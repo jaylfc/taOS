@@ -15,6 +15,7 @@ async def activity(request: Request):
     import psutil
 
     from tinyagentos.system_stats import (
+        get_all_gpu_loads,
         get_cpu_per_core,
         get_disk_io_rate,
         get_gpu_load,
@@ -36,7 +37,29 @@ async def activity(request: Request):
     mem = psutil.virtual_memory()
     swap = psutil.swap_memory()
 
+    gpu_block = hw_data.get("gpu") if isinstance(hw_data, dict) else None
+    gpus_block = hw_data.get("gpus") if isinstance(hw_data, dict) else None
+    npu_block = hw_data.get("npu") if isinstance(hw_data, dict) else None
+
     gpu_type = getattr(getattr(hw, "gpu", None), "type", None) or ""
+    gpus_for_stats = []
+    if isinstance(gpus_block, list):
+        for g in gpus_block:
+            if isinstance(g, dict):
+                gpus_for_stats.append({
+                    "type": g.get("type"),
+                    "model": g.get("model"),
+                    "vram_mb": g.get("vram_mb"),
+                    "pci_address": g.get("pci_address"),
+                })
+    if not gpus_for_stats and gpu_type:
+        gpus_for_stats = [{"type": gpu_type}]
+
+    try:
+        gpu_loads = get_all_gpu_loads(gpus_for_stats)
+    except Exception:
+        gpu_loads = []
+
     try:
         vram_pct, vram_used_mb, vram_total_mb = get_vram_usage(gpu_type)
     except Exception:
@@ -64,8 +87,6 @@ async def activity(request: Request):
         }
 
     cpu_block = hw_data.get("cpu") if isinstance(hw_data, dict) else None
-    gpu_block = hw_data.get("gpu") if isinstance(hw_data, dict) else None
-    npu_block = hw_data.get("npu") if isinstance(hw_data, dict) else None
 
     board = None
     if isinstance(cpu_block, dict):
@@ -110,12 +131,42 @@ async def activity(request: Request):
     except Exception:
         procs = []
 
+    # Build gpus array for response
+    gpus_response = []
+    if isinstance(gpus_block, list):
+        for i, g in enumerate(gpus_block):
+            if not isinstance(g, dict):
+                continue
+            load_info = gpu_loads[i] if i < len(gpu_loads) else {}
+            load_percent = load_info.get("load_percent")
+            freq_hz = load_info.get("freq_hz")
+            # GPUs without stats (Intel, Mali, Apple) should report load: null
+            load_obj = None
+            if load_percent is not None or freq_hz is not None:
+                load_obj = {
+                    "load_percent": load_percent,
+                    "freq_hz": freq_hz,
+                }
+                freq_max_hz = load_info.get("freq_max_hz")
+                if freq_max_hz is not None:
+                    load_obj["freq_max_hz"] = freq_max_hz
+            gpus_response.append({
+                "type": g.get("type"),
+                "model": g.get("model"),
+                "load": load_obj,
+                "vram_percent": load_info.get("vram_percent"),
+                "vram_used_mb": load_info.get("vram_used_mb"),
+                "vram_total_mb": load_info.get("vram_total_mb"),
+                "shared_memory": load_info.get("shared_memory"),
+            })
+
     return JSONResponse({
         "timestamp": time.time(),
         "hardware": {
             "board": board,
             "cpu": cpu_block,
             "gpu": gpu_block,
+            "gpus": gpus_block,
             "npu": npu_block,
             "ram_mb": hw_data.get("ram_mb") if isinstance(hw_data, dict) else None,
         },
@@ -146,6 +197,7 @@ async def activity(request: Request):
             "vram_total_mb": vram_total_mb,
             "type": gpu_name,
         },
+        "gpus": gpus_response,
         "thermal": thermal,
         "zram": zram,
         "disk": disk_info,

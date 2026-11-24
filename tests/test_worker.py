@@ -433,6 +433,111 @@ class TestHeartbeat:
 
         assert result == 401
 
+    async def test_heartbeat_success_records_the_heartbeat_ok_timestamp(self, tmp_path):
+        """The deploy helper's health check reads a "last heartbeat OK"
+        timestamp from the worker's state dir as proof the worker is
+        reaching the controller (PR #1910).  A successful heartbeat must
+        write it -- atomically, so no temp file is left behind -- and
+        refresh a stale one."""
+        save_signing_key(tmp_path, secrets.token_bytes(32))
+        agent = WorkerAgent("http://controller:6969", name="test-worker", state_dir=tmp_path)
+        hb_file = tmp_path / "last-heartbeat-ok"
+        hb_file.write_text("1\n")  # a stale timestamp from an earlier run
+
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+
+        with patch("tinyagentos.worker.agent.httpx.AsyncClient") as mock_client_cls:
+            mock_client = AsyncMock()
+            mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+            mock_client.__aexit__ = AsyncMock(return_value=False)
+            mock_client.post = AsyncMock(return_value=mock_response)
+            mock_client_cls.return_value = mock_client
+
+            with patch("tinyagentos.worker.agent.psutil.cpu_percent", return_value=0.0):
+                with patch("tinyagentos.worker.agent.WorkerAgent.detect_backends", return_value=[]):
+                    result = await agent.heartbeat()
+
+        assert result == 200
+        written = int(hb_file.read_text().strip())
+        assert abs(time.time() - written) < 60
+        # Atomic write (temp file + rename): no residue in the state dir.
+        assert not [p for p in tmp_path.iterdir() if ".tmp." in p.name]
+
+    async def test_heartbeat_failure_records_no_timestamp(self, tmp_path):
+        """A heartbeat that never reached the controller must not create
+        the timestamp -- that is the whole point of it as proof of work."""
+        save_signing_key(tmp_path, secrets.token_bytes(32))
+        agent = WorkerAgent("http://controller:6969", name="test-worker", state_dir=tmp_path)
+
+        with patch("tinyagentos.worker.agent.httpx.AsyncClient") as mock_client_cls:
+            mock_client = AsyncMock()
+            mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+            mock_client.__aexit__ = AsyncMock(return_value=False)
+            mock_client.post = AsyncMock(side_effect=Exception("timeout"))
+            mock_client_cls.return_value = mock_client
+
+            with patch("tinyagentos.worker.agent.psutil.cpu_percent", return_value=0.0):
+                with patch("tinyagentos.worker.agent.WorkerAgent.detect_backends", return_value=[]):
+                    result = await agent.heartbeat()
+
+        assert result == 0
+        assert not (tmp_path / "last-heartbeat-ok").exists()
+
+    async def test_heartbeat_non_200_records_no_timestamp(self, tmp_path):
+        """A heartbeat the controller answered with an error is not a
+        successful heartbeat: no timestamp."""
+        save_signing_key(tmp_path, secrets.token_bytes(32))
+        agent = WorkerAgent("http://controller:6969", name="test-worker", state_dir=tmp_path)
+
+        mock_response = MagicMock()
+        mock_response.status_code = 500
+
+        with patch("tinyagentos.worker.agent.httpx.AsyncClient") as mock_client_cls:
+            mock_client = AsyncMock()
+            mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+            mock_client.__aexit__ = AsyncMock(return_value=False)
+            mock_client.post = AsyncMock(return_value=mock_response)
+            mock_client_cls.return_value = mock_client
+
+            with patch("tinyagentos.worker.agent.psutil.cpu_percent", return_value=0.0):
+                with patch("tinyagentos.worker.agent.WorkerAgent.detect_backends", return_value=[]):
+                    result = await agent.heartbeat()
+
+        assert result == 500
+        assert not (tmp_path / "last-heartbeat-ok").exists()
+
+    async def test_clear_heartbeat_ok_removes_the_timestamp(self, tmp_path):
+        """run() clears the timestamp at startup, so a restarted worker
+        cannot ride on its predecessor's last successful heartbeat: the
+        file only counts once THIS process has reached the controller."""
+        agent = WorkerAgent("http://controller:6969", name="test-worker", state_dir=tmp_path)
+        hb_file = tmp_path / "last-heartbeat-ok"
+        hb_file.write_text("123\n")
+
+        agent._clear_heartbeat_ok()
+
+        assert not hb_file.exists()
+        # Clearing an absent file is not an error.
+        agent._clear_heartbeat_ok()
+
+    async def test_record_heartbeat_ok_creates_a_missing_state_dir(self, tmp_path):
+        """The timestamp write must not depend on the state dir already
+        existing.  If it were missing and the write failed quietly, no
+        timestamp would ever be recorded and the deploy helper's health
+        check would roll back a healthy update (PR #1910), so
+        _record_heartbeat_ok creates the directory itself."""
+        state_dir = tmp_path / "state"
+        agent = WorkerAgent("http://controller:6969", name="test-worker", state_dir=state_dir)
+        assert not state_dir.exists()
+
+        agent._record_heartbeat_ok()
+
+        hb_file = state_dir / "last-heartbeat-ok"
+        assert hb_file.exists()
+        written = int(hb_file.read_text().strip())
+        assert abs(time.time() - written) < 60
+
 
 @pytest.mark.asyncio
 class TestRunLoopRepairState:

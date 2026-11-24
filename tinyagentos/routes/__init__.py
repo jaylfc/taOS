@@ -17,6 +17,12 @@ def register_all_routers(app):
     from tinyagentos.routes.system import router as system_router
     app.include_router(system_router, dependencies=_csrf)
 
+    from tinyagentos.routes.offline_model import router as offline_model_router
+    app.include_router(offline_model_router, dependencies=_csrf)
+
+    from tinyagentos.routes.other_systems import router as other_systems_router
+    app.include_router(other_systems_router, dependencies=_csrf)
+
     from tinyagentos.routes.hardware_wifi import router as hardware_wifi_router
     app.include_router(hardware_wifi_router, dependencies=_csrf)
 
@@ -229,6 +235,11 @@ def register_all_routers(app):
 
     from tinyagentos.routes.agent_workspace import router as agent_workspace_router
     app.include_router(agent_workspace_router, dependencies=_csrf)
+
+    # Built-in Photos location (~/Pictures of the controller user) plus the
+    # /api/files/locations discovery endpoint the Files app lists from.
+    from tinyagentos.routes.photos_location import router as photos_location_router
+    app.include_router(photos_location_router, dependencies=_csrf)
 
     from tinyagentos.routes.agent_desktop import router as agent_desktop_router
     app.include_router(agent_desktop_router, dependencies=_csrf)

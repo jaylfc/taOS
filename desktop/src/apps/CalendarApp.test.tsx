@@ -86,7 +86,7 @@ describe("CalendarApp", () => {
   it("highlights today's date with the accent class", () => {
     render(<CalendarApp windowId="w1" />);
     // June 15 is "today" per our fixed clock; the cell should have the accent bg
-    const todayCell = screen.getByText("15")?.closest("span");
+    const todayCell = screen.getByText("15")?.closest("button");
     expect(todayCell?.className).toContain("bg-accent");
   });
 
@@ -99,5 +99,101 @@ describe("CalendarApp", () => {
     const todayBtn = screen.getByRole("button", { name: /today/i });
     fireEvent.click(todayBtn);
     expect(screen.getByText("June 2025")).toBeTruthy();
+  });
+});
+
+describe("CalendarApp day selection", () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date(2025, 5, 15));
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("marks the tapped day selected (aria-pressed + accent style) and shows the day panel", () => {
+    render(<CalendarApp windowId="test" />);
+
+    // The grid renders one button per cell; the today cell starts selected.
+    const buttons = screen.getAllByTestId("calendar-day");
+    expect(buttons.length).toBeGreaterThan(0);
+
+    const todayButton = buttons.find((b) => b.getAttribute("aria-pressed") === "true");
+    expect(todayButton).toBeInTheDocument();
+
+    // Pick a different day and tap it.
+    const other = buttons.find((b) => b.getAttribute("aria-pressed") !== "true")!;
+    fireEvent.click(other);
+
+    expect(other).toHaveAttribute("aria-pressed", "true");
+    expect(todayButton).toHaveAttribute("aria-pressed", "false");
+
+    // The day panel/agenda must show for the selected date, even with no
+    // events — it must not vanish just because the day is empty.
+    const panel = screen.getByRole("tabpanel", { name: /agenda for/i });
+    expect(panel).toBeInTheDocument();
+    expect(panel.textContent).toContain("No events.");
+  });
+
+  it("keeps the selected style on the button element itself", () => {
+    render(<CalendarApp windowId="test" />);
+    const buttons = screen.getAllByTestId("calendar-day");
+    const selected = buttons.find((b) => b.getAttribute("aria-pressed") === "true")!;
+    // The accent background marks the selected day visually.
+    expect(selected.className).toContain("bg-accent");
+  });
+
+  it("round-trips other-month day keys so the panel shows the clicked day", () => {
+    render(<CalendarApp windowId="test" />);
+    const today = new Date();
+    const cells = screen.getAllByTestId("calendar-day");
+
+    // Trailing cells of the next month carry single-digit day numbers —
+    // exactly the case the old non-padded key ("2025-5-15") parsed wrong in
+    // some engines. Find the first such cell.
+    const other = cells.find((b) => {
+      const label = b.getAttribute("aria-label") ?? "";
+      return (
+        label.includes("(other month)") && /^\d$/.test(b.textContent?.trim() ?? "")
+      );
+    }) as HTMLElement | undefined;
+    expect(other).toBeDefined();
+    const day = other!.textContent!.trim();
+
+    // The clicked cell belongs to the next month; compute the heading the
+    // panel should name so the assertion is independent of today's date.
+    const nextMonth = (today.getMonth() + 1) % 12;
+    const nextYear = today.getMonth() === 11 ? today.getFullYear() + 1 : today.getFullYear();
+    const expected = new Date(nextYear, nextMonth, Number(day)).toLocaleDateString(
+      "en-US",
+      { year: "numeric", month: "long", day: "numeric" },
+    );
+
+    fireEvent.click(other!);
+
+    const panel = screen.getByRole("tabpanel", { name: /agenda for/i });
+    expect(panel.textContent).toContain(expected);
+  });
+
+  it("gives each cell a distinct accessible name (its own date)", () => {
+    render(<CalendarApp windowId="test" />);
+    const buttons = screen.getAllByTestId("calendar-day");
+    // Find two different current-month cells with different date keys
+    const todayButton = buttons.find((b) => b.getAttribute("aria-pressed") === "true");
+    const otherButton = buttons.find(
+      (b) =>
+        b.getAttribute("aria-pressed") !== "true" &&
+        b.getAttribute("data-date-key") !== todayButton?.getAttribute("data-date-key") &&
+        !b.getAttribute("aria-label")?.includes("(other month)")
+    );
+    expect(todayButton).toBeDefined();
+    expect(otherButton).toBeDefined();
+    const todayLabel = todayButton!.getAttribute("aria-label");
+    const otherLabel = otherButton!.getAttribute("aria-label");
+    expect(todayLabel).not.toBe(otherLabel);
+    // Both should contain a month name, not the same heading
+    expect(todayLabel).toMatch(/\w+ \d+, \d{4}/);
+    expect(otherLabel).toMatch(/\w+ \d+, \d{4}/);
   });
 });

@@ -61,6 +61,30 @@ async def _ensure_cluster_pairing_store(client, tmp_path_factory):
     if store is not None and store._db is not None:
         await store.close()
 
+
+@pytest_asyncio.fixture(autouse=True)
+async def _ensure_notifications_store(client, tmp_path_factory):
+    """Init app.state.notifications on a fresh DB; the test client does not run the lifespan."""
+    store = client._transport.app.state.notifications
+    if store._db is not None:
+        await store.close()
+    store.db_path = tmp_path_factory.mktemp("notifications_authz") / "notifications.db"
+    await store.init()
+    yield
+    await store.close()
+
+
+@pytest_asyncio.fixture(autouse=True)
+async def _ensure_user_memory_store(client, tmp_path_factory):
+    """Init app.state.user_memory on a fresh DB; the test client does not run the lifespan."""
+    store = client._transport.app.state.user_memory
+    if store._db is not None:
+        await store.close()
+    store.db_path = tmp_path_factory.mktemp("user_memory_authz") / "user_memory.db"
+    await store.init()
+    yield
+    await store.close()
+
 # A non-loopback peer address so the loopback-only prepare-shutdown carve-out
 # in AuthMiddleware does not apply (the default ASGITransport peer is loopback).
 _LAN_PEER = ("192.168.1.10", 51234)
@@ -448,6 +472,119 @@ class TestMcpMemberRejected:
 
 
 @pytest.mark.asyncio
+class TestNotificationsPrefsMemberRejected:
+    async def test_put_pref_rejected_and_not_applied(self, client, app):
+        """Member cannot mute/unmute global notification event types."""
+        # First, verify the default state (unmuted)
+        event_type = "app.failed"
+        resp = await client.get("/api/notifications/prefs")
+        assert resp.status_code == 200
+        prefs = resp.json()
+        pref = next(p for p in prefs if p["event_type"] == event_type)
+        assert pref["muted"] is False
+
+        # Member tries to mute it
+        member = await _member_client(app)
+        try:
+            resp = await member.put(
+                f"/api/notifications/prefs/{event_type}", json={"muted": True}
+            )
+        finally:
+            await member.aclose()
+        assert resp.status_code == 403, resp.text
+        assert resp.json() == FORBIDDEN
+
+        # Verify the value is unchanged
+        resp = await client.get("/api/notifications/prefs")
+        assert resp.status_code == 200
+        prefs = resp.json()
+        pref = next(p for p in prefs if p["event_type"] == event_type)
+        assert pref["muted"] is False
+
+    async def test_admin_put_pref_allowed(self, client, app):
+        """Admin can mute/unmute global notification event types."""
+        event_type = "app.failed"
+        resp = await client.put(f"/api/notifications/prefs/{event_type}", json={"muted": True})
+        assert resp.status_code == 200, resp.text
+        assert resp.json() == {"event_type": event_type, "muted": True}
+
+        # Verify it's changed
+        resp = await client.get("/api/notifications/prefs")
+        assert resp.status_code == 200
+        prefs = resp.json()
+        pref = next(p for p in prefs if p["event_type"] == event_type)
+        assert pref["muted"] is True
+
+    async def test_local_token_put_pref_allowed(self, client, app):
+        """Local token can mute/unmute global notification event types."""
+        bare = _local_token_client(app)
+        try:
+            event_type = "app.failed"
+            resp = await bare.put(f"/api/notifications/prefs/{event_type}", json={"muted": True})
+            assert resp.status_code == 200, resp.text
+            assert resp.json() == {"event_type": event_type, "muted": True}
+        finally:
+            await bare.aclose()
+
+
+@pytest.mark.asyncio
+class TestUserMemorySettingsMemberRejected:
+    async def test_put_settings_rejected_and_not_applied(self, client, app):
+        """Member cannot change global user-memory settings."""
+        # First, verify the default state
+        resp = await client.get("/api/user-memory/settings")
+        assert resp.status_code == 200
+        original_capture = resp.json().get("capture_notes", True)
+
+        # Member tries to change it
+        member = await _member_client(app)
+        try:
+            resp = await member.put("/api/user-memory/settings", json={"capture_notes": not original_capture})
+        finally:
+            await member.aclose()
+        assert resp.status_code == 403, resp.text
+        assert resp.json() == FORBIDDEN
+
+        # Verify the value is unchanged
+        resp = await client.get("/api/user-memory/settings")
+        assert resp.status_code == 200
+        assert resp.json().get("capture_notes") == original_capture
+
+    async def test_admin_put_settings_allowed(self, client, app):
+        """Admin can change global user-memory settings."""
+        resp = await client.get("/api/user-memory/settings")
+        assert resp.status_code == 200
+        original_capture = resp.json().get("capture_notes", True)
+
+        resp = await client.put("/api/user-memory/settings", json={"capture_notes": not original_capture})
+        assert resp.status_code == 200, resp.text
+        assert resp.json() == {"ok": True}
+
+        # Verify it's changed
+        resp = await client.get("/api/user-memory/settings")
+        assert resp.status_code == 200
+        assert resp.json().get("capture_notes") == (not original_capture)
+
+    async def test_local_token_put_settings_allowed(self, client, app):
+        """Local token can change global user-memory settings."""
+        bare = _local_token_client(app)
+        try:
+            resp = await bare.get("/api/user-memory/settings")
+            assert resp.status_code == 200
+            original_capture = resp.json().get("capture_notes", True)
+
+            resp = await bare.put("/api/user-memory/settings", json={"capture_notes": not original_capture})
+            assert resp.status_code == 200, resp.text
+            assert resp.json() == {"ok": True}
+
+            resp = await bare.get("/api/user-memory/settings")
+            assert resp.status_code == 200
+            assert resp.json().get("capture_notes") == (not original_capture)
+        finally:
+            await bare.aclose()
+
+
+@pytest.mark.asyncio
 class TestAgentModelKeysMint:
     async def test_member_cannot_mint_for_admin_owned_agent(self, client, app):
         registry = await _init_registry(app)
@@ -813,6 +950,9 @@ _CLUSTER_MEMBER_CASES = [
 ]
 
 
+FORBIDDEN = {"detail": "forbidden"}
+
+
 @pytest.mark.asyncio
 class TestClusterMemberRejected:
     @pytest.mark.parametrize("method,path,body", _CLUSTER_MEMBER_CASES)
@@ -832,6 +972,17 @@ class TestClusterMemberRejected:
         cluster.get_workers.assert_not_called()
         cluster.unregister_worker.assert_not_called()
         task_router.route_request.assert_not_called()
+
+    async def test_member_delete_via_member_client_403(self, client, app):
+        """Member session DELETE on /api/cluster/workers/{name} must get 403.
+        This is a real member-session test (not admin, not local token)."""
+        member = await _member_client(app)
+        try:
+            resp = await member.delete("/api/cluster/workers/w1")
+        finally:
+            await member.aclose()
+        assert resp.status_code == 403, resp.text
+        assert resp.json() == FORBIDDEN
 
 
 @pytest.mark.asyncio
@@ -872,12 +1023,12 @@ class TestClusterAdminAllowed:
         bare = _local_token_client(app)
         try:
             resp = await bare.delete("/api/cluster/workers/w1")
-            assert resp.status_code == 200, resp.text
+            assert resp.status_code == 403, resp.text
+            cluster.unregister_worker.assert_not_called()
             resp = await bare.post("/api/cluster/promote-archived")
             assert resp.status_code == 200, resp.text
         finally:
             await bare.aclose()
-        cluster.unregister_worker.assert_awaited_once_with("w1")
 
 # ---------------------------------------------------------------------------
 # Cluster admin DELETE when pairing store is unavailable (DEFECT 1)
@@ -918,7 +1069,7 @@ class TestClusterAdminDeleteWithoutPairingStore:
         assert cluster.get_worker("test-worker").name == "test-worker"
 
     async def test_local_token_delete_without_pairing_store_refuses(self, app):
-        """Local token DELETE also must fail closed when pairing store is unavailable."""
+        """Local token DELETE also must fail with 403 when pairing store is unavailable."""
         # Set cluster_pairing to None
         app.state.cluster_pairing = None
 
@@ -933,20 +1084,19 @@ class TestClusterAdminDeleteWithoutPairingStore:
         )
         cluster._workers["local-test-worker"] = worker
 
-        # Local token DELETE should also fail with 503
-        from tests.test_global_routers_authz import _local_token_client
+        # Local token DELETE should also fail with 403 when pairing store is unavailable
         bare = _local_token_client(app)
         try:
             resp = await bare.delete("/api/cluster/workers/local-test-worker")
         finally:
             await bare.aclose()
 
-        assert resp.status_code == 503, resp.text
-        assert resp.json()["code"] == "STORE_UNAVAILABLE"
-        assert resp.json()["error"] == "pairing store unavailable"
+        assert resp.status_code == 403, resp.text
+        # No need to check JSON body since 403 is the authz gate
 
-        # Worker row should still be present
+        # Worker row should still be present because DELETE was refused
         assert cluster.get_worker("local-test-worker") is not None
+        assert cluster.get_worker("local-test-worker").name == "local-test-worker"
 
     async def test_delete_with_uninitialised_pairing_store_refuses(self, client, app):
         """When cluster_pairing exists but its DB was never initialised, admin

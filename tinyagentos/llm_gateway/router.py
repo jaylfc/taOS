@@ -49,8 +49,9 @@ def _model_entry(name: str) -> dict:
 
 @router.get("/models")
 async def list_models(request: Request, caller: GatewayCaller = Depends(gateway_caller)):
+    table = await routing_table(request.app.state)
     names = [TAOS_DEFAULT] + [
-        n for n in model_names(routing_table(request.app.state)) if n != TAOS_DEFAULT
+        n for n in model_names(table) if n != TAOS_DEFAULT
     ]
     return {"object": "list", "data": [_model_entry(n) for n in names if caller.may_use(n)]}
 
@@ -94,7 +95,7 @@ async def chat_completions(request: Request, caller: GatewayCaller = Depends(gat
                 "taos-default has nothing behind it: no default chat model is set. "
                 "Pick one in the taOS agent settings."
             )
-    routes = find_routes(routing_table(state), name)
+    routes = find_routes(await routing_table(state), name)
     if not routes:
         suffix = f" (taos-default points at it)" if name != requested else ""
         raise model_not_found(f"model {name!r} not found{suffix}")

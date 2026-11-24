@@ -92,8 +92,18 @@ async def test_install_upstream_fetch_failure_returns_502(client):
 @pytest.mark.asyncio
 async def test_install_pins_connection_to_resolved_ip(client):
     # SSRF #971: the fetch must connect to the validated IP (closing the
-    # DNS-rebind TOCTOU window), keeping the original Host header + TLS SNI so
-    # the client never re-resolves the hostname to a different (internal) IP.
+    # DNS-rebind TOCTOU window) so the client never re-resolves the
+    # hostname to a different (internal) IP. The pinning itself lives in
+    # the userspace_fetch_client transport (jaylfc on #4364: the route
+    # used to hand-rewrite the URL to an IP literal, which bypassed the
+    # factory's hostname path entirely) -- this test pins the route's
+    # half of the contract: validate, then fetch the ORIGINAL URL
+    # through the client, leaving Host header + TLS SNI to the
+    # transport. The end-to-end pin (connection lands on the validated
+    # IP, original Host preserved) is proven through the real factory
+    # in test_install_security.py::
+    # test_install_source_url_fetches_original_url_through_pinned_factory
+    # and in test_pinned_fetch.py.
     captured = {}
 
     async def _fake_get(self, url, **kwargs):
@@ -113,12 +123,12 @@ async def test_install_pins_connection_to_resolved_ip(client):
                 json={"source_url": "http://example.com/app.taosapp"},
             )
     assert r.status_code == 200, r.text
-    # connected to the pinned IP, NOT the hostname
-    assert "93.184.216.34" in captured["url"]
-    assert "example.com" not in captured["url"]
-    # original host preserved for vhost routing + cert validation
-    assert captured["headers"]["Host"] == "example.com"
-    assert captured["extensions"]["sni_hostname"] == "example.com"
+    # the route fetches the original URL and lets the factory's
+    # transport pin it to the validated IP -- no hand-rolled rewrite,
+    # no route-supplied Host/SNI overrides
+    assert captured["url"] == "http://example.com/app.taosapp"
+    assert not captured["headers"]
+    assert not captured["extensions"]
 
 
 def _container_zip():

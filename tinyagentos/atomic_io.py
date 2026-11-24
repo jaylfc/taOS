@@ -31,7 +31,7 @@ import secrets
 import time
 from pathlib import Path
 
-__all__ = ["atomic_write_text", "atomic_write_bytes", "atomic_create_bytes"]
+__all__ = ["atomic_write_text", "atomic_write_bytes", "atomic_create_bytes", "durable_replace"]
 
 logger = logging.getLogger(__name__)
 
@@ -206,6 +206,27 @@ def atomic_write_bytes(path: Path, data: bytes, *, mode: int | None = None) -> N
             pass
         raise
     _fsync_dir(path.parent)
+
+
+def durable_replace(temp_path: Path, final_path: Path) -> None:
+    """Durably promote *temp_path* to *final_path*.
+
+    fsync the temp file so its bytes are on disk, then ``os.replace`` it into
+    place (atomic within a directory), then fsync the parent directory so the
+    rename itself survives a power cut.  A crash at any point leaves either the
+    complete old file or the complete new one -- never a half-written or
+    NUL-filled one.
+    """
+    temp_path = Path(temp_path)
+    final_path = Path(final_path)
+    fd = os.open(temp_path, os.O_RDONLY)
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+    os.replace(temp_path, final_path)
+    _fsync_dir(final_path.parent)
+
 
 def _create_via_claim(path: Path, data: bytes, mode: int | None) -> bytes:
     """``atomic_create_bytes`` on a filesystem with no hard links.

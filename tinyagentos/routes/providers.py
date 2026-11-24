@@ -233,7 +233,7 @@ async def _fetch_litellm_models(proxy, app_state=None) -> list[dict]:
     try:
         from tinyagentos.llm_gateway.resolve import routing_table
 
-        table = routing_table(app_state)
+        table = await routing_table(app_state)
     except Exception as exc:  # noqa: BLE001 - an empty catalog, never a 500
         logger.warning("model catalog: routing table unavailable: %s", exc)
         return []

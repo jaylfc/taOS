@@ -1,0 +1,78 @@
+# The nodes of the device-link test bed (design 11.1), layered on
+# compose.core.yml. Every taOS node runs the taOS controller from the ref under
+# test plus ONE userspace tailscaled per hosted person (design 5.0). Joining the
+# mesh is done by bed.sh (mesh-join.sh) after it has minted keys.
+#
+#   TAOS_SRC_DIR   a checkout (or git archive) of the taOS ref under test: the
+#                  named build context "taos" for the node image
+#   TAOS_BED_STUBS 1 (default) binds loopback stand-ins on the per-person ports
+#                  27700+n and 27750+n; 0 once the real listeners exist
+#   BED_TIME_SCALE value for TAOS_DEVICE_LINK_TIME_SCALE (default 60)
+#
+# Kernel-tun containers (a-host1, a-phone, personal) have /dev/net/tun and
+# NET_ADMIN, because they carry the personal-tailnet stand-in. Every other node
+# gets neither: a userspace-only node must work without them.
+
+x-node: &node
+  build:
+    context: ./images
+    target: node
+    additional_contexts:
+      taos: ${TAOS_SRC_DIR:?bed.sh sets this}
+  init: true
+  environment: &node-env
+    CONTROLLER: "1"
+    STUBS: ${TAOS_BED_STUBS:-1}
+    TAOS_DEVICE_LINK_TIME_SCALE: ${BED_TIME_SCALE:-60}
+    TAOS_HEADSCALE_URL: http://headscale:8080
+    TAOS_ACCOUNT_BASE_URL: http://taosmy:8080
+
+x-kernel: &kernel
+  cap_add: [NET_ADMIN]
+  devices: ["/dev/net/tun:/dev/net/tun"]
+
+services:
+  # ---- person A: three hosts and a phone --------------------------------
+  a-host1:
+    <<: [*node, *kernel]
+    environment: {<<: *node-env, NODE_NAME: a-host1, PERSONS: "a:0", PERSONAL_KERNEL: "1"}
+  a-host2:
+    <<: *node
+    environment: {<<: *node-env, NODE_NAME: a-host2, PERSONS: "a:0"}
+  a-host3:
+    <<: *node
+    environment: {<<: *node-env, NODE_NAME: a-host3, PERSONS: "a:0"}
+  a-phone:
+    <<: [*node, *kernel]
+    environment: {<<: *node-env, NODE_NAME: a-phone, PERSONS: "a:0", PERSONAL_KERNEL: "1"}
+
+  # ---- person B: a host and a phone ------------------------------------
+  b-host:
+    <<: *node
+    environment: {<<: *node-env, NODE_NAME: b-host, PERSONS: "b:0"}
+  b-phone:
+    <<: *node
+    environment: {<<: *node-env, NODE_NAME: b-phone, PERSONS: "b:0"}
+
+  # ---- a shared computer hosting two people, and the second person's phone
+  shared-s:
+    <<: *node
+    environment: {<<: *node-env, NODE_NAME: shared-s, PERSONS: "a:0 f:1"}
+  f-phone:
+    <<: *node
+    environment: {<<: *node-env, NODE_NAME: f-phone, PERSONS: "f:0"}
+
+  # ---- the browser relay stand-in: a node tagged tag:relay under taos-relay.
+  # No relay software; it is the network position the relay has (ACL: *:6969 only).
+  relay:
+    build: {context: ./images, target: net}
+    init: true
+    environment: {NODE_NAME: relay, PERSONS: "relay:49", STUBS: "0", CONTROLLER: "0"}
+
+  # ---- the personal-tailnet stand-in: kernel-tun tailscaled on a second
+  # Headscale, in a container that knows nothing about taOS (MT11).
+  personal:
+    build: {context: ./images, target: net}
+    init: true
+    <<: *kernel
+    environment: {NODE_NAME: personal, PERSONS: "", STUBS: "0", CONTROLLER: "0", PERSONAL_KERNEL: "1"}

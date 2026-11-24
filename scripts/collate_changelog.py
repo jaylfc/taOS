@@ -156,7 +156,28 @@ def main(argv: list[str]) -> int:
     # Insert directly BELOW [Unreleased] so Unreleased stays empty and on top,
     # which is what the release train expects on the next cycle.
     anchor = UNRELEASED + "\n"
+    if anchor not in text:
+        # CHANGELOG.md ends exactly at the anchor with no trailing newline:
+        # the replace below would silently no-op and the fragments would be
+        # unlinked without ever being folded. Normalise the file ending so
+        # the insertion always lands.
+        if not text.endswith(UNRELEASED):
+            print(f"collate-changelog: {CHANGELOG.name} anchor is not on its own line", file=sys.stderr)
+            return 1
+        # The anchor must also START its line: a file ending in e.g.
+        # "Some prefix ## [Unreleased]" passes endswith but the anchor
+        # is mid-line, and folding would insert the section after the
+        # prefix and unlink the fragments for a malformed fold.
+        anchor_start = len(text) - len(UNRELEASED)
+        if anchor_start > 0 and text[anchor_start - 1] != "\n":
+            print(f"collate-changelog: {CHANGELOG.name} anchor is not on its own line", file=sys.stderr)
+            return 1
+        text += "\n"
     text = text.replace(anchor, anchor + "\n" + section, 1)
+    if version_header not in text:
+        # Never unlink fragments for a fold that did not happen.
+        print(f"collate-changelog: insertion into {CHANGELOG.name} failed; fragments kept", file=sys.stderr)
+        return 1
     CHANGELOG.write_text(text, encoding="utf-8")
 
     for path in consumed:

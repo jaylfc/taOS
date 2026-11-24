@@ -8,6 +8,7 @@ import {
   FileAudio,
   FileCode,
   FileArchive,
+  Images,
   ChevronRight,
   FolderPlus,
   Upload,
@@ -38,6 +39,7 @@ import { projectsApi, type DocReviewState } from "@/lib/projects";
 import { useDragSource } from "@/shell/dnd/use-drag-source";
 import { DocViewer } from "@/apps/ProjectsApp/files/DocViewer";
 import { useRefreshOnFocus } from "@/hooks/use-refresh-on-focus";
+import { useOnBackendRecovered } from "@/hooks/use-on-backend-recovered";
 import { createSseConnection } from "@/lib/sse";
 
 /* ------------------------------------------------------------------ */
@@ -69,6 +71,12 @@ interface WorkspaceTrashItem {
   deleted_at: string; // ISO string
 }
 
+interface PhotosTrashItem {
+  id: string;
+  original_path: string;
+  deleted_at: string; // ISO string
+}
+
 interface FileEntry {
   name: string;
   path: string;
@@ -90,6 +98,13 @@ interface AgentSummary {
   display_name?: string;
   emoji?: string;
   framework?: string;
+}
+
+// Entry returned by GET /api/files/locations: a built-in location that exists
+// on this device. The server decides the set, the sidebar renders it.
+interface BuiltInLocation {
+  id: string;
+  label: string;
 }
 
 interface WorkspaceStats {
@@ -190,10 +205,55 @@ function projectSlug(loc: string): string {
   return loc.slice(PROJECT_LOCATION_PREFIX.length);
 }
 
+// Built-in locations the controller owns directly (see
+// tinyagentos/routes/photos_location.py). The backend lists only the ones whose
+// base directory exists on this device, so the set is decided by the server and
+// the sidebar renders whatever it returns.
+//
+// Their ids are namespaced in the location state. A shared folder may be called
+// anything, "photos" included, and an un-namespaced id put the two on the same
+// location: the shared folder was listed and deleted through the built-in
+// endpoint. The server's raw id is only ever used to look the entry back up.
+const BUILTIN_LOCATION_PREFIX = "builtin:";
+
+function builtinLocationKey(id: string): string {
+  return `${BUILTIN_LOCATION_PREFIX}${id}`;
+}
+
+function isBuiltinLocation(loc: string): boolean {
+  return loc.startsWith(BUILTIN_LOCATION_PREFIX);
+}
+
+function builtinId(loc: string): string {
+  return loc.slice(BUILTIN_LOCATION_PREFIX.length);
+}
+
+const PHOTOS_LOCATION_ID = "photos";
+
+function isPhotosLocation(loc: string): boolean {
+  return isBuiltinLocation(loc) && builtinId(loc) === PHOTOS_LOCATION_ID;
+}
+
+// Icon per built-in location id as the server spells it (NOT the namespaced
+// location key). An id the frontend does not know still gets a row (with the
+// folder icon) so a location the server starts listing stays reachable rather
+// than silently invisible.
+const BUILT_IN_LOCATION_ICONS: Record<string, typeof Folder> = {
+  [PHOTOS_LOCATION_ID]: Images,
+};
+
+function BuiltInLocationIcon({ id, size = 16 }: { id: string; size?: number }) {
+  const Icon = BUILT_IN_LOCATION_ICONS[id] ?? Folder;
+  return <Icon size={size} className="text-accent" />;
+}
+
 function fileUrl(location: "workspace" | string, path: string): string {
   const encoded = encodeURIComponent(path);
   if (location === "workspace") {
     return `/api/workspace/files/${encoded}`;
+  }
+  if (isPhotosLocation(location)) {
+    return `/api/photos/files/${encoded}`;
   }
   if (isAgentLocation(location)) {
     return `/api/agents/${encodeURIComponent(agentSlug(location))}/workspace/files/${encoded}`;
@@ -205,15 +265,18 @@ function fileUrl(location: "workspace" | string, path: string): string {
 }
 
 /**
- * Build endpoint URLs for the three workspace root kinds:
+ * Build endpoint URLs for the location kinds the sidebar can list:
  *   - "workspace"       → user workspace
  *   - "agent:<slug>"    → per-agent workspace
+ *   - "photos"          → built-in Pictures folder (read and delete only)
+ *     (keyed as "builtin:photos" so a shared folder may also be named photos)
  *   - "<folder-name>"   → shared folder
- * Centralising the fan-out here keeps fetch/upload/mkdir/delete/watch in sync.
+ * Centralising the fan-out here keeps fetch/upload/delete/watch in sync.
  */
 function workspaceListUrl(location: "workspace" | string, path: string): string {
   const qs = path ? `?path=${encodeURIComponent(path)}` : "";
   if (location === "workspace") return `/api/workspace/files${qs}`;
+  if (isPhotosLocation(location)) return `/api/photos/files${qs}`;
   if (isAgentLocation(location)) {
     return `/api/agents/${encodeURIComponent(agentSlug(location))}/workspace/files${qs}`;
   }
@@ -235,9 +298,10 @@ function workspaceWatchUrl(location: "workspace" | string, path: string): string
   return null;
 }
 
-function workspaceUploadUrl(location: "workspace" | string, path: string): string {
+function workspaceUploadUrl(location: "workspace" | string, path: string): string | null {
   const qs = path ? `?path=${encodeURIComponent(path)}` : "";
   if (location === "workspace") return `/api/workspace/files/upload${qs}`;
+  if (isPhotosLocation(location)) return null;  // the camera folder is not a write target
   if (isAgentLocation(location)) {
     return `/api/agents/${encodeURIComponent(agentSlug(location))}/workspace/files/upload${qs}`;
   }
@@ -261,6 +325,7 @@ function workspaceMkdirUrl(location: "workspace" | string): string | null {
 function workspaceDeleteUrl(location: "workspace" | string, path: string): string | null {
   const encoded = encodeURIComponent(path);
   if (location === "workspace") return `/api/workspace/files/${encoded}`;
+  if (isPhotosLocation(location)) return `/api/photos/files/${encoded}`;
   if (isAgentLocation(location)) {
     return `/api/agents/${encodeURIComponent(agentSlug(location))}/workspace/files/${encoded}`;
   }
@@ -393,7 +458,7 @@ interface FileRowProps {
   location: "workspace" | string;
   currentPath: string;
   navigateTo: (path: string) => void;
-  isWritable: boolean;
+  canReadAndDelete: boolean;
   deleteConfirm: string | null;
   handleDelete: (path: string) => void;
   setDeleteConfirm: (path: string | null) => void;
@@ -408,7 +473,7 @@ function FileRow({
   location,
   currentPath,
   navigateTo,
-  isWritable,
+  canReadAndDelete,
   deleteConfirm,
   handleDelete,
   setDeleteConfirm,
@@ -491,7 +556,7 @@ function FileRow({
       </td>
       <td className="px-3 py-2">
         <div className="flex items-center gap-1">
-          {!f.is_dir && isWritable && (
+          {!f.is_dir && canReadAndDelete && (
             <a
               href={fileUrl(location, f.path || f.name)}
               target="_blank"
@@ -502,7 +567,7 @@ function FileRow({
               <Download size={13} />
             </a>
           )}
-          {isWritable && (
+          {canReadAndDelete && (
             <Button
               variant="ghost"
               size="icon"
@@ -547,6 +612,7 @@ export function FilesApp({
   const [location, setLocation] = useState<"workspace" | string>(() => rootPath ?? "workspace");
   const [files, setFiles] = useState<FileEntry[]>([]);
   const [sharedFolders, setSharedFolders] = useState<SharedFolder[]>([]);
+  const [builtInLocations, setBuiltInLocations] = useState<BuiltInLocation[]>([]);
   const [agents, setAgents] = useState<AgentSummary[] | null>(null);
   const [agentsExpanded, setAgentsExpanded] = useState(true);
   const [viewMode, setViewMode] = useState<"grid" | "list">("grid");
@@ -585,6 +651,11 @@ export function FilesApp({
   const [workspaceTrashItems, setWorkspaceTrashItems] = useState<WorkspaceTrashItem[]>([]);
   const [workspaceTrashLoading, setWorkspaceTrashLoading] = useState(false);
   const [workspaceTrashError, setWorkspaceTrashError] = useState<string | null>(null);
+
+  // Photos trash (built-in Photos location trash scope)
+  const [photosTrashItems, setPhotosTrashItems] = useState<PhotosTrashItem[]>([]);
+  const [photosTrashLoading, setPhotosTrashLoading] = useState(false);
+  const [photosTrashError, setPhotosTrashError] = useState<string | null>(null);
 
   // Doc-review stamp state (project: locations only)
   const [reviewStates, setReviewStates] = useState<Record<string, string | null>>({});
@@ -633,6 +704,10 @@ export function FilesApp({
   // Workspace locations (user + per-agent + project) allow mutations and the stats
   // endpoint. Shared folders and the recycle bin are read-only here.
   const isWritable = location === "workspace" || isAgentLocation(location) || isProjectLocation(location);
+  // The built-in Photos location has no upload / mkdir / rename endpoint, so the
+  // mutation affordances stay hidden, but opening, downloading and deleting a
+  // photo works exactly as it does in a writable location.
+  const canReadAndDelete = isWritable || isPhotosLocation(location);
   const locationTitle =
     location === "recycle"
       ? "Recycle Bin"
@@ -642,6 +717,9 @@ export function FilesApp({
           ? agents?.find((a) => a.name === agentSlug(location))?.display_name ?? agentSlug(location)
           : isProjectLocation(location)
             ? projectSlug(location)
+          : isBuiltinLocation(location)
+            ? builtInLocations.find((l) => builtinLocationKey(l.id) === location)?.label
+              ?? builtinId(location)
             : location;
 
   /* ---- Fetch files ---- */
@@ -690,6 +768,10 @@ export function FilesApp({
   );
   useRefreshOnFocus(refreshCurrentDir);
 
+  // Refetch current directory when the backend recovers so a window that
+  // was stuck on the initial loading state gets its data.
+  useOnBackendRecovered(refreshCurrentDir);
+
   // Live updates via SSE — supports both the user workspace and per-agent
   // workspaces. Shared folders don't expose a watch stream, so the SSE setup
   // is skipped for them (workspaceWatchUrl returns null).
@@ -715,6 +797,14 @@ export function FilesApp({
     apiFetch<SharedFolder[]>("/api/shared-folders")
       .then((d) => setSharedFolders(Array.isArray(d) ? d : []))
       .catch(() => setSharedFolders([]));
+  }, []);
+
+  // Built-in locations (Photos). The server lists only the ones whose directory
+  // exists, so a device without a Pictures folder lists no Photos entry.
+  useEffect(() => {
+    apiFetch<BuiltInLocation[]>("/api/files/locations")
+      .then((d) => setBuiltInLocations(Array.isArray(d) ? d : []))
+      .catch(() => setBuiltInLocations([]));
   }, []);
 
   useEffect(() => {
@@ -855,6 +945,58 @@ export function FilesApp({
     }
   }, [workspaceTrashItems.length, fetchWorkspaceTrash]);
 
+  /* ---- Photos trash ---- */
+  const fetchPhotosTrash = useCallback(async () => {
+    setPhotosTrashLoading(true);
+    setPhotosTrashError(null);
+    try {
+      const res = await fetch("/api/photos/trash", { headers: { Accept: "application/json" } });
+      if (!res.ok) {
+        // 403 means the user cannot access the Photos location (not owner/admin)
+        // Treat as empty rather than an error so the UI stays clean.
+        if (res.status === 403) {
+          setPhotosTrashItems([]);
+          return;
+        }
+        setPhotosTrashError(`Failed to load Photos trash (${res.status})`);
+        return;
+      }
+      const ct = res.headers.get("content-type") ?? "";
+      if (!ct.includes("application/json")) {
+        setPhotosTrashError("Unexpected response from server");
+        return;
+      }
+      const data = await res.json();
+      const items = Array.isArray(data.items) ? data.items : [];
+      setPhotosTrashItems(items);
+    } catch (e: unknown) {
+      setPhotosTrashError(e instanceof Error ? e.message : "Failed to load Photos trash");
+    } finally {
+      setPhotosTrashLoading(false);
+    }
+  }, []);
+
+  const handlePhotosTrashRestore = useCallback(async (item: PhotosTrashItem) => {
+    if (!window.confirm(`Restore \`${item.original_path}\` to its original location?`)) return;
+    try {
+      const res = await fetch(
+        `/api/photos/trash/${encodeURIComponent(item.id)}/restore`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json", Accept: "application/json" },
+        }
+      );
+      if (!res.ok) {
+        const body = await res.text().catch(() => "");
+        setPhotosTrashError(`Restore failed: ${body || res.status}`);
+        return;
+      }
+      fetchPhotosTrash();
+    } catch (e: unknown) {
+      setPhotosTrashError(e instanceof Error ? e.message : "Restore failed");
+    }
+  }, [fetchPhotosTrash]);
+
   /* ---- Actions ---- */
   const handleNewFolder = useCallback(async () => {
     const mkdirUrl = workspaceMkdirUrl(location);
@@ -881,6 +1023,9 @@ export function FilesApp({
     setError(null);
     try {
       const uploadUrl = workspaceUploadUrl(location, currentPath);
+      // A location with no upload endpoint (the built-in Photos folder) is not a
+      // write target, so a dropped file is ignored rather than posted to a 404.
+      if (!uploadUrl) return;
       for (let i = 0; i < fileList.length; i++) {
         const file = fileList.item(i);
         if (!file) continue;
@@ -1044,6 +1189,56 @@ export function FilesApp({
             <HardDrive size={16} />
             <span className="truncate">My Workspace</span>
           </Button>
+        )}
+
+        {/* Built-in locations (Photos). Rendered only for what the server
+            reports as present, so a device with no Pictures folder shows no
+            Photos row. */}
+        {isMobile ? (
+          builtInLocations.length > 0 && (
+            <div
+              style={{ background: "rgba(255,255,255,0.05)", borderRadius: 16 }}
+              className="overflow-hidden divide-y divide-white/[0.04]"
+            >
+              {builtInLocations.map((loc) => {
+                const locKey = builtinLocationKey(loc.id);
+                return (
+                  <button
+                    key={loc.id}
+                    onClick={() => {
+                      setLocation(locKey);
+                      setCurrentPath("");
+                      setSelectedLocation(locKey);
+                    }}
+                    className="w-full flex items-center justify-between px-4 py-3.5 text-sm text-shell-text active:bg-white/10 transition-colors"
+                    aria-label={loc.label}
+                  >
+                    <span className="flex items-center gap-3">
+                      <BuiltInLocationIcon id={loc.id} />
+                      <span className="truncate">{loc.label}</span>
+                    </span>
+                    <ChevronRight size={16} className="text-shell-text-tertiary" />
+                  </button>
+                );
+              })}
+            </div>
+          )
+        ) : (
+          builtInLocations.map((loc) => {
+            const locKey = builtinLocationKey(loc.id);
+            return (
+              <Button
+                key={loc.id}
+                variant={location === locKey ? "secondary" : "ghost"}
+                onClick={() => { setLocation(locKey); setCurrentPath(""); }}
+                className="w-full justify-start mx-1.5 px-3"
+                aria-label={loc.label}
+              >
+                <BuiltInLocationIcon id={loc.id} />
+                <span className="truncate">{loc.label}</span>
+              </Button>
+            );
+          })
         )}
 
         {/* Shared Folders */}
@@ -1212,6 +1407,7 @@ export function FilesApp({
                 setSelectedLocation("recycle");
                 fetchRecycle();
                 fetchWorkspaceTrash();
+                fetchPhotosTrash();
               }}
               className={`w-full flex items-center justify-between px-4 py-3.5 text-sm text-shell-text active:bg-white/10 transition-colors ${location === "recycle" ? "bg-white/10" : ""}`}
               aria-label="Recycle Bin"
@@ -1231,6 +1427,7 @@ export function FilesApp({
               setCurrentPath("");
               fetchRecycle();
               fetchWorkspaceTrash();
+              fetchPhotosTrash();
             }}
             className="w-full justify-start mx-1.5 mt-1 px-3"
             aria-label="Recycle Bin"
@@ -1269,15 +1466,20 @@ export function FilesApp({
         </Button>
       )}
 
-      <Button
-        variant="default"
-        size="sm"
-        onClick={() => fileInputRef.current?.click()}
-        aria-label="Upload file"
-      >
-        <Upload size={14} />
-        <span className="hidden sm:inline">Upload</span>
-      </Button>
+      {/* Rendered only where workspaceUploadUrl has an upload endpoint for this
+          location; where it returns null the button would only look pressed and
+          do nothing. */}
+      {workspaceUploadUrl(location, "") !== null && (
+        <Button
+          variant="default"
+          size="sm"
+          onClick={() => fileInputRef.current?.click()}
+          aria-label="Upload file"
+        >
+          <Upload size={14} />
+          <span className="hidden sm:inline">Upload</span>
+        </Button>
+      )}
       <input
         ref={fileInputRef}
         type="file"
@@ -1357,23 +1559,25 @@ export function FilesApp({
           onClick={() => {
             fetchRecycle();
             fetchWorkspaceTrash();
+            fetchPhotosTrash();
           }}
           className={`h-7 w-7 ${workspaceTrashItems.length > 0 ? "" : "ml-auto"}`}
           aria-label="Refresh recycle bin"
         >
-          <RefreshCw size={13} className={recycleLoading || workspaceTrashLoading ? "animate-spin" : ""} aria-hidden="true" />
+          <RefreshCw size={13} className={recycleLoading || workspaceTrashLoading || photosTrashLoading ? "animate-spin" : ""} aria-hidden="true" />
         </Button>
       </div>
 
       {/* Error */}
-      {(recycleError || workspaceTrashError) && (
+      {(recycleError || workspaceTrashError || photosTrashError) && (
         <div className="mx-3 mt-2 flex items-center gap-2 px-3 py-2 rounded-lg bg-red-500/10 text-red-400 text-xs">
           <AlertCircle size={14} className="shrink-0" aria-hidden="true" />
-          <span className="flex-1">{recycleError || workspaceTrashError}</span>
+          <span className="flex-1">{recycleError || workspaceTrashError || photosTrashError}</span>
           <button
             onClick={() => {
               setRecycleError(null);
               setWorkspaceTrashError(null);
+              setPhotosTrashError(null);
             }}
             className="hover:text-red-300"
             aria-label="Dismiss error"
@@ -1385,7 +1589,7 @@ export function FilesApp({
 
       {/* Content */}
       <div className="flex-1 overflow-auto p-3">
-        {(recycleLoading || workspaceTrashLoading) && recycleItems.length === 0 && workspaceTrashItems.length === 0 && (
+        {(recycleLoading || workspaceTrashLoading || photosTrashLoading) && recycleItems.length === 0 && workspaceTrashItems.length === 0 && photosTrashItems.length === 0 && (
           <div className="flex items-center justify-center h-full text-shell-text-tertiary">
             <RefreshCw size={20} className="animate-spin" aria-hidden="true" />
           </div>
@@ -1398,7 +1602,7 @@ export function FilesApp({
           </div>
         ))}
 
-        {!recycleLoading && !workspaceTrashLoading && recycleItems.length === 0 && workspaceTrashItems.length === 0 && recycleContainerOffline.length === 0 && (
+        {!recycleLoading && !workspaceTrashLoading && !photosTrashLoading && recycleItems.length === 0 && workspaceTrashItems.length === 0 && photosTrashItems.length === 0 && recycleContainerOffline.length === 0 && (
           <div className="flex flex-col items-center justify-center h-full text-shell-text-tertiary gap-2 text-center">
             <Recycle size={40} className="opacity-30" aria-hidden="true" />
             <span className="text-sm">Recycle bin is empty. Deleted files land here automatically.</span>
@@ -1447,6 +1651,47 @@ export function FilesApp({
                       title="Delete permanently"
                     >
                       <Trash2 size={13} aria-hidden="true" />
+                    </Button>
+                  </div>
+                </Card>
+              ))}
+            </div>
+          </section>
+        )}
+
+        {/* Items deleted from the Photos location */}
+        {photosTrashItems.length > 0 && (
+          <section className="mb-4" aria-label="Trashed items from Photos">
+            <div className="flex items-center gap-1.5 mb-2">
+              <Images size={10} className="text-shell-text-tertiary" aria-hidden="true" />
+              <span className="text-[10px] font-semibold uppercase tracking-wider text-shell-text-tertiary">
+                Photos
+              </span>
+            </div>
+            <div className="space-y-1.5">
+              {photosTrashItems.map((item) => (
+                <Card
+                  key={item.id}
+                  className="flex items-center gap-3 px-3 py-2.5 hover:bg-shell-surface/50 transition-colors"
+                >
+                  <div className="flex-1 min-w-0">
+                    <div className="text-xs truncate font-mono" title={item.original_path}>
+                      {item.original_path}
+                    </div>
+                    <div className="text-[10px] text-shell-text-tertiary mt-0.5">
+                      {formatDate(Math.floor(new Date(item.deleted_at).getTime() / 1000))}
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-1 shrink-0">
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      className="h-7 w-7 hover:bg-emerald-500/15 hover:text-emerald-400"
+                      onClick={() => handlePhotosTrashRestore(item)}
+                      aria-label={`Restore ${item.original_path}`}
+                      title="Restore"
+                    >
+                      <RotateCcw size={13} aria-hidden="true" />
                     </Button>
                   </div>
                 </Card>
@@ -1695,7 +1940,7 @@ export function FilesApp({
                     }
                   }}
                   onDoubleClick={() => {
-                    if (!f.is_dir && isWritable) {
+                    if (!f.is_dir && canReadAndDelete) {
                       const handler = handlerAppForFile(f.name);
                       if (handler) {
                         window.dispatchEvent(
@@ -1759,7 +2004,7 @@ export function FilesApp({
                   )}
 
                   {/* Delete button overlay */}
-                  {isWritable && (
+                  {canReadAndDelete && (
                     <span
                       role="button"
                       tabIndex={0}
@@ -1820,7 +2065,7 @@ export function FilesApp({
                   location={location}
                   currentPath={currentPath}
                   navigateTo={navigateTo}
-                  isWritable={isWritable}
+                  canReadAndDelete={canReadAndDelete}
                   deleteConfirm={deleteConfirm}
                   handleDelete={handleDelete}
                   setDeleteConfirm={setDeleteConfirm}
@@ -1871,10 +2116,10 @@ export function FilesApp({
       );
       return;
     }
-    if (isWritable) {
+    if (canReadAndDelete) {
       window.open(fileUrl(location, f.path || f.name), "_blank");
     }
-  }, [navigateTo, currentPath, isWritable, location]);
+  }, [navigateTo, currentPath, canReadAndDelete, location]);
 
   const copySupported = workspaceCopyUrl(location) !== null;
   const moveSupported = workspaceRenameUrl(location) !== null;
@@ -1890,7 +2135,7 @@ export function FilesApp({
         action: () => openFile(f),
       },
     ];
-    if (!f.is_dir && isWritable) {
+    if (!f.is_dir && canReadAndDelete) {
       items.push({
         label: "Download",
         icon: <Download size={14} />,
@@ -1913,6 +2158,12 @@ export function FilesApp({
           disabled: !copySupported,
           action: () => setClipboard({ mode: "copy", location, path: f.path, name: f.name }),
         },
+      );
+    }
+    // Read-and-delete locations (the built-in Photos folder) get Delete without
+    // the mutation entries above, since they have no rename / move endpoint.
+    if (canReadAndDelete) {
+      items.push(
         { label: "", separator: true },
         {
           label: "Delete",

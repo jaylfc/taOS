@@ -3,7 +3,7 @@
 Design document for taOS Issue [#890](https://github.com/jaylfc/taOS/issues/890) — worker-initiated
 auto-update with graceful pause, drain, install, restart, re-register, and rollback.
 
-**Status:** Design proposal  
+**Status:** Partially implemented (#1910 worker self-update, #890 C3 -- merged). Implemented: `tinyagentos/worker/self_update.py`, `POST /api/cluster/workers/{name}/update-outcome` (tinyagentos/routes/cluster.py:2011), `scripts/taos-deploy-helper.sh trigger-update`. Not implemented -- no route on dev today: `begin-update`, `update-ready`. Operator docs: `tinyagentos/worker/README.md` section "Self-update".
 **Related PR:** [#1878](https://github.com/jaylfc/taOS/pull/1878) (controller-pushed `update-all` rolling orchestration — merged, extended here)
 
 ---
