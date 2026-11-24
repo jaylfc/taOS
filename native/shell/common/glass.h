@@ -52,6 +52,25 @@ class Style : public QObject {
     Q_PROPERTY(QColor scrollbar READ scrollbar NOTIFY changed)
     Q_PROPERTY(bool reduceMotion READ reduceMotion NOTIFY changed)
     Q_PROPERTY(QString windowButtons READ windowButtons NOTIFY changed)
+    // The skin and layout the greeter, overview and launcher may follow (see Theme).
+    Q_PROPERTY(qreal radiusScale READ radiusScale NOTIFY changed)
+    Q_PROPERTY(int borderWidth READ borderWidth NOTIFY changed)
+    Q_PROPERTY(qreal shadowStrength READ shadowStrength NOTIFY changed)
+    Q_PROPERTY(QString fontStack READ fontStack NOTIFY changed)
+    Q_PROPERTY(QString dockMode READ dockMode NOTIFY changed)
+    Q_PROPERTY(QString dockEdge READ dockEdge NOTIFY changed)
+    Q_PROPERTY(int taskbarHeight READ taskbarHeight NOTIFY changed)
+    Q_PROPERTY(QString launcherPlace READ launcherPlace NOTIFY changed)
+    Q_PROPERTY(QString dockSurface READ dockSurface NOTIFY changed)
+    Q_PROPERTY(QColor attention READ attention NOTIFY changed)
+    Q_PROPERTY(QColor accentDim READ accentDim NOTIFY changed)
+    Q_PROPERTY(QString fontDisplayStack READ fontDisplayStack NOTIFY changed)
+    Q_PROPERTY(QString fontDataStack READ fontDataStack NOTIFY changed)
+    Q_PROPERTY(bool upperTitles READ upperTitles NOTIFY changed)
+    Q_PROPERTY(qreal titleTracking READ titleTracking NOTIFY changed)
+    Q_PROPERTY(bool scanlines READ scanlines NOTIFY changed)
+    Q_PROPERTY(QColor bevelLight READ bevelLight NOTIFY changed)
+    Q_PROPERTY(QColor bevelDark READ bevelDark NOTIFY changed)
 public:
     explicit Style(const Theme *t, QObject *parent = nullptr) : QObject(parent), m_t(t) {
         connect(t, &Theme::changed, this, &Style::changed);
@@ -73,6 +92,25 @@ public:
     bool dark() const { return m_t->dark(); }
     bool reduceMotion() const { return m_t->reduceMotion(); }
     QString windowButtons() const { return m_t->windowButtons(); }
+    qreal radiusScale() const { return m_t->radiusScale(); }
+    int borderWidth() const { return m_t->borderWidth(); }
+    qreal shadowStrength() const { return m_t->shadowStrength(); }
+    QString fontStack() const { return m_t->fontStack(); }
+    QString dockMode() const { return m_t->dockMode(); }
+    QString dockEdge() const { return m_t->dockEdge(); }
+    int taskbarHeight() const { return m_t->taskbarHeight(); }
+    QString launcherPlace() const { return m_t->launcherPlace(); }
+    QString dockSurface() const { return m_t->dockSurface(); }
+    QColor attention() const { return m_t->attention(); }
+    QColor accentDim() const { return m_t->accentDim(); }
+    QString fontDisplayStack() const { return m_t->fontDisplayStack(); }
+    QString fontDataStack() const { return m_t->fontDataStack(); }
+    bool upperTitles() const { return m_t->upperTitles(); }
+    qreal titleTracking() const { return m_t->titleTracking(); }
+    bool scanlines() const { return m_t->scanlines(); }
+    QColor bevelLight() const { return m_t->bevelLight(); }
+    QColor bevelDark() const { return m_t->bevelDark(); }
+    Q_INVOKABLE qreal radius(qreal base) const { return m_t->radius(base); }
     QColor surface() const { return m_t->surface(); }
     QColor raised() const { return m_t->raised(); }
     QColor hairline() const { return m_t->hairline(); }

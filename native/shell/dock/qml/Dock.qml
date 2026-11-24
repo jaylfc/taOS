@@ -7,9 +7,11 @@ import Taos.Dock
 // slides along its cross axis to hide. Shadow and blur come from the compositor (layer_effects). Colours come from Theme only.
 Item {
     id: root
-    readonly property string fontFamily: "Inter, Noto Sans, DejaVu Sans, sans-serif"
+    readonly property string fontFamily: Theme.fontStack
     readonly property bool dark: Theme.variant !== "light"
     readonly property bool hidden: Dock.autohide && !Dock.revealed
+    readonly property bool cells: Theme.dockMode === "cells"
+    readonly property int cellsWidth: (Dock.model.count - Dock.model.separators) * 52 + Dock.model.separators * 10
 
     Accessible.role: Accessible.ToolBar
     Accessible.name: "Dock"
@@ -77,22 +79,25 @@ Item {
         // Glass: tint, veil, hairline (the bar menus' recipe; the compositor adds blur and shadow).
         Rectangle {
             id: tint
+            visible: !root.cells
             anchors.fill: parent
-            radius: Dock.radius
+            radius: Math.round((Dock.radius) * Theme.radiusScale)
             readonly property bool flatBottom: Dock.attached && Dock.position === "bottom"
             readonly property bool flatLeft: Dock.attached && Dock.position === "left"
             readonly property bool flatRight: Dock.attached && Dock.position === "right"
-            topLeftRadius: flatLeft ? 0 : Dock.radius
-            bottomLeftRadius: flatLeft || flatBottom ? 0 : Dock.radius
-            topRightRadius: flatRight ? 0 : Dock.radius
-            bottomRightRadius: flatRight || flatBottom ? 0 : Dock.radius
-            color: Qt.rgba(Theme.ground.r, Theme.ground.g, Theme.ground.b, root.dark ? 0.86 : 0.90)
-            border.width: 1
-            border.color: Theme.glassStroke
+            topLeftRadius: flatLeft ? 0 : Math.round((Dock.radius) * Theme.radiusScale)
+            bottomLeftRadius: flatLeft || flatBottom ? 0 : Math.round((Dock.radius) * Theme.radiusScale)
+            topRightRadius: flatRight ? 0 : Math.round((Dock.radius) * Theme.radiusScale)
+            bottomRightRadius: flatRight || flatBottom ? 0 : Math.round((Dock.radius) * Theme.radiusScale)
+            color: Theme.dockSurface === "solid" ? Theme.ground : Theme.dockSurface === "raised" ? Theme.surface
+                   : Qt.rgba(Theme.ground.r, Theme.ground.g, Theme.ground.b, root.dark ? 0.86 : 0.90)
+            border.width: Theme.borderWidth
+            border.color: Theme.dockSurface === "raised" ? Theme.bevelDark : Theme.glassStroke
         }
         Rectangle {
+            visible: Theme.dockSurface === "translucent" && !root.cells
             anchors.fill: parent
-            radius: Dock.radius
+            radius: Math.round((Dock.radius) * Theme.radiusScale)
             gradient: Gradient {
                 GradientStop { position: 0.0; color: Theme.glassVeil }
                 GradientStop { position: 1.0; color: Qt.rgba(Theme.glassVeil.r, Theme.glassVeil.g, Theme.glassVeil.b, Theme.glassVeil.a * 0.22) }
@@ -103,9 +108,9 @@ Item {
             id: flow
             z: 1
             flow: Dock.vertical ? Flow.TopToBottom : Flow.LeftToRight
-            x: Dock.vertical ? 0 : Dock.padding
+            x: Dock.vertical ? 0 : (root.cells ? Math.max(0, (parent.width - root.cellsWidth) / 2) : Dock.padding)
             y: Dock.vertical ? Dock.padding : 0
-            width: Dock.vertical ? parent.width : parent.width - 2 * Dock.padding
+            width: Dock.vertical ? parent.width : (root.cells ? root.cellsWidth + 2 : parent.width - 2 * Dock.padding)
             height: Dock.vertical ? parent.height - 2 * Dock.padding : parent.height
             Repeater {
                 id: items

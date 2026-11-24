@@ -15,7 +15,7 @@ qt_add_executable(taos-frame src/main.cpp src/stripmanager.cpp src/stripmanager.
 qt_add_resources(taos-frame frame_resources
     PREFIX /taos/frame
     BASE ${CMAKE_CURRENT_SOURCE_DIR}
-    FILES qml/Strip.qml qml/StripButton.qml qml/StripTip.qml qml/FrameMenu.qml)
+    FILES qml/Strip.qml qml/StripButton.qml qml/StripTip.qml qml/FrameMenu.qml qml/Bracket.qml)
 target_link_libraries(taos-frame PRIVATE taosframe_core Qt6::Quick Qt6::Qml LayerShellQt::Interface)
 install(TARGETS taos-frame RUNTIME DESTINATION bin)
 install(FILES sway/49-taos-frame.conf DESTINATION share/taos/sway.d)
@@ -33,7 +33,8 @@ taos_frame_test(test_frameplan)
 
 # Integration on a headless sway: set TAOS_TEST_SWAY (default: sway on PATH) and TAOS_TEST_SWAY_LIBS when it is not installed.
 taos_frame_test(test_frame_sway)
-target_compile_definitions(test_frame_sway PRIVATE TAOS_FRAME_BIN="$<TARGET_FILE:taos-frame>" TAOS_WINDOW_BIN="$<TARGET_FILE:taos-window>")
+target_compile_definitions(test_frame_sway PRIVATE TAOS_FRAME_BIN="$<TARGET_FILE:taos-frame>" TAOS_WINDOW_BIN="$<TARGET_FILE:taos-window>"
+                           TAOS_FOLDER_THEMES="${CMAKE_CURRENT_SOURCE_DIR}/../themes")
 add_dependencies(test_frame_sway taos-frame taos-window)
 set_tests_properties(test_frame_sway PROPERTIES TIMEOUT 240)
 

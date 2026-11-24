@@ -15,7 +15,8 @@ add_library(taosbar_core STATIC
     src/pulsebackend.cpp src/pulsebackend.h
     src/baripc.cpp src/baripc.h
     src/battery.cpp src/battery.h
-    src/launcher.cpp src/launcher.h)
+    src/launcher.cpp src/launcher.h
+    src/workspaces.cpp src/workspaces.h)
 target_include_directories(taosbar_core PUBLIC src)
 target_link_libraries(taosbar_core PUBLIC taos_common taosdisplay_core Qt6::Core Qt6::Gui Qt6::DBus Qt6::Network PkgConfig::PULSE)
 target_compile_definitions(taosbar_core PUBLIC TAOS_BAR_VERSION="${PROJECT_VERSION}")
@@ -26,6 +27,11 @@ qt_add_resources(taos-bar bar_resources
     BASE ${CMAKE_CURRENT_SOURCE_DIR}
     FILES
         qml/Bar.qml
+        qml/Surface.qml
+        qml/TickMeter.qml
+        qml/Scanlines.qml
+        qml/StripBar.qml
+        qml/Tray.qml
         qml/BarItem.qml
         qml/NetworkIcon.qml
         qml/VolumeIcon.qml

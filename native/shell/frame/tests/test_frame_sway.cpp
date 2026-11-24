@@ -157,6 +157,7 @@ private slots:
         m_env.insert(QStringLiteral("WAYLAND_DISPLAY"), m_display);
         m_env.insert(QStringLiteral("XDG_CONFIG_HOME"), m_cfgDir);
         m_env.insert(QStringLiteral("TAOS_APPEARANCE"), m_cfgDir + QStringLiteral("/taos/appearance.json"));
+        m_env.insert(QStringLiteral("TAOS_THEME_DIR"), QStringLiteral(TAOS_FOLDER_THEMES));
         m_env.insert(QStringLiteral("TAOS_SYSTEM_APPEARANCE"), m_dir.path() + QStringLiteral("/none.json"));
         m_env.insert(QStringLiteral("TAOS_FRAME_CONFIG"), m_cfgDir + QStringLiteral("/taos/frame.json"));
         m_frameSock = m_dir.path() + QStringLiteral("/frame.sock");
@@ -407,6 +408,27 @@ private slots:
         const int term = idOf(QStringLiteral("Plain terminal"));
         QVERIFY(waitFor([&] { return strip(term).value(QLatin1String("show")).toBool(); }, 6000));
         writeFile(m_cfgDir + QStringLiteral("/taos/frame.json"), "{}");
+    }
+
+    // A skin switch changes the gaps and bar of the workspace; sway then re-scales every floating window's position,
+    // which walked windows off the screen over repeated switches. A floating window ends where it started.
+    void aFloatingWindowKeepsItsPlaceAcrossSkinSwitches()
+    {
+        swaymsg({QStringLiteral("[title=\"Web app\"] floating enable, move absolute position 300 200")});
+        QTest::qWait(1500);
+        auto place = [&] { const QJsonObject r = swayWindow(QStringLiteral("Web app")).value(QLatin1String("rect")).toObject();
+                           return QPoint(r.value(QLatin1String("x")).toInt(), r.value(QLatin1String("y")).toInt()); };
+        const QPoint start = place();
+        QVERIFY(!start.isNull());
+        for (int i = 0; i < 3; ++i) {
+            writeFile(m_cfgDir + QStringLiteral("/taos/appearance.json"), "{\"theme\":\"workbench\",\"mode\":\"dark\"}");
+            QTest::qWait(3500);
+            writeFile(m_cfgDir + QStringLiteral("/taos/appearance.json"), "{\"theme\":\"graphite\",\"mode\":\"dark\"}");
+            QTest::qWait(3500);
+        }
+        const QPoint end = place();
+        QVERIFY2((end - start).manhattanLength() <= 2, qPrintable(QStringLiteral("window moved from %1,%2 to %3,%4").arg(start.x()).arg(start.y()).arg(end.x()).arg(end.y())));
+        swaymsg({QStringLiteral("[title=\"Web app\"] floating disable")});
     }
 
     void survivesASwayReload()

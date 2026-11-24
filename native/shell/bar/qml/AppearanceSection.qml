@@ -65,6 +65,48 @@ Column {
             }
         }
     }
+    // Choices the showing theme offers (its accent, for example): one row of chips each.
+    Repeater {
+        model: Themes.options
+        delegate: Column {
+            required property var modelData
+            width: sec.width
+            Text {
+                leftPadding: 10; topPadding: 8; bottomPadding: 2
+                text: modelData.label
+                color: Theme.text
+                font.family: sec.fontFamily; font.pixelSize: 13; font.weight: Font.Bold
+                Accessible.role: Accessible.Heading
+                Accessible.name: text
+            }
+            Row {
+                x: 10
+                spacing: 6
+                Repeater {
+                    model: modelData.choices
+                    delegate: ChoiceChip {
+                        required property var modelData
+                        text: modelData.label
+                        checked: modelData.current
+                        accessibleName: checked ? qsTr("%1, selected").arg(modelData.label)
+                                      : modelData.available ? modelData.label : qsTr("%1, not available on this system yet").arg(modelData.label)
+                        onActivated: Themes.chooseOption(parent.parent.modelData.key, modelData.id)
+                    }
+                }
+            }
+        }
+    }
+    Text {
+        visible: Themes.notes.length > 0
+        width: parent.width
+        leftPadding: 10; rightPadding: 10; topPadding: 4
+        wrapMode: Text.WordWrap
+        text: Themes.notes.join("\n")
+        color: Theme.warning
+        font.family: sec.fontFamily; font.pixelSize: 11
+        Accessible.role: Accessible.StaticText
+        Accessible.name: text
+    }
     Text {
         leftPadding: 10; topPadding: 8; bottomPadding: 2
         text: qsTr("Window buttons")

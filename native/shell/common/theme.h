@@ -2,6 +2,7 @@
 #pragma once
 #include <QColor>
 #include <QObject>
+#include <QSet>
 #include <QString>
 #include <QStringList>
 #include <QVariantAnimation>
@@ -43,6 +44,8 @@ class Theme : public QObject {
     Q_PROPERTY(QColor live READ live NOTIFY changed)
     Q_PROPERTY(QColor track READ track NOTIFY changed)
     Q_PROPERTY(QColor scrollbar READ scrollbar NOTIFY changed)
+    Q_PROPERTY(QColor attention READ attention NOTIFY changed)
+    Q_PROPERTY(QColor accentDim READ accentDim NOTIFY changed)
     // Glass, scrim and highlights, all derived from the tokens above.
     Q_PROPERTY(QColor glassTint READ glassTint NOTIFY changed)
     Q_PROPERTY(QColor glassVeil READ glassVeil NOTIFY changed)
@@ -52,6 +55,46 @@ class Theme : public QObject {
     Q_PROPERTY(qreal blurRadius READ blurRadius CONSTANT)
     Q_PROPERTY(bool reduceMotion READ reduceMotion NOTIFY changed)
     Q_PROPERTY(QString windowButtons READ windowButtons NOTIFY changed)
+    // Skin (see THEME-FORMAT.md): notify skinChanged, once per theme switch (not on every fade frame).
+    Q_PROPERTY(qreal radiusScale READ radiusScale NOTIFY skinChanged)
+    Q_PROPERTY(int borderWidth READ borderWidth NOTIFY skinChanged)
+    Q_PROPERTY(qreal shadowStrength READ shadowStrength NOTIFY skinChanged)
+    Q_PROPERTY(QString fontStack READ fontStack NOTIFY skinChanged)
+    Q_PROPERTY(int fontSize READ fontSize NOTIFY skinChanged)
+    Q_PROPERTY(qreal iconStroke READ iconStroke NOTIFY skinChanged)
+    Q_PROPERTY(int titleBarHeight READ titleBarHeight NOTIFY skinChanged)
+    Q_PROPERTY(QString buttonShape READ buttonShape NOTIFY skinChanged)
+    Q_PROPERTY(int buttonSize READ buttonSize NOTIFY changed)
+    Q_PROPERTY(QStringList buttonOrder READ buttonOrder NOTIFY changed)
+    Q_PROPERTY(QString barSurface READ barSurface NOTIFY skinChanged)
+    Q_PROPERTY(QString dockSurface READ dockSurface NOTIFY skinChanged)
+    Q_PROPERTY(qreal spacingFactor READ spacingFactor NOTIFY skinChanged)
+    Q_PROPERTY(int windowRadius READ windowRadius NOTIFY skinChanged)
+    Q_PROPERTY(int windowGap READ windowGap NOTIFY skinChanged)
+    Q_PROPERTY(QString fontDisplayStack READ fontDisplayStack NOTIFY skinChanged)
+    Q_PROPERTY(QString fontDataStack READ fontDataStack NOTIFY skinChanged)
+    Q_PROPERTY(bool upperTitles READ upperTitles NOTIFY skinChanged)
+    Q_PROPERTY(qreal titleTracking READ titleTracking NOTIFY skinChanged)
+    Q_PROPERTY(QString focusBorder READ focusBorder NOTIFY skinChanged)
+    Q_PROPERTY(bool brackets READ brackets NOTIFY skinChanged)
+    Q_PROPERTY(bool scanlines READ scanlines NOTIFY skinChanged)
+    Q_PROPERTY(QString barStyle READ barStyle NOTIFY layoutChanged)
+    Q_PROPERTY(QString cellShape READ cellShape NOTIFY layoutChanged)
+    Q_PROPERTY(QString activeTitle READ activeTitle NOTIFY skinChanged)
+    Q_PROPERTY(int trayWidth READ trayWidth NOTIFY changed)
+    Q_PROPERTY(QString wallpaperPath READ wallpaperPath NOTIFY skinChanged)
+    Q_PROPERTY(QColor bevelLight READ bevelLight NOTIFY changed)
+    Q_PROPERTY(QColor bevelDark READ bevelDark NOTIFY changed)
+    // Layout: notify layoutChanged, once per theme switch.
+    Q_PROPERTY(bool topBar READ topBar NOTIFY layoutChanged)
+    Q_PROPERTY(int barHeight READ barHeight NOTIFY layoutChanged)
+    Q_PROPERTY(QString barEdge READ barEdge NOTIFY layoutChanged)
+    Q_PROPERTY(QString clockPlace READ clockPlace NOTIFY layoutChanged)
+    Q_PROPERTY(QString dockMode READ dockMode NOTIFY layoutChanged)
+    Q_PROPERTY(int taskbarHeight READ taskbarHeight NOTIFY layoutChanged)
+    Q_PROPERTY(QString dockEdge READ dockEdge NOTIFY layoutChanged)
+    Q_PROPERTY(QString launcherPlace READ launcherPlace NOTIFY layoutChanged)
+    Q_PROPERTY(QString startLabel READ startLabel NOTIFY layoutChanged)
 public:
     static constexpr double kBarOpacity = 0.72;
 
@@ -101,6 +144,8 @@ public:
     QColor live() const { return m_cur[ThemeTokens::Live]; }
     QColor track() const { return m_cur[ThemeTokens::Track]; }
     QColor scrollbar() const { return m_cur[ThemeTokens::Scrollbar]; }
+    QColor attention() const { return m_cur[ThemeTokens::Attention]; }
+    QColor accentDim() const { return m_cur[ThemeTokens::AccentDim]; }
     QColor glassTint() const;
     QColor glassVeil() const;
     QColor glassStroke() const;
@@ -113,13 +158,69 @@ public:
     // "" follows the theme. Emits `changed` when the effective side changes.
     void setWindowButtonsOverride(const QString &side);
 
+    const Skin &skin() const { return m_skin; }
+    const LayoutSpec &layout() const { return m_layout; }
+    qreal radiusScale() const { return m_skin.radiusScale; }
+    int borderWidth() const { return m_skin.borderWidth; }
+    qreal shadowStrength() const { return m_skin.shadowStrength; }
+    // The font family list for QML `font.family`: the theme's family first (when it gives one), then the shipped stack.
+    QString fontStack() const;
+    int fontSize() const { return m_skin.fontSize; }
+    qreal iconStroke() const { return m_skin.iconStroke; }
+    int titleBarHeight() const { return m_skin.titleBarHeight; }
+    QString buttonShape() const { return m_skin.buttonShape; }
+    int buttonSize() const { return m_skin.buttonSize; }
+    // close, minimise, full in on-screen order, left to right: the theme's order, else by the side in effect.
+    QStringList buttonOrder() const { return m_skin.buttonOrder.isEmpty() ? defaultButtonOrder(windowButtons()) : m_skin.buttonOrder; }
+    QString barSurface() const { return m_skin.barSurface; }
+    QString dockSurface() const { return m_skin.dockSurface; }
+    qreal spacingFactor() const;
+    int windowRadius() const { return m_skin.windowRadius; }
+    int windowGap() const { return m_skin.windowGap; }
+    QString fontDisplayStack() const;   // the display face (titles, labels) then the body stack
+    QString fontDataStack() const;      // the data face (numbers, readouts) then the body stack
+    bool upperTitles() const { return m_skin.titleCase == QLatin1String("upper"); }
+    qreal titleTracking() const { return m_skin.titleTracking; }
+    QString focusBorder() const { return m_skin.focusBorder; }
+    bool brackets() const { return m_skin.brackets; }
+    bool scanlines() const { return m_skin.texture == QLatin1String("scanlines"); }
+    QString barStyle() const { return m_layout.barStyle; }
+    QString cellShape() const { return m_layout.cellShape; }
+    QString activeTitle() const { return m_skin.activeTitle; }
+    // The width of the taskbar's tray (display, network, sound and the clock), derived from the skin so that taos-bar,
+    // which draws the tray, and taos-dock, which draws the taskbar beside it, agree without talking to each other.
+    int trayWidth() const;
+    QString wallpaperPath() const { return m_wallpaper; }   // absolute, "" when the theme has none
+    QColor bevelLight() const;   // the lit edge of a raised surface, derived from the tokens
+    QColor bevelDark() const;    // the shaded edge
+    // A corner radius the way the skin wants it: `base` (what the shell drew before skins) times radiusScale.
+    Q_INVOKABLE qreal radius(qreal base) const { return qRound(base * m_skin.radiusScale); }
+    // A spacing in px scaled by the density.
+    Q_INVOKABLE qreal space(qreal base) const { return qRound(base * spacingFactor()); }
+
+    bool topBar() const { return m_layout.topBar; }
+    int barHeight() const { return m_layout.barHeight; }
+    QString barEdge() const { return m_layout.barEdge; }
+    QString clockPlace() const { return m_layout.clock; }
+    QString dockMode() const { return m_layout.dock; }
+    int taskbarHeight() const { return m_layout.taskbarHeight; }
+    QString dockEdge() const { return m_layout.dockEdge; }
+    QString launcherPlace() const { return m_layout.launcher; }
+    QString startLabel() const { return m_layout.startLabel; }
+
 signals:
     void changed();
+    void skinChanged();     // once per switch that changes the skin
+    void layoutChanged();   // once per switch that changes the layout
 
 private:
     void setCurrent(double t);
     QString m_id, m_name, m_variant = QStringLiteral("dark"), m_source;
     TokenSet m_from, m_to, m_cur;
+    Skin m_skin;
+    LayoutSpec m_layout;
+    QString m_wallpaper;
+    QSet<QString> m_fontFiles;
     QString m_themeButtons = QStringLiteral("left"), m_buttonsOverride;
     bool m_have = false, m_reduce = false;
     int m_transitionMs = 0;

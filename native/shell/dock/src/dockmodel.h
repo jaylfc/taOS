@@ -55,6 +55,7 @@ class DockModel : public QAbstractListModel {
     Q_OBJECT
     Q_PROPERTY(int count READ rowCount NOTIFY countChanged)
     Q_PROPERTY(int pinnedCount READ pinnedCount NOTIFY countChanged)
+    Q_PROPERTY(int separators READ separatorCount NOTIFY countChanged)
 public:
     enum Role { KindRole = Qt::UserRole + 1, KeyRole, NameRole, IconRole, PinnedRole, RunningRole, FocusedRole, LaunchingRole,
                 WindowCountRole, MinimisedCountRole, AccessibleRole, TooltipRole, WindowIdRole, TitleRole };

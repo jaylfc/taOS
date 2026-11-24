@@ -14,7 +14,7 @@ Item {
     height: 16
     readonly property bool silent: level === "none" || level === "muted"
     readonly property color glyph: silent ? Theme.textTertiary : color
-    readonly property real stroke: 1.5
+    readonly property real stroke: Theme.iconStroke
 
     Shape {
         anchors.fill: parent

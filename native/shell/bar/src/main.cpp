@@ -29,6 +29,7 @@
 #include "network.h"
 #include "theme.h"
 #include "thememanager.h"
+#include "workspaces.h"
 
 static int g_sigPipe[2] = {-1, -1};
 static void onSignal(int) {
@@ -57,7 +58,7 @@ int main(int argc, char **argv) {
     p.setApplicationDescription(QStringLiteral("taOS status bar"));
     p.addHelpOption();
     QCommandLineOption optVersion(QStringLiteral("version"), QStringLiteral("Print the version and exit."));
-    QCommandLineOption optHeight(QStringLiteral("height"), QStringLiteral("Bar height in logical px (default 40)."), QStringLiteral("N"), QStringLiteral("40"));
+    QCommandLineOption optHeight(QStringLiteral("height"), QStringLiteral("Bar height in logical px; overrides the theme (default: the theme's layout.barHeight, 40)."), QStringLiteral("N"), QStringLiteral("40"));
     QCommandLineOption optVariant(QStringLiteral("variant"), QStringLiteral("Theme variant: dark, light or auto; overrides appearance.json (env TAOS_THEME_VARIANT)."), QStringLiteral("dark|light|auto"));
     QCommandLineOption optLauncher(QStringLiteral("launcher-cmd"), QStringLiteral("Command run by the taOS button (default foot)."), QStringLiteral("cmd"), QStringLiteral("foot"));
     QCommandLineOption optOutput(QStringLiteral("output"), QStringLiteral("Only show the bar on this output."), QStringLiteral("name"));
@@ -157,6 +158,9 @@ int main(int argc, char **argv) {
     display.setSettleMs(400);
     OutputWatcher outputWatcher;
     const bool haveSway = !qEnvironmentVariableIsEmpty("SWAYSOCK");
+    Workspaces workspaces(&swayMsg);
+    if (haveSway) workspaces.start();
+    qmlRegisterSingletonInstance("Taos.Bar", 1, 0, "Workspaces", &workspaces);
     qmlRegisterSingletonInstance("Taos.Bar", 1, 0, "Display", &display);
     qmlRegisterSingletonInstance("Taos.Bar", 1, 0, "Theme", &theme);
     qmlRegisterSingletonInstance("Taos.Bar", 1, 0, "Themes", &themes);
@@ -171,6 +175,9 @@ int main(int argc, char **argv) {
 
     BarManager::Options o;
     o.height = height;
+    o.heightPinned = p.isSet(optHeight);
+    o.theme = &theme;
+    o.trayUrl = QStringLiteral("qrc:/taos/bar/qml/Tray.qml");
     o.onlyOutput = p.value(optOutput);
     o.qmlUrl = QStringLiteral("qrc:/taos/bar/qml/Bar.qml");
     o.networkMenuUrl = QStringLiteral("qrc:/taos/bar/qml/NetMenu.qml");

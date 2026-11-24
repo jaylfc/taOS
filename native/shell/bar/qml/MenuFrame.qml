@@ -9,6 +9,8 @@ import Taos.Bar
 FocusScope {
     id: root
     property int barHeight: 40
+    property string barEdge: "top"          // the edge the bar or taskbar sits on: the panel opens away from it
+    readonly property bool atBottom: barEdge === "bottom"
     property real anchorRight: width - 16
     property string title: ""
     property int panelWidth: 348
@@ -18,7 +20,7 @@ FocusScope {
     property bool dismissible: true
     signal dismissAttempt()
     default property alias content: col.data
-    readonly property string fontFamily: "Inter, Noto Sans, DejaVu Sans, sans-serif"
+    readonly property string fontFamily: Theme.fontStack
 
     focus: true
     Accessible.role: Accessible.Pane
@@ -54,10 +56,11 @@ FocusScope {
         id: panel
         width: root.panelWidth
         x: Math.max(8, Math.min(root.width - width - 8, root.anchorRight - width))
-        y: root.barHeight + 6
-        height: Math.min(flick.contentHeight + 16, root.height - y - 12)
+        readonly property real restY: root.atBottom ? root.height - root.barHeight - 6 - height : root.barHeight + 6
+        y: restY
+        height: Math.min(flick.contentHeight + 16, root.height - root.barHeight - 18)
         opacity: 0
-        transformOrigin: Item.TopRight
+        transformOrigin: root.atBottom ? Item.BottomRight : Item.TopRight
         Accessible.role: Accessible.Pane
         Accessible.name: root.title
 
@@ -67,7 +70,7 @@ FocusScope {
             id: openAnim
             NumberAnimation { target: panel; property: "opacity"; from: 0; to: 1; duration: 150; easing.type: Easing.OutCubic }
             NumberAnimation { target: panel; property: "scale"; from: 0.96; to: 1; duration: 190; easing.type: Easing.OutCubic }
-            NumberAnimation { target: panel; property: "y"; from: root.barHeight - 2; to: root.barHeight + 6; duration: 190; easing.type: Easing.OutCubic }
+            NumberAnimation { target: panel; property: "y"; from: panel.restY + (root.atBottom ? 8 : -8); to: panel.restY; duration: 190; easing.type: Easing.OutCubic }
         }
         ParallelAnimation {
             id: closeAnim

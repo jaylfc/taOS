@@ -10,6 +10,7 @@
 #include "desktopmode.h"
 #include "dockmodel.h"
 #include "layout.h"
+#include "taskbarmodel.h"
 #include "windowengine.h"
 
 // The dock's brain and its QML face: owns the setting, the application index, the window engine and
@@ -17,6 +18,7 @@
 class DockController : public QObject {
     Q_OBJECT
     Q_PROPERTY(DockModel *model READ model CONSTANT)
+    Q_PROPERTY(TaskbarModel *taskbar READ taskbar CONSTANT)
     Q_PROPERTY(QString position READ position NOTIFY layoutChanged)
     Q_PROPERTY(bool vertical READ vertical NOTIFY layoutChanged)
     Q_PROPERTY(bool attached READ attached NOTIFY layoutChanged)
@@ -47,6 +49,7 @@ public:
     void start();
 
     DockModel *model() { return &m_model; }
+    TaskbarModel *taskbar() { return &m_taskbar; }
     DockSettings *settings() { return &m_settings; }
     DesktopIndex *index() { return &m_index; }
     WindowEngine *engine() { return m_engine; }
@@ -79,6 +82,14 @@ public:
     // The pinned list for a person without a saved one: only entries that exist.
     static QStringList defaultPinned(const DesktopIndex &idx);
 
+    // Taskbar (layout.dock "taskbar"): the start button opens the launcher; a window button focuses its window, or
+    // minimises it when it is the active one, or restores it when minimised.
+    Q_INVOKABLE void taskbarStart();
+    Q_INVOKABLE void taskbarActivate(int windowId);
+    // The share-out of the width among the buttons: {buttonWidth, first, visible, hidden} (TaskbarLayout::compute).
+    Q_INVOKABLE QVariantMap taskbarLayout(int available, int minW, int maxW, int gap, int moreW) const;
+    Q_INVOKABLE void taskbarMenu(int windowId, qreal x, qreal y);      // right click: restore / minimise / close
+    Q_INVOKABLE void taskbarOverflowMenu(int first, int visible, qreal x, qreal y);   // the windows that did not fit
     Q_INVOKABLE void activate(int row);
     Q_INVOKABLE void middleClick(int row);
     // Builds the right-click menu of `row` (-1: the strip) and tells the surface owner to show it at (x, y) in surface coordinates.
@@ -127,6 +138,7 @@ private:
     DesktopModeWatcher m_modes;
     DesktopIndex m_index;
     DockModel m_model;
+    TaskbarModel m_taskbar;
     WindowEngine *m_engine = nullptr;
     Layout m_layout;
     QSize m_output = QSize(1920, 1080);

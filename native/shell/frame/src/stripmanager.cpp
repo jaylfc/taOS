@@ -9,6 +9,8 @@
 #include <QScreen>
 #include <cstdio>
 
+#include "theme.h"
+
 #include "framecontroller.h"
 
 StripManager::StripManager(FrameController *c, QQmlEngine *engine, QObject *parent) : QObject(parent), m_c(c), m_engine(engine)
@@ -18,12 +20,16 @@ StripManager::StripManager(FrameController *c, QQmlEngine *engine, QObject *pare
     m_tipTimer.setSingleShot(true);
     m_tipTimer.setInterval(500);
     connect(&m_tipTimer, &QTimer::timeout, this, [this] { showTip(m_tipId, QStringLiteral("shown"), m_tipText, m_tipX); });
+    connect(c, &FrameController::treeChanged, this, &StripManager::applyBrackets);
+    if (c->theme()) connect(c->theme(), &Theme::skinChanged, this, &StripManager::applyBrackets);
 }
 
 StripManager::~StripManager()
 {
     closeMenu();
     hideTip();
+    for (QQuickView *v : {m_brTL, m_brBR})
+        if (v) { v->destroy(); delete v; }
     for (QQuickView *v : std::as_const(m_views)) {
         v->destroy();
         delete v;
@@ -38,10 +44,10 @@ int StripManager::liveViews() const
     return n;
 }
 
-QVariantList StripManager::buttonModel(bool right, const QString &title, bool canMinimise, bool canFull)
+QVariantList StripManager::buttonModel(bool right, const QString &title, bool canMinimise, bool canFull, const StripMetrics &m)
 {
     QVariantList l;
-    for (const StripLayout::Button &b : StripLayout::buttons(right)) {
+    for (const StripLayout::Button &b : StripLayout::buttons(right, m)) {
         const bool usable = b.name == QLatin1String("close") || (b.name == QLatin1String("minimise") ? canMinimise : canFull);
         l.append(QVariantMap{{QStringLiteral("enabled"), usable}, {QStringLiteral("tip"), StripLayout::tipFor(b.name, usable)},{QStringLiteral("name"), b.name}, {QStringLiteral("x"), b.rect.x()}, {QStringLiteral("y"), b.rect.y()},
                              {QStringLiteral("w"), b.rect.width()}, {QStringLiteral("h"), b.rect.height()},
@@ -127,7 +133,7 @@ void StripManager::apply()
             m_views.insert(s.id, v);
         }
         if (QQuickItem *root = v->rootObject()) {
-            root->setProperty("buttons", buttonModel(s.right, s.title, s.canMinimise, s.canFull));
+            root->setProperty("buttons", buttonModel(s.right, s.title, s.canMinimise, s.canFull, m_c->metrics()));
             root->setProperty("active", s.focused);
         }
         const bool moved = v->isVisible() && (v->property("stripMargin").toPoint() != s.margin);
@@ -203,6 +209,68 @@ void StripManager::showTip(int id, const QString &, const QString &text, qreal c
     }
     v->show();
     m_tip = v;
+}
+
+QQuickView *StripManager::makeBracket(const QString &corner)
+{
+    auto *v = new QQuickView(m_engine, nullptr);
+    v->setColor(Qt::transparent);
+    v->setFlags(Qt::FramelessWindowHint | Qt::WindowTransparentForInput);
+    v->setResizeMode(QQuickView::SizeRootObjectToView);
+    v->setTitle(QStringLiteral("taos-frame-bracket"));
+    v->setInitialProperties({{QStringLiteral("corner"), corner}});
+    v->resize(16, 16);
+    v->setSource(QUrl(QStringLiteral("qrc:/taos/frame/qml/Bracket.qml")));
+    if (v->status() != QQuickView::Ready) {
+        for (const auto &e : v->errors()) fprintf(stderr, "taos-frame: bracket qml: %s\n", qPrintable(e.toString()));
+        delete v;
+        return nullptr;
+    }
+    return v;
+}
+
+// Cream corner brackets on the focused window (top left and bottom right), when the skin asks for them. They follow the
+// window the compositor says has focus, framed or not; none while it is fullscreen, parked or on a hidden workspace.
+void StripManager::applyBrackets()
+{
+    const FrameWindow *w = nullptr;
+    if (m_c->theme() && m_c->theme()->brackets())
+        for (const FrameWindow &c : m_c->tree().windows)
+            if (c.focused && c.visible && !c.parked && !c.fullscreen) w = &c;
+    QScreen *screen = w ? screenFor(w->output) : nullptr;
+    if (!w || !screen) {
+        for (QQuickView **v : {&m_brTL, &m_brBR})
+            if (*v && (*v)->isVisible()) (*v)->hide();
+        return;
+    }
+    const QRect outer = w->deco.isEmpty() ? w->rect : w->deco.united(w->rect);
+    // the bracket surface is 16 px: its stroke starts 2 px outside the window's corner
+    const QPoint tl = outer.topLeft() - QPoint(2, 2) - w->outputRect.topLeft();
+    const QPoint br = outer.bottomRight() + QPoint(1, 1) - QPoint(14, 14) - w->outputRect.topLeft();
+    struct Spot { QQuickView **v; const char *corner; QPoint at; };
+    for (const Spot &s : {Spot{&m_brTL, "tl", tl}, Spot{&m_brBR, "br", br}}) {
+        if (!*s.v) *s.v = makeBracket(QString::fromLatin1(s.corner));
+        QQuickView *v = *s.v;
+        if (!v) continue;
+        if (!v->isVisible() || v->property("at").toPoint() != s.at || v->screen() != screen) {
+            if (v->isVisible()) v->hide();
+            v->setScreen(screen);
+            v->create();
+            if (auto *lw = LayerShellQt::Window::get(v)) {
+                lw->setScreen(screen);
+                lw->setLayer(LayerShellQt::Window::LayerTop);
+                lw->setScope(QStringLiteral("taos-frame-bracket"));
+                lw->setAnchors(LayerShellQt::Window::Anchors(LayerShellQt::Window::AnchorTop | LayerShellQt::Window::AnchorLeft));
+                lw->setMargins(QMargins(s.at.x(), s.at.y(), 0, 0));
+                lw->setExclusiveZone(-1);
+                lw->setDesiredSize(QSize(16, 16));
+                lw->setKeyboardInteractivity(LayerShellQt::Window::KeyboardInteractivityNone);
+            }
+            v->resize(16, 16);
+            v->setProperty("at", s.at);
+            v->show();
+        }
+    }
 }
 
 void StripManager::closeMenu()

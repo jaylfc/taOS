@@ -14,7 +14,7 @@ Item {
         x: 2.5; y: 1.5; width: 16; height: 10
         radius: 2
         color: "transparent"
-        border.width: 1.5
+        border.width: Theme.iconStroke
         border.color: icon.color
     }
     Rectangle { x: 9.75; y: 11.5; width: 1.5; height: 2.5; color: icon.color }

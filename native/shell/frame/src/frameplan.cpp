@@ -117,24 +117,34 @@ bool parseFrameTree(const QByteArray &json, FrameTree *out, QString *error)
 
 // ----------------------------------------------------------------------------------------------- layout
 
-QSize StripLayout::surfaceSize()
+StripMetrics StripMetrics::fromSkin(const Skin &k)
 {
-    return QSize(3 * kHit + 2 * kGap, kHit);
+    StripMetrics m;
+    m.bar = k.titleBarHeight;
+    m.hit = std::max(20, std::min(m.bar - 2, std::min(34, std::max(24, k.buttonSize + 10))));
+    m.gap = k.buttonShape == QLatin1String("round") ? 4 : 2;
+    m.inset = k.buttonShape == QLatin1String("round") ? 8 : std::max(2, (m.bar - m.hit) / 2);
+    m.order = k.buttonOrder;
+    return m;
 }
 
-QVector<StripLayout::Button> StripLayout::buttons(bool right)
+QSize StripLayout::surfaceSize(const StripMetrics &m)
 {
-    const QStringList order = right ? QStringList{QStringLiteral("minimise"), QStringLiteral("full"), QStringLiteral("close")}
-                                    : QStringList{QStringLiteral("close"), QStringLiteral("minimise"), QStringLiteral("full")};
+    return QSize(3 * m.hit + 2 * m.gap, m.hit);
+}
+
+QVector<StripLayout::Button> StripLayout::buttons(bool right, const StripMetrics &m)
+{
+    const QStringList order = !m.order.isEmpty() ? m.order : defaultButtonOrder(right ? QStringLiteral("right") : QStringLiteral("left"));
     QVector<Button> v;
     for (int i = 0; i < order.size(); ++i)
-        v.append({order.at(i), QRect(i * (kHit + kGap), 0, kHit, kHit)});
+        v.append({order.at(i), QRect(i * (m.hit + m.gap), 0, m.hit, m.hit)});
     return v;
 }
 
-QString StripLayout::buttonAt(bool right, const QPoint &p)
+QString StripLayout::buttonAt(bool right, const QPoint &p, const StripMetrics &m)
 {
-    for (const Button &b : buttons(right))
+    for (const Button &b : buttons(right, m))
         if (b.rect.contains(p))
             return b.name;
     return QString();
@@ -183,8 +193,8 @@ QVector<Strip> planStrips(const FrameTree &tree, const FrameConfig &cfg, const P
         s.output = w.output;
         s.focused = w.focused;
         s.right = in.buttonsRight;
-        s.size = StripLayout::surfaceSize();
-        const int x = in.buttonsRight ? w.deco.right() + 1 - StripLayout::kInset - s.size.width() : w.deco.x() + StripLayout::kInset;
+        s.size = StripLayout::surfaceSize(in.metrics);
+        const int x = in.buttonsRight ? w.deco.right() + 1 - in.metrics.inset - s.size.width() : w.deco.x() + in.metrics.inset;
         const int y = w.deco.y() + (w.deco.height() - s.size.height()) / 2;
         s.pos = QPoint(x, y);
         s.margin = s.pos - w.outputRect.topLeft();

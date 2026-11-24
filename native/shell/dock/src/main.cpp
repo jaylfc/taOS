@@ -84,7 +84,7 @@ int main(int argc, char **argv) {
     qmlRegisterSingletonInstance("Taos.Dock", 1, 0, "DockSettings", dock.settings());
     QQmlEngine engine;
     engine.addImageProvider(QStringLiteral("dockicon"), new DockIconProvider);
-    DockManager mgr(&dock, &engine);
+    DockManager mgr(&dock, &engine, &theme);
     DockIpc ipc;
     if (!ipc.listen()) fprintf(stderr, "taos-dock: cannot listen on %s: Super+D will not work\n", qPrintable(DockIpc::socketPath()));
     QObject::connect(&ipc, &DockIpc::command, &dock, &DockController::handleCommand);

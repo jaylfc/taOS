@@ -10,6 +10,7 @@ FocusScope {
     property real anchorX: 0
     property real anchorY: 0
     property string edge: "bottom"
+    property real clearance: Dock.iconSize / 2 + 24      // from the anchor to the panel; the taskbar passes a smaller one
     readonly property string fontFamily: "Inter, Noto Sans, DejaVu Sans, sans-serif"
     readonly property bool dark: Theme.variant !== "light"
     property int current: -1
@@ -55,7 +56,8 @@ FocusScope {
         x: edge === "left" ? root.anchorX + Dock.iconSize / 2 + 18
          : edge === "right" ? root.anchorX - width - Dock.iconSize / 2 - 18
          : Math.max(8, Math.min(root.width - width - 8, root.anchorX - width / 2))
-        y: edge === "bottom" ? root.anchorY - Dock.iconSize / 2 - 24 - height
+        y: edge === "bottom" ? root.anchorY - root.clearance - height
+         : edge === "top" ? root.anchorY + root.clearance
          : Math.max(8, Math.min(root.height - height - 8, root.anchorY - height / 2))
         MouseArea { anchors.fill: parent; acceptedButtons: Qt.AllButtons }
         NumberAnimation { id: openAnim; target: panel; property: "opacity"; from: 0; to: 1; duration: 130; easing.type: Easing.OutCubic }

@@ -51,9 +51,10 @@ DockController::DockController(const Options &o, QObject *parent)
     connect(m_engine, &WindowEngine::focusedWorkspaceChanged, this, &DockController::relayout);
     connect(&m_settings, &DockSettings::pinnedChanged, this, &DockController::refreshModel);
     connect(&m_model, &DockModel::countChanged, this, &DockController::relayout);
-    connect(m_engine, &WindowEngine::windowsChanged, this, [this] { m_model.setWindows(m_engine->windows()); relayout(); });
+    connect(m_engine, &WindowEngine::windowsChanged, this, [this] { m_model.setWindows(m_engine->windows()); m_taskbar.setWindows(m_engine->windows()); relayout(); });
     m_index.scan(m_o.appDirs);
     m_model.setIndex(&m_index);
+    m_taskbar.setIndex(&m_index);
     refreshModel();
     relayout();
 }
@@ -298,4 +299,71 @@ void DockController::invokeSub(int index, int sub) {
 void DockController::movePinned(int from, int to) {
     const QStringList l = m_model.pinnedAfterMove(from, to);
     if (l != m_model.pinnedList()) m_settings.setPinned(l);
+}
+
+// ---------------------------------------------------------------------------------------------------- taskbar
+
+void DockController::taskbarStart() {
+    m_spawn(qEnvironmentVariable("TAOS_LAUNCHER_CMD", QStringLiteral("taos-launcher")), {QStringLiteral("toggle")});
+}
+
+void DockController::taskbarActivate(int id) {
+    const int p = m_taskbar.positionOf(id);
+    if (p < 0) return;
+    const TaskbarButton &b = m_taskbar.buttons()[p];
+    if (b.minimised) m_engine->restore(id);
+    else if (b.focused) m_engine->minimise(id);
+    else m_engine->focus(id);
+}
+
+static DockMenuRow windowRow(const QString &id, const QString &text, int win, bool danger = false) {
+    DockMenuRow r;
+    r.id = id;
+    r.text = text;
+    r.windowId = win;
+    r.danger = danger;
+    return r;
+}
+
+void DockController::taskbarMenu(int id, qreal x, qreal y) {
+    const int p = m_taskbar.positionOf(id);
+    if (p < 0) return;
+    const TaskbarButton &b = m_taskbar.buttons()[p];
+    m_menu.clear();
+    if (b.minimised) m_menu << windowRow(QStringLiteral("restore"), tr("Restore"), id);
+    else {
+        m_menu << windowRow(QStringLiteral("window:%1").arg(id), tr("Show"), id);
+        m_menu << windowRow(QStringLiteral("window-min:%1").arg(id), tr("Minimise"), id);
+    }
+    DockMenuRow sep;
+    sep.kind = DockMenuRow::Separator;
+    m_menu << sep << windowRow(QStringLiteral("close"), tr("Close"), id, true);
+    m_menuRow = -1;
+    m_menuRows = toVariant(m_menu);
+    m_menuOpen = true;
+    emit menuRowsChanged();
+    emit menuRequested(x, y, -1);
+}
+
+void DockController::taskbarOverflowMenu(int first, int visible, qreal x, qreal y) {
+    m_menu.clear();
+    const auto &bs = m_taskbar.buttons();
+    for (int i = 0; i < bs.size(); ++i) {
+        if (i >= first && i < first + visible) continue;
+        DockMenuRow r = windowRow(QStringLiteral("window:%1").arg(bs[i].id), bs[i].title, bs[i].id);
+        r.minimised = bs[i].minimised;
+        m_menu << r;
+    }
+    if (m_menu.isEmpty()) return;
+    m_menuRow = -1;
+    m_menuRows = toVariant(m_menu);
+    m_menuOpen = true;
+    emit menuRowsChanged();
+    emit menuRequested(x, y, -1);
+}
+
+QVariantMap DockController::taskbarLayout(int available, int minW, int maxW, int gap, int moreW) const {
+    const TaskbarLayout::Result r = TaskbarLayout::compute(available, m_taskbar.rowCount(), m_taskbar.focusedPosition(), minW, maxW, gap, moreW);
+    return {{QStringLiteral("buttonWidth"), r.buttonWidth}, {QStringLiteral("first"), r.first},
+            {QStringLiteral("visible"), r.visible}, {QStringLiteral("hidden"), r.hidden}};
 }
