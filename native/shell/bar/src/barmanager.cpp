@@ -3,6 +3,7 @@
 
 #include <LayerShellQt/Window>
 #include "menuhost.h"
+#include "theme.h"
 #include <QGuiApplication>
 #include <QQuickItem>
 #include <QQuickView>
@@ -20,6 +21,27 @@ BarManager::~BarManager() {
         v->destroy();
         delete v;
     }
+    for (QQuickView *v : std::as_const(m_trays)) {
+        v->destroy();
+        delete v;
+    }
+}
+
+int BarManager::barHeight() const {
+    return (!m_o.theme || m_o.heightPinned) ? m_o.height : m_o.theme->barHeight();
+}
+
+static bool bottomEdge(const Theme *t) { return t && t->barEdge() == QLatin1String("bottom"); }
+
+// The layout decides which surfaces exist. A theme switch that changes it drops every surface and makes the
+// wanted ones again (the process, its menus and its volume key socket stay up).
+void BarManager::rebuild() {
+    closeMenu();
+    for (QQuickView *v : std::as_const(m_views)) { v->destroy(); delete v; }
+    for (QQuickView *v : std::as_const(m_trays)) { v->destroy(); delete v; }
+    m_views.clear();
+    m_trays.clear();
+    for (QScreen *s : QGuiApplication::screens()) addScreen(s);
 }
 
 QString BarManager::describeOutputs() const {
@@ -46,7 +68,11 @@ void BarManager::openMenu(const QString &kind, const QString &output, qreal anch
     v->setFlag(Qt::FramelessWindowHint);
     v->setResizeMode(QQuickView::SizeRootObjectToView);
     v->setTitle(QStringLiteral("taos-menu"));
-    v->setInitialProperties({{QStringLiteral("barHeight"), m_o.height}, {QStringLiteral("anchorRight"), anchorRight}});
+    const bool trayMenu = m_o.theme && !m_o.theme->topBar();
+    const bool atBottom = trayMenu ? m_o.theme->dockEdge() == QLatin1String("bottom") : bottomEdge(m_o.theme);
+    v->setInitialProperties({{QStringLiteral("barHeight"), trayMenu ? m_o.theme->taskbarHeight() : barHeight()},
+                             {QStringLiteral("barEdge"), atBottom ? QStringLiteral("bottom") : QStringLiteral("top")},
+                             {QStringLiteral("anchorRight"), anchorRight}});
     v->resize(s->geometry().size());
     v->setSource(QUrl(url));
     if (v->status() != QQuickView::Ready) {
@@ -124,14 +150,57 @@ void BarManager::start() {
         connect(m_o.host, &MenuHost::openRequested, this, &BarManager::openMenu);
         connect(m_o.host, &MenuHost::closeFinished, this, &BarManager::closeMenu, Qt::QueuedConnection);
     }
+    if (m_o.theme) connect(m_o.theme, &Theme::layoutChanged, this, &BarManager::rebuild);
     connect(qGuiApp, &QGuiApplication::screenAdded, this, &BarManager::addScreen);
     connect(qGuiApp, &QGuiApplication::screenRemoved, this, &BarManager::removeScreen);
     for (QScreen *s : QGuiApplication::screens()) addScreen(s);
 }
 
+// The tray: display, network, sound and the clock as a small surface at the far end of the taskbar edge, tiled beside
+// taos-dock's taskbar surface (which leaves Theme::trayWidth() free). It reserves nothing: the taskbar's zone covers it.
+void BarManager::addTray(QScreen *s) {
+    if (m_trays.contains(s) || m_o.trayUrl.isEmpty() || !m_o.theme) return;
+    const int h = m_o.theme->taskbarHeight(), w = m_o.theme->trayWidth();
+    auto *v = new QQuickView(&m_engine, nullptr);
+    v->setScreen(s);
+    v->setColor(Qt::transparent);
+    v->setFlag(Qt::FramelessWindowHint);
+    v->setResizeMode(QQuickView::SizeRootObjectToView);
+    v->setTitle(QStringLiteral("taos-tray"));
+    v->setInitialProperties({{QStringLiteral("outputName"), s->name()}});
+    v->resize(w, h);
+    v->setSource(QUrl(m_o.trayUrl));
+    if (v->status() != QQuickView::Ready) {
+        for (const auto &e : v->errors()) fprintf(stderr, "taos-bar: tray qml: %s\n", qPrintable(e.toString()));
+        delete v;
+        return;
+    }
+    v->create();
+    if (auto *lw = LayerShellQt::Window::get(v)) {
+        const bool bottom = m_o.theme->dockEdge() == QLatin1String("bottom");
+        lw->setScreen(s);
+        lw->setLayer(LayerShellQt::Window::LayerTop);
+        lw->setScope(QStringLiteral("taos-tray"));
+        lw->setAnchors(LayerShellQt::Window::Anchors((bottom ? LayerShellQt::Window::AnchorBottom : LayerShellQt::Window::AnchorTop)
+                                                     | LayerShellQt::Window::AnchorRight));
+        lw->setExclusiveZone(-1);
+        lw->setDesiredSize(QSize(w, h));
+        lw->setKeyboardInteractivity(LayerShellQt::Window::KeyboardInteractivityOnDemand);
+    }
+    v->show();
+    m_trays.insert(s, v);
+    fprintf(stderr, "taos-bar: tray added on output %s\n", qPrintable(s->name()));
+}
+
 void BarManager::addScreen(QScreen *s) {
     if (m_views.contains(s)) return;
     if (!m_o.onlyOutput.isEmpty() && s->name() != m_o.onlyOutput) return;
+    if (m_o.theme && !m_o.theme->topBar()) {   // no top bar in this layout: only the tray (when the dock is a taskbar)
+        if (m_o.theme->dockMode() == QLatin1String("taskbar")) addTray(s);
+        return;
+    }
+    const int barH = barHeight();
+    const bool atBottom = bottomEdge(m_o.theme);
 
     auto *v = new QQuickView(&m_engine, nullptr);
     v->setScreen(s);
@@ -139,9 +208,10 @@ void BarManager::addScreen(QScreen *s) {
     v->setFlag(Qt::FramelessWindowHint);
     v->setResizeMode(QQuickView::SizeRootObjectToView);
     v->setTitle(QStringLiteral("taos-bar"));
-    v->setInitialProperties({{QStringLiteral("barHeight"), m_o.height},
+    v->setInitialProperties({{QStringLiteral("barHeight"), barH},
+                             {QStringLiteral("barEdge"), atBottom ? QStringLiteral("bottom") : QStringLiteral("top")},
                              {QStringLiteral("outputName"), s->name()}});
-    v->resize(s->geometry().width(), m_o.height);
+    v->resize(s->geometry().width(), barH);
     v->setSource(QUrl(m_o.qmlUrl));
     if (v->status() != QQuickView::Ready) {
         for (const auto &e : v->errors()) fprintf(stderr, "taos-bar: qml: %s\n", qPrintable(e.toString()));
@@ -153,11 +223,11 @@ void BarManager::addScreen(QScreen *s) {
         w->setScreen(s);  // explicit: otherwise a hot-plugged output can end up with the surface on the first one
         w->setLayer(LayerShellQt::Window::LayerTop);
         w->setScope(QStringLiteral("taos-bar"));
-        w->setAnchors(LayerShellQt::Window::Anchors(LayerShellQt::Window::AnchorTop
+        w->setAnchors(LayerShellQt::Window::Anchors((atBottom ? LayerShellQt::Window::AnchorBottom : LayerShellQt::Window::AnchorTop)
                                                     | LayerShellQt::Window::AnchorLeft
                                                     | LayerShellQt::Window::AnchorRight));
-        w->setExclusiveZone(m_o.height);
-        w->setDesiredSize(QSize(0, m_o.height));
+        w->setExclusiveZone(barH);
+        w->setDesiredSize(QSize(0, barH));
         w->setKeyboardInteractivity(LayerShellQt::Window::KeyboardInteractivityNone);
     } else {
         fprintf(stderr, "taos-bar: layer shell is not available on output %s (not a layer-shell compositor?)\n",
@@ -170,6 +240,7 @@ void BarManager::addScreen(QScreen *s) {
 
 void BarManager::removeScreen(QScreen *s) {
     if (s == m_menuScreen) closeMenu();
+    if (QQuickView *t = m_trays.take(s)) { t->destroy(); delete t; }
     QQuickView *v = m_views.take(s);
     if (!v) return;
     fprintf(stderr, "taos-bar: bar removed from output %s\n", qPrintable(s->name()));

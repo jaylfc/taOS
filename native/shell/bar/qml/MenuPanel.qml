@@ -9,7 +9,7 @@ import Taos.Bar
 // denser than the greeter's; if it ever blurs, lower `tintAlpha`.
 Item {
     id: gp
-    property real radius: 14
+    property real radius: Math.round((14) * Theme.radiusScale)
     property real tintAlpha: Theme.variant === "light" ? 0.90 : 0.86
     readonly property bool dark: Theme.variant !== "light"
 
@@ -26,9 +26,9 @@ Item {
         anchors.fill: shadowSource
         source: shadowSource
         autoPaddingEnabled: true
-        shadowEnabled: true
         shadowColor: "black"
-        shadowOpacity: gp.dark ? 0.45 : 0.28
+        shadowOpacity: Math.min(1, (gp.dark ? 0.45 : 0.28) * Theme.shadowStrength)
+        shadowEnabled: Theme.shadowStrength > 0
         shadowBlur: 1.0
         shadowVerticalOffset: 10
         opacity: 1
@@ -63,7 +63,7 @@ Item {
         anchors.fill: parent
         radius: gp.radius
         color: "transparent"
-        border.width: 1
+        border.width: Theme.borderWidth
         border.color: Theme.glassStroke
     }
 }

@@ -7,6 +7,7 @@
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QLocalSocket>
+#include <QProcess>
 #include <QThread>
 #include <cstdio>
 
@@ -17,9 +18,15 @@
 using namespace TaosWin;
 
 // What snippet 49-taos-frame.conf sets; the controller applies the same at start (a reload puts the snippet back).
-static const char kFontFamily[] = "Inter";   // one family: a comma list is refused at run time
-static const int kBaseFontSize = 13;   // px
 static const int kBaseVPad = 7;
+// One family: a comma list is refused at run time. The theme's family (a plain name, validated), else Inter.
+static QString titleFont(const Theme *t)
+{
+    if (!t) return QStringLiteral("Inter");
+    if (!t->skin().fontDisplay.isEmpty()) return t->skin().fontDisplay;
+    return !t->skin().fontFamily.isEmpty() ? t->skin().fontFamily : QStringLiteral("Inter");
+}
+static int baseFontSize(const Theme *t) { return t ? t->skin().fontSize : 13; }
 static const int kMaxTuneSteps = 6;
 
 static QString hex(const QColor &c) { return c.name(QColor::HexRgb); }
@@ -51,11 +58,39 @@ FrameController::FrameController(Theme *theme, const Options &o, QObject *parent
     connect(&m_settle, &QTimer::timeout, this, &FrameController::replan);
     m_grace.setSingleShot(true);
     connect(&m_grace, &QTimer::timeout, this, [this] { if (!m_lastJson.isEmpty()) onTree(m_lastJson, false); });
+    m_holdTimer.setSingleShot(true);
+    m_holdTimer.setInterval(1400);
+    connect(&m_holdTimer, &QTimer::timeout, this, &FrameController::restorePositions);
+    m_tuneTimer.setSingleShot(true);
+    m_tuneTimer.setInterval(170);
+    connect(&m_tuneTimer, &QTimer::timeout, this, [this] { if (m_o.manageSway) tuneFrom(m_tree); });
     m_chromeDebounce.setSingleShot(true);
     m_chromeDebounce.setInterval(30);
     connect(&m_chromeDebounce, &QTimer::timeout, this, &FrameController::applyChrome);
-    if (m_theme)
+    if (m_theme) {
+        m_fontSize = baseFontSize(m_theme);
+        m_metrics = StripMetrics::fromSkin(m_theme->skin());
         connect(m_theme, &Theme::changed, this, [this] { m_chromeDebounce.start(); replan(); });
+        connect(m_theme, &Theme::skinChanged, this, [this] {
+            // a new skin: the title bar is measured again from the new font and height
+            m_metrics = StripMetrics::fromSkin(m_theme->skin());
+            m_fontSize = baseFontSize(m_theme);
+            m_vPad = kBaseVPad;
+            m_tuneSteps = 0;
+            m_lastChrome.clear();
+            m_chromeDebounce.start();
+            // the place windows had before the switch: the newest sample at least 1.2 s old (the bar and dock may already
+            // have changed the workspace by the time this signal arrives)
+            m_holdPos.clear();
+            const qint64 now = m_clock.elapsed();
+            m_skinAt = now;
+            for (int i = m_posHistory.size() - 1; i >= 0; --i)
+                if (m_posHistory.at(i).first <= now - 1200) { m_holdPos = m_posHistory.at(i).second; break; }
+            m_holdTries = 0;
+            m_holdTimer.start();
+            applyCompositor();
+        });
+    }
 }
 
 FrameController::~FrameController()
@@ -124,8 +159,10 @@ bool FrameController::start(QString *error)
         fprintf(stderr, "taos-frame: cannot listen on %s: the right click menu will not work\n", qPrintable(sock));
     connect(&m_server, &QLocalServer::newConnection, this, &FrameController::onControl);
 
-    if (m_o.manageSway)
+    if (m_o.manageSway) {
         applyChrome();
+        applyCompositor();
+    }
     startWorker();
     return true;
 }
@@ -228,6 +265,15 @@ void FrameController::onTree(const QByteArray &json, bool reloaded)
     for (auto it = m_changedAt.begin(); it != m_changedAt.end();)
         it = rects.contains(it.key()) ? std::next(it) : m_changedAt.erase(it);
     m_tree = t;
+    {   // where every floating, shown window sits now; kept for a few seconds so a skin switch can go back to a settled place
+        QHash<int, QRect> pos;
+        for (const FrameWindow &w : std::as_const(t.windows))
+            if (w.floating && w.visible && !w.parked && !w.fullscreen) pos.insert(w.id, w.rect);
+        if (now - m_skinAt > 3000)      // not while a switch is settling: those places are the drifted ones
+            m_posHistory.append({now, pos});
+        while (m_posHistory.size() > 2 && m_posHistory.at(1).first < now - 4000) m_posHistory.removeFirst();
+    }
+    emit treeChanged();
     // The poll goes slow when no window is framed.
     bool any = false;
     for (const FrameWindow &w : std::as_const(t.windows)) any = any || m_cfg.shouldFrame(w.appId);
@@ -236,11 +282,16 @@ void FrameController::onTree(const QByteArray &json, bool reloaded)
 
     if (m_o.manageSway) {
         if (reloaded) {
-            m_fontSize = kBaseFontSize;
+            m_fontSize = baseFontSize(m_theme);
             m_vPad = kBaseVPad;
             m_tuneSteps = 0;
             m_lastChrome.clear();
             applyChrome();
+            m_appliedRadius = 0;      // a reload put the config's values back
+            m_appliedGap = 8;
+            m_appliedAlign = QStringLiteral("center");
+            m_appliedWallpaper.clear();
+            applyCompositor();
         }
         QSet<int> ready;
         QHash<int, qint64> seen;
@@ -261,6 +312,7 @@ void FrameController::onTree(const QByteArray &json, bool reloaded)
         const QStringList cmds = borderCommands(t, m_cfg, &m_framed, &ready);
         if (!cmds.isEmpty())
             runCommands(cmds);
+        applyTitleFormat();
         tuneFrom(t);
     }
     replan();
@@ -270,6 +322,9 @@ void FrameController::replan()
 {
     PlanInput in;
     in.buttonsRight = m_theme && m_theme->windowButtons() == QLatin1String("right");
+    if (m_theme) m_metrics = StripMetrics::fromSkin(m_theme->skin());
+    if (m_theme && !m_theme->skin().buttonOrder.isEmpty()) {}   // (the order travels in the metrics)
+    in.metrics = m_metrics;
     in.nowMs = m_clock.elapsed();
     in.settleMs = m_o.settleMs;
     in.changedAt = m_changedAt;
@@ -315,6 +370,34 @@ void FrameController::runCommands(const QStringList &cmds)
 
 // sway draws the bar behind the buttons (and is what a window shows while its strip is hidden, or if this daemon
 // is not running): make it the theme's surface with the theme's text, the strip's height and a hairline.
+// After a skin switch has settled: give each floating window back the size and place it had (content rectangle). A
+// terminal that snapped to a smaller cell grid when its title bar changed height is asked for its old size first (up to
+// three tries, it may not be able to match), then everything is moved by relative moves.
+void FrameController::restorePositions()
+{
+    if (!m_tx || !m_o.manageSway || m_holdPos.isEmpty())
+        return;
+    QStringList resizes, moves;
+    for (const FrameWindow &w : std::as_const(m_tree.windows)) {
+        if (!w.floating || !w.visible || w.parked || w.fullscreen || !m_holdPos.contains(w.id)) continue;
+        const QRect want = m_holdPos.value(w.id);
+        // `resize set` takes the whole window: the content plus the title bar and its bottom border line
+        const int extra = w.deco.isEmpty() ? 0 : w.deco.height() + 1;
+        if (qAbs(w.rect.width() - want.width()) > 2 || qAbs(w.rect.height() - want.height()) > 2)   // a terminal snaps to its cell grid
+            resizes << QStringLiteral("[con_id=%1] resize set width %2 px height %3 px").arg(w.id).arg(want.width()).arg(want.height() + extra);
+        const QPoint d = want.topLeft() - w.rect.topLeft();
+        if (d.x()) moves << QStringLiteral("[con_id=%1] move %2 %3 px").arg(w.id).arg(d.x() > 0 ? QStringLiteral("right") : QStringLiteral("left")).arg(qAbs(d.x()));
+        if (d.y()) moves << QStringLiteral("[con_id=%1] move %2 %3 px").arg(w.id).arg(d.y() > 0 ? QStringLiteral("down") : QStringLiteral("up")).arg(qAbs(d.y()));
+    }
+    if (!resizes.isEmpty() && m_holdTries++ < 3) {
+        runCommands(resizes);
+        m_holdTimer.start(700);        // look again once the windows have answered
+        return;
+    }
+    m_holdPos.clear();
+    runCommands(moves);
+}
+
 void FrameController::applyChrome()
 {
     if (!m_theme || !m_tx || !m_o.manageSway)
@@ -325,24 +408,122 @@ void FrameController::applyChrome()
     const QColor focusedBorder = over(surface, QColor(text.red(), text.green(), text.blue(), 90));
     QStringList cmds;
     // class: border  background  text  indicator  child_border
-    cmds << QStringLiteral("client.focused %1 %2 %3 %1 %1").arg(hex(focusedBorder), hex(surface), hex(text));
-    cmds << QStringLiteral("client.focused_inactive %1 %2 %3 %1 %1").arg(hex(hair), hex(surface), hex(dim));
-    cmds << QStringLiteral("client.unfocused %1 %2 %3 %1 %1").arg(hex(hair), hex(surface), hex(dim));
-    const QByteArray key = cmds.join(QLatin1Char(';')).toUtf8() + QByteArray::number(m_fontSize) + ':' + QByteArray::number(m_vPad);
+    if (m_theme->focusBorder() == QLatin1String("accent") && m_theme->activeTitle() != QLatin1String("accent")) {
+        const QColor ac = m_theme->accent();
+        cmds << QStringLiteral("client.focused %1 %2 %3 %1 %1").arg(hex(ac), hex(surface), hex(text));
+    } else if (m_theme->activeTitle() == QLatin1String("accent")) {   // the focused window's title bar in the accent colour
+        const QColor ac = m_theme->accent();
+        cmds << QStringLiteral("client.focused %1 %1 %2 %1 %1").arg(hex(ac), hex(m_theme->accentText()));
+    } else {
+        cmds << QStringLiteral("client.focused %1 %2 %3 %1 %1").arg(hex(focusedBorder), hex(surface), hex(text));
+    }
+    // focusBorder "accent": a 1 px accent border on the focused window, a dimmer one on the others
+    const QColor idleBorder = m_theme->focusBorder() == QLatin1String("accent") ? over(surface, m_theme->accentDim()) : hair;
+    cmds << QStringLiteral("client.focused_inactive %1 %2 %3 %1 %1").arg(hex(idleBorder), hex(surface), hex(dim));
+    cmds << QStringLiteral("client.unfocused %1 %2 %3 %1 %1").arg(hex(idleBorder), hex(surface), hex(dim));
+    const QByteArray key = cmds.join(QLatin1Char(';')).toUtf8() + titleFont(m_theme).toUtf8() + QByteArray::number(m_fontSize) + ':' + QByteArray::number(m_vPad);
     if (key == m_lastChrome)
         return;
     m_lastChrome = key;
-    cmds << QStringLiteral("font pango:%1 %2px").arg(QString::fromLatin1(kFontFamily)).arg(m_fontSize);
+    m_chromeAppliedMs = m_clock.elapsed();
+    m_tuneTimer.start();      // look again once sway has laid the bars out with this font (trees read before that are ignored)
+    cmds << QStringLiteral("font pango:%1 %2px").arg(titleFont(m_theme)).arg(m_fontSize);
     cmds << QStringLiteral("titlebar_padding 8 %1").arg(m_vPad);
+    runCommands(cmds);
+    // sway keeps each title as a texture sized for the font it was made with: a new font or size means making the
+    // titles again, and setting the title format is what makes sway do that
+    m_titleFormatted.clear();
+    applyTitleFormat();
+}
+
+// The compositor-side keys of the skin: window corner radius (swayfx), the gap between tiled windows, the wallpaper.
+// Only what differs from what was last sent goes out, so a session on the default theme sends nothing at all.
+void FrameController::applyCompositor()
+{
+    if (!m_theme || !m_tx || !m_o.manageSway)
+        return;
+    const Skin &k = m_theme->skin();
+    QStringList cmds;
+    if (k.windowRadius != m_appliedRadius) {
+        cmds << QStringLiteral("corner_radius %1").arg(k.windowRadius);
+        m_appliedRadius = k.windowRadius;
+    }
+    if (k.windowGap != m_appliedGap) {
+        cmds << QStringLiteral("gaps inner all set %1").arg(k.windowGap);
+        m_appliedGap = k.windowGap;
+    }
+    // Upper case, letter spaced titles: pango markup in the title format of each framed window (pango 1.50 or newer
+    // shows the upper case; an older one shows the spacing only).
+    {
+        const QString fmt = (k.titleCase == QLatin1String("upper") || k.titleTracking > 0)
+            ? QStringLiteral("<span%1%2>%title</span>")
+                  .arg(k.titleCase == QLatin1String("upper") ? QStringLiteral(" text_transform='uppercase'") : QString())
+                  .arg(k.titleTracking > 0 ? QStringLiteral(" letter_spacing='%1'").arg(int(k.titleTracking * m_fontSize * 0.75 * 1024)) : QString())
+            : QStringLiteral("%title");
+        if (fmt != m_titleFormat) {
+            m_titleFormat = fmt;
+            m_titleFormatted.clear();
+        }
+        applyTitleFormat();
+    }
+    // Blur behind the shell's own surfaces (swayfx; plain sway refuses the command and keeps the tint)
+    if (k.blur != m_appliedBlur) {
+        m_appliedBlur = k.blur;
+        for (const char *ns : {"taos-bar", "taos-tray", "taos-dock", "taos-taskbar"})
+        {
+            // one effect per command: sway splits a command line at the semicolon
+            cmds << QStringLiteral("layer_effects \"%1\" blur %2").arg(QString::fromLatin1(ns), k.blur ? QStringLiteral("enable") : QStringLiteral("disable"));
+            if (k.blur) cmds << QStringLiteral("layer_effects \"%1\" blur_ignore_transparent enable").arg(QString::fromLatin1(ns));
+        }
+    }
+    if (k.titleAlign != m_appliedAlign) {
+        cmds << QStringLiteral("title_align %1").arg(k.titleAlign);
+        m_appliedAlign = k.titleAlign;
+    }
+    runCommands(cmds);
+    const QString wall = m_theme->wallpaperPath();
+    if (wall != m_appliedWallpaper) {
+        m_appliedWallpaper = wall;
+        if (!wall.isEmpty()) {
+            // the path is a file in the theme folder whose name was validated (no quote, space or slash in it); the
+            // folder is the person's own, so it is quoted for sway rather than trusted
+            QString q = wall;
+            q.replace(QLatin1Char('\\'), QStringLiteral("\\\\")).replace(QLatin1Char('"'), QStringLiteral("\\\""));
+            runCommands({QStringLiteral("output \"*\" bg \"%1\" fill").arg(q)});
+        } else {
+            // back to the session's own wallpaper: its helper sets one per output
+            const QString helper = qEnvironmentVariable("TAOS_WALLPAPER_HELPER", QStringLiteral("/usr/lib/taos/desktop-session/wallpaper"));
+            if (QFile::exists(helper))
+                QProcess::startDetached(helper, {});
+        }
+    }
+}
+
+// Sets the title format of each framed window that does not have the current one yet.
+void FrameController::applyTitleFormat()
+{
+    if (!m_tx || !m_o.manageSway)
+        return;
+    QStringList cmds;
+    for (int id : std::as_const(m_framed)) {
+        if (m_titleFormatted.contains(id)) continue;
+        m_titleFormatted.insert(id);
+        // sway re-makes a title only when the format string differs from the one it has: a different one first, then ours
+        cmds << QStringLiteral("[con_id=%1] title_format \"%2 \"").arg(id).arg(m_titleFormat);
+        cmds << QStringLiteral("[con_id=%1] title_format \"%2\"").arg(id).arg(m_titleFormat);
+    }
     runCommands(cmds);
 }
 
 void FrameController::tuneFrom(const FrameTree &t)
 {
+    // a tree read before sway laid the new font out still shows the old bar height: tuning on it overshoots
+    if (m_clock.elapsed() - m_chromeAppliedMs < 150)
+        return;
     for (const FrameWindow &w : t.windows) {
         if (!m_cfg.shouldFrame(w.appId) || w.border != QLatin1String("normal") || w.deco.isEmpty() || w.fullscreen || !w.visible)
             continue;
-        const TuneStep s = tuneTitleBar(w.deco.height(), m_fontSize, m_vPad);
+        const TuneStep s = tuneTitleBar(w.deco.height(), m_fontSize, m_vPad, m_metrics.bar);
         if (s.done) {
             m_tuneSteps = 0;
             return;

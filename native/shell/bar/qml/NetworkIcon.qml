@@ -53,7 +53,7 @@ Item {
             height: 9
             radius: 2
             color: "transparent"
-            border.width: 1.5
+            border.width: Theme.iconStroke
             border.color: icon.color
         }
         Rectangle {

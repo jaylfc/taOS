@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 #pragma once
 #include <QDateTime>
+#include <QMap>
 #include <QString>
 
 // The per person appearance setting: ~/.config/taos/appearance.json
@@ -9,7 +10,9 @@ struct Appearance {
     QString theme = QStringLiteral("graphite");
     QString mode = QStringLiteral("dark");
     QString windowButtons;   // "" (follow the theme), "left" or "right": the person's own choice of button side
-    bool operator==(const Appearance &o) const { return theme == o.theme && mode == o.mode && windowButtons == o.windowButtons; }
+    // The person's choices inside themes that offer options: theme id -> option key -> choice id.
+    QMap<QString, QMap<QString, QString>> options;
+    bool operator==(const Appearance &o) const { return theme == o.theme && mode == o.mode && windowButtons == o.windowButtons && options == o.options; }
     bool operator!=(const Appearance &o) const { return !(*this == o); }
 };
 

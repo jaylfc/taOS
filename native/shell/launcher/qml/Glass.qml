@@ -8,8 +8,11 @@ import Taos.Launcher
 // top, a 1 px highlight, a hairline and a soft drop shadow that follows the corners.
 Item {
     id: gp
-    property real radius: 22
-    property real tintAlpha: Style.dark ? 0.86 : 0.90
+    property real radius: Math.round((22) * Style.radiusScale)
+    property string kind: Style.dockSurface        // translucent (frosted glass, the default) | solid | raised (bevelled)
+    property real tintAlpha: kind === "translucent" ? (Style.dark ? 0.86 : 0.90) : 1.0
+    readonly property int bw: Style.borderWidth
+    readonly property bool ring: Style.launcherPlace === "ring"       // the command ring: an accent outline with a soft glow
 
     Rectangle {
         id: shadowSource
@@ -23,18 +26,19 @@ Item {
         anchors.fill: shadowSource
         source: shadowSource
         autoPaddingEnabled: true
-        shadowEnabled: true
-        shadowColor: "black"
-        shadowOpacity: Style.dark ? 0.45 : 0.28
+        shadowEnabled: Style.shadowStrength > 0
+        shadowColor: gp.ring ? Style.accent : "black"
+        shadowOpacity: gp.ring ? 0.28 : Math.min(1, (Style.dark ? 0.45 : 0.28) * Style.shadowStrength)
         shadowBlur: 1.0
         shadowVerticalOffset: 10
     }
     Rectangle {
         anchors.fill: parent
         radius: gp.radius
-        color: Qt.rgba(Style.ground.r, Style.ground.g, Style.ground.b, gp.tintAlpha)
+        color: gp.kind === "raised" ? Style.surface : Qt.rgba(Style.ground.r, Style.ground.g, Style.ground.b, gp.tintAlpha)
     }
     Rectangle {
+        visible: gp.kind === "translucent"
         anchors.fill: parent
         radius: gp.radius
         gradient: Gradient {
@@ -43,6 +47,7 @@ Item {
         }
     }
     Rectangle {
+        visible: gp.kind === "translucent"
         height: 1
         y: 1
         x: gp.radius * 0.6
@@ -58,7 +63,20 @@ Item {
         anchors.fill: parent
         radius: gp.radius
         color: "transparent"
-        border.width: 1
-        border.color: Style.glassStroke
+        border.width: gp.bw
+        border.color: gp.ring ? Style.accent : gp.kind === "raised" ? Style.bevelDark : Style.glassStroke
+    }
+    // raised: the lit top and left edges inside the dark outline
+    Rectangle { visible: gp.kind === "raised" && gp.bw > 0; x: gp.bw; y: gp.bw; width: parent.width - 2 * gp.bw; height: gp.bw; color: Style.bevelLight }
+    Rectangle { visible: gp.kind === "raised" && gp.bw > 0; x: gp.bw; y: gp.bw; width: gp.bw; height: parent.height - 2 * gp.bw; color: Style.bevelLight }
+    // the faint line texture of themes that ask for it
+    Item {
+        visible: Style.scanlines
+        anchors.fill: parent
+        clip: true
+        Repeater {
+            model: Style.scanlines ? Math.ceil(gp.height / 3) : 0
+            Rectangle { y: index * 3; width: gp.width; height: 1; color: Style.text; opacity: 0.03 }
+        }
     }
 }

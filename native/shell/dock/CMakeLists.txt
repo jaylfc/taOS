@@ -11,6 +11,7 @@ add_library(taosdock_core STATIC
     src/dockconfig.cpp src/dockconfig.h
     src/layout.cpp src/layout.h
     src/dockmodel.cpp src/dockmodel.h
+    src/taskbarmodel.cpp src/taskbarmodel.h
     src/dockcontroller.cpp src/dockcontroller.h
     src/dockcli.cpp src/dockcli.h
     src/iconprovider.cpp src/iconprovider.h
@@ -26,6 +27,8 @@ qt_add_resources(taos-dock dock_resources
     BASE ${CMAKE_CURRENT_SOURCE_DIR}
     FILES
         qml/Dock.qml
+        qml/Taskbar.qml
+        qml/TaskbarButton.qml
         qml/DockItem.qml
         qml/DockMenu.qml
         qml/DockSettings.qml
@@ -50,6 +53,7 @@ taos_dock_test(test_dockmodel)
 taos_dock_test(test_sway_integration)
 taos_dock_test(test_modefollow)
 taos_dock_test(test_dockmenu)
+taos_dock_test(test_taskbarmodel)
 
 # Dev tool: renders the dock, its menu and the settings popover offscreen (tests/dockshot.cpp).
 qt_add_executable(dockshot tests/dockshot.cpp)

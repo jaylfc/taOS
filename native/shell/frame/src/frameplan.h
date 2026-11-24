@@ -11,6 +11,7 @@
 #include <QVector>
 
 #include "frameconfig.h"
+#include "themedef.h"
 
 // One toplevel as the strip needs it, read from sway's get_tree (it needs more than taos-window's list: the title
 // bar rectangle, visibility, the stacking order and the output).
@@ -49,15 +50,25 @@ bool parseFrameTree(const QByteArray &json, FrameTree *out, QString *error = nul
 
 // The three round buttons, in the strip's own coordinates. One source of truth for the layout, the hit regions, the
 // QML and the tests.
+// The measures of the strip, from the skin (titleBarHeight, windowButtons). The defaults are what the strip has always been.
+struct StripMetrics {
+    int bar = 32;           // the title bar the strip sits in
+    int hit = 24;           // one button's hit area
+    int gap = 4;
+    int inset = 8;          // from the window edge
+    QStringList order;      // close, minimise, full in on-screen order; empty: by side
+    static StripMetrics fromSkin(const Skin &k);
+};
+
 namespace StripLayout {
 constexpr int kBarHeight = 32;    // the strip, as TaosTitleBar
 constexpr int kHit = 24;          // one button's hit area (the disc is 14 px inside it)
 constexpr int kGap = 4;
 constexpr int kInset = 8;         // from the window edge
 struct Button { QString name; QRect rect; };     // name: close | minimise | full
-QSize surfaceSize();              // the three buttons together
-QVector<Button> buttons(bool right);             // in drawing order, left to right
-QString buttonAt(bool right, const QPoint &p);   // "" when between or outside
+QSize surfaceSize(const StripMetrics &m = StripMetrics());   // the three buttons together
+QVector<Button> buttons(bool right, const StripMetrics &m = StripMetrics());   // in drawing order, left to right
+QString buttonAt(bool right, const QPoint &p, const StripMetrics &m = StripMetrics());   // "" when between or outside
 QString labelFor(const QString &button, const QString &windowTitle);   // "Close <title>"
 QString tipFor(const QString &button, bool usable);   // the tooltip: what it does and the keyboard way, "" when unusable
 }
@@ -81,6 +92,7 @@ struct Strip {
 
 struct PlanInput {
     bool buttonsRight = false;
+    StripMetrics metrics;
     qint64 nowMs = 0;
     int settleMs = 150;                       // a window that moved less than this ago hides its buttons
     QHash<int, qint64> changedAt;             // when each window's geometry last changed

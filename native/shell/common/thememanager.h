@@ -32,6 +32,8 @@ class ThemeManager : public QObject {
     Q_PROPERTY(QString description READ description NOTIFY appearanceChanged)
     Q_PROPERTY(QString windowButtons READ windowButtons NOTIFY appearanceChanged)
     Q_PROPERTY(QString windowButtonsChoice READ windowButtonsChoice NOTIFY appearanceChanged)
+    Q_PROPERTY(QVariantList options READ options NOTIFY appearanceChanged)
+    Q_PROPERTY(QStringList notes READ notes NOTIFY appearanceChanged)
 public:
     enum class Role { Session, Greeter };
     struct Options {
@@ -74,6 +76,13 @@ public:
     QString windowButtons() const { return m_theme->windowButtons(); }                 // the side in effect
     QString windowButtonsChoice() const { return m_app.windowButtons.isEmpty() ? QStringLiteral("theme") : m_app.windowButtons; }
     Q_INVOKABLE bool choose(const QString &id, const QString &mode);
+    // The options the showing theme offers: [{key,label,current,choices:[{id,label,available,note,current}]}].
+    QVariantList options() const;
+    // Say in plain words what a saved choice cannot show (for example "Window depth: On is not available on this system yet").
+    QStringList notes() const { return m_notes; }
+    // The same for the QML pickers: the showing theme, no error out parameter.
+    Q_INVOKABLE bool chooseOption(const QString &key, const QString &choice) { return setOption(m_shownId, key, choice, nullptr); }
+    Q_INVOKABLE bool setOption(const QString &themeId, const QString &key, const QString &choice, QString *error = nullptr);
 
     // Greeter: show this person's choice (their mirror file), else the system default.
     void previewUser(int uid);
@@ -81,6 +90,8 @@ public:
     void reload();
     void rescanThemes();
     QString lastWriteError() const { return m_writeError; }
+    // Why the wanted theme is not the one showing ("" when it is): a refused or missing theme leaves the previous one in place.
+    QString lastError() const { return m_lastError; }
 
 signals:
     void appearanceChanged();
@@ -100,6 +111,10 @@ private:
     Options m_o;
     ThemeCatalog m_cat;
     Appearance m_app;
+    ThemeDef m_good;
+    QStringList m_notes;
+    bool m_haveGood = false;
+    QString m_lastError;
     QString m_shownId, m_variant = QStringLiteral("dark"), m_writeError;
     int m_previewUid = -1;
     QFileSystemWatcher m_watch;

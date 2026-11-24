@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 import QtQuick
+import QtQuick.Effects
+import QtQuick.Shapes
 import Taos.Dock
 
 // One slot of the dock: an application, the separator, or a minimised window.
@@ -19,9 +21,13 @@ Item {
     property Item host
     property Item flowItem
 
+    readonly property bool cells: Theme.dockMode === "cells"        // layout.dock "cells": shaped cells instead of bare icons
+    readonly property bool hexCells: cells && Theme.cellShape === "hex"
+    readonly property int cellW: 46
+    readonly property int cellH: 52
     readonly property bool isSep: kind === "separator"
     readonly property bool isMin: kind === "minimised"
-    width: Dock.vertical ? flowItem.width : (isSep ? Dock.separatorWidth : Dock.cell)
+    width: Dock.vertical ? flowItem.width : (isSep ? (cells ? 10 : Dock.separatorWidth) : (cells ? cellW + 6 : Dock.cell))
     height: Dock.vertical ? (isSep ? Dock.separatorWidth : Dock.cell) : flowItem.height
 
     readonly property bool kbd: Dock.keyboardActive && host && host.focusIndex === index
@@ -68,6 +74,9 @@ Item {
         readonly property real along: Dock.vertical ? slot.y + slot.height / 2 : slot.x + slot.width / 2
         readonly property real mag: (Dock.magnify && !Theme.reduceMotion && !slot.isSep && host.ptrMain > -5000)
             ? 1 + 0.55 * Math.exp(-Math.pow((along - host.ptrMain) / (Dock.cell * 1.25), 2)) : 1
+        // cells: a hovered cell lifts 3 px
+        anchors.topMargin: slot.cells && press.containsMouse ? -3 : 0
+        Behavior on anchors.topMargin { enabled: !Theme.reduceMotion; NumberAnimation { duration: 150; easing.type: Easing.OutCubic } }
         scale: mag * (press.pressed && !slot.dragging ? 0.92 : 1)
         transformOrigin: Dock.position === "bottom" ? Item.Bottom : Dock.position === "left" ? Item.Left : Item.Right
         z: slot.dragging ? 100 : mag
@@ -76,12 +85,39 @@ Item {
         // The icon sits towards the outer side, the indicator dot on the inner edge.
         Item {
             id: iconBox
-            width: Dock.iconSize
-            height: Dock.iconSize
-            x: Dock.vertical ? (Dock.position === "left" ? (slot.width - width) / 2 + 3 : (slot.width - width) / 2 - 3) : (slot.width - width) / 2
-            y: Dock.vertical ? (slot.height - height) / 2 : (slot.height - height) / 2 - 3
+            width: slot.cells ? 24 : Dock.iconSize
+            height: width
+            x: slot.cells ? (slot.width - width) / 2 : Dock.vertical ? (Dock.position === "left" ? (slot.width - width) / 2 + 3 : (slot.width - width) / 2 - 3) : (slot.width - width) / 2
+            y: slot.cells ? (slot.height - height) / 2 : Dock.vertical ? (slot.height - height) / 2 : (slot.height - height) / 2 - 3
 
+            // the cell: a hexagon (pointy top) or a square, the accent at 16 percent, 34 percent on hover, solid for the focused app
+            Shape {
+                id: hexShape
+                visible: slot.cells
+                width: slot.cellW
+                height: slot.cellH
+                x: (parent.width - width) / 2
+                y: (parent.height - height) / 2
+                z: -1
+                antialiasing: true
+                preferredRendererType: Shape.CurveRenderer
+                property color fill: slot.focused && !slot.isMin ? Theme.accent
+                    : Qt.rgba(Theme.accent.r, Theme.accent.g, Theme.accent.b, press.containsMouse || press.pressed ? 0.34 : 0.16)
+                Behavior on fill { enabled: !Theme.reduceMotion; ColorAnimation { duration: 150 } }
+                ShapePath {
+                    fillColor: hexShape.fill
+                    strokeColor: slot.kbd ? Theme.attention : "transparent"
+                    strokeWidth: slot.kbd ? 2 : 0
+                    joinStyle: ShapePath.MiterJoin
+                    PathPolyline {
+                        path: slot.hexCells
+                            ? [Qt.point(23, 0), Qt.point(46, 13), Qt.point(46, 39), Qt.point(23, 52), Qt.point(0, 39), Qt.point(0, 13), Qt.point(23, 0)]
+                            : [Qt.point(0, 0), Qt.point(46, 0), Qt.point(46, 52), Qt.point(0, 52), Qt.point(0, 0)]
+                    }
+                }
+            }
             Rectangle {   // hover and focus plate
+                visible: !slot.cells
                 anchors.fill: parent
                 anchors.margins: -4
                 radius: 10
@@ -101,6 +137,13 @@ Item {
                 cache: true
                 readonly property bool ok: status === Image.Ready && implicitWidth > 1
                 visible: ok
+                // cells: the icon in greys, darker on the focused app's solid cell
+                layer.enabled: slot.cells
+                layer.effect: MultiEffect {
+                    saturation: -1.0                                      // one ink, not the app's colours
+                    brightness: slot.focused && !slot.isMin ? -0.55 : 0.25
+                    contrast: 0.3
+                }
             }
             Rectangle {   // bundled fallback glyph
                 visible: !img.ok
@@ -132,8 +175,16 @@ Item {
                 Rectangle { anchors.centerIn: parent; width: 8; height: 2; radius: 1; color: Theme.text }
             }
         }
+        Rectangle {   // cells: a small tick under a running app's cell
+            visible: slot.cells && slot.running && !slot.isMin
+            width: 10
+            height: 2
+            color: slot.focused ? Theme.accent : Theme.accentDim
+            x: (slot.width - width) / 2
+            y: (slot.height + slot.cellH) / 2 + 2
+        }
         Rectangle {   // running indicator: one dot, no accent colour
-            visible: slot.running && !slot.isMin
+            visible: !slot.cells && slot.running && !slot.isMin
             width: 4
             height: 4
             radius: 2

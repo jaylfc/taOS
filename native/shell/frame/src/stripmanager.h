@@ -42,10 +42,12 @@ public:
     // Test and screenshot access: the view of a window's strip (null when none was made).
     QQuickView *viewFor(int id) const { return m_views.value(id); }
     int liveViews() const;
-    static QVariantList buttonModel(bool right, const QString &title, bool canMinimise = true, bool canFull = true);
+    static QVariantList buttonModel(bool right, const QString &title, bool canMinimise = true, bool canFull = true,
+                                    const StripMetrics &m = StripMetrics());
 
 public slots:
     void apply();
+    void applyBrackets();   // the corner brackets of the focused window (skin brackets)
     void openMenu(int id);
     void closeMenu();
     void showTip(int id, const QString &button, const QString &text, qreal centerX);
@@ -65,4 +67,6 @@ private:
     int m_tipId = 0;
     QString m_tipText;
     qreal m_tipX = 0;
+    QQuickView *m_brTL = nullptr, *m_brBR = nullptr;
+    QQuickView *makeBracket(const QString &corner);
 };

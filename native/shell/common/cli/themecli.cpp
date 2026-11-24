@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 #include "themecli.h"
 
+#include <QDir>
+#include <QFileInfo>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
@@ -14,7 +16,11 @@ static int usage(QTextStream &err) {
            "       taos-theme set <theme> [--mode dark|light|auto]\n"
            "       taos-theme set --mode dark|light|auto\n"
            "       taos-theme export foot|button-layout      (for other apps: foot's [csd] section, GTK's button-layout string)\n"
-           "       taos-theme set-buttons left|right|theme   (which side the window buttons are on; theme = the theme's own)\n";
+           "       taos-theme set-buttons left|right|theme   (which side the window buttons are on; theme = the theme's own)\n"
+           "       taos-theme validate <theme.json | theme folder>   (check a theme file; changes nothing)\n"
+           "       taos-theme options <theme>                        (the choices a theme offers and which is picked)\n"
+           "       taos-theme option <theme> <key> <value>           (pick one; live, and saved per person)\n"
+           "exit status: 0 done / valid, 1 refused (unknown theme, invalid theme, cannot save), 2 wrong usage, 3 a file given to validate cannot be read\n";
     return 2;
 }
 
@@ -82,6 +88,82 @@ int runThemeCli(const QStringList &argsIn, QTextStream &out, QTextStream &err) {
         for (const auto &r : cat.refused()) err << "taos-theme: refused " << r.id << " (" << r.source << "): " << r.message << "\n";
         return 0;
     }
+    if (cmd == QLatin1String("validate")) {
+        if (pos.size() != 1 || json || !mode.isEmpty()) return usage(err);
+        QString path = pos[0];
+        if (QFileInfo(path).isDir()) path = QDir(path).filePath(QStringLiteral("theme.json"));
+        if (!QFileInfo(path).isFile() || !QFileInfo(path).isReadable()) {
+            err << "taos-theme: " << path << ": the file cannot be read\n";
+            return 3;
+        }
+        // a theme.json is checked against its folder name, like the picker does; any other file name is not
+        const QFileInfo fi(path);
+        const QString expected = fi.fileName() == QLatin1String("theme.json") ? fi.absoluteDir().dirName() : QString();
+        const ThemeParse p = parseThemeFile(path, expected);
+        if (!p.ok) {
+            for (const QString &e : p.errors) err << path << ": " << e << "\n";
+            err << "taos-theme: " << path << " is not a valid theme (" << p.errors.size() << (p.errors.size() == 1 ? " problem)\n" : " problems)\n");
+            return 1;
+        }
+        const ThemeDef &d = p.def;
+        out << "OK " << d.id << " (" << d.name << "), variants " << d.variants.join(QLatin1Char('+'))
+            << "; dock mode " << d.layout.dock << ", top bar " << (d.layout.topBar ? "yes" : "no")
+            << ", window buttons " << d.windowButtons << " " << d.skin.buttonShape << "\n";
+        return 0;
+    }
+    if (cmd == QLatin1String("options")) {
+        if (pos.size() != 1 || !mode.isEmpty()) return usage(err);
+        const ThemeDef *d = cat.find(pos[0]);
+        if (!d) { err << "taos-theme: no theme called '" << pos[0] << "'\n"; return 1; }
+        const QMap<QString, QString> chosen = cur.options.value(d->id);
+        QJsonArray arr;
+        for (const ThemeOption &o : d->options) {
+            const QString now = o.find(chosen.value(o.key)) ? chosen.value(o.key) : o.defaultChoice;
+            if (json) {
+                QJsonArray cs;
+                for (const ThemeChoice &c : o.choices)
+                    cs << QJsonObject{{QStringLiteral("id"), c.id}, {QStringLiteral("label"), c.label}, {QStringLiteral("available"), c.available}, {QStringLiteral("note"), c.note}};
+                arr << QJsonObject{{QStringLiteral("key"), o.key}, {QStringLiteral("label"), o.label}, {QStringLiteral("current"), now}, {QStringLiteral("choices"), cs}};
+                continue;
+            }
+            out << o.key.leftJustified(10) << o.label << ": ";
+            for (const ThemeChoice &c : o.choices)
+                out << (c.id == now ? "[" : "") << c.id << (c.available ? "" : " (not available yet)") << (c.id == now ? "]" : "") << " ";
+            out << "\n";
+        }
+        if (json) out << QJsonDocument(QJsonObject{{QStringLiteral("theme"), d->id}, {QStringLiteral("options"), arr}}).toJson(QJsonDocument::Indented);
+        else if (d->options.isEmpty()) out << d->name << " has no options.\n";
+        return 0;
+    }
+    if (cmd == QLatin1String("option")) {
+        if (pos.size() != 3 || json || !mode.isEmpty()) return usage(err);
+        const ThemeDef *d = cat.find(pos[0]);
+        if (!d) { err << "taos-theme: no theme called '" << pos[0] << "'\n"; return 1; }
+        const ThemeOption *opt = nullptr;
+        for (const ThemeOption &o : d->options) if (o.key == pos[1]) opt = &o;
+        if (!opt) {
+            err << "taos-theme: " << d->name << " has no option '" << pos[1] << "'. It offers:";
+            for (const ThemeOption &o : d->options) err << " " << o.key;
+            err << "\n";
+            return 1;
+        }
+        const ThemeChoice *ch = opt->find(pos[2]);
+        if (!ch) {
+            err << "taos-theme: '" << pos[2] << "' is not a choice of " << opt->label << ". Choices:";
+            for (const ThemeChoice &c : opt->choices) err << " " << c.id;
+            err << "\n";
+            return 1;
+        }
+        Appearance next = cur;
+        next.options[d->id].insert(opt->key, ch->id);
+        QString e;
+        if (!AppearanceFile::write(AppearanceFile::userPath(), next, &e)) { err << "taos-theme: " << e << "\n"; return 1; }
+        out << d->name << ": " << opt->label << " = " << ch->label << "\n";
+        if (!ch->available)
+            out << "Saved, but not available on this system yet" << (ch->note.isEmpty() ? QString() : QStringLiteral(" (") + ch->note + QLatin1Char(')'))
+                << ": the theme keeps showing " << opt->find(opt->defaultChoice)->label << ".\n";
+        return 0;
+    }
     if (cmd == QLatin1String("get")) {
         if (!pos.isEmpty() || !mode.isEmpty()) return usage(err);
         const QString v = AppearanceFile::resolveVariant(cur.mode, QDateTime::currentDateTime());
@@ -123,9 +205,12 @@ int runThemeCli(const QStringList &argsIn, QTextStream &out, QTextStream &err) {
                    "[csd]\npreferred=server\nsize=32\nbutton-width=32\nborder-width=1\n"
                 << "color=ff" << hex(c[ThemeTokens::Surface]) << "\n"
                 << "border-color=ff" << hex(border) << "\n"
-                << "button-color=ff" << hex(c[ThemeTokens::Surface]) << "\n"
-                << "button-minimize-color=ff" << hex(c[ThemeTokens::TextSecondary]) << "\n"
-                << "button-maximize-color=ff" << hex(c[ThemeTokens::TextSecondary]) << "\n"
+                // button-color is the SYMBOL colour and the per-button colours are the backgrounds foot
+                // paints on hover. The symbol must contrast with the title bar at rest (it used to be the
+                // surface colour, so the buttons were invisible until hovered).
+                << "button-color=ff" << hex(c[ThemeTokens::Text]) << "\n"
+                << "button-minimize-color=ff" << hex(border) << "\n"
+                << "button-maximize-color=ff" << hex(border) << "\n"
                 << "button-close-color=ff" << hex(c[ThemeTokens::Danger]) << "\n";
             return 0;
         }

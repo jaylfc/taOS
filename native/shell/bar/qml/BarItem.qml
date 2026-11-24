@@ -31,7 +31,7 @@ Item {
         anchors.left: parent.left
         anchors.right: parent.right
         height: Math.min(parent.height - 8, 28)
-        radius: 8
+        radius: Math.round((8) * Theme.radiusScale)
         color: !item.interactive ? "transparent"
                : area.pressed ? Theme.pressed
                : area.containsMouse ? Theme.hover : "transparent"

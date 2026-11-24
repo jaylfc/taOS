@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 #include "appearance.h"
 
+#include <QRegularExpression>
+
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
@@ -52,6 +54,15 @@ bool read(const QString &path, Appearance *out, QString *error) {
     if (validMode(mode)) out->mode = mode;
     const QString side = d.object().value(QStringLiteral("windowButtons")).toString();
     if (validButtonSide(side)) out->windowButtons = side;
+    static const QRegularExpression idRe(QStringLiteral("^[a-z][a-zA-Z0-9]{0,23}$"));
+    const QJsonObject opts = d.object().value(QStringLiteral("options")).toObject();
+    for (auto t = opts.begin(); t != opts.end(); ++t) {
+        if (!validThemeId(t.key())) continue;
+        const QJsonObject m = t.value().toObject();
+        for (auto k = m.begin(); k != m.end(); ++k)
+            if (idRe.match(k.key()).hasMatch() && idRe.match(k.value().toString()).hasMatch())
+                out->options[t.key()].insert(k.key(), k.value().toString());
+    }
     return true;
 }
 
@@ -70,6 +81,13 @@ bool write(const QString &path, const Appearance &a, QString *error, bool worldR
     o.insert(QStringLiteral("theme"), a.theme);
     o.insert(QStringLiteral("mode"), a.mode);
     if (validButtonSide(a.windowButtons)) o.insert(QStringLiteral("windowButtons"), a.windowButtons);
+    QJsonObject opts;
+    for (auto t = a.options.cbegin(); t != a.options.cend(); ++t) {
+        QJsonObject m;
+        for (auto k = t.value().cbegin(); k != t.value().cend(); ++k) m.insert(k.key(), k.value());
+        if (!m.isEmpty()) opts.insert(t.key(), m);
+    }
+    if (!opts.isEmpty()) o.insert(QStringLiteral("options"), opts);
     f.write(QJsonDocument(o).toJson(QJsonDocument::Indented));
     if (!f.commit()) {
         if (error) *error = QStringLiteral("cannot save %1").arg(path);

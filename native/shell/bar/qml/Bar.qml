@@ -8,9 +8,10 @@ import Taos.Bar
 Item {
     id: root
     property int barHeight: 40
+    property string barEdge: "top"          // top | bottom (layout.barEdge)
     property string outputName: ""
-    readonly property int sidePadding: 12
-    readonly property int itemSpacing: 4
+    readonly property int sidePadding: Math.round((12) * Theme.spacingFactor)
+    readonly property int itemSpacing: Math.round((4) * Theme.spacingFactor)
 
     // Filled later by the window tracker: focused app name and its group chip.
     property string focusedAppName: ""
@@ -20,27 +21,30 @@ Item {
     implicitHeight: barHeight
     height: barHeight
 
-    readonly property string fontFamily: "Inter, Noto Sans, DejaVu Sans, sans-serif"
+    readonly property string fontFamily: Theme.fontStack
     Accessible.role: Accessible.ToolBar
     Accessible.name: qsTr("taOS status bar")
 
-    Rectangle { anchors.fill: parent; color: Theme.barBackground }
-    Rectangle {
-        anchors.left: parent.left
-        anchors.right: parent.right
-        anchors.bottom: parent.bottom
-        height: 1
-        color: Theme.stroke
+    Surface { id: surf; anchors.fill: parent; kind: Theme.barSurface; lineSide: root.barEdge === "bottom" ? "top" : "bottom" }
+    Scanlines { anchors.fill: parent }
+    StripBar {
+        anchors.fill: parent
+        visible: Theme.barStyle === "strip"
+        outputName: root.outputName
+        insetTop: surf.insetTop
+        insetBottom: surf.insetBottom
     }
 
     // Left: taOS button, then the reserved slot (fixed width so nothing jumps when it fills).
     Row {
         id: leftRow
+        visible: Theme.barStyle !== "strip"
         anchors.left: parent.left
         anchors.leftMargin: root.sidePadding
         anchors.top: parent.top
+        anchors.topMargin: surf.insetTop
         anchors.bottom: parent.bottom
-        anchors.bottomMargin: 1
+        anchors.bottomMargin: surf.insetBottom
         spacing: root.itemSpacing
 
         BarItem {
@@ -56,7 +60,7 @@ Item {
                 text: "taOS"
                 color: Theme.text
                 font.family: root.fontFamily
-                font.pixelSize: 13
+                font.pixelSize: Theme.fontSize
                 font.weight: Font.Bold
                 renderType: Text.QtRendering
                 anchors.verticalCenter: parent.verticalCenter
@@ -88,22 +92,25 @@ Item {
                 text: root.focusedAppName
                 color: Theme.text
                 font.family: root.fontFamily
-                font.pixelSize: 13
+                font.pixelSize: Theme.fontSize
                 font.weight: Font.Medium
                 renderType: Text.NativeRendering
             }
             // Group chip goes here later (app-model section 10); nothing is drawn while empty.
         }
+        Loader { active: Theme.clockPlace === "left"; height: parent.height; sourceComponent: clockItem }
     }
 
     // Right: status items, then clock and date.
     Row {
         id: rightRow
+        visible: Theme.barStyle !== "strip"
         anchors.right: parent.right
         anchors.rightMargin: root.sidePadding
         anchors.top: parent.top
+        anchors.topMargin: surf.insetTop
         anchors.bottom: parent.bottom
-        anchors.bottomMargin: 1
+        anchors.bottomMargin: surf.insetBottom
         spacing: root.itemSpacing
 
         BarItem {
@@ -137,7 +144,7 @@ Item {
                 text: Audio.muted ? qsTr("Muted") : Audio.percent + "%"
                 color: Theme.textSecondary
                 font.family: root.fontFamily
-                font.pixelSize: 13
+                font.pixelSize: Theme.fontSize
                 font.weight: Font.Medium
                 font.features: { "tnum": 1 }
                 renderType: Text.NativeRendering
@@ -152,13 +159,19 @@ Item {
                 text: Battery.percent + "%"
                 color: Theme.textSecondary
                 font.family: root.fontFamily
-                font.pixelSize: 13
+                font.pixelSize: Theme.fontSize
                 font.weight: Font.Medium
                 font.features: { "tnum": 1 }
                 renderType: Text.NativeRendering
                 anchors.verticalCenter: parent.verticalCenter
             }
         }
+        Loader { active: Theme.clockPlace === "right"; height: parent.height; sourceComponent: clockItem }
+    }
+
+    // The clock and date: in the right group (default), at the left after the window name, or centred.
+    Component {
+        id: clockItem
         BarItem {
             accessibleName: qsTr("Date and time: %1 %2").arg(Clock.date).arg(Clock.time)
             spacing: 8
@@ -166,7 +179,7 @@ Item {
                 text: Clock.date
                 color: Theme.textSecondary
                 font.family: root.fontFamily
-                font.pixelSize: 13
+                font.pixelSize: Theme.fontSize
                 font.weight: Font.Medium
                 renderType: Text.NativeRendering
                 anchors.verticalCenter: parent.verticalCenter
@@ -175,12 +188,21 @@ Item {
                 text: Clock.time
                 color: Theme.text
                 font.family: root.fontFamily
-                font.pixelSize: 13
+                font.pixelSize: Theme.fontSize
                 font.weight: Font.Medium
                 font.features: { "tnum": 1 }
                 renderType: Text.NativeRendering
                 anchors.verticalCenter: parent.verticalCenter
             }
         }
+    }
+    Loader {
+        active: Theme.clockPlace === "center" && Theme.barStyle !== "strip"
+        anchors.horizontalCenter: parent.horizontalCenter
+        anchors.top: parent.top
+        anchors.topMargin: surf.insetTop
+        anchors.bottom: parent.bottom
+        anchors.bottomMargin: surf.insetBottom
+        sourceComponent: clockItem
     }
 }

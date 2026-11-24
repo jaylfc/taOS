@@ -3,6 +3,7 @@
 
 #include <QDir>
 #include <QFileInfo>
+#include <cstdio>
 #include <unistd.h>
 
 ThemeManager::ThemeManager(Theme *theme, const Options &o, QObject *parent) : QObject(parent), m_theme(theme), m_o(o) {
@@ -66,8 +67,28 @@ Appearance ThemeManager::readSource() const {
 }
 
 void ThemeManager::showCurrent(bool announceIt) {
-    const ThemeDef *d = m_cat.resolve(m_app.theme);
-    if (!d) return;
+    const ThemeDef *d = m_cat.find(m_app.theme);
+    if (!d) {
+        // Wanted but missing or refused (a broken edit, a deleted folder). Once something is showing, that stays:
+        // a bad theme can never leave the shell without one. Only start-up falls back to the default theme.
+        if (m_started && m_haveGood) {
+            QString why = QStringLiteral("it is not installed");
+            for (const auto &r : m_cat.refused()) if (r.id == m_app.theme) why = r.message;
+            const QString msg = tr("Theme '%1' was not applied (%2); '%3' stays.").arg(m_app.theme, why, m_good.id);
+            if (msg != m_lastError) fprintf(stderr, "taos-theme: %s\n", qPrintable(msg));
+            m_lastError = msg;
+            return;
+        }
+        d = m_cat.resolve(m_app.theme);
+        if (!d) return;
+    }
+    m_lastError.clear();
+    QStringList notes;
+    const ThemeDef eff = applyOptions(*d, m_app.options.value(d->id), &notes);
+    m_notes = notes;
+    m_good = eff;
+    m_haveGood = true;
+    d = &m_good;
     const QString oldVariant = m_variant, oldId = m_shownId;
     const QString v = AppearanceFile::resolveVariant(m_app.mode, now());
     m_theme->apply(*d, v, m_o.reduceMotion);
@@ -192,6 +213,7 @@ bool ThemeManager::choose(const QString &id, const QString &mode) {
     a.theme = id;
     a.mode = mode;
     a.windowButtons = m_app.windowButtons;   // a theme or mode choice keeps the person's button side
+    a.options = m_app.options;               // and their choices inside themes
     m_writeError.clear();
     m_app = a;
     showCurrent(true);  // live first, then the file: the screen must not wait for the disk
@@ -226,3 +248,51 @@ bool ThemeManager::setWindowButtons(const QString &choice) {
 
 bool ThemeManager::setTheme(const QString &id) { return choose(id, m_app.mode); }
 bool ThemeManager::setMode(const QString &mode) { return choose(m_shownId.isEmpty() ? m_app.theme : m_shownId, mode); }
+
+// A choice inside the showing theme: applied live and saved. "" or an unknown key/choice is refused with `error`.
+bool ThemeManager::setOption(const QString &themeId, const QString &key, const QString &choice, QString *error) {
+    const ThemeDef *d = m_cat.find(themeId);
+    const ThemeOption *opt = nullptr;
+    if (d) for (const ThemeOption &o : d->options) if (o.key == key) opt = &o;
+    if (!opt || !opt->find(choice)) {
+        if (error) *error = !d ? tr("no theme called '%1'").arg(themeId) : !opt ? tr("%1 has no option '%2'").arg(d->name, key) : tr("'%1' is not a choice of %2").arg(choice, opt->label);
+        return false;
+    }
+    m_app.options[themeId].insert(key, choice);
+    if (themeId == m_app.theme) showCurrent(false);
+    if (m_o.role == Role::Session) {
+        QString e;
+        if (!AppearanceFile::write(m_o.appearancePath, m_app, &e)) { if (error) *error = e; return false; }
+        writeMirror();
+        if (m_o.watch) rewatch();
+    }
+    emitAppearance();
+    return true;
+}
+
+QVariantList ThemeManager::options() const {
+    QVariantList out;
+    const ThemeDef *d = m_cat.find(m_shownId);
+    if (!d) return out;
+    const QMap<QString, QString> chosen = m_app.options.value(d->id);
+    for (const ThemeOption &o : d->options) {
+        QVariantMap m;
+        m.insert(QStringLiteral("key"), o.key);
+        m.insert(QStringLiteral("label"), o.label);
+        const QString cur = o.find(chosen.value(o.key)) ? chosen.value(o.key) : o.defaultChoice;
+        m.insert(QStringLiteral("current"), cur);
+        QVariantList cs;
+        for (const ThemeChoice &c : o.choices) {
+            QVariantMap cm;
+            cm.insert(QStringLiteral("id"), c.id);
+            cm.insert(QStringLiteral("label"), c.label);
+            cm.insert(QStringLiteral("available"), c.available);
+            cm.insert(QStringLiteral("note"), c.note);
+            cm.insert(QStringLiteral("current"), c.id == cur);
+            cs << cm;
+        }
+        m.insert(QStringLiteral("choices"), cs);
+        out << m;
+    }
+    return out;
+}
