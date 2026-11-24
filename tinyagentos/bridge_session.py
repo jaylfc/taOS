@@ -161,12 +161,14 @@ class BridgeSessionRegistry:
         chat_channels=None,
         chat_hub=None,
         archive=None,
+        in_use=None,
     ) -> None:
         self._trace_registry = trace_registry
         self._chat_messages = chat_messages
         self._chat_channels = chat_channels
         self._chat_hub = chat_hub
         self._archive = archive
+        self._in_use = in_use
         self._sessions: dict[str, _AgentSession] = {}
         self._lock = asyncio.Lock()
         self._router = None
@@ -174,6 +176,18 @@ class BridgeSessionRegistry:
         # _is_guest(slug) is True when no config agent has that name.
         self._guest_outbox = None
         self._is_guest = None
+
+    async def _release_turn(self, session: _AgentSession, trace_id: str | None) -> None:
+        """Decrement the in-flight agent turn when a pending hop is cleared.
+
+        A turn is in flight exactly while its trace id sits in
+        ``session.pending_hops`` (set at enqueue, popped at final or error).
+        Never lets the counter go negative.
+        """
+        if trace_id is None:
+            return
+        if session.pending_hops.pop(trace_id, None) is not None and self._in_use is not None:
+            await self._in_use.decrement_agent_turn()
 
     def _get_or_create(self, slug: str) -> _AgentSession:
         if slug not in self._sessions:
@@ -198,6 +212,8 @@ class BridgeSessionRegistry:
         trace_id = msg.get("trace_id") or msg.get("id")
         if trace_id is not None:
             session.pending_hops[trace_id] = int(msg.get("hops_since_user") or 0)
+            if self._in_use is not None:
+                await self._in_use.increment_agent_turn()
         # Store data as JSON string so subscribe can read id without re-encoding
         event: dict = {"event": "user_message", "data": json.dumps(msg)}
         outbox = self._guest_outbox
@@ -545,7 +561,7 @@ class BridgeSessionRegistry:
                         validated_blocks_for_broadcast = merged
                     else:
                         validated_blocks_for_broadcast = None
-                    session.pending_hops.pop(trace_id, None)
+                    await self._release_turn(session, trace_id)
                     if self._chat_hub:
                         # Broadcast message_edit with content and optionally content_blocks
                         broadcast_payload = {
@@ -567,7 +583,7 @@ class BridgeSessionRegistry:
                 elif self._chat_messages and self._chat_channels:
                     # No streaming placeholder — create the message directly.
                     _final_hops = session.pending_hops.get(trace_id, 0)
-                    session.pending_hops.pop(trace_id, None)
+                    await self._release_turn(session, trace_id)
                     new_msg = await self._chat_messages.send_message(
                         channel_id=channel_id,
                         author_id=slug,
@@ -713,6 +729,7 @@ class BridgeSessionRegistry:
                     logger.exception("archive dual-write failed (error)")
             # Set any pending message to error state.
             pending_msg_id = session.pop_pending_msg(trace_id)
+            await self._release_turn(session, trace_id)
             if pending_msg_id and self._chat_messages:
                 await self._chat_messages.update_state(pending_msg_id, "error")
                 if channel_id and self._chat_hub:
