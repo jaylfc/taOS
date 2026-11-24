@@ -315,7 +315,7 @@ jobs:
   taosmd-head:
     runs-on: ubuntu-latest
     timeout-minutes: 30
-    continue-on-error: true
+    if: github.event_name == 'pull_request' && github.base_ref == 'dev'
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
 
@@ -364,6 +364,14 @@ jobs:
             tests/test_routes_agents.py \
             tests/test_deployer.py \
             --tb=short -q
+        continue-on-error: true
+
+      - name: Taosmd head test result annotator
+        run: |
+          if [ "${{ failure() }}" = "true" ]; then
+            echo "taosmd-head test step failed" >> "$GITHUB_STEP_SUMMARY"
+            echo "::warning::Resolved commit: ${{ steps.resolve.outputs.sha }}"
+          fi
 
   spa-build:
     runs-on: ubuntu-latest
