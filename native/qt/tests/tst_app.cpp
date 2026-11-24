@@ -3,6 +3,8 @@
 #include <QGuiApplication>
 #include <QSignalSpy>
 #include <QtTest>
+#include <QTemporaryDir>
+#include <unistd.h>
 
 #include "taosqt/app.h"
 
@@ -45,6 +47,20 @@ private Q_SLOTS:
         } // closed: the next one starts normally
         SingleInstance b(id);
         QVERIFY(b.acquire());
+    }
+
+    void theSocketLivesUnderTheRuntimeDirNotInTmp()
+    {
+        QTemporaryDir rt;
+        QVERIFY(rt.isValid());
+        qputenv("XDG_RUNTIME_DIR", rt.path().toUtf8());
+        const QString id = u"my.taos.runtime-%1"_s.arg(QCoreApplication::applicationPid());
+        SingleInstance a(id);
+        QVERIFY(a.acquire());
+        QVERIFY2(a.serverName().startsWith(rt.path() + u"/taos/"_s), qPrintable(a.serverName()));
+        QVERIFY(QFile::exists(a.serverName()));
+        QVERIFY(!QFile::exists(u"/tmp/taos-%1-%2"_s.arg(id).arg(quint32(::getuid()))));
+        qunsetenv("XDG_RUNTIME_DIR");
     }
 
     void desktopTemplateCarriesTheAppIdAsStartupWMClass()

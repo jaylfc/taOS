@@ -1,6 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 #include "dockcontroller.h"
 
+#include <QDir>
+#include <QDirIterator>
+
 #include <QProcess>
 #include <QStandardPaths>
 #include <QVariantMap>
@@ -53,8 +56,47 @@ DockController::DockController(const Options &o, QObject *parent)
     connect(&m_model, &DockModel::countChanged, this, &DockController::relayout);
     connect(m_engine, &WindowEngine::windowsChanged, this, [this] { m_model.setWindows(m_engine->windows()); m_taskbar.setWindows(m_engine->windows()); relayout(); });
     m_index.scan(m_o.appDirs);
+    if (m_o.watch) {
+        m_appDebounce.setSingleShot(true);
+        m_appDebounce.setInterval(300);   // an install writes several files; rescan once it settles
+        connect(&m_appDebounce, &QTimer::timeout, this, &DockController::rescanApps);
+        connect(&m_appWatch, &QFileSystemWatcher::directoryChanged, this, [this] { m_appDebounce.start(); });
+        watchAppDirs();
+    }
     m_model.setIndex(&m_index);
     m_taskbar.setIndex(&m_index);
+    refreshModel();
+    relayout();
+}
+
+// Watches every application folder and its subfolders; a folder that does not exist yet is watched through its
+// nearest existing parent, so the first entry the person installs is noticed too.
+void DockController::watchAppDirs() {
+    QStringList want;
+    for (const QString &d : std::as_const(m_o.appDirs)) {
+        QDir dir(d);
+        while (!dir.exists() && dir.cdUp()) {}
+        if (!dir.exists()) continue;
+        want << dir.absolutePath();
+        QDirIterator it(dir.absolutePath(), QDir::Dirs | QDir::NoDotAndDotDot, QDirIterator::Subdirectories);
+        if (dir.absolutePath() == QDir(d).absolutePath())
+            while (it.hasNext()) want << it.next();
+    }
+    want.removeDuplicates();
+    const QStringList have = m_appWatch.directories();
+    QStringList gone;
+    for (const QString &h : have) if (!want.contains(h)) gone << h;
+    if (!gone.isEmpty()) m_appWatch.removePaths(gone);
+    QStringList add;
+    for (const QString &w : std::as_const(want)) if (!have.contains(w)) add << w;
+    if (!add.isEmpty()) m_appWatch.addPaths(add);
+}
+
+void DockController::rescanApps() {
+    m_index.scan(m_o.appDirs);
+    watchAppDirs();
+    m_model.setIndex(&m_index);          // the old entry pointers are gone: rebuild from the new index
+    m_taskbar.setWindows(m_engine->windows());
     refreshModel();
     relayout();
 }

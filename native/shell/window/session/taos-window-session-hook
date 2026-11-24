@@ -55,16 +55,26 @@ case ${1:-apply} in
     apply) apply ;;
     scheme) publish_scheme ;;
     watch)
+        # One watcher per user session: a lock under the runtime dir. A newcomer waits a few seconds (the watcher of a
+        # session that just ended notices within one tick), then gives up if the lock is still held. The watcher also
+        # leaves when its compositor socket is gone, so stopping and starting the session never piles them up.
+        lock=${XDG_RUNTIME_DIR:-${XDG_CACHE_HOME:-$HOME/.cache}}/taos-window-session-hook.lock
+        mkdir -p "${lock%/*}" 2>/dev/null
+        if command -v flock >/dev/null 2>&1; then
+            exec 9>"$lock" || exit 1
+            flock -w 5 9 || exit 0
+        fi
         file=${TAOS_APPEARANCE:-${XDG_CONFIG_HOME:-$HOME/.config}/taos/appearance.json}
         last=""
         ticks=0
         while :; do
+            if [ -n "${SWAYSOCK:-}" ] && [ ! -S "$SWAYSOCK" ]; then exit 0; fi
             now=$(stat -c %Y-%s "$file" 2>/dev/null || echo none)
             if [ "$now" != "$last" ]; then apply; last=$now; ticks=0
             elif [ "$ticks" -ge 30 ]; then publish_scheme; ticks=0   # auto flips with the clock, not with the file
             fi
             ticks=$((ticks + 1))
-            sleep 2
+            sleep 2 9>&-
         done ;;
     *) echo "usage: taos-window-session-hook apply|watch" >&2; exit 2 ;;
 esac
