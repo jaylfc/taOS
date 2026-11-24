@@ -346,6 +346,7 @@ jobs:
         run: uv pip install "taosmd[onnx,mcp] @ git+https://github.com/jaylfc/taosmd@${{ steps.resolve.outputs.sha }}"
 
       - name: Run taosmd-related tests
+        id: test
         run: |
           uv run --no-sync python -m pytest \
             tests/test_routes_taosmd.py \
@@ -367,11 +368,10 @@ jobs:
         continue-on-error: true
 
       - name: Taosmd head test result annotator
+        if: steps.test.outcome == 'failure'
         run: |
-          if [ "${{ failure() }}" = "true" ]; then
-            echo "taosmd-head test step failed" >> "$GITHUB_STEP_SUMMARY"
-            echo "::warning::Resolved commit: ${{ steps.resolve.outputs.sha }}"
-          fi
+          echo "taosmd-head test step failed" >> "$GITHUB_STEP_SUMMARY"
+          echo "::warning::Resolved commit: ${{ steps.resolve.outputs.sha }}"
 
   spa-build:
     runs-on: ubuntu-latest
