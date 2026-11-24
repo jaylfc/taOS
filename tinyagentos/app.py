@@ -615,20 +615,6 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
-        # Release the archive writer on every exit path, including a start-up
-        # that fails after the writer was taken.  Only the object this start
-        # registered is released (app.state._archive_writer), so a start that
-        # was refused because another app holds the directory frees nothing.
-        try:
-            async with _lifespan_body(app):
-                yield
-        finally:
-            held = getattr(app.state, "_archive_writer", None)
-            if held is not None:
-                await release_archive_writer(held)
-
-    @asynccontextmanager
-    async def _lifespan_body(app: FastAPI):
         # Arm the startup guard: block non-exempt requests until init completes.
         app.state._startup_complete = False
         await agent_registry_store.init()
@@ -1802,7 +1788,21 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
                 except Exception:
                     logger.debug("shutdown: close failed for app.state.%s", _name, exc_info=True)
 
-    app = FastAPI(title="TinyAgentOS", version="0.1.0", lifespan=lifespan)
+    @asynccontextmanager
+    async def _lifespan_releasing_archive(app: FastAPI):
+        # Release the archive writer on every exit path, including a start-up
+        # that fails after the writer was taken.  Only the object this start
+        # registered is released (app.state._archive_writer), so a start that
+        # was refused because another app holds the directory frees nothing.
+        try:
+            async with lifespan(app):
+                yield
+        finally:
+            held = getattr(app.state, "_archive_writer", None)
+            if held is not None:
+                await release_archive_writer(held)
+
+    app = FastAPI(title="TinyAgentOS", version="0.1.0", lifespan=_lifespan_releasing_archive)
 
     # An unreadable account store must never be answered with a plausible
     # empty result — "no such user" and "cannot read the users" are different
