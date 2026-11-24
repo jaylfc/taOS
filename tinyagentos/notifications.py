@@ -305,6 +305,7 @@ class NotificationStore(BaseStore):
             publish_id = self._transient_seq
         else:
             publish_id = row_id
+        transient = row_id is None
         row = {
             "id": publish_id,
             "timestamp": ts,
@@ -318,6 +319,10 @@ class NotificationStore(BaseStore):
         }
         if pref["style"] == "alert":
             row["persistent"] = True
+        if transient:
+            # Live-only: the client must keep this out of the Notification
+            # Centre's collection (it was never stored) while still toasting.
+            row["transient"] = True
         # Style "none" and an active Do Not Disturb window both mean: stored
         # (above) but no live fan-out — no toast, no web-push (#206).
         deliver = pref["style"] != "none" and not await self.dnd_active()
@@ -429,12 +434,15 @@ class NotificationStore(BaseStore):
                     )
                     await self._db.commit()
                     _pref = await self._get_event_pref(source)
+                    _row = {
+                        "id": target[0], "timestamp": ts, "level": level, "title": title,
+                        "message": message, "read": False, "source": source, "data": data,
+                        "user_id": user_id,
+                    }
+                    if _pref["style"] == "alert":
+                        _row["persistent"] = True
                     await self._publish(
-                        {
-                            "id": target[0], "timestamp": ts, "level": level, "title": title,
-                            "message": message, "read": False, "source": source, "data": data,
-                            "user_id": user_id,
-                        },
+                        _row,
                         deliver=_pref["style"] != "none" and not await self.dnd_active(),
                     )
                     return target[0], False
@@ -780,19 +788,32 @@ class NotificationStore(BaseStore):
         """
         if style is not None and style not in DELIVERY_STYLES:
             raise ValueError(f"unknown delivery style: {style!r}")
-        pref = await self._get_event_pref(event_type)
+        if muted is None and style is None and show_centre is None:
+            return {"event_type": event_type, **await self._get_event_pref(event_type)}
+        # One statement, and the conflict clause touches only the columns
+        # this call specified: two overlapping partial updates cannot
+        # restore each other's stale values the way a read-modify-write
+        # of the whole row could. The INSERT side uses defaults for
+        # unspecified fields, which only matters for a brand-new row.
+        assignments = []
         if muted is not None:
-            pref["muted"] = bool(muted)
+            assignments.append("muted = excluded.muted")
         if style is not None:
-            pref["style"] = style
+            assignments.append("style = excluded.style")
         if show_centre is not None:
-            pref["show_centre"] = bool(show_centre)
+            assignments.append("show_centre = excluded.show_centre")
         await self._db.execute(
-            "INSERT OR REPLACE INTO notification_prefs (event_type, muted, style, show_centre) VALUES (?, ?, ?, ?)",
-            (event_type, int(pref["muted"]), pref["style"], int(pref["show_centre"])),
+            "INSERT INTO notification_prefs (event_type, muted, style, show_centre) VALUES (?, ?, ?, ?) "
+            f"ON CONFLICT(event_type) DO UPDATE SET {', '.join(assignments)}",
+            (
+                event_type,
+                int(bool(muted)) if muted is not None else 0,
+                style if style is not None else "banner",
+                int(bool(show_centre)) if show_centre is not None else 1,
+            ),
         )
         await self._db.commit()
-        return {"event_type": event_type, **pref}
+        return {"event_type": event_type, **await self._get_event_pref(event_type)}
 
     async def set_event_muted(self, event_type: str, muted: bool) -> None:
         await self.set_event_pref(event_type, muted=muted)

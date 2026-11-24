@@ -21,6 +21,9 @@ export interface Notification {
   /** Alert-style delivery (#206): the toast stays until dismissed instead
    *  of auto-expiring. Set from the backend row's `persistent` flag. */
   persistent?: boolean;
+  /** Live-only row (#206): published for the toast but never stored, so it
+   *  must not render in the Notification Centre or count as unread there. */
+  transient?: boolean;
 }
 
 interface NotificationStore {
@@ -177,7 +180,9 @@ export const useNotificationStore = create<NotificationStore>((set, get) => ({
   },
 
   unreadCount() {
-    return get().notifications.filter((n) => !n.read && !n.archived).length;
+    return get().notifications.filter(
+      (n) => !n.read && !n.archived && !n.transient,
+    ).length;
   },
 
   archivedNotifications() {

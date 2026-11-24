@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, afterEach } from "vitest";
-import { render, screen, fireEvent, waitFor } from "@testing-library/react";
+import { render, screen, fireEvent, waitFor, within } from "@testing-library/react";
 import { NotificationsPanel } from "./NotificationsPanel";
 
 function jsonResponse(obj: unknown) {
@@ -150,7 +150,10 @@ describe("NotificationsPanel delivery controls (#206)", () => {
     routedFetch(calls);
     render(<NotificationsPanel />);
     expect(await screen.findByText("Worker joined")).toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: "Alert" }));
+    const styleGroup = screen.getByRole("group", {
+      name: "Worker joined delivery style",
+    });
+    fireEvent.click(within(styleGroup).getByRole("button", { name: "Alert" }));
     await waitFor(() => {
       expect(
         calls.some(

@@ -183,3 +183,66 @@ class TestDoNotDisturb:
         await store.set_dnd(False, "08:00", "08:00")
         await store.emit_event("worker.join", "Worker joined", "w1 connected")
         assert len(published) == 1
+
+
+@pytest.mark.asyncio
+class TestReviewRegressions:
+    async def test_centre_off_row_published_as_transient(self, store, published):
+        # The Centre renders from the same client store the live events merge
+        # into, so a toast-only row must be marked live-only at publish time.
+        await store.set_event_pref("app.installed", show_centre=False)
+        await store.add("App installed", "ready", source="app.installed")
+        assert len(published) == 1
+        assert published[0].get("transient") is True
+
+    async def test_stored_row_published_without_transient(self, store, published):
+        await store.add("Hello", "world", source="app.installed")
+        assert len(published) == 1
+        assert not published[0].get("transient")
+
+    async def test_os_replace_publishes_persistent_for_alert_style(
+        self, store, published
+    ):
+        await store.set_event_pref("backend.down", style="alert")
+        rid, created = await store.add_os(
+            user_id="u1",
+            client_id="os-1",
+            title="Backend down",
+            message="stopped",
+            level="error",
+            source="backend.down",
+            data={},
+            digest="d1",
+        )
+        assert created is True
+        rid2, created2 = await store.add_os(
+            user_id="u1",
+            client_id="os-2",
+            title="Backend down",
+            message="still stopped",
+            level="error",
+            source="backend.down",
+            data={},
+            replaces="os-1",
+            digest="d2",
+        )
+        assert rid2 == rid
+        assert created2 is False
+        # The replacement publication is the last one; it must keep the
+        # alert style's persistent flag, like the initial insert does.
+        assert published[-1].get("persistent") is True
+
+    async def test_concurrent_partial_updates_all_land(self, store):
+        import asyncio
+
+        await asyncio.gather(
+            store.set_event_pref("worker.join", style="alert"),
+            store.set_event_pref("worker.join", muted=True),
+            store.set_event_pref("worker.join", show_centre=False),
+        )
+        pref = next(
+            p for p in await store.get_event_prefs() if p["event_type"] == "worker.join"
+        )
+        assert pref["style"] == "alert"
+        assert pref["muted"] is True
+        assert pref["show_centre"] is False

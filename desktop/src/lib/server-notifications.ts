@@ -24,6 +24,9 @@ export interface ServerNotificationRow {
   archived?: boolean;
   /** Present on live-published rows for alert-style sources (#206). */
   persistent?: boolean;
+  /** Present on live-published rows that were never stored (#206):
+   *  toast-only (Centre visibility off for the source). */
+  transient?: boolean;
 }
 
 const VALID_LEVELS: ReadonlySet<Notification["level"]> = new Set([
@@ -143,6 +146,7 @@ export function mapRow(row: ServerNotificationRow): Notification {
     ...(meta ? { meta } : {}),
     ...(row.data ? { data: row.data } : {}),
     ...(row.persistent ? { persistent: true } : {}),
+    ...(row.transient ? { transient: true } : {}),
   };
 }
 

@@ -50,6 +50,7 @@ function isDndSettings(data: unknown): data is DndSettings {
 export function NotificationsPanel() {
   const [prefs, setPrefs] = useState<NotifPref[] | null>(null);
   const [dnd, setDnd] = useState<DndSettings | null>(null);
+  const [dndSaving, setDndSaving] = useState(false);
   const [saving, setSaving] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loaded, setLoaded] = useState(false);
@@ -134,6 +135,7 @@ export function NotificationsPanel() {
     const previous = dnd;
     setDnd(next);
     setError(null);
+    setDndSaving(true);
     try {
       const res = await fetch("/api/notifications/dnd", {
         method: "PUT",
@@ -152,6 +154,8 @@ export function NotificationsPanel() {
     } catch {
       setDnd(previous);
       setError("Could not reach backend.");
+    } finally {
+      setDndSaving(false);
     }
   };
 
@@ -272,6 +276,7 @@ export function NotificationsPanel() {
                   id="notif-dnd"
                   checked={dnd.enabled}
                   onCheckedChange={(v) => saveDnd({ ...dnd, enabled: v })}
+                  disabled={dndSaving}
                   aria-label="Do Not Disturb"
                 />
               </div>
@@ -284,6 +289,7 @@ export function NotificationsPanel() {
                     <input
                       id="notif-dnd-start"
                       type="time"
+                      disabled={dndSaving}
                       value={dnd.start}
                       onChange={(e) => saveDnd({ ...dnd, start: e.target.value })}
                       className="rounded-md border border-white/10 bg-shell-bg-deep px-2 py-1 text-xs text-shell-text"
@@ -296,6 +302,7 @@ export function NotificationsPanel() {
                     <input
                       id="notif-dnd-end"
                       type="time"
+                      disabled={dndSaving}
                       value={dnd.end}
                       onChange={(e) => saveDnd({ ...dnd, end: e.target.value })}
                       className="rounded-md border border-white/10 bg-shell-bg-deep px-2 py-1 text-xs text-shell-text"
