@@ -644,6 +644,7 @@ def test_the_pa_says_jason_with_a_capital_j():
 import pytest_asyncio  # noqa: E402
 from httpx import ASGITransport, AsyncClient  # noqa: E402
 
+from tinyagentos.console_secret import cookie_value  # noqa: E402
 from tinyagentos.demo_mode import write_demo_mode  # noqa: E402
 
 CONSOLE_HEADER = {"X-taOS-Console": "1"}
@@ -684,6 +685,7 @@ async def loopback(real_app):
         transport=ASGITransport(app=real_app, client=("127.0.0.1", 50124)),
         base_url="http://127.0.0.1:6969",
         headers={"User-Agent": "taos-lock-call-test/1.0"},
+        cookies={"taos_console": cookie_value("1")},
     ) as c:
         yield c
 

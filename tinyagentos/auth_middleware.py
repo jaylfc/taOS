@@ -8,12 +8,14 @@ import re
 import secrets
 from datetime import UTC, datetime
 from pathlib import Path
+from urllib.parse import urlencode
 
 from fastapi import HTTPException, Request
 from fastapi.responses import JSONResponse
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.responses import HTMLResponse, RedirectResponse
 
+from tinyagentos import console_secret
 from tinyagentos.agent_db import find_agent
 from tinyagentos.agent_token_auth import (
     _enforce_rotation_cutoff,
@@ -209,7 +211,7 @@ async def _stamp_local_token_identity(request: Request, auth_mgr, presented: str
 # password. See routes.auth.swipe_unlock.
 # Note /auth/pin (set/clear a PIN) is deliberately absent from this set: those
 # require a live session and must stay gated here.
-EXEMPT_PATHS = {"/auth/login", "/auth/pin-login", "/auth/swipe-unlock", "/auth/osk.js", "/auth/pin-panel.js", "/auth/lock-screen.js", "/auth/lock-widgets", "/auth/lock-weather", "/auth/lock-notifications", "/auth/lock-stats", "/auth/lock-panels", "/auth/lock-events", "/auth/lock-state", "/auth/lock-power-menu", "/auth/lock-screen-off", "/auth/lock-screen-on", "/auth/lock-brightness", "/auth/lock-torch", "/auth/lock-volume", "/auth/lock-volume-key", "/auth/lock-charge", "/auth/lock-radios", "/auth/lock-usb", "/auth/lock-power-action", "/auth/lock-app", "/auth/device-agent/heartbeat", "/auth/device-agent/message", "/auth/lock-call", "/auth/lock-call/ring", "/auth/lock-call/reset", "/auth/lock-call/action", "/auth/lock-call/dismiss", "/auth/setup", "/auth/status", "/auth/me", "/auth/complete", "/auth/lock", "/api/health", "/api/version", "/setup", "/setup/complete", "/redeem", "/api/desktop/browser/push/vapid-public-key", "/api/desktop/browser/proxy-config", "/sw.js", "/desktop", "/desktop/index.html", "/chat-pwa", "/app.html", "/manifest", "/api/agents/registry/pubkey", "/api/share/destinations"}
+EXEMPT_PATHS = {"/auth/login", "/auth/console-ticket", "/auth/pin-login", "/auth/swipe-unlock", "/auth/osk.js", "/auth/pin-panel.js", "/auth/lock-screen.js", "/auth/lock-widgets", "/auth/lock-weather", "/auth/lock-notifications", "/auth/lock-stats", "/auth/lock-panels", "/auth/lock-events", "/auth/lock-state", "/auth/lock-power-menu", "/auth/lock-screen-off", "/auth/lock-screen-on", "/auth/lock-brightness", "/auth/lock-torch", "/auth/lock-volume", "/auth/lock-volume-key", "/auth/lock-charge", "/auth/lock-radios", "/auth/lock-usb", "/auth/lock-power-action", "/auth/lock-app", "/auth/device-agent/heartbeat", "/auth/device-agent/message", "/auth/lock-call", "/auth/lock-call/ring", "/auth/lock-call/reset", "/auth/lock-call/action", "/auth/lock-call/dismiss", "/auth/setup", "/auth/status", "/auth/me", "/auth/complete", "/auth/lock", "/api/health", "/api/version", "/setup", "/setup/complete", "/redeem", "/api/desktop/browser/push/vapid-public-key", "/api/desktop/browser/proxy-config", "/sw.js", "/desktop", "/desktop/index.html", "/chat-pwa", "/app.html", "/manifest", "/api/agents/registry/pubkey", "/api/share/destinations"}
 
 # Registry feed endpoints accept EITHER an admin session OR a registry JWT.
 # When a Bearer token is present for these paths the request bypasses the
@@ -961,6 +963,63 @@ def rate_limit_retry_after(key: str) -> int:
     return _invite_limiter.retry_after(key)
 
 
+#: Paths that still see the session cookie while the console is locked: the
+#: routes whose whole job is to END that session (they revoke it by cookie).
+_LOCKED_CONSOLE_PASSTHROUGH = frozenset({"/auth/lock", "/auth/logout", "/auth/login"})
+
+
+def _redeem_console_ticket(request: Request):
+    """303 to the same URL without the ticket, with the console cookie set."""
+    from tinyagentos.routes import auth as auth_routes
+
+    ticket = request.query_params.get(console_secret.TICKET_PARAM, "")
+    if not auth_routes._request_has_console_shape(request):
+        return None
+    if not console_secret.redeem_ticket(ticket):
+        return None
+    auth_mgr = getattr(request.app.state, "auth", None)
+    secret = console_secret.get_secret(getattr(auth_mgr, "data_dir", None))
+    if not secret:
+        return None
+    rest = [
+        (k, v) for k, v in request.query_params.multi_items()
+        if k != console_secret.TICKET_PARAM
+    ]
+    target = request.url.path + (("?" + urlencode(rest)) if rest else "")
+    response = RedirectResponse(target, status_code=303)
+    response.set_cookie(
+        console_secret.COOKIE_NAME, console_secret.cookie_value(secret),
+        httponly=True, samesite="lax", path="/",
+    )
+    return response
+
+
+def _console_lock_applies(request: Request, path: str) -> bool:
+    """True when this is the locked console and the path may not use a session."""
+    if path in _LOCKED_CONSOLE_PASSTHROUGH:
+        return False
+    # Imported late: routes.auth owns the lock flag and imports this module's
+    # siblings at load time.
+    from tinyagentos.routes import auth as auth_routes
+
+    return bool(auth_routes._CONSOLE_LOCKED) and auth_routes._request_is_console(request)
+
+
+def _drop_session_cookie(request: Request) -> None:
+    """Remove ``taos_session`` from the request, for this and every later reader."""
+    kept = [
+        part.strip()
+        for part in request.headers.get("cookie", "").split(";")
+        if part.strip() and part.strip().split("=", 1)[0] != "taos_session"
+    ]
+    headers = [(k, v) for k, v in request.scope["headers"] if k != b"cookie"]
+    if kept:
+        headers.append((b"cookie", "; ".join(kept).encode("latin-1")))
+    request.scope["headers"] = headers
+    for cached in ("_headers", "_cookies"):
+        request.__dict__.pop(cached, None)
+
+
 def _is_exempt(method: str, path: str) -> bool:
     """Return True if this request should bypass the auth gate.
 
@@ -1113,6 +1172,24 @@ class AuthMiddleware(BaseHTTPMiddleware):
     async def _dispatch(self, request: Request, call_next):
         auth_mgr = request.app.state.auth
         path = request.url.path
+
+        # The shell's start URL carries a one-time console ticket (see
+        # console_secret): trade it for the console cookie and drop it from the URL.
+        if (
+            request.method == "GET"
+            and console_secret.TICKET_PARAM in request.url.query
+            and (ticket_response := _redeem_console_ticket(request)) is not None
+        ):
+            return ticket_response
+
+        # A locked console holds no session. Enforced here, where every request
+        # passes, rather than trusted to the lock page: the session that was
+        # active before the lock is dropped from the request, so it reaches
+        # nothing but the routes that need no session (the unlock routes and
+        # the lock-state read). Remote clients are not the console and are
+        # untouched.
+        if "taos_session" in request.cookies and _console_lock_applies(request, path):
+            _drop_session_cookie(request)
 
         # Always allow exempt paths through (SPA shell, static assets, auth
         # endpoints, cluster heartbeat). Without this, a cached old client

@@ -31,6 +31,8 @@ import pytest
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
 
+from tinyagentos.console_secret import cookie_value
+
 import tinyagentos.routes.auth as auth_routes
 from tinyagentos.auth import AuthManager
 from taos_test_csrf import csrf_event_hooks
@@ -74,6 +76,18 @@ class _Orchestrator:
         return {"stopped": []}
 
 
+@pytest.fixture(autouse=True)
+def _console_unlocked():
+    """These tests sign in with a session minted directly, as a signed-in
+    console would hold; a LOCKED console holds no session (enforced in the
+    middleware), so the console starts unlocked here."""
+    from tinyagentos.routes import auth as auth_routes
+
+    auth_routes._CONSOLE_LOCKED = False
+    yield
+    auth_routes._CONSOLE_LOCKED = True
+
+
 @pytest.fixture(scope="module")
 def _built_app(tmp_path_factory):
     """create_app is slow; build it once and reset its state per test."""
@@ -109,7 +123,7 @@ def _client(app, cookies=None):
         transport=ASGITransport(app=app, client=("127.0.0.1", 50123)),
         base_url="http://127.0.0.1:6969",
         headers={"User-Agent": UA},
-        cookies=cookies or {},
+        cookies={"taos_console": cookie_value("1"), **(cookies or {})},
         event_hooks=csrf_event_hooks(),
     )
 

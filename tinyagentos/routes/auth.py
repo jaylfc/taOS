@@ -27,6 +27,7 @@ from fastapi.responses import (
     StreamingResponse,
 )
 
+from tinyagentos import console_secret
 from tinyagentos.agent_avatars import LOCK_AVATAR_DIR, _avatar_slug
 from tinyagentos.atomic_io import atomic_write_text
 from tinyagentos.auth import (
@@ -5619,15 +5620,19 @@ _LOCK_SCREEN_SCRIPT = r"""
 
     function requirePasscodeForPower(item) {
       window.__lsPendingPowerAction = { action: item[1], at: Date.now() };
+      // What they are unlocking FOR, said truthfully: nothing carries this
+      // choice across the sign-in, so the agents are NOT stopped by it.
+      var msg = "Signing in does not stop the agents. Stop them from inside taOS.";
+      // A swipe is not a credential, and this verb changes state: the owner's
+      // password is the only gate offered, whatever the unlock method is.
+      if (UNLOCK === "swipe") { openPasswordSheet(msg); return; }
       // NOT closeSheet() first: openSheet already hides whatever sheet is up
       // before revealing the next, and closing first would leave closeSheet's
       // 400ms hide to find data-sheet already "passcode" and bail -- the power
       // sheet would stay in the tree, behind the keypad.
       var note = document.getElementById("ls-unlock-note");
       if (note) {
-        // What they are unlocking FOR. An unexplained keypad straight after a
-        // menu tap reads as the phone having simply re-locked itself.
-        note.textContent = "Unlock to stop all agents";
+        note.textContent = msg;
         note.hidden = false;
       }
       openPasscode();
@@ -7192,8 +7197,12 @@ _LOCK_SCREEN_SCRIPT = r"""
         // and let them answer it signed in.
         decActs.hidden = true;
         decDone.hidden = false;
-        decDone.textContent = "Unlock to " + (approved ? "approve" : "deny") + " this.";
-        window.setTimeout(openPasscode, 700);
+        decDone.textContent = "Unlock first, then answer this in Decisions.";
+        window.setTimeout(function () {
+          // Answering a decision changes state: no credential-free swipe.
+          if (UNLOCK === "swipe") openPasswordSheet(decDone.textContent);
+          else openPasscode();
+        }, 700);
       });
     }
 
@@ -7264,9 +7273,12 @@ _LOCK_SCREEN_SCRIPT = r"""
         agent: agent.name || "", action: action, at: Date.now()
       };
       closeAgentMenu(false);
+      var msg = "Unlock first, then do this inside taOS: " + label;
+      // A swipe is not a credential (see requirePasscodeForPower).
+      if (UNLOCK === "swipe") { openPasswordSheet(msg); return; }
       var note = document.getElementById("ls-unlock-note");
       if (note) {
-        note.textContent = "Unlock to " + label;
+        note.textContent = msg;
         note.hidden = false;
       }
       openPasscode();
@@ -8847,7 +8859,9 @@ def _require_self(request: Request, username: str) -> tuple[bool, JSONResponse |
     return True, None
 
 
-async def _json_object(request: Request) -> tuple[dict | None, JSONResponse | None]:
+async def _json_object(
+    request: Request, *, require_json: bool = False
+) -> tuple[dict | None, JSONResponse | None]:
     """Read a JSON request body that must be an object. Returns (body, error_response).
 
     Parsing alone is not enough: request.json() happily returns null, [], 1 or
@@ -8855,7 +8869,15 @@ async def _json_object(request: Request) -> tuple[dict | None, JSONResponse | No
     those raises AttributeError, so the caller gets a 500 for what is plainly a
     malformed request. /auth/login, /auth/setup and /auth/complete are all
     session-exempt, so that 500 is reachable by anyone who can reach the port.
+
+    ``require_json`` refuses any Content-Type other than application/json: the
+    credential routes must not accept a body a browser can send without a
+    preflight (text/plain, form types).
     """
+    if require_json:
+        media = request.headers.get("content-type", "").split(";", 1)[0].strip().lower()
+        if media != "application/json":
+            return None, JSONResponse({"error": "JSON body required"}, status_code=415)
     try:
         body = await request.json()
     except (json.JSONDecodeError, UnicodeDecodeError):
@@ -8894,19 +8916,28 @@ async def login_page(request: Request, error: str = "", next: str = ""):
     # with more than one account, this stays the plain card it always was, so a
     # LAN browser is never told how this device's own screen unlocks.
     unlock_method = None
+    stale_session = None
     if _request_is_console(request):
         # The lock/sign-in page being served to the console IS "locked".
         _set_console_locked(request, True)
+        # ...and a locked console holds no session: whatever session this
+        # browser still carried is ended here, not merely hidden behind the page.
+        stale_session = request.cookies.get("taos_session")
+        if stale_session:
+            auth_mgr.revoke_session(stale_session)
         sole = auth_mgr.lock_screen_user()
         if sole is not None:
             unlock_method = effective_unlock_method(sole)
-    return HTMLResponse(_login_page(
+    page = HTMLResponse(_login_page(
         err_text,
         multi_user=auth_mgr.is_multi_user(),
         next_url=safe_next,
         unlock_method=unlock_method,
         pin_length=auth_mgr.pin_length() if unlock_method == "pin" else None,
     ))
+    if stale_session:
+        page.delete_cookie("taos_session")
+    return page
 
 
 @router.get("/setup", response_class=HTMLResponse)
@@ -8979,7 +9010,7 @@ async def login(request: Request):
 
         # Pending user: invite code accepted as password
         if user_record and user_record.get("pending_invite"):
-            token = auth_mgr.create_session(user_id=user_record["id"], long_lived=long_lived, user_agent=user_agent)
+            token = auth_mgr.create_session(user_id=user_record["id"], long_lived=long_lived, user_agent=user_agent, console=_request_is_console(request))
             resp = JSONResponse({
                 "ok": True,
                 "needs_onboarding": True,
@@ -8997,7 +9028,7 @@ async def login(request: Request):
         user_id = user_record["id"] if user_record else ""
         if user_record:
             auth_mgr.update_last_login(user_id)
-        token = auth_mgr.create_session(user_id=user_id, long_lived=long_lived, user_agent=user_agent)
+        token = auth_mgr.create_session(user_id=user_id, long_lived=long_lived, user_agent=user_agent, console=_request_is_console(request))
         _set_console_locked(request, False)
         pub = auth_mgr._public_user(user_record) if user_record else auth_mgr.get_user()
         resp = JSONResponse({"ok": True, "user": pub})
@@ -9033,12 +9064,12 @@ async def login(request: Request):
         # Pending user — create their session, then send to /desktop. The
         # SPA's LoginGate will see needs_onboarding via /auth/status and
         # render the invite-completion screen.
-        token = auth_mgr.create_session(user_id=user_record["id"], long_lived=long_lived, user_agent=user_agent)
+        token = auth_mgr.create_session(user_id=user_record["id"], long_lived=long_lived, user_agent=user_agent, console=_request_is_console(request))
     else:
         user_id = user_record["id"] if user_record else ""
         if user_record:
             auth_mgr.update_last_login(user_id)
-        token = auth_mgr.create_session(user_id=user_id, long_lived=long_lived, user_agent=user_agent)
+        token = auth_mgr.create_session(user_id=user_id, long_lived=long_lived, user_agent=user_agent, console=_request_is_console(request))
 
     if not (user_record and user_record.get("pending_invite")):
         _set_console_locked(request, False)
@@ -9054,16 +9085,32 @@ async def login(request: Request):
     return response
 
 
-def _request_is_console(request: Request) -> bool:
-    """Whether this request may use PIN sign-in at all.
+def _request_has_console_shape(request: Request) -> bool:
+    """Loopback peer and no forwarding header. Necessary, never sufficient."""
+    client = getattr(request, "client", None)
+    return is_console_origin(client.host if client else None, request.headers)
 
-    Thin wrapper so every PIN route asks the question exactly one way. The rule
-    itself lives in ``auth.is_console_origin`` and is unit-tested there without
-    needing a request object.
+
+def _request_has_console_secret(request: Request) -> bool:
+    """Does the request carry the per-boot console secret (or its cookie)?
+
+    The secret is shared only with the local shell process (see
+    ``tinyagentos.console_secret``). No secret established means nobody is the
+    console: fail closed.
     """
-    return is_console_origin(
-        request.client.host if request.client else None, request.headers
-    )
+    auth_mgr = getattr(request.app.state, "auth", None)
+    secret = console_secret.get_secret(getattr(auth_mgr, "data_dir", None))
+    return console_secret.matches(secret, request.headers, request.cookies)
+
+
+def _request_is_console(request: Request) -> bool:
+    """Whether this request is the device's own screen.
+
+    Loopback alone never means console: the request must also carry the
+    per-boot secret that only the local shell process can read. The shape rule
+    itself lives in ``auth.is_console_origin`` and is unit-tested there.
+    """
+    return _request_has_console_shape(request) and _request_has_console_secret(request)
 
 
 #: The header the device's own lock screen sends on every /auth/lock-* POST.
@@ -9082,16 +9129,8 @@ def _request_is_console(request: Request) -> bool:
 LOCK_CONSOLE_HEADER = "X-taOS-Console"
 
 
-def _lock_post_refusal(request: Request) -> JSONResponse | None:
-    """The gate on every /auth/lock-* POST, or None when the request may pass.
-
-    Loopback AND non-simple. See LOCK_CONSOLE_HEADER for why loopback alone is
-    not enough. This is not authentication -- any local process can still send
-    the header -- it removes the cross-origin browser, the one caller that can
-    reach loopback without being on the device's side.
-    """
-    if not _request_is_console(request):
-        return JSONResponse({"error": "console only"}, status_code=403)
+def _simple_request_refusal(request: Request) -> JSONResponse | None:
+    """None when the request is not a "simple" cross-site-sendable request."""
     if request.headers.get(LOCK_CONSOLE_HEADER, "").strip():
         return None
     media_type = request.headers.get("content-type", "").split(";", 1)[0]
@@ -9104,11 +9143,41 @@ def _lock_post_refusal(request: Request) -> JSONResponse | None:
     )
 
 
+def _lock_post_refusal(request: Request) -> JSONResponse | None:
+    """The gate on every /auth/lock-* POST, or None when the request may pass.
+
+    Loopback, non-simple, AND carrying the per-boot console secret. See
+    LOCK_CONSOLE_HEADER for why loopback alone is not enough: the simple-request
+    gate removes the cross-origin browser, the secret removes every other local
+    process that is not the device's own shell.
+    """
+    if not _request_is_console(request):
+        # A loopback caller without the secret that is ALSO a simple request is
+        # told about the simple-request rule (the more actionable answer); every
+        # other non-console caller just gets "console only".
+        if _request_has_console_shape(request):
+            simple = _simple_request_refusal(request)
+            if simple is not None:
+                return simple
+        return JSONResponse({"error": "console only"}, status_code=403)
+    return _simple_request_refusal(request)
+
+
 #: PIN attempts are throttled separately from passwords, keyed by user id.
 #: Sharing ``_login_limiter`` would let PIN failures lock a user out of the
 #: password path -- and since every console request arrives from the same
 #: loopback address, an IP-keyed counter would be one shared bucket for all.
 _pin_limiter = _PinAttemptLimiter()
+
+
+def _bind_pin_limiter(auth_mgr) -> None:
+    """Attach the limiter to the account store's directory, so failures and the
+    lockout survive a controller restart. Idempotent; loads once per path."""
+    data_dir = getattr(auth_mgr, "data_dir", None)
+    if data_dir is not None:
+        _pin_limiter.bind(Path(data_dir) / ".auth_pin_limiter.json")
+
+
 _pin_key_locks: "OrderedDict[str, asyncio.Lock]" = OrderedDict()
 _pin_key_waiters: "dict[str, int]" = {}
 _pin_key_locks_guard = asyncio.Lock()
@@ -12084,6 +12153,12 @@ def _set_console_locked(request: Request, locked: bool) -> None:
         if locked and not _CONSOLE_LOCKED:
             _CONSOLE_SESSION += 1
         _CONSOLE_LOCKED = locked
+        if locked:
+            # Locked means no session signed in at this screen survives, whoever
+            # holds the cookie. Remote sessions are not touched.
+            auth_mgr = getattr(request.app.state, "auth", None)
+            if auth_mgr is not None:
+                auth_mgr.revoke_console_sessions()
 
 
 @router.get("/lock-state")
@@ -12761,6 +12836,9 @@ async def lock_screen_off(request: Request):
         return refusal
     global _LOCK_SCREEN_STATE
     _LOCK_SCREEN_STATE = "screen-off"
+    # A dark panel is a locked console, whatever the page managed to do about
+    # it. The shell's own lock request can fail; this one cannot depend on it.
+    _set_console_locked(request, True)
     return JSONResponse({"ok": True, "delivered": _push_lock_event("screen-off")})
 
 
@@ -12946,6 +13024,29 @@ async def lock_power_action(request: Request):
             return JSONResponse(
                 {"error": "sign in to stop all agents"}, status_code=401
             )
+        # A swipe is not a credential. When the owner chose "swipe", a session
+        # minted by a swipe must not be enough to change state from the lock
+        # screen: the account password is the gate, same throttle as unlocking.
+        sole = auth_mgr.lock_screen_user()
+        if sole is not None and effective_unlock_method(sole) == "swipe":
+            _bind_pin_limiter(auth_mgr)
+            wait = _pin_limiter.retry_after(sole["id"])
+            if wait > 0:
+                return JSONResponse(
+                    {"error": f"Too many attempts. Try again in {wait} seconds.",
+                     "retry_after": wait},
+                    status_code=429, headers={"Retry-After": str(wait)},
+                )
+            ok, _ = await asyncio.to_thread(
+                auth_mgr.check_password,
+                str(body.get("password") or ""), username=sole.get("username"),
+            )
+            if not ok:
+                _pin_limiter.record_failure(sole["id"])
+                return JSONResponse(
+                    {"error": "password required to stop all agents"}, status_code=403
+                )
+            _pin_limiter.reset(sole["id"])
         orchestrator = getattr(request.app.state, "orchestrator", None)
         if orchestrator is None:
             return JSONResponse({"error": "orchestrator unavailable"}, status_code=503)
@@ -13082,10 +13183,18 @@ async def pin_login(request: Request):
     auth_mgr = request.app.state.auth
     if not _request_is_console(request):
         return JSONResponse({"error": "PIN sign-in is not available"}, status_code=404)
-
-    body, body_err = await _json_object(request)
+    # The same gate swipe-unlock has, applied BEFORE the throttle is touched: a
+    # simple (no-preflight) or cross-origin request from a page in a local
+    # browser must neither guess a PIN nor burn the owner's attempts.
+    simple = _simple_request_refusal(request)
+    if simple is not None:
+        return simple
+    if not _same_origin_or_absent(request):
+        return JSONResponse({"error": "PIN sign-in is not available"}, status_code=403)
+    body, body_err = await _json_object(request, require_json=True)
     if body_err is not None:
         return body_err
+    _bind_pin_limiter(auth_mgr)
     username = (body.get("username") or "").strip() or None
     pin = body.get("pin") or ""
 
@@ -13134,6 +13243,7 @@ async def pin_login(request: Request):
         user_id=user_record["id"],
         long_lived=True,
         user_agent=request.headers.get("user-agent", ""),
+        console=True,
     )
     _set_console_locked(request, False)
     resp = JSONResponse({"ok": True, "user": auth_mgr._public_user(user_record)})
@@ -13160,6 +13270,27 @@ def _same_origin_or_absent(request: Request) -> bool:
         if origin.split("://", 1)[-1].rstrip("/") != host:
             return False
     return True
+
+
+@router.post("/console-ticket")
+async def console_ticket(request: Request):
+    """Hand a one-time ticket to a caller that can read the console secret file.
+
+    The device's browser shell starts at ``/?console_ticket=<ticket>``; the
+    server trades the ticket for the HttpOnly console cookie (see
+    ``auth_middleware``) and redirects to the same page without it. Loopback
+    only, and only the HEADER form of the secret opens this: a cookie cannot
+    mint more cookies. A ticket lives 60 seconds and works once.
+    """
+    if not _request_has_console_shape(request):
+        return JSONResponse({"error": "console only"}, status_code=403)
+    auth_mgr = getattr(request.app.state, "auth", None)
+    secret = console_secret.get_secret(getattr(auth_mgr, "data_dir", None))
+    if not console_secret.header_matches(secret, request.headers):
+        return JSONResponse({"error": "console only"}, status_code=403)
+    return JSONResponse(
+        {"ticket": console_secret.mint_ticket()}, headers={"Cache-Control": "no-store"}
+    )
 
 
 @router.post("/swipe-unlock")
@@ -13198,6 +13329,7 @@ async def swipe_unlock(request: Request):
     if not _same_origin_or_absent(request):
         return refused
 
+    _bind_pin_limiter(auth_mgr)
     record = auth_mgr.lock_screen_user()
     limiter_key = (record or {}).get("id") or "unknown:"
     wait = _pin_limiter.retry_after(limiter_key)
@@ -13221,6 +13353,7 @@ async def swipe_unlock(request: Request):
         user_id=record["id"],
         long_lived=True,
         user_agent=request.headers.get("user-agent", ""),
+        console=True,
     )
     _set_console_locked(request, False)
     resp = JSONResponse({"ok": True, "user": auth_mgr._public_user(record)})
@@ -13267,6 +13400,7 @@ async def set_pin(request: Request):
         return JSONResponse({"error": str(exc)}, status_code=400)
 
     auth_mgr.set_pin(username, body["pin"])
+    _bind_pin_limiter(auth_mgr)
     _pin_limiter.reset(user_id)
     return JSONResponse({"ok": True, "has_pin": True})
 
@@ -13290,6 +13424,7 @@ async def delete_pin(request: Request):
     if not user:
         return JSONResponse({"error": "not authenticated"}, status_code=401)
     removed = auth_mgr.clear_pin(user.get("username", ""))
+    _bind_pin_limiter(auth_mgr)
     _pin_limiter.reset(user_id)
     return JSONResponse({"ok": True, "removed": removed, "has_pin": False})
 

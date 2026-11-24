@@ -86,8 +86,11 @@ User=$TAOS_USER
 Environment=XDG_RUNTIME_DIR=/run/user/$(id -u "$TAOS_USER")
 Environment=WLR_LIBINPUT_NO_DEVICES=1
 
-# Use cage as the Wayland compositor (minimal, no desktop)
-ExecStart=/usr/bin/cage -- $BROWSER \\
+# Use cage as the Wayland compositor (minimal, no desktop). The start URL comes
+# from taos-console-url, which trades the console secret file for a one-time
+# ticket so the page is recognised as this device's own screen; it prints the
+# plain URL when no secret is readable.
+ExecStart=/bin/sh -c 'exec /usr/bin/cage -- $BROWSER \\
     --kiosk \\
     --no-first-run \\
     --disable-translate \\
@@ -97,7 +100,7 @@ ExecStart=/usr/bin/cage -- $BROWSER \\
     --noerrdialogs \\
     --enable-features=OverlayScrollbar \\
     --ozone-platform=wayland \\
-    $TAOS_URL
+    "\$\$(/usr/local/bin/taos-console-url $TAOS_URL)"'
 
 Restart=on-failure
 RestartSec=5
@@ -139,6 +142,9 @@ case "${1:-status}" in
 esac
 SCRIPT
 chmod +x /usr/local/bin/taos-kiosk
+
+# The kiosk's start URL helper (console ticket, see the unit above).
+install -m 755 "$(dirname "$0")/../session/bin/taos-console-url" /usr/local/bin/taos-console-url
 
 echo ""
 echo "=== Setup complete ==="

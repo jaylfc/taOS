@@ -1079,3 +1079,20 @@ async def client_with_qmd(app_with_qmd):
     await project_element_store.close()
     await app_with_qmd.state.qmd_client.close()
     await app_with_qmd.state.http_client.aclose()
+
+
+@pytest.fixture(autouse=True)
+def _console_secret_file(tmp_path_factory, monkeypatch):
+    """Give every test a per-test console secret file.
+
+    The suite's lock-screen helpers send ``X-taOS-Console: 1``, so the secret is
+    "1" here; tests that need a real secret point TAOS_CONSOLE_SECRET_FILE at
+    their own file. Nothing ever writes to /run/taos from a test.
+    """
+    import os
+
+    path = tmp_path_factory.mktemp("console-secret") / "secret"
+    path.write_text("1\n")
+    os.chmod(path, 0o600)
+    monkeypatch.setenv("TAOS_CONSOLE_SECRET_FILE", str(path))
+    yield

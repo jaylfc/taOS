@@ -1,0 +1,31 @@
+#!/bin/sh
+# Print the URL the kiosk browser should start at, carrying a one-time console
+# ticket. Usage: taos-console-url BASE_URL
+#
+# The controller only treats a request as coming from this device's own screen
+# when it carries the per-boot console secret (a file readable only by the
+# shell's user). The browser cannot read that file, so this script, running as
+# the shell's user, trades the secret for a 60 second single-use ticket and puts
+# the ticket in the start URL; the controller swaps it for an HttpOnly cookie
+# and redirects to the plain URL. The secret itself is never in a URL or in
+# argv (it goes to curl on stdin).
+#
+# No readable secret, or no ticket: print the plain URL and say so on stderr.
+# The page still works for password sign-in; only the console-only features
+# (PIN keypad, swipe, power menu) stay off, which is the safe direction.
+BASE="${1:?usage: taos-console-url BASE_URL}"
+FILE="${TAOS_CONSOLE_SECRET_FILE:-/run/taos/console-secret}"
+if [ -r "$FILE" ]; then
+    SECRET="$(tr -d '\r\n' < "$FILE")"
+    TICKET="$(printf 'header = "X-taOS-Console: %s"\n' "$SECRET" \
+        | curl -s --max-time 5 -X POST -K - "$BASE/auth/console-ticket" 2>/dev/null \
+        | sed -n 's/.*"ticket" *: *"\([A-Za-z0-9_-]*\)".*/\1/p')"
+    if [ -n "$TICKET" ]; then
+        printf '%s/?console_ticket=%s\n' "$BASE" "$TICKET"
+        exit 0
+    fi
+    echo "taos-console-url: controller gave no ticket; starting without console identity" >&2
+else
+    echo "taos-console-url: $FILE not readable; starting without console identity" >&2
+fi
+printf '%s\n' "$BASE"
