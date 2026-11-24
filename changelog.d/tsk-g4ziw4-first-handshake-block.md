@@ -1,0 +1,3 @@
+### Fixed
+
+- Block landing during a FIRST friend-accept handshake (no pre-existing peer link) now correctly revokes the newly created peer link and returns a 403 response. Previously, the INSERT arm of `establish_peer_link` had no WHERE clause on the first handshake path, so it always wrote and the post-write block handling never ran. A final block check after `establish_peer_link` now closes this window.

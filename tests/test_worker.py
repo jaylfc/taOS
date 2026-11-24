@@ -85,6 +85,40 @@ class TestDetectCapabilities:
         assert "llm-chat" not in caps
         assert "tts" not in caps
 
+    @pytest.mark.asyncio
+    async def test_configured_whisper_backend_live_probe(self):
+        """A configured whisper backend is probed via /v1/models and advertises ASR."""
+        agent = WorkerAgent("http://localhost:6969")
+        models_resp = MagicMock()
+        models_resp.status_code = 200
+        models_resp.json.return_value = {
+            "data": [{"id": "whisper-1", "object": "model", "created": 1234567890}],
+            "object": "list",
+        }
+
+        with patch("tinyagentos.worker.agent.httpx.AsyncClient") as mock_client_cls:
+            mock_client = AsyncMock()
+            mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+            mock_client.__aexit__ = AsyncMock(return_value=False)
+
+            async def mock_get(url):
+                if "9000" in url and "/v1/models" in url:
+                    return models_resp
+                raise Exception("not running")
+
+            mock_client.get = AsyncMock(side_effect=mock_get)
+            mock_client_cls.return_value = mock_client
+
+            with patch("os.environ.get", return_value="whisper=http://localhost:9000"):
+                backends = await agent.detect_backends()
+
+        whisper = [b for b in backends if b["type"] == "whisper"]
+        assert len(whisper) == 1
+        assert whisper[0]["url"] == "http://localhost:9000"
+        assert whisper[0]["name"] == "whisper:9000"
+        assert whisper[0]["capabilities"] == ["asr"]
+        assert whisper[0]["models"] == [{"name": "whisper-1", "size_mb": 0}]
+
     def test_kokoro_backend(self):
         """A kokoro backend advertises tts only (taOS #3231)."""
         agent = WorkerAgent("http://localhost:6969")
@@ -102,6 +136,7 @@ class TestDetectCapabilities:
         with patch("shutil.which", return_value=None):
             caps = agent.detect_capabilities(backends)
         assert "tts" in caps
+        assert "llm-chat" not in caps
         assert "asr" not in caps
 
     def test_respects_preattached_capabilities(self):
@@ -397,6 +432,111 @@ class TestHeartbeat:
                     result = await agent.heartbeat()
 
         assert result == 401
+
+    async def test_heartbeat_success_records_the_heartbeat_ok_timestamp(self, tmp_path):
+        """The deploy helper's health check reads a "last heartbeat OK"
+        timestamp from the worker's state dir as proof the worker is
+        reaching the controller (PR #1910).  A successful heartbeat must
+        write it -- atomically, so no temp file is left behind -- and
+        refresh a stale one."""
+        save_signing_key(tmp_path, secrets.token_bytes(32))
+        agent = WorkerAgent("http://controller:6969", name="test-worker", state_dir=tmp_path)
+        hb_file = tmp_path / "last-heartbeat-ok"
+        hb_file.write_text("1\n")  # a stale timestamp from an earlier run
+
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+
+        with patch("tinyagentos.worker.agent.httpx.AsyncClient") as mock_client_cls:
+            mock_client = AsyncMock()
+            mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+            mock_client.__aexit__ = AsyncMock(return_value=False)
+            mock_client.post = AsyncMock(return_value=mock_response)
+            mock_client_cls.return_value = mock_client
+
+            with patch("tinyagentos.worker.agent.psutil.cpu_percent", return_value=0.0):
+                with patch("tinyagentos.worker.agent.WorkerAgent.detect_backends", return_value=[]):
+                    result = await agent.heartbeat()
+
+        assert result == 200
+        written = int(hb_file.read_text().strip())
+        assert abs(time.time() - written) < 60
+        # Atomic write (temp file + rename): no residue in the state dir.
+        assert not [p for p in tmp_path.iterdir() if ".tmp." in p.name]
+
+    async def test_heartbeat_failure_records_no_timestamp(self, tmp_path):
+        """A heartbeat that never reached the controller must not create
+        the timestamp -- that is the whole point of it as proof of work."""
+        save_signing_key(tmp_path, secrets.token_bytes(32))
+        agent = WorkerAgent("http://controller:6969", name="test-worker", state_dir=tmp_path)
+
+        with patch("tinyagentos.worker.agent.httpx.AsyncClient") as mock_client_cls:
+            mock_client = AsyncMock()
+            mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+            mock_client.__aexit__ = AsyncMock(return_value=False)
+            mock_client.post = AsyncMock(side_effect=Exception("timeout"))
+            mock_client_cls.return_value = mock_client
+
+            with patch("tinyagentos.worker.agent.psutil.cpu_percent", return_value=0.0):
+                with patch("tinyagentos.worker.agent.WorkerAgent.detect_backends", return_value=[]):
+                    result = await agent.heartbeat()
+
+        assert result == 0
+        assert not (tmp_path / "last-heartbeat-ok").exists()
+
+    async def test_heartbeat_non_200_records_no_timestamp(self, tmp_path):
+        """A heartbeat the controller answered with an error is not a
+        successful heartbeat: no timestamp."""
+        save_signing_key(tmp_path, secrets.token_bytes(32))
+        agent = WorkerAgent("http://controller:6969", name="test-worker", state_dir=tmp_path)
+
+        mock_response = MagicMock()
+        mock_response.status_code = 500
+
+        with patch("tinyagentos.worker.agent.httpx.AsyncClient") as mock_client_cls:
+            mock_client = AsyncMock()
+            mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+            mock_client.__aexit__ = AsyncMock(return_value=False)
+            mock_client.post = AsyncMock(return_value=mock_response)
+            mock_client_cls.return_value = mock_client
+
+            with patch("tinyagentos.worker.agent.psutil.cpu_percent", return_value=0.0):
+                with patch("tinyagentos.worker.agent.WorkerAgent.detect_backends", return_value=[]):
+                    result = await agent.heartbeat()
+
+        assert result == 500
+        assert not (tmp_path / "last-heartbeat-ok").exists()
+
+    async def test_clear_heartbeat_ok_removes_the_timestamp(self, tmp_path):
+        """run() clears the timestamp at startup, so a restarted worker
+        cannot ride on its predecessor's last successful heartbeat: the
+        file only counts once THIS process has reached the controller."""
+        agent = WorkerAgent("http://controller:6969", name="test-worker", state_dir=tmp_path)
+        hb_file = tmp_path / "last-heartbeat-ok"
+        hb_file.write_text("123\n")
+
+        agent._clear_heartbeat_ok()
+
+        assert not hb_file.exists()
+        # Clearing an absent file is not an error.
+        agent._clear_heartbeat_ok()
+
+    async def test_record_heartbeat_ok_creates_a_missing_state_dir(self, tmp_path):
+        """The timestamp write must not depend on the state dir already
+        existing.  If it were missing and the write failed quietly, no
+        timestamp would ever be recorded and the deploy helper's health
+        check would roll back a healthy update (PR #1910), so
+        _record_heartbeat_ok creates the directory itself."""
+        state_dir = tmp_path / "state"
+        agent = WorkerAgent("http://controller:6969", name="test-worker", state_dir=state_dir)
+        assert not state_dir.exists()
+
+        agent._record_heartbeat_ok()
+
+        hb_file = state_dir / "last-heartbeat-ok"
+        assert hb_file.exists()
+        written = int(hb_file.read_text().strip())
+        assert abs(time.time() - written) < 60
 
 
 @pytest.mark.asyncio
@@ -798,6 +938,42 @@ class TestDetectBackends:
 
         assert backends == []
 
+    async def test_default_kokoro_voices_malformed_200_not_recorded(self):
+        """The DEFAULT kokoro candidate is skipped silently when
+        /v1/audio/voices returns HTTP 200 with a malformed body (no
+        'voices' list), even though /v1/models would otherwise make it look
+        like a healthy kokoro backend."""
+        agent = WorkerAgent("http://localhost:6969")
+        voices_resp = MagicMock()
+        voices_resp.status_code = 200
+        voices_resp.json.return_value = {"voices": "af_bella"}
+        models_resp = MagicMock()
+        models_resp.status_code = 200
+        models_resp.json.return_value = {
+            "data": [{"id": "kokoro-model", "object": "model", "created": 1234567890}],
+            "object": "list",
+        }
+
+        with patch("tinyagentos.worker.agent.httpx.AsyncClient") as mock_client_cls:
+            mock_client = AsyncMock()
+            mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+            mock_client.__aexit__ = AsyncMock(return_value=False)
+
+            async def mock_get(url):
+                if "8880" in url:
+                    if "/v1/audio/voices" in url:
+                        return voices_resp
+                    if "/v1/models" in url:
+                        return models_resp
+                raise Exception("not running")
+
+            mock_client.get = AsyncMock(side_effect=mock_get)
+            mock_client_cls.return_value = mock_client
+
+            backends = await agent.detect_backends()
+
+        assert backends == []
+
     async def test_default_kokoro_voices_list_recorded_with_tts(self):
         """The DEFAULT kokoro candidate is recorded (with capability tts)
         when /v1/audio/voices returns 200 and a 'voices' list."""
@@ -892,6 +1068,92 @@ class TestDetectBackends:
         # The llama-swap should have the kokoro model from /v1/models
         assert len(backends[0]["models"]) == 1
         assert backends[0]["models"][0]["name"] == "kokoro-model"
+
+    async def test_manifest_declared_kokoro_deduped_against_llama_swap(self):
+        """A kokoro backend declared in the worker manifest on the same port
+        as a llama-swap backend is currently NOT deduplicated against the
+        llama-swap live backend. The manifest entry creates a synthetic
+        stopped backend with url=None, which is added after the dedupe pass,
+        so both llama-swap (live) and kokoro (stopped) are reported.
+        This test documents the current behavior; see taOS #XXXX for tracking
+        whether synthetic entries should also be deduplicated."""
+        agent = WorkerAgent("http://localhost:6969")
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        # llama-swap's /v1/models response
+        mock_response.json.return_value = {
+            "data": [
+                {"id": "kokoro-model", "object": "model", "created": 1234567890}
+            ],
+            "object": "list"
+        }
+        
+        # llama-swap's /running response
+        mock_running_response = MagicMock()
+        mock_running_response.status_code = 200
+        mock_running_response.json.return_value = {
+            "running": [{"model": "kokoro-model", "state": "ready"}]
+        }
+        
+        with patch("tinyagentos.worker.agent.httpx.AsyncClient") as mock_client_cls:
+            mock_client = AsyncMock()
+            mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+            mock_client.__aexit__ = AsyncMock(return_value=False)
+            
+            async def mock_get(url):
+                if "8880" in url:
+                    # For llama-swap's /v1/models endpoint
+                    if "/v1/models" in url:
+                        return mock_response
+                    # For llama-swap's /running endpoint  
+                    if "/running" in url:
+                        return mock_running_response
+                raise Exception("not running")
+            
+            mock_client.get = AsyncMock(side_effect=mock_get)
+            mock_client_cls.return_value = mock_client
+            
+            # Manifest declares a kokoro backend on port 8880
+            manifest = {
+                "resource_id": "w1",
+                "models": [
+                    {
+                        "model_id": "kokoro-model",
+                        "capability": "tts",
+                        "software": "kokoro",
+                        "port": 8880,
+                        "vram_required_gb": 0.0,
+                        "health_url": "http://localhost:8880/health",
+                    },
+                ],
+            }
+            # TAOS_EXTRA_BACKENDS has llama-swap on the same port
+            with patch("tinyagentos.worker.worker_manifest.load_manifest",
+                       return_value=manifest):
+                with patch("os.environ.get", return_value="llama-swap=http://localhost:8880"):
+                    backends = await agent.detect_backends()
+        
+        # Current behavior: both llama-swap (live) and kokoro (synthetic stopped) are reported
+        # because synthetic entries are added after the dedupe pass
+        types = {b["type"] for b in backends}
+        assert types == {"llama-swap", "kokoro"}, f"expected both llama-swap and kokoro, got {types}"
+        assert len(backends) == 2
+        # Find the llama-swap backend
+        llama_swap = next(b for b in backends if b["type"] == "llama-swap")
+        assert llama_swap["url"] == "http://localhost:8880"
+        assert llama_swap["name"] == "llama-swap:8880"
+        assert len(llama_swap["models"]) == 1
+        assert llama_swap["models"][0]["name"] == "kokoro-model"
+        # Find the synthetic kokoro backend
+        kokoro = next(b for b in backends if b["type"] == "kokoro")
+        assert kokoro["status"] == "stopped"
+        assert kokoro["url"] is None
+        assert kokoro["name"] == "kokoro:8880"
+        # The manifest-declared model should appear in available_models
+        avail = kokoro.get("available_models", [])
+        assert len(avail) == 1
+        assert avail[0]["model_id"] == "kokoro-model"
+        assert avail[0]["status"] == "available"
 
     async def test_default_kokoro_voices_ok_models_error_returns_none(self):
         """Default kokoro candidate with /v1/audio/voices 200 but /v1/models
@@ -993,6 +1255,47 @@ class TestDetectBackends:
         assert kokoro[0]["name"] == "kokoro:8880"
         assert kokoro[0]["capabilities"] == ["tts"]
         assert kokoro[0]["models"] == [{"name": "kokoro-model", "size_mb": 0}]
+
+    async def test_configured_kokoro_at_non_default_url_no_voices_route(self):
+        """A kokoro configured via TAOS_EXTRA_BACKENDS at a non-default URL
+        (e.g. :8881) must use the generic /v1/models probe (not the voices
+        check) and be included when /v1/models returns a model, even if
+        /v1/audio/voices returns 404."""
+        agent = WorkerAgent("http://localhost:6969")
+        voices_resp = MagicMock()
+        voices_resp.status_code = 404
+        models_resp = MagicMock()
+        models_resp.status_code = 200
+        models_resp.json.return_value = {
+            "data": [{"id": "kokoro-model-2", "object": "model", "created": 1234567890}],
+            "object": "list",
+        }
+
+        with patch("tinyagentos.worker.agent.httpx.AsyncClient") as mock_client_cls:
+            mock_client = AsyncMock()
+            mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+            mock_client.__aexit__ = AsyncMock(return_value=False)
+
+            async def mock_get(url):
+                if "8881" in url:
+                    if "/v1/audio/voices" in url:
+                        return voices_resp
+                    if "/v1/models" in url:
+                        return models_resp
+                raise Exception("not running")
+
+            mock_client.get = AsyncMock(side_effect=mock_get)
+            mock_client_cls.return_value = mock_client
+
+            with patch("os.environ.get", return_value="kokoro=http://localhost:8881"):
+                backends = await agent.detect_backends()
+
+        kokoro = [b for b in backends if b["type"] == "kokoro"]
+        assert len(kokoro) == 1
+        assert kokoro[0]["url"] == "http://localhost:8881"
+        assert kokoro[0]["name"] == "kokoro:8881"
+        assert kokoro[0]["capabilities"] == ["tts"]
+        assert kokoro[0]["models"] == [{"name": "kokoro-model-2", "size_mb": 0}]
 
 
 # ---------------------------------------------------------------------------

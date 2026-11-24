@@ -14,6 +14,7 @@ from tinyagentos.device_auth import require_device
 from tinyagentos.workspace_trash import (
     TrashItemNotFound,
     TrashRestoreConflict,
+    TrashRestoreOutsideRoot,
     empty_trash,
     get_trash_dir,
     list_trash_items,
@@ -120,6 +121,23 @@ def _resolve_safe(workspace: Path, subpath: str) -> Path | None:
         return None
     except Exception:
         return None
+
+
+def _resolve_safe_child(workspace: Path, subpath: str) -> Path | None:
+    """Like ``_resolve_safe`` but also refuse the workspace root itself.
+
+    Every destructive or mutating operation (delete) must resolve to a
+    *child* of the workspace — ``_resolve_safe`` alone accepts the base, which
+    let a ``DELETE /api/projects/{slug}/files/`` (empty path, ``.``, ``%2e``,
+    ``sub/..``) move the whole files folder into the trash. Listing the base
+    stays allowed, so callers that only read use ``_resolve_safe``.
+    """
+    target = _resolve_safe(workspace, subpath)
+    if target is None:
+        return None
+    if target == workspace.resolve():
+        return None
+    return target
 
 
 class MkdirRequest(BaseModel):
@@ -341,7 +359,7 @@ async def api_project_delete_file(request: Request, slug: str, file_path: str):
     if workspace is None:
         return JSONResponse({"error": "Invalid slug"}, status_code=400)
 
-    target = _resolve_safe(workspace, file_path)
+    target = _resolve_safe_child(workspace, file_path)
     if target is None:
         return JSONResponse({"error": "Invalid path"}, status_code=400)
 
@@ -383,6 +401,10 @@ async def api_project_restore_trash_item(request: Request, slug: str, item_id: s
     except TrashRestoreConflict:
         return JSONResponse(
             {"error": "a file already exists at the original path"}, status_code=409
+        )
+    except TrashRestoreOutsideRoot:
+        return JSONResponse(
+            {"error": "this item cannot be restored to its original place"}, status_code=400
         )
     return {"status": "restored", "path": metadata["original_path"]}
 

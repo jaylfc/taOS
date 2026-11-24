@@ -7,6 +7,7 @@ agents.py; only the business logic lives here.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from datetime import datetime, timezone
 from pathlib import Path
@@ -14,9 +15,51 @@ from pathlib import Path
 from fastapi import Request
 
 from tinyagentos.agent_db import find_agent
-from tinyagentos.config import save_config_locked, unique_agent_slug
+from tinyagentos.config import save_config_locked, unique_agent_slug, reserve_agent_slug, release_agent_slug
+from tinyagentos.containers import SNAPSHOT_TIMEOUT_S
 
 logger = logging.getLogger(__name__)
+
+# Serializes restores from the archive-entry lookup through the config
+# publication. Without it two restores (of one archive, or of two archives
+# wanting the same slug) both pass the lookup and unique_agent_slug, both mint
+# a local token for the same name (the second revoking the first) and both
+# append the agent. Per-process: it does not span controller workers.
+_restore_lock = asyncio.Lock()
+
+
+def _safe_archive_base(data_dir: Path, entry: dict) -> Path | None:
+    """Return resolved archive base path only if it is strictly inside data_dir/archive.
+
+    Returns None and logs a warning when archive_dir is missing, empty, absolute,
+    contains path traversal (..), or resolves outside the archive root.
+    """
+    archive_dir = entry.get("archive_dir", "")
+    archive_id = entry.get("id", "unknown")
+    if not archive_dir or not isinstance(archive_dir, str):
+        logger.warning("purge/restore: archive entry %s has missing or empty archive_dir", archive_id)
+        return None
+    # Reject absolute paths (pathlib drops left side for absolute right side)
+    if Path(archive_dir).is_absolute():
+        logger.warning("purge/restore: archive entry %s has absolute archive_dir: %s", archive_id, archive_dir)
+        return None
+    archive_root = (data_dir / "archive").resolve()
+    candidate = (data_dir / archive_dir).resolve()
+    # Must be strictly inside archive_root (not equal, and is_relative_to)
+    try:
+        if not candidate.is_relative_to(archive_root) or candidate == archive_root:
+            logger.warning(
+                "purge/restore: archive entry %s archive_dir %s escapes archive root",
+                archive_id, archive_dir,
+            )
+            return None
+    except Exception:
+        logger.warning(
+            "purge/restore: archive entry %s archive_dir %s caused resolution error",
+            archive_id, archive_dir,
+        )
+        return None
+    return candidate
 
 
 def _archive_timestamp() -> str:
@@ -25,14 +68,23 @@ def _archive_timestamp() -> str:
 
 
 def _revoke_gateway_keys(request: Request, slug: str, agent_id: str | None) -> None:
-    """Revoke LLM gateway keys bound to the agent (by slug and by id).
+    """Revoke the agent's local token, then LLM gateway keys bound to it (by slug and by id).
 
     Legacy per-agent keys are keyed by the agent NAME (slug); gateway keys may
     be bound to either, so both are revoked.
+
+    Raises when the local token cannot be revoked: an archive that reported
+    success while the token still authenticates would leave a live credential
+    for an agent the config no longer lists. Callers must stop before
+    changing the config.
     """
+    from tinyagentos.auth import AuthManager
     from tinyagentos.llm_gateway.auth import revoke_keys_for
 
     data_dir = request.app.state.data_dir
+    # The per-agent local token first: it is bound by name, and a later deploy
+    # may take the name. Restore mints a fresh one.
+    AuthManager(data_dir).unbind_local_token_agent(slug)
     for principal in {slug, agent_id} - {None, ""}:
         revoke_keys_for(principal, data_dir=data_dir)
 
@@ -112,8 +164,13 @@ async def archive_agent_fully(request: Request, name: str) -> dict:
         trace_dir = data_dir / "trace" / slug
         has_trace_history = trace_dir.exists() and any(trace_dir.iterdir())
 
-        # Always revoke the agent's LLM keys first (best effort, same as below).
-        _revoke_gateway_keys(request, slug, agent_id)
+        # Always revoke the agent's credentials first; stop if the local token
+        # cannot be revoked (see _revoke_gateway_keys).
+        try:
+            await asyncio.to_thread(_revoke_gateway_keys, request, slug, agent_id)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("archive(orphan): credential revoke failed for %s: %s", slug, exc)
+            return {"error": f"archive failed: credential revoke failed: {exc}", "status_code": 500}
         llm_key = agent.get("llm_key")
         llm_proxy = getattr(request.app.state, "llm_proxy", None)
         if llm_key and llm_proxy:
@@ -146,8 +203,11 @@ async def archive_agent_fully(request: Request, name: str) -> dict:
                     )
             config.agents = [a for a in config.agents if a["name"] != name]
             await save_config_locked(config, config.config_path)
+            _deploy_tasks = getattr(request.app.state, "deploy_tasks", None)
+            if _deploy_tasks is not None:
+                _deploy_tasks.pop(slug, None)
             try:
-                request.app.state.auth.unbind_local_token_agent(slug)
+                await asyncio.to_thread(request.app.state.auth.unbind_local_token_agent, slug)
             except Exception as exc:  # noqa: BLE001 - best-effort revocation
                 logger.warning("archive(orphan): unbind local token for %s failed: %s", slug, exc)
             return {
@@ -172,8 +232,11 @@ async def archive_agent_fully(request: Request, name: str) -> dict:
         config.agents = [a for a in config.agents if a["name"] != name]
         config.archived_agents.append(archive_entry)
         await save_config_locked(config, config.config_path)
+        _deploy_tasks = getattr(request.app.state, "deploy_tasks", None)
+        if _deploy_tasks is not None:
+            _deploy_tasks.pop(slug, None)
         try:
-            request.app.state.auth.unbind_local_token_agent(slug)
+            await asyncio.to_thread(request.app.state.auth.unbind_local_token_agent, slug)
         except Exception as exc:  # noqa: BLE001 - best-effort revocation
             logger.warning("archive(orphan): unbind local token for %s failed: %s", slug, exc)
         return {
@@ -195,7 +258,20 @@ async def archive_agent_fully(request: Request, name: str) -> dict:
 
     # 2) Create snapshot. If this fails (container not found, pool error, etc.)
     #    we abort without mutating config so the agent stays in the live list.
-    snap_result = await snapshot_create(container, snapshot_name)
+    try:
+        snap_result = await snapshot_create(container, snapshot_name)
+    except asyncio.TimeoutError:
+        return {
+            "error": (
+                f"archive failed: snapshot {snapshot_name} on {container} "
+                f"did not finish within {SNAPSHOT_TIMEOUT_S}s (dir-backed pools "
+                f"copy the full rootfs). Agent left in live list; check "
+                f"`incus snapshot list {container}` for a partial taos-archive "
+                f"snapshot before retrying."
+            ),
+            "status_code": 504,
+        }
+
     if not snap_result.get("success"):
         out = (snap_result.get("output") or "").strip()
         return {
@@ -268,7 +344,18 @@ async def archive_agent_fully(request: Request, name: str) -> dict:
         except Exception as exc:  # noqa: BLE001
             logger.warning("archive: chat-export failed for %s: %s", slug, exc)
 
-        # 4b) Flag the channel archived with full metadata.
+    # 5) Revoke the agent's key-store key (best effort) and every LLM gateway
+    #    key bound to the agent. Both stores are local; nothing is gated on a
+    #    process. A failed local-token revoke stops here, before the config
+    #    moves the agent out of agents, so the archive can be retried.
+    try:
+        await asyncio.to_thread(_revoke_gateway_keys, request, slug, agent_id)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("archive: credential revoke failed for %s: %s", slug, exc)
+        return {"error": f"archive failed: credential revoke failed: {exc}", "status_code": 500}
+
+    # 4b) Flag the channel archived with full metadata.
+    if channel_id:
         try:
             ch_store = request.app.state.chat_channels
             await ch_store.set_settings(
@@ -282,17 +369,6 @@ async def archive_agent_fully(request: Request, name: str) -> dict:
             )
         except Exception as exc:  # noqa: BLE001
             logger.warning("archive: channel flag failed for %s: %s", channel_id, exc)
-
-    # 5) Revoke the agent's key-store key (best effort) and every LLM gateway
-    #    key bound to the agent. Both stores are local; nothing is gated on a
-    #    process. The agent's local-token binding is revoked here too: the
-    #    slug is about to be freed, so the archived token must stop
-    #    validating as an admin credential.
-    _revoke_gateway_keys(request, slug, agent_id)
-    try:
-        request.app.state.auth.unbind_local_token_agent(slug)
-    except Exception as exc:  # noqa: BLE001 - best-effort revocation
-        logger.warning("archive: unbind local token for %s failed: %s", slug, exc)
     llm_key = agent.get("llm_key")
     llm_proxy = getattr(request.app.state, "llm_proxy", None)
     if llm_key and llm_proxy:
@@ -320,6 +396,10 @@ async def archive_agent_fully(request: Request, name: str) -> dict:
     config.archived_agents.append(archive_entry)
     await save_config_locked(config, config.config_path)
 
+    _deploy_tasks = getattr(request.app.state, "deploy_tasks", None)
+    if _deploy_tasks is not None:
+        _deploy_tasks.pop(slug, None)
+
     return {
         "status": "archived",
         "name": slug,
@@ -331,6 +411,11 @@ async def archive_agent_fully(request: Request, name: str) -> dict:
 
 
 async def restore_archived(request: Request, archive_id: str):
+    async with _restore_lock:
+        return await _restore_archived(request, archive_id)
+
+
+async def _restore_archived(request: Request, archive_id: str):
     import json as _json
     from tinyagentos.containers import (
         snapshot_restore, rename_container, start_container, set_env, exec_in_container,
@@ -362,154 +447,217 @@ async def restore_archived(request: Request, archive_id: str):
     # before that field existed.
     container = entry.get("container_name") or f"taos-agent-{desired_slug}"
 
-    # Resolve slug collisions with currently-live agents.
+    # Reserve a unique slug for this restore path. This prevents concurrent
+    # deploy/import/restore paths from picking the same name.
     try:
-        final_slug = unique_agent_slug(config, desired_slug)
+        final_slug = await reserve_agent_slug(config, desired_slug)
     except ValueError:
         from fastapi.responses import JSONResponse
         return JSONResponse({"error": "Could not resolve restore slug"}, status_code=500)
 
-    data_dir = request.app.state.data_dir
-    archive_base = data_dir / entry.get("archive_dir", "")
-
-    # 1) Restore snapshot. Container must be stopped (archive left it stopped).
-    snap_result = await snapshot_restore(container, snapshot_name)
-    if not snap_result.get("success"):
-        out = (snap_result.get("output") or "").strip()
-        from fastapi.responses import JSONResponse
-        return JSONResponse(
-            {
-                "error": (
-                    f"restore failed: snapshot_restore {container}/{snapshot_name} "
-                    f"failed: {out or 'unknown error'}"
-                ),
-            },
-            status_code=500,
-        )
-
-    # 2) Rename if the slug changed (collision resolution).
-    rename_ok = True
-    target_container = f"taos-agent-{final_slug}"
-    if final_slug != desired_slug:
-        try:
-            rename_result = await rename_container(container, target_container)
-            rename_ok = rename_result.get("success", False)
-            if not rename_ok:
-                logger.warning(
-                    "restore: rename %s -> %s failed: %s",
-                    container, target_container, rename_result.get("output", ""),
-                )
-        except Exception as exc:  # noqa: BLE001
-            rename_ok = False
-            logger.warning("restore: rename failed: %s", exc)
-    else:
-        target_container = container
-
-    # 3) Start container.
     try:
-        await start_container(target_container)
-    except Exception as exc:  # noqa: BLE001
-        logger.warning("restore: start_container failed for %s: %s", target_container, exc)
+        data_dir = request.app.state.data_dir
+        archive_base = _safe_archive_base(data_dir, entry)
 
-    # 4) Mint a new key in the local key store.
-    llm_proxy = getattr(request.app.state, "llm_proxy", None)
-    new_key = None
-    if llm_proxy:
-        # Scoped to the models the agent had when archived (the default alias
-        # when it had none), as a deploy would scope it.
-        restore_models = [
-            m for m in [original.get("model"), *(original.get("fallback_models") or [])] if m
-        ]
-        try:
-            new_key = await llm_proxy.create_agent_key(final_slug, models=restore_models or None)
-        except Exception:
-            pass
+        # 1) Restore snapshot. Container must be stopped (archive left it stopped).
+        snap_result = await snapshot_restore(container, snapshot_name)
+        if not snap_result.get("success"):
+            out = (snap_result.get("output") or "").strip()
+            from fastapi.responses import JSONResponse
+            return JSONResponse(
+                {
+                    "error": (
+                        f"restore failed: snapshot_restore {container}/{snapshot_name} "
+                        f"failed: {out or 'unknown error'}"
+                    ),
+                },
+                status_code=500,
+            )
 
-    # 5) Update openclaw env in the restored container with the new key.
-    #    Uses incus config set environment.OPENAI_API_KEY=<new> so the
-    #    value persists in the container's config and does not require a
-    #    bind-mounted file. Also restart openclaw.service if present.
-    if new_key is not None:
+        # 1b) Re-mint the per-agent local token under the restored name before the
+        #     container starts. The archived token is bound to the old name, which
+        #     a later deploy may now hold (and whose mint revoked it). Bind the
+        #     new token to the original registry_canonical_id so a surviving token
+        #     cannot fence onto a later agent that reuses the same name. Done
+        #     before the rename (the env is instance config, which a rename keeps)
+        #     so a failure leaves the container stopped under the name the archive
+        #     entry records, and the restore can be retried.
+        restored_canonical_id = original.get("registry_canonical_id")
         try:
-            # LITELLM_API_KEY first: the framework units read that name.
-            await set_env(target_container, "LITELLM_API_KEY", new_key)
-            env_result = await set_env(target_container, "OPENAI_API_KEY", new_key)
+            from tinyagentos.auth import AuthManager
+            local_token = await asyncio.to_thread(
+                AuthManager(request.app.state.data_dir).mint_agent_local_token,
+                final_slug,
+                canonical_id=restored_canonical_id,
+            )
+            env_result = await set_env(container, "TAOS_LOCAL_TOKEN", local_token)
             if not env_result.get("success"):
-                logger.warning(
-                    "restore: set_env OPENAI_API_KEY failed for %s: %s",
-                    target_container, env_result.get("output", ""),
+                raise RuntimeError(
+                    f"set_env TAOS_LOCAL_TOKEN failed: {env_result.get('output') or 'unknown error'}"
                 )
-            else:
-                # Best-effort: restart openclaw.service if it is present.
-                try:
-                    await exec_in_container(
-                        target_container,
-                        ["systemctl", "restart", "openclaw.service"],
-                        timeout=30,
-                    )
-                except Exception:
-                    pass
         except Exception as exc:  # noqa: BLE001
-            logger.warning("restore: env key update failed for %s: %s", target_container, exc)
+            logger.warning("restore: local token re-mint failed for %s: %s", container, exc)
+            from fastapi.responses import JSONResponse
+            return JSONResponse(
+                {"error": f"restore failed: local token re-mint failed: {exc}"},
+                status_code=500,
+            )
 
-    # 6) Re-import chat-export.jsonl from the archive path if present.
-    try:
-        chat_export_file = archive_base / "chat" / "chat-export.jsonl"
-        if chat_export_file.exists():
-            msg_store = request.app.state.chat_messages
-            imported = 0
+        # 2) Rename if the slug changed (collision resolution).
+        rename_ok = True
+        target_container = f"taos-agent-{final_slug}"
+        if final_slug != desired_slug:
             try:
-                with chat_export_file.open("r", encoding="utf-8") as fh:
-                    for raw_line in fh:
-                        raw_line = raw_line.strip()
-                        if not raw_line:
-                            continue
-                        try:
-                            msg = _json.loads(raw_line)
-                            await msg_store.ensure_message(msg)
-                            imported += 1
-                        except Exception as line_exc:  # noqa: BLE001
-                            logger.warning("restore: bad export line, skipping: %s", line_exc)
-                logger.info("restore: re-imported %d messages from chat-export", imported)
+                rename_result = await rename_container(container, target_container)
+                rename_ok = rename_result.get("success", False)
+                if not rename_ok:
+                    logger.warning(
+                        "restore: rename %s -> %s failed: %s",
+                        container, target_container, rename_result.get("output", ""),
+                    )
             except Exception as exc:  # noqa: BLE001
-                logger.warning("restore: chat-export read failed for %s: %s", final_slug, exc)
-    except Exception as exc:  # noqa: BLE001
-        logger.warning("restore: chat re-import outer failed: %s", exc)
+                rename_ok = False
+                logger.warning("restore: rename failed: %s", exc)
+        else:
+            target_container = container
 
-    # 7) Unflag all channels where archived_agent_id matches this archive entry.
-    agent_id_to_unflag = entry.get("id")
-    try:
-        ch_store = request.app.state.chat_channels
-        channel_id = original.get("chat_channel_id")
-        if channel_id:
-            await ch_store.set_settings(channel_id, {"archived": False})
-        all_channels = await ch_store.list_channels(archived=True)
-        for ch in all_channels:
-            ch_settings = ch.get("settings") or {}
-            if ch_settings.get("archived_agent_id") == agent_id_to_unflag:
-                await ch_store.set_settings(ch["id"], {"archived": False})
-    except Exception as exc:  # noqa: BLE001
-        logger.warning("restore: channel unflag failed: %s", exc)
+        # 4) Mint a new key in the local key store.
+        llm_proxy = getattr(request.app.state, "llm_proxy", None)
+        new_key = None
+        if llm_proxy:
+            # Scoped to the models the agent had when archived (the default alias
+            # when it had none), as a deploy would scope it.
+            restore_models = [
+                m for m in [original.get("model"), *(original.get("fallback_models") or [])] if m
+            ]
+            try:
+                new_key = await llm_proxy.create_agent_key(final_slug, models=restore_models or None)
+            except Exception:
+                pass
 
-    # 8) Move config entry from archived_agents back to agents.
-    restored = dict(original)
-    restored["name"] = final_slug
-    restored["status"] = "stopped"
-    restored["host"] = ""
-    if new_key is not None:
-        restored["llm_key"] = new_key
-    config.agents.append(restored)
-    config.archived_agents = [a for a in config.archived_agents if a.get("id") != archive_id]
-    await save_config_locked(config, config.config_path)
+        # 8) Move config entry from archived_agents back to agents BEFORE
+        #    starting the container. The restored agent's local token is bound
+        #    to the canonical id, so the middleware looks up the CURRENT config
+        #    entry for a canonical-bound token: without this entry the bridge's
+        #    bootstrap request answers 401 and fetch_bootstrap does not retry.
+        restored = dict(original)
+        restored["name"] = final_slug
+        restored["status"] = "stopped"
+        restored["host"] = ""
+        if new_key is not None:
+            restored["llm_key"] = new_key
 
-    return {
-        "status": "restored",
-        "id": archive_id,
-        "name": final_slug,
-        "display_name": restored.get("display_name", final_slug),
-        "container_renamed": rename_ok,
-        "new_llm_key": new_key is not None,
-    }
+        # Save original state for rollback on save failure
+        original_agents = list(config.agents)
+        original_archived = list(config.archived_agents)
+
+        config.agents.append(restored)
+        config.archived_agents = [a for a in config.archived_agents if a.get("id") != archive_id]
+        try:
+            await save_config_locked(config, config.config_path)
+        except Exception as exc:  # noqa: BLE001
+            # Roll back in-memory mutations before returning 500
+            config.agents = original_agents
+            config.archived_agents = original_archived
+            logger.warning("restore: save_config_locked failed for %s: %s", final_slug, exc)
+            from fastapi.responses import JSONResponse
+            release_agent_slug(final_slug)
+            return JSONResponse(
+                {"error": f"restore failed: config save failed: {exc}"},
+                status_code=500,
+            )
+
+        # 3) Start container.
+        try:
+            await start_container(target_container)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("restore: start_container failed for %s: %s", target_container, exc)
+
+        # 5) Update openclaw env in the restored container with the new key.
+        #    Uses incus config set environment.OPENAI_API_KEY=<new> so the
+        #    value persists in the container's config and does not require a
+        #    bind-mounted file. Also restart openclaw.service if present.
+        if new_key is not None:
+            try:
+                # LITELLM_API_KEY first: the framework units read that name.
+                await set_env(target_container, "LITELLM_API_KEY", new_key)
+                env_result = await set_env(target_container, "OPENAI_API_KEY", new_key)
+                if not env_result.get("success"):
+                    logger.warning(
+                        "restore: set_env OPENAI_API_KEY failed for %s: %s",
+                        target_container, env_result.get("output", ""),
+                    )
+                else:
+                    # Best-effort: restart openclaw.service if it is present.
+                    try:
+                        await exec_in_container(
+                            target_container,
+                            ["systemctl", "restart", "openclaw.service"],
+                            timeout=30,
+                        )
+                    except Exception:
+                        pass
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("restore: env key update failed for %s: %s", target_container, exc)
+
+        # 6) Re-import chat-export.jsonl from the archive path if present.
+        try:
+            if archive_base is not None:
+                chat_export_file = archive_base / "chat" / "chat-export.jsonl"
+                if chat_export_file.exists():
+                    msg_store = request.app.state.chat_messages
+                    imported = 0
+                    try:
+                        with chat_export_file.open("r", encoding="utf-8") as fh:
+                            for raw_line in fh:
+                                raw_line = raw_line.strip()
+                                if not raw_line:
+                                    continue
+                                try:
+                                    msg = _json.loads(raw_line)
+                                    await msg_store.ensure_message(msg)
+                                    imported += 1
+                                except Exception as line_exc:  # noqa: BLE001
+                                    logger.warning("restore: bad export line, skipping: %s", line_exc)
+                        logger.info("restore: re-imported %d messages from chat-export", imported)
+                    except Exception as exc:  # noqa: BLE001
+                        logger.warning("restore: chat-export read failed for %s: %s", final_slug, exc)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("restore: chat re-import outer failed: %s", exc)
+
+        # 7) Unflag all channels where archived_agent_id matches this archive entry.
+        agent_id_to_unflag = entry.get("id")
+        try:
+            ch_store = request.app.state.chat_channels
+            channel_id = original.get("chat_channel_id")
+            if channel_id:
+                await ch_store.set_settings(channel_id, {"archived": False})
+            all_channels = await ch_store.list_channels(archived=True)
+            for ch in all_channels:
+                ch_settings = ch.get("settings") or {}
+                if ch_settings.get("archived_agent_id") == agent_id_to_unflag:
+                    await ch_store.set_settings(ch["id"], {"archived": False})
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("restore: channel unflag failed: %s", exc)
+
+        _deploy_tasks = getattr(request.app.state, "deploy_tasks", None)
+        if _deploy_tasks is not None:
+            _deploy_tasks.pop(final_slug, None)
+
+        return {
+            "status": "restored",
+            "id": archive_id,
+            "name": final_slug,
+            "display_name": restored.get("display_name", final_slug),
+            "container_renamed": rename_ok,
+            "new_llm_key": new_key is not None,
+        }
+    finally:
+        # Release the reservation once the entry is appended (or the restore
+        # failed before config mutation) so a later deploy can reuse the name.
+        # If we already released on the save-failure path, release_agent_slug
+        # is idempotent for an unreserved slug.
+        release_agent_slug(final_slug)
 
 
 async def purge_archived(request: Request, archive_id: str):
@@ -532,7 +680,7 @@ async def purge_archived(request: Request, archive_id: str):
         f"taos-agent-{archived_slug}" if archived_slug else ""
     )
     data_dir = request.app.state.data_dir
-    archive_base = data_dir / entry.get("archive_dir", "")
+    archive_base = _safe_archive_base(data_dir, entry)
 
     # 1) Destroy container (destroys all snapshots too in incus).
     #    "not found" is fine — container may already be gone.
@@ -555,7 +703,7 @@ async def purge_archived(request: Request, archive_id: str):
             logger.warning("purge: export path cleanup failed %s: %s", export_path, exc)
 
     # 3) Wipe archive dir (chat-export + any other host-side state).
-    if archive_base.exists():
+    if archive_base is not None and archive_base.exists():
         try:
             shutil.rmtree(archive_base, ignore_errors=True)
         except Exception:
@@ -594,7 +742,26 @@ async def purge_archived(request: Request, archive_id: str):
     except Exception as exc:  # noqa: BLE001
         logger.warning("purge: channel/message cleanup failed: %s", exc)
 
-    # 5) Drop archived_agents entry.
+    # 5) Revoke the purged agent's local token, unless a live agent has since
+    #    taken the name (its deploy already revoked the old token).
+    #    A failed revoke keeps the archived entry so the purge can be retried
+    #    (destroy and the archive-dir wipe both tolerate a second run).
+    original_name = (entry.get("original") or {}).get("name") or ""
+    if original_name and not any(a.get("name") == original_name for a in config.agents):
+        try:
+            from tinyagentos.auth import AuthManager
+            await asyncio.to_thread(
+                AuthManager(data_dir).unbind_local_token_agent, original_name
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("purge: local token revoke failed for %s: %s", original_name, exc)
+            from fastapi.responses import JSONResponse
+            return JSONResponse(
+                {"error": f"purge failed: local token revoke failed: {exc}"},
+                status_code=500,
+            )
+
+    # 6) Drop archived_agents entry.
     config.archived_agents = [a for a in config.archived_agents if a.get("id") != archive_id]
     await save_config_locked(config, config.config_path)
 
@@ -611,11 +778,18 @@ async def purge_archived(request: Request, archive_id: str):
             )
         else:
             try:
-                request.app.state.auth.unbind_local_token_agent(archived_slug)
+                await asyncio.to_thread(
+                    request.app.state.auth.unbind_local_token_agent, archived_slug
+                )
             except Exception as exc:  # noqa: BLE001 - best-effort revocation
                 logger.warning(
                     "purge: unbind local token for %s failed: %s",
                     archived_slug, exc,
                 )
+
+    _deploy_tasks = getattr(request.app.state, "deploy_tasks", None)
+    if _deploy_tasks is not None:
+        if not any(a.get("name") == original_name for a in config.agents):
+            _deploy_tasks.pop(original_name, None)
 
     return {"status": "purged", "id": archive_id}

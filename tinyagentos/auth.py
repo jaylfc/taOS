@@ -1,4 +1,5 @@
 from __future__ import annotations
+import contextlib
 import functools
 import hashlib
 import ipaddress
@@ -1350,14 +1351,21 @@ class AuthManager:
                 return True
         return False
 
-    def mint_agent_local_token(self, agent_name: str) -> str:
+    def mint_agent_local_token(self, agent_name: str, canonical_id: str | None = None) -> str:
         """Mint a distinct local token for *agent_name* and bind it.
 
         Returns the new token. The caller is responsible for delivering it to
         the agent (e.g. via ``TAOS_LOCAL_TOKEN`` env var at deploy time).
+
+        A new deploy under *agent_name* revokes any token still bound to that
+        name: the agent that held it has been archived or purged (deploy
+        refuses a live name), and leaving it bound would fence it to the new
+        agent instead.
         """
         token = secrets.token_urlsafe(32)
-        self.bind_local_token_agent(token, agent_name)
+        self.bind_local_token_agent(
+            token, agent_name, exclusive=True, canonical_id=canonical_id
+        )
         return token
 
     def _local_token_agent_path(self) -> Path:
@@ -1368,20 +1376,74 @@ class AuthManager:
             self._local_token_agent_path().name + ".lock"
         )
 
-    def bind_local_token_agent(self, token: str, agent_name: str) -> None:
+    @staticmethod
+    def _binding_name(binding: Any) -> str | None:
+        if isinstance(binding, str):
+            return binding
+        if isinstance(binding, dict):
+            name = binding.get("name")
+            if isinstance(name, str):
+                return name
+        return None
+
+    @staticmethod
+    def _binding_canonical_id(binding: Any) -> str | None:
+        if not isinstance(binding, dict):
+            return None
+        canonical_id = binding.get("canonical_id")
+        if isinstance(canonical_id, str):
+            return canonical_id
+        return None
+
+    def bind_local_token_agent(
+        self,
+        token: str,
+        agent_name: str,
+        exclusive: bool = False,
+        canonical_id: str | None = None,
+    ) -> None:
         """Record that *token* is bound to *agent_name* for skill-exec identity.
 
-        The bindings file maps ``sha256(token) -> agent_name`` so the raw token
+        The bindings file maps ``sha256(token)`` to a legacy name string or to
+        ``{"name": agent_name, "canonical_id": canonical_id}`` so the raw token
         is never written to disk a second time. A process-shared file lock
         serialises the read-modify-write cycle so concurrent deploys cannot
         lose one another's binding. The bindings file must be readable and
         a valid JSON object; a corrupt or mis-shaped file raises rather than
-        being silently replaced. Any previous binding for the same agent is
-        removed first so an agent has at most one live token.
+        being silently replaced. With *exclusive*, any other token bound to
+        *agent_name* is dropped in the same locked write.
         """
+        token_hash = hashlib.sha256(token.encode()).hexdigest()
+        value: Any = agent_name
+        if canonical_id is not None:
+            value = {"name": agent_name, "canonical_id": canonical_id}
+        with self._edit_local_token_bindings() as data:
+            if exclusive:
+                for h in [
+                    h
+                    for h, binding in data.items()
+                    if self._binding_name(binding) == agent_name
+                ]:
+                    del data[h]
+            data[token_hash] = value
+
+    def unbind_local_token_agent(self, agent_name: str) -> int:
+        """Revoke every token bound to *agent_name*; return how many were bound."""
+        with self._edit_local_token_bindings() as data:
+            stale = [
+                h
+                for h, binding in data.items()
+                if self._binding_name(binding) == agent_name
+            ]
+            for h in stale:
+                del data[h]
+        return len(stale)
+
+    @contextlib.contextmanager
+    def _edit_local_token_bindings(self):
+        """Yield the bindings dict under the file lock, then write it back."""
         path = self._local_token_agent_path()
         lock_path = self._local_token_agent_lock_path()
-        token_hash = hashlib.sha256(token.encode()).hexdigest()
         lock = FileLock(str(lock_path), timeout=10)
         with lock:
             if path.exists():
@@ -1404,44 +1466,12 @@ class AuthManager:
                     )
             else:
                 data = {}
-            for existing_hash in [k for k, v in data.items() if v == agent_name]:
-                del data[existing_hash]
-            data[token_hash] = agent_name
+
+            yield data
             atomic_write_text(path, json.dumps(data), mode=0o600)
 
-    def unbind_local_token_agent(self, agent_name: str) -> int:
-        """Remove every entry bound to *agent_name*. Returns the count removed."""
-        path = self._local_token_agent_path()
-        lock_path = self._local_token_agent_lock_path()
-        lock = FileLock(str(lock_path), timeout=10)
-        with lock:
-            if not path.exists():
-                return 0
-            try:
-                raw = path.read_text()
-            except OSError as exc:
-                raise AuthStoreCorruptError(
-                    f"cannot read bindings file {path}: {exc}"
-                ) from exc
-            try:
-                data = json.loads(raw)
-            except json.JSONDecodeError as exc:
-                raise AuthStoreCorruptError(
-                    f"bindings file {path} is not valid JSON: {exc}"
-                ) from exc
-            if not isinstance(data, dict):
-                raise AuthStoreCorruptError(
-                    f"bindings file {path} is a "
-                    f"{type(data).__name__}, expected an object"
-                )
-            keys_to_remove = [k for k, v in data.items() if v == agent_name]
-            for k in keys_to_remove:
-                del data[k]
-            atomic_write_text(path, json.dumps(data), mode=0o600)
-            return len(keys_to_remove)
-
-    def get_local_token_agent(self, presented: str) -> str | None:
-        """Return the agent name bound to this local token, or ``None``."""
+    def get_local_token_binding(self, presented: str) -> tuple[str, str | None] | None:
+        """Return ``(name, canonical_id)`` for *presented*, or ``None``."""
         if not presented:
             return None
         path = self._local_token_agent_path()
@@ -1454,7 +1484,16 @@ class AuthManager:
         if not isinstance(data, dict):
             return None
         token_hash = hashlib.sha256(presented.encode()).hexdigest()
-        return data.get(token_hash)
+        binding = data.get(token_hash)
+        name = self._binding_name(binding)
+        if name is None:
+            return None
+        return (name, self._binding_canonical_id(binding))
+
+    def get_local_token_agent(self, presented: str) -> str | None:
+        """Return the agent name bound to this local token, or ``None``."""
+        bound = self.get_local_token_binding(presented)
+        return bound[0] if bound is not None else None
 
     def update_last_login(self, user_id: str) -> None:
         data = self._read_users()

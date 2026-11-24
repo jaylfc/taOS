@@ -13,6 +13,7 @@ class _FakeClient:
         self.calls = []
         self.base_url = "http://x"
         self.token = "t"
+        self._raise = None
 
     def get(self, path, params=None):
         self.calls.append(("GET", path, params))
@@ -28,6 +29,8 @@ class _FakeClient:
 
     def delete(self, path, params=None):
         self.calls.append(("DELETE", path, params))
+        if self._raise is not None:
+            raise self._raise
         return {"ok": True}
 
 
@@ -162,3 +165,19 @@ def test_pairing_manual_url_does_not_clobber_server_url(monkeypatch, capsys):
     assert rc == 0
     assert seen["url"] == "http://server:6969"
     assert fake.calls[0][2] == {"url": "http://w1:9000", "code": "ABC"}
+
+
+def test_cluster_remove_403_prints_admin_message(monkeypatch, capsys):
+    import pytest
+
+    from tinyagentos.cli.taosctl import __main__ as cli_main
+    from tinyagentos.cli.taosctl import client as cli_client
+
+    fake = _FakeClient()
+    fake._raise = cli_client.ApiError(403, "forbidden")
+    monkeypatch.setattr(cli_main, "TaosClient", lambda **k: fake)
+    with pytest.raises(SystemExit) as exc:
+        cli_main.main(["cluster", "remove", "w1"])
+    assert exc.value.code == 1
+    captured = capsys.readouterr()
+    assert "Removing a worker needs a signed-in admin" in captured.out

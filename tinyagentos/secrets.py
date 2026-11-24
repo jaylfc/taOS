@@ -21,6 +21,7 @@ CREATE TABLE IF NOT EXISTS secrets (
     category TEXT NOT NULL DEFAULT 'general',
     value TEXT NOT NULL,
     description TEXT DEFAULT '',
+    write_once INTEGER NOT NULL DEFAULT 0,
     created_at INTEGER NOT NULL,
     updated_at INTEGER NOT NULL
 );
@@ -150,6 +151,17 @@ def _decrypt(encrypted: str, key_dir: Path | None = None) -> str:
     return _xor_decrypt(encrypted)
 
 
+class WriteOnceError(Exception):
+    """A write-once secret's pinned value cannot be changed or deleted.
+
+    Raised by ``SecretsStore.update`` (value change) and ``SecretsStore.delete``
+    (without ``force``) so the route layer can map it to a 409 with a clear
+    body.  Metadata edits (description, category, grants) are unaffected: only
+    the encrypted VALUE is pinned, because rotating it would orphan every
+    span encrypted under the old key id.
+    """
+
+
 class SecretsStore(BaseStore):
     SCHEMA = SECRETS_SCHEMA
 
@@ -160,6 +172,22 @@ class SecretsStore(BaseStore):
 
     async def _post_init(self) -> None:
         await self._db.execute("PRAGMA foreign_keys = ON")
+        # `write_once` was added after the initial secrets ship. Guarded ALTER so
+        # existing databases gain it without a destructive migration (SQLite
+        # lacks ADD COLUMN IF NOT EXISTS before 3.37). Default 0 keeps every
+        # pre-existing secret behaving exactly as before: only secrets created
+        # with the flag set are pinned.
+        cols = {
+            row[1]
+            for row in await (
+                await self._db.execute("PRAGMA table_info(secrets)")
+            ).fetchall()
+        }
+        if "write_once" not in cols:
+            await self._db.execute(
+                "ALTER TABLE secrets ADD COLUMN write_once INTEGER NOT NULL DEFAULT 0"
+            )
+            await self._db.commit()
         # Seed default categories
         for cat in DEFAULT_CATEGORIES:
             await self._db.execute(
@@ -198,12 +226,13 @@ class SecretsStore(BaseStore):
         category: str = "general",
         description: str = "",
         agents: list[str] | None = None,
+        write_once: bool = False,
     ) -> int:
         now = int(time.time())
         encrypted = self._enc(value)
         cursor = await self._db.execute(
-            "INSERT INTO secrets (name, category, value, description, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)",
-            (name, category, encrypted, description, now, now),
+            "INSERT INTO secrets (name, category, value, description, write_once, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (name, category, encrypted, description, int(bool(write_once)), now, now),
         )
         secret_id = cursor.lastrowid
         if agents:
@@ -217,7 +246,7 @@ class SecretsStore(BaseStore):
 
     async def get(self, name: str) -> dict | None:
         async with self._db.execute(
-            "SELECT id, name, category, value, description, created_at, updated_at FROM secrets WHERE name = ?",
+            "SELECT id, name, category, value, description, write_once, created_at, updated_at FROM secrets WHERE name = ?",
             (name,),
         ) as cursor:
             row = await cursor.fetchone()
@@ -230,13 +259,14 @@ class SecretsStore(BaseStore):
             "category": row[2],
             "value": await self._dec(row[3], name=row[1], secret_id=row[0]),
             "description": row[4],
-            "created_at": row[5],
-            "updated_at": row[6],
+            "write_once": bool(row[5]),
+            "created_at": row[6],
+            "updated_at": row[7],
             "agents": agents,
         }
 
     async def list(self, category: str | None = None) -> list[dict]:
-        sql = "SELECT id, name, category, description, created_at, updated_at FROM secrets"
+        sql = "SELECT id, name, category, description, write_once, created_at, updated_at FROM secrets"
         params: list = []
         if category:
             sql += " WHERE category = ?"
@@ -253,8 +283,9 @@ class SecretsStore(BaseStore):
                     "name": r[1],
                     "category": r[2],
                     "description": r[3],
-                    "created_at": r[4],
-                    "updated_at": r[5],
+                    "write_once": bool(r[4]),
+                    "created_at": r[5],
+                    "updated_at": r[6],
                     "agents": agents,
                 }
             )
@@ -271,6 +302,15 @@ class SecretsStore(BaseStore):
         secret = await self.get(name)
         if not secret:
             return False
+        # A write-once secret pins the VALUE: rotating it would orphan every
+        # span encrypted under the old key id (the taosmd archive key lives
+        # here).  Metadata edits still land; only the ciphertext is frozen.
+        # Rotation is a NEW secret name, never an in-place value change.
+        if value is not None and secret.get("write_once"):
+            raise WriteOnceError(
+                f"secret {name!r} is write_once; its value is pinned and cannot "
+                "be changed. Rotate by creating a new secret under a new name."
+            )
         now = int(time.time())
         if value is not None:
             await self._db.execute(
@@ -299,7 +339,16 @@ class SecretsStore(BaseStore):
         await self._db.commit()
         return True
 
-    async def delete(self, name: str) -> bool:
+    async def delete(self, name: str, *, force: bool = False) -> bool:
+        secret = await self._db.execute(
+            "SELECT write_once FROM secrets WHERE name = ?", (name,)
+        )
+        row = await secret.fetchone()
+        if row and row[0] and not force:
+            raise WriteOnceError(
+                f"secret {name!r} is write_once and cannot be deleted without "
+                "an explicit force=true admin query."
+            )
         cursor = await self._db.execute("DELETE FROM secrets WHERE name = ?", (name,))
         await self._db.commit()
         return cursor.rowcount > 0

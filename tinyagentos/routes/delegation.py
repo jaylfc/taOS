@@ -239,6 +239,7 @@ async def _notify_delegate(
             request.app.state.project_store,
             task["project_id"],
             config=getattr(request.app.state, "config", None),
+            agent_registry=getattr(request.app.state, "agent_registry", None),
         )
         content = f'@{to_agent} {from_agent} delegated "{task["title"]}" to you.'
         if note:

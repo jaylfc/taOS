@@ -884,6 +884,247 @@ class TestGetNetworkRates:
 
 
 # ---------------------------------------------------------------------------
+# read_all_intel_gpus
+# ---------------------------------------------------------------------------
+
+
+class TestReadAllIntelGpus:
+    def setup_method(self):
+        from tinyagentos import system_stats
+
+        system_stats._INTEL_LAST.clear()
+
+    def _add_intel_card(self, root, name="card0", vendor="0x8086", device="0x4c8a", **files):
+        card = root / name
+        (card / "device").mkdir(parents=True, exist_ok=True)
+        (card / "device" / "vendor").write_text(vendor + "\n")
+        (card / "device" / "device").write_text(device + "\n")
+        for rel, value in files.items():
+            target = card / rel
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text(str(value) + "\n")
+        return card
+
+    def _fake_time(self, monkeypatch, system_stats, now=1000.0):
+        class FakeTime:
+            def __init__(self):
+                self.now = now
+
+            def monotonic(self):
+                return self.now
+
+        fake = FakeTime()
+        monkeypatch.setattr(system_stats.time, "monotonic", fake.monotonic)
+        return fake
+
+    def test_rc6_load_between_two_samples(self, monkeypatch, tmp_path):
+        from tinyagentos import system_stats
+
+        drm = tmp_path / "sys" / "class" / "drm"
+        drm.mkdir(parents=True)
+        self._add_intel_card(
+            drm,
+            "card0",
+            **{
+                "gt/gt0/rc6_residency_ms": 100,
+                "gt_act_freq_mhz": 0,
+                "gt_cur_freq_mhz": 1100,
+                "gt_max_freq_mhz": 1200,
+            },
+        )
+        monkeypatch.setattr(system_stats, "_DRM_ROOT", drm)
+        fake_time = self._fake_time(monkeypatch, system_stats)
+
+        first = system_stats.read_all_intel_gpus()
+        assert first is not None
+        assert len(first) == 1
+        # First sample reports null load.
+        assert first[0]["load_percent"] is None
+        # act_freq 0 falls back to cur_freq.
+        assert first[0]["freq_hz"] == 1100 * 1_000_000
+        assert first[0]["freq_max_hz"] == 1200 * 1_000_000
+        assert first[0]["shared_memory"] is True
+        assert first[0]["vram_percent"] is None
+        assert first[0]["vram_used_mb"] is None
+        assert first[0]["vram_total_mb"] is None
+
+        # Second sample 2000 ms later with 1900 ms more RC6 residency -> 5% busy.
+        fake_time.now = 1002.0
+        (drm / "card0" / "gt" / "gt0" / "rc6_residency_ms").write_text("2000\n")
+        second = system_stats.read_all_intel_gpus()
+        assert second[0]["load_percent"] == 5
+
+    def test_missing_files_nulls_no_crash(self, monkeypatch, tmp_path):
+        from tinyagentos import system_stats
+
+        drm = tmp_path / "sys" / "class" / "drm"
+        drm.mkdir(parents=True)
+        self._add_intel_card(drm, "card0")
+        monkeypatch.setattr(system_stats, "_DRM_ROOT", drm)
+        self._fake_time(monkeypatch, system_stats)
+
+        result = system_stats.read_all_intel_gpus()
+        assert result is not None
+        assert len(result) == 1
+        entry = result[0]
+        assert entry["load_percent"] is None
+        assert entry["freq_hz"] is None
+        assert entry["freq_max_hz"] is None
+        assert entry["shared_memory"] is True
+        assert entry["vram_percent"] is None
+        assert entry["vram_used_mb"] is None
+        assert entry["vram_total_mb"] is None
+
+    def test_xe_driver_paths(self, monkeypatch, tmp_path):
+        from tinyagentos import system_stats
+
+        drm = tmp_path / "sys" / "class" / "drm"
+        drm.mkdir(parents=True)
+        card = drm / "card0"
+        (card / "device").mkdir(parents=True)
+        (card / "device" / "vendor").write_text("0x8086\n")
+        (card / "device" / "device").write_text("0x4c8a\n")
+        (card / "device" / "tile0" / "gt0" / "gtidle").mkdir(parents=True)
+        (card / "device" / "tile0" / "gt0" / "gtidle" / "idle_residency_ms").write_text("100\n")
+        (card / "device" / "tile0" / "gt0" / "freq0").mkdir(parents=True)
+        (card / "device" / "tile0" / "gt0" / "freq0" / "act_freq").write_text("1300\n")
+        (card / "device" / "tile0" / "gt0" / "freq0" / "max_freq").write_text("1400\n")
+        monkeypatch.setattr(system_stats, "_DRM_ROOT", drm)
+        fake_time = self._fake_time(monkeypatch, system_stats)
+
+        first = system_stats.read_all_intel_gpus()
+        assert first[0]["load_percent"] is None
+        assert first[0]["freq_hz"] == 1300 * 1_000_000
+        assert first[0]["freq_max_hz"] == 1400 * 1_000_000
+
+        fake_time.now = 1002.0
+        (card / "device" / "tile0" / "gt0" / "gtidle" / "idle_residency_ms").write_text("2000\n")
+        second = system_stats.read_all_intel_gpus()
+        assert second[0]["load_percent"] == 5
+
+    def test_xe_reads_min_freq(self, monkeypatch, tmp_path):
+        from tinyagentos import system_stats
+
+        drm = tmp_path / "sys" / "class" / "drm"
+        drm.mkdir(parents=True)
+        card = drm / "card0"
+        (card / "device").mkdir(parents=True)
+        (card / "device" / "vendor").write_text("0x8086\n")
+        (card / "device" / "device").write_text("0x4c8a\n")
+        (card / "device" / "tile0" / "gt0" / "freq0").mkdir(parents=True)
+        (card / "device" / "tile0" / "gt0" / "freq0" / "cur_freq").write_text("1300\n")
+        (card / "device" / "tile0" / "gt0" / "freq0" / "max_freq").write_text("1400\n")
+        (card / "device" / "tile0" / "gt0" / "freq0" / "min_freq").write_text("900\n")
+        monkeypatch.setattr(system_stats, "_DRM_ROOT", drm)
+        self._fake_time(monkeypatch, system_stats)
+
+        first = system_stats.read_all_intel_gpus()
+        assert first[0]["freq_hz"] == 1300 * 1_000_000
+        assert first[0]["freq_max_hz"] == 1400 * 1_000_000
+        assert first[0].get("freq_min_hz") == 900 * 1_000_000
+
+    def test_non_intel_card_skipped(self, monkeypatch, tmp_path):
+        from tinyagentos import system_stats
+
+        drm = tmp_path / "sys" / "class" / "drm"
+        drm.mkdir(parents=True)
+        self._add_intel_card(drm, "card0", vendor="0x1002")
+        monkeypatch.setattr(system_stats, "_DRM_ROOT", drm)
+        self._fake_time(monkeypatch, system_stats)
+
+        assert system_stats.read_all_intel_gpus() is None
+
+    def test_no_drm_dir(self, monkeypatch, tmp_path):
+        from tinyagentos import system_stats
+
+        monkeypatch.setattr(system_stats, "_DRM_ROOT", tmp_path / "sys" / "class" / "drm")
+        self._fake_time(monkeypatch, system_stats)
+        assert system_stats.read_all_intel_gpus() is None
+
+    def test_amd_gpu_busy_percent(self, monkeypatch, tmp_path):
+        from tinyagentos import system_stats
+
+        drm = tmp_path / "sys" / "class" / "drm"
+        drm.mkdir(parents=True)
+        card = drm / "card0"
+        (card / "device").mkdir(parents=True)
+        (card / "device" / "vendor").write_text("0x1002\n")
+        (card / "device" / "gpu_busy_percent").write_text("42\n")
+        monkeypatch.setattr(system_stats, "_DRM_ROOT", drm)
+
+        result = system_stats.read_amd_sysfs_loads()
+        assert result is not None
+        assert len(result) == 1
+        assert result[0]["load_percent"] == 42
+
+    def test_amd_gpu_busy_percent_missing_file_null(self, monkeypatch, tmp_path):
+        from tinyagentos import system_stats
+
+        drm = tmp_path / "sys" / "class" / "drm"
+        drm.mkdir(parents=True)
+        card = drm / "card0"
+        (card / "device").mkdir(parents=True)
+        (card / "device" / "vendor").write_text("0x1002\n")
+        monkeypatch.setattr(system_stats, "_DRM_ROOT", drm)
+
+        result = system_stats.read_amd_sysfs_loads()
+        assert result is not None
+        assert result[0]["load_percent"] is None
+
+    def test_amd_skips_non_amd_cards(self, monkeypatch, tmp_path):
+        from tinyagentos import system_stats
+
+        drm = tmp_path / "sys" / "class" / "drm"
+        drm.mkdir(parents=True)
+        card = drm / "card0"
+        (card / "device").mkdir(parents=True)
+        (card / "device" / "vendor").write_text("0x8086\n")
+        monkeypatch.setattr(system_stats, "_DRM_ROOT", drm)
+
+        assert system_stats.read_amd_sysfs_loads() is None
+
+
+# ---------------------------------------------------------------------------
+# get_all_gpu_loads intel wiring
+# ---------------------------------------------------------------------------
+
+
+class TestGetAllGpuLoadsIntel:
+    @patch("tinyagentos.system_stats.read_all_intel_gpus")
+    def test_intel_entry_has_shared_memory(self, mock_intel):
+        from tinyagentos.system_stats import get_all_gpu_loads
+
+        mock_intel.return_value = [
+            {
+                "index": 0,
+                "pci_address": "0000:00:02.0",
+                "name": "",
+                "load_percent": 5,
+                "freq_hz": 1100 * 1_000_000,
+                "freq_max_hz": 1200 * 1_000_000,
+                "vram_percent": None,
+                "vram_used_mb": None,
+                "vram_total_mb": None,
+                "shared_memory": True,
+            }
+        ]
+
+        result = get_all_gpu_loads([{"type": "intel", "pci_address": "0000:00:02.0"}])
+        assert result == [
+            {
+                "type": "intel",
+                "load_percent": 5,
+                "freq_hz": 1100 * 1_000_000,
+                "freq_max_hz": 1200 * 1_000_000,
+                "vram_percent": None,
+                "vram_used_mb": None,
+                "vram_total_mb": None,
+                "shared_memory": True,
+            }
+        ]
+
+
+# ---------------------------------------------------------------------------
 # get_top_processes
 # ---------------------------------------------------------------------------
 
@@ -968,3 +1209,393 @@ class TestGetTopProcesses:
 
         result = get_top_processes()
         assert result[0]["cpu_percent"] == 0.0
+
+
+# ---------------------------------------------------------------------------
+# get_all_gpu_loads - regression tests for tsk-dyc5ff
+# ---------------------------------------------------------------------------
+
+
+class TestGetAllGpuLoadsAmdRocmMerge:
+    """AMD: prefer ROCm VRAM over sysfs when both present (Issue 1)."""
+
+    @patch("tinyagentos.system_stats.read_amd_sysfs_loads")
+    @patch("tinyagentos.system_stats.read_all_amd_gpus")
+    def test_amd_prefers_rocm_vram_over_sysfs(self, mock_rocm, mock_sysfs):
+        from tinyagentos.system_stats import get_all_gpu_loads
+
+        # sysfs has load but no VRAM
+        mock_sysfs.return_value = [
+            {
+                "index": 0,
+                "pci_address": "0000:03:00.0",
+                "load_percent": 42,
+                "freq_hz": None,
+                "vram_percent": None,
+                "vram_used_mb": None,
+                "vram_total_mb": None,
+            }
+        ]
+        # ROCm has VRAM but no PCI address in list
+        mock_rocm.return_value = [
+            {
+                "index": 0,
+                "name": "AMD Radeon RX 7900 XTX",
+                "util_percent": 0,
+                "freq_hz": 0,
+                "mem_used_mb": 8192,
+                "mem_total_mb": 24576,
+            }
+        ]
+
+        gpus = [{"type": "amd", "pci_address": "0000:03:00.0", "model": "RX 7900 XTX"}]
+        result = get_all_gpu_loads(gpus)
+
+        assert len(result) == 1
+        entry = result[0]
+        # load from ROCm (preferred over sysfs when ROCm has a value)
+        assert entry["load_percent"] == 0
+        # VRAM from ROCm
+        assert entry["vram_used_mb"] == 8192
+        assert entry["vram_total_mb"] == 24576
+        assert entry["vram_percent"] == pytest.approx(33.3, rel=0.1)
+
+    @patch("tinyagentos.system_stats.read_amd_sysfs_loads")
+    @patch("tinyagentos.system_stats.read_all_amd_gpus")
+    def test_amd_sysfs_only_when_no_rocm(self, mock_rocm, mock_sysfs):
+        from tinyagentos.system_stats import get_all_gpu_loads
+
+        mock_sysfs.return_value = [
+            {
+                "index": 0,
+                "pci_address": "0000:03:00.0",
+                "load_percent": 42,
+                "freq_hz": None,
+                "vram_percent": None,
+                "vram_used_mb": None,
+                "vram_total_mb": None,
+            }
+        ]
+        mock_rocm.return_value = None  # ROCm unavailable
+
+        gpus = [{"type": "amd", "pci_address": "0000:03:00.0"}]
+        result = get_all_gpu_loads(gpus)
+
+        assert result[0]["load_percent"] == 42
+        assert result[0]["vram_used_mb"] is None
+        assert result[0]["vram_total_mb"] is None
+
+
+class TestGetAllGpuLoadsUtilZero:
+    """Utilisation 0 must not become null (Issue 2)."""
+
+    @patch("tinyagentos.system_stats.read_all_nvidia_gpus")
+    def test_nvidia_util_zero_not_null(self, mock_nvidia):
+        from tinyagentos.system_stats import get_all_gpu_loads
+
+        mock_nvidia.return_value = [
+            {
+                "index": 0,
+                "pci_bus_id": "0000:01:00.0",
+                "name": "RTX 3090",
+                "util_percent": 0,  # Zero utilisation
+                "freq_hz": 1500 * 1_000_000,
+                "mem_used_mb": 1024,
+                "mem_total_mb": 24576,
+            }
+        ]
+
+        gpus = [{"type": "nvidia", "pci_address": "0000:01:00.0"}]
+        result = get_all_gpu_loads(gpus)
+
+        assert result[0]["load_percent"] == 0
+        assert result[0]["freq_hz"] == 1500 * 1_000_000
+
+    @patch("tinyagentos.system_stats.read_amd_sysfs_loads")
+    @patch("tinyagentos.system_stats.read_all_amd_gpus")
+    def test_amd_util_zero_not_null(self, mock_rocm, mock_sysfs):
+        from tinyagentos.system_stats import get_all_gpu_loads
+
+        mock_sysfs.return_value = [
+            {
+                "index": 0,
+                "pci_address": "0000:03:00.0",
+                "load_percent": 0,  # Zero utilisation
+                "freq_hz": None,
+                "vram_percent": None,
+                "vram_used_mb": None,
+                "vram_total_mb": None,
+            }
+        ]
+        mock_rocm.return_value = [
+            {
+                "index": 0,
+                "util_percent": 0,
+                "freq_hz": 0,
+                "mem_used_mb": 0,
+                "mem_total_mb": 8192,
+            }
+        ]
+
+        gpus = [{"type": "amd", "pci_address": "0000:03:00.0"}]
+        result = get_all_gpu_loads(gpus)
+
+        assert result[0]["load_percent"] == 0
+
+    @patch("tinyagentos.system_stats.read_all_intel_gpus")
+    def test_intel_util_zero_not_null(self, mock_intel):
+        from tinyagentos.system_stats import get_all_gpu_loads
+
+        mock_intel.return_value = [
+            {
+                "index": 0,
+                "pci_address": "0000:00:02.0",
+                "load_percent": 0,  # Zero utilisation
+                "freq_hz": 300 * 1_000_000,
+                "freq_max_hz": 1200 * 1_000_000,
+                "vram_percent": None,
+                "vram_used_mb": None,
+                "vram_total_mb": None,
+                "shared_memory": True,
+            }
+        ]
+
+        gpus = [{"type": "intel", "pci_address": "0000:00:02.0"}]
+        result = get_all_gpu_loads(gpus)
+
+        assert result[0]["load_percent"] == 0
+        assert result[0]["freq_hz"] == 300 * 1_000_000
+
+
+class TestGetAllGpuLoadsNoPCI:
+    """Records without pci_address fall back to vendor index (Issue 3)."""
+
+    @patch("tinyagentos.system_stats.read_all_nvidia_gpus")
+    def test_nvidia_no_pci_address_fallback(self, mock_nvidia):
+        from tinyagentos.system_stats import get_all_gpu_loads
+
+        # nvidia-smi returns stats WITH PCI addresses, but hardware record has none
+        mock_nvidia.return_value = [
+            {
+                "index": 0,
+                "pci_bus_id": "0000:01:00.0",
+                "name": "RTX 3090",
+                "util_percent": 45,
+                "freq_hz": 1800 * 1_000_000,
+                "mem_used_mb": 12288,
+                "mem_total_mb": 24576,
+            }
+        ]
+
+        # GPU record has NO pci_address
+        gpus = [{"type": "nvidia", "model": "RTX 3090"}]
+        result = get_all_gpu_loads(gpus)
+
+        assert len(result) == 1
+        assert result[0]["load_percent"] == 45
+        assert result[0]["vram_total_mb"] == 24576
+
+    @patch("tinyagentos.system_stats.read_all_intel_gpus")
+    def test_intel_no_pci_address_fallback(self, mock_intel):
+        from tinyagentos.system_stats import get_all_gpu_loads
+
+        mock_intel.return_value = [
+            {
+                "index": 0,
+                "pci_address": "0000:00:02.0",
+                "load_percent": 5,
+                "freq_hz": 1100 * 1_000_000,
+                "freq_max_hz": 1200 * 1_000_000,
+                "vram_percent": None,
+                "vram_used_mb": None,
+                "vram_total_mb": None,
+                "shared_memory": True,
+            }
+        ]
+
+        # GPU record has NO pci_address
+        gpus = [{"type": "intel", "model": "UHD Graphics"}]
+        result = get_all_gpu_loads(gpus)
+
+        assert len(result) == 1
+        assert result[0]["load_percent"] == 5
+        assert result[0]["freq_hz"] == 1100 * 1_000_000
+
+    @patch("tinyagentos.system_stats.read_amd_sysfs_loads")
+    @patch("tinyagentos.system_stats.read_all_amd_gpus")
+    def test_amd_no_pci_address_fallback(self, mock_rocm, mock_sysfs):
+        from tinyagentos.system_stats import get_all_gpu_loads
+
+        mock_sysfs.return_value = [
+            {
+                "index": 0,
+                "pci_address": "0000:03:00.0",
+                "load_percent": 30,
+                "freq_hz": None,
+                "vram_percent": None,
+                "vram_used_mb": None,
+                "vram_total_mb": None,
+            }
+        ]
+        mock_rocm.return_value = [
+            {
+                "index": 0,
+                "util_percent": 0,
+                "freq_hz": 0,
+                "mem_used_mb": 4096,
+                "mem_total_mb": 16384,
+            }
+        ]
+
+        # GPU record has NO pci_address
+        gpus = [{"type": "amd", "model": "RX 6800"}]
+        result = get_all_gpu_loads(gpus)
+
+        assert len(result) == 1
+        # load from ROCm (preferred over sysfs when ROCm has a value, fallback to vendor index)
+        assert result[0]["load_percent"] == 0
+        assert result[0]["vram_used_mb"] == 4096
+        assert result[0]["vram_total_mb"] == 16384
+
+
+class TestGetAllGpuLoadsPciBridge:
+    """PCI address from LAST component for devices behind bridge (Issue 4)."""
+
+    @patch("tinyagentos.system_stats.read_all_intel_gpus")
+    def test_intel_pci_address_last_component(self, mock_intel):
+        from tinyagentos.system_stats import get_all_gpu_loads
+
+        # Simulate a device behind a bridge: path has two 0000: components
+        # /sys/devices/pci0000:00/0000:00:01.0/0000:02:00.0/drm/card0/device
+        # The LAST component (0000:02:00.0) should be used
+        mock_intel.return_value = [
+            {
+                "index": 0,
+                "pci_address": "0000:02:00.0",  # This is what the fixed code extracts
+                "load_percent": 10,
+                "freq_hz": 1000 * 1_000_000,
+                "freq_max_hz": 1200 * 1_000_000,
+                "vram_percent": None,
+                "vram_used_mb": None,
+                "vram_total_mb": None,
+                "shared_memory": True,
+            }
+        ]
+
+        gpus = [{"type": "intel", "pci_address": "0000:02:00.0"}]
+        result = get_all_gpu_loads(gpus)
+
+        assert result[0]["load_percent"] == 10
+
+    @patch("tinyagentos.system_stats.read_amd_sysfs_loads")
+    @patch("tinyagentos.system_stats.read_all_amd_gpus")
+    def test_amd_pci_address_last_component(self, mock_rocm, mock_sysfs):
+        from tinyagentos.system_stats import get_all_gpu_loads
+
+        mock_sysfs.return_value = [
+            {
+                "index": 0,
+                "pci_address": "0000:02:00.0",  # Last component
+                "load_percent": 25,
+                "freq_hz": None,
+                "vram_percent": None,
+                "vram_used_mb": None,
+                "vram_total_mb": None,
+            }
+        ]
+        mock_rocm.return_value = [
+            {
+                "index": 0,
+                "util_percent": 0,
+                "freq_hz": 0,
+                "mem_used_mb": 2048,
+                "mem_total_mb": 8192,
+            }
+        ]
+
+        gpus = [{"type": "amd", "pci_address": "0000:02:00.0"}]
+        result = get_all_gpu_loads(gpus)
+
+        # load from ROCm (preferred over sysfs when ROCm has a value)
+        assert result[0]["load_percent"] == 0
+        assert result[0]["vram_total_mb"] == 8192
+
+
+class TestGetAllGpuLoadsMultiVendorIndex:
+    """Multiple GPUs of same vendor use vendor index for fallback."""
+
+    @patch("tinyagentos.system_stats.read_all_nvidia_gpus")
+    def test_two_nvidia_cards_vendor_index(self, mock_nvidia):
+        from tinyagentos.system_stats import get_all_gpu_loads
+
+        mock_nvidia.return_value = [
+            {
+                "index": 0,
+                "pci_bus_id": "0000:01:00.0",
+                "name": "RTX 3090",
+                "util_percent": 45,
+                "freq_hz": 1800 * 1_000_000,
+                "mem_used_mb": 12288,
+                "mem_total_mb": 24576,
+            },
+            {
+                "index": 1,
+                "pci_bus_id": "0000:02:00.0",
+                "name": "RTX 3060",
+                "util_percent": 12,
+                "freq_hz": 1500 * 1_000_000,
+                "mem_used_mb": 4096,
+                "mem_total_mb": 12288,
+            },
+        ]
+
+        gpus = [
+            {"type": "nvidia", "pci_address": "0000:01:00.0", "model": "RTX 3090"},
+            {"type": "nvidia", "pci_address": "0000:02:00.0", "model": "RTX 3060"},
+        ]
+        result = get_all_gpu_loads(gpus)
+
+        assert len(result) == 2
+        assert result[0]["load_percent"] == 45
+        assert result[0]["vram_total_mb"] == 24576
+        assert result[1]["load_percent"] == 12
+        assert result[1]["vram_total_mb"] == 12288
+
+    @patch("tinyagentos.system_stats.read_all_intel_gpus")
+    def test_two_intel_cards_vendor_index(self, mock_intel):
+        from tinyagentos.system_stats import get_all_gpu_loads
+
+        mock_intel.return_value = [
+            {
+                "index": 0,
+                "pci_address": "0000:00:02.0",
+                "load_percent": 5,
+                "freq_hz": 1100 * 1_000_000,
+                "freq_max_hz": 1200 * 1_000_000,
+                "vram_percent": None,
+                "vram_used_mb": None,
+                "vram_total_mb": None,
+                "shared_memory": True,
+            },
+            {
+                "index": 1,
+                "pci_address": "0000:01:00.0",
+                "load_percent": 15,
+                "freq_hz": 1200 * 1_000_000,
+                "freq_max_hz": 1500 * 1_000_000,
+                "vram_percent": None,
+                "vram_used_mb": None,
+                "vram_total_mb": None,
+                "shared_memory": True,
+            },
+        ]
+
+        gpus = [
+            {"type": "intel", "pci_address": "0000:00:02.0", "model": "UHD 750"},
+            {"type": "intel", "pci_address": "0000:01:00.0", "model": "Arc A770"},
+        ]
+        result = get_all_gpu_loads(gpus)
+
+        assert len(result) == 2
+        assert result[0]["load_percent"] == 5
+        assert result[1]["load_percent"] == 15

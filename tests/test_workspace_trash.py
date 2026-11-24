@@ -11,12 +11,14 @@ rather than merely asserting the API response shape.
 from __future__ import annotations
 
 import io
+import json
 
 import pytest
 
 from tinyagentos.workspace_trash import (
     TrashItemNotFound,
     TrashRestoreConflict,
+    TrashRestoreOutsideRoot,
     empty_trash,
     get_trash_dir,
     list_trash_items,
@@ -110,6 +112,29 @@ class TestWorkspaceTrashHelper:
 
         with pytest.raises(TrashRestoreConflict):
             restore_trash_item(trash_dir, workspace, metadata["id"])
+
+    def test_restore_refuses_original_path_escaping_the_root(self, tmp_path):
+        """An original_path that resolves outside the root is refused, not
+        restored outside. move_to_trash only ever records in-root paths, so a
+        sidecar that escapes is corrupt or hand-edited; the destination check
+        must run before anything is moved or created."""
+        workspace = tmp_path / "workspace"
+        workspace.mkdir()
+        target = workspace / "note.txt"
+        target.write_bytes(b"keep me inside")
+        trash_dir = get_trash_dir(tmp_path, "workspace")
+        metadata = move_to_trash(trash_dir, target, "note.txt")
+
+        sidecar = trash_dir / f"{metadata['id']}.json"
+        record = json.loads(sidecar.read_text())
+        record["original_path"] = "../escaped.txt"
+        sidecar.write_text(json.dumps(record))
+
+        with pytest.raises(TrashRestoreOutsideRoot):
+            restore_trash_item(trash_dir, workspace, metadata["id"])
+
+        assert not (tmp_path / "escaped.txt").exists()
+        assert (trash_dir / metadata["id"] / "note.txt").read_bytes() == b"keep me inside"
 
     def test_purge_trash_item_permanently_deletes(self, tmp_path):
         workspace = tmp_path / "workspace"
@@ -227,6 +252,24 @@ class TestUserWorkspaceTrashRoutes:
         back = await client.get("/api/workspace/files")
         assert "doc.txt" in [e["name"] for e in back.json()]
         assert (await client.get("/api/workspace/trash")).json()["items"] == []
+
+    @pytest.mark.asyncio
+    async def test_restore_with_an_escaping_sidecar_is_a_400_not_a_500(self, client, app):
+        await client.post(
+            "/api/workspace/files/upload",
+            files={"file": ("doc.txt", io.BytesIO(b"draft"), "text/plain")},
+        )
+        await client.delete("/api/workspace/files/doc.txt")
+        item_id = (await client.get("/api/workspace/trash")).json()["items"][0]["id"]
+        trash_root = app.state.config_path.parent / ".taos-trash" / "workspace"
+        sidecar = trash_root / f"{item_id}.json"
+        record = json.loads(sidecar.read_text())
+        record["original_path"] = "../escaped.txt"
+        sidecar.write_text(json.dumps(record))
+
+        resp = await client.post(f"/api/workspace/trash/{item_id}/restore")
+        assert resp.status_code == 400
+        assert not (app.state.config_path.parent / "escaped.txt").exists()
 
     @pytest.mark.asyncio
     async def test_empty_trash_purges_all_items(self, client, app):

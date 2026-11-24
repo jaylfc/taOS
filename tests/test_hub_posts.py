@@ -269,6 +269,72 @@ class TestImageIngest:
             posts.ingest_image(b"this is not an image", "text/plain")
 
 
+import gc
+
+
+@pytest.mark.asyncio
+async def test_append_lock_weakref_cleanup(store, data_dir):
+    """_append_lock uses WeakKeyDictionary so GC of a store removes its lock.
+
+    Regression: id(store)-keyed dict reused lock after GC when a new store
+    got the same id() as a GC'd one, causing RuntimeError on a different
+    event loop.
+    """
+    # Clear the module-level dict so other tests don't leak in.
+    posts._append_locks.clear()
+
+    s = hub_store.HubStore(hub_store.default_db_path())
+    await s.init()
+    # First lock: create and immediately delete
+    posts._append_lock(s)
+    # Close the store so its aiosqlite worker thread exits cleanly.
+    await s.close()
+    # Delete strong reference; WeakKeyDictionary should reclaim the lock.
+    del s
+    gc.collect()
+    # After GC the weakref key is gone, so the dict should be empty.
+    assert len(posts._append_locks) == 0, (
+        f"Expected empty dict after GC, got {len(posts._append_locks)}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_append_lock_distinct_stores_get_distinct_locks(store, data_dir):
+    """Two live distinct stores must get two distinct locks."""
+    posts._append_locks.clear()
+
+    s1 = hub_store.HubStore(hub_store.default_db_path())
+    s2 = hub_store.HubStore(hub_store.default_db_path())
+    await s1.init()
+    await s2.init()
+    try:
+        lock1 = posts._append_lock(s1)
+        lock2 = posts._append_lock(s2)
+        assert lock1 is not lock2, (
+            "Different stores must get different locks"
+        )
+    finally:
+        await s1.close()
+        await s2.close()
+
+
+@pytest.mark.asyncio
+async def test_append_lock_same_store_twice(store, data_dir):
+    """The same store called twice must return the same lock."""
+    posts._append_locks.clear()
+
+    s = hub_store.HubStore(hub_store.default_db_path())
+    await s.init()
+    try:
+        lock1 = posts._append_lock(s)
+        lock2 = posts._append_lock(s)
+        assert lock1 is lock2, (
+            "Same store called twice must return the same lock"
+        )
+    finally:
+        await s.close()
+
+
 @pytest.mark.asyncio
 async def test_concurrent_appends_do_not_orphan(store, monkeypatch):
     """Two racing appends must both land on the chain with distinct seqs.
@@ -280,15 +346,25 @@ async def test_concurrent_appends_do_not_orphan(store, monkeypatch):
     import asyncio as _asyncio
     from tinyagentos.hub import posts as hub_posts
 
-    results = await _asyncio.gather(
-        hub_posts.append_post(store, visibility="circle", text="one", author="racer"),
-        hub_posts.append_post(store, visibility="circle", text="two", author="racer"),
-        hub_posts.append_post(store, visibility="circle", text="three", author="racer"),
-    )
-    seqs = sorted(p["seq"] for p in results)
-    assert seqs == [1, 2, 3]
-    head = await store.get_chain_head("racer")
-    assert head["seq"] == 3
+    store_b = hub_store.HubStore(hub_store.default_db_path())
+    store_c = hub_store.HubStore(hub_store.default_db_path())
+    await store_b.init()
+    await store_c.init()
+    shared_lock = _asyncio.Lock()
+    monkeypatch.setattr(hub_posts, "_append_lock", lambda _store: shared_lock)
+    try:
+        results = await _asyncio.gather(
+            hub_posts.append_post(store, visibility="circle", text="one", author="racer"),
+            hub_posts.append_post(store_b, visibility="circle", text="two", author="racer"),
+            hub_posts.append_post(store_c, visibility="circle", text="three", author="racer"),
+        )
+        seqs = sorted(p["seq"] for p in results)
+        assert seqs == [1, 2, 3]
+        head = await store.get_chain_head("racer")
+        assert head["seq"] == 3
+    finally:
+        await store_b.close()
+        await store_c.close()
 
 
 @pytest.mark.asyncio

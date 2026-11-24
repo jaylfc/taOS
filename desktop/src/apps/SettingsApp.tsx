@@ -22,6 +22,7 @@ import {
   Presentation,
   Wifi,
   Bluetooth,
+  Cpu,
 } from "lucide-react";
 import {
   Button,
@@ -34,6 +35,7 @@ import { useIsMobile } from "@/hooks/use-is-mobile";
 import { useThemeStore } from "@/stores/theme-store";
 import { WALLPAPER_FIT_OPTIONS } from "@/stores/theme-store";
 import { useDockStore } from "@/stores/dock-store";
+import { useLayoutStore } from "@/stores/layout-store";
 import { ThemesPanel } from "@/apps/SettingsApp/ThemesPanel";
 import { safeFetch, ProgressBar, RestartProgressModal } from "@/apps/SettingsApp/_shared";
 import { WallpaperPicker } from "@/components/WallpaperPicker";
@@ -46,13 +48,33 @@ import { LockScreenPanel } from "@/apps/SettingsApp/LockScreenPanel";
 import { DemoModePanel } from "@/apps/SettingsApp/DemoModePanel";
 import { WifiPanel } from "@/apps/SettingsApp/WifiPanel";
 import { BluetoothPanel } from "@/apps/SettingsApp/BluetoothPanel";
+import { OfflineModelPanel } from "@/apps/SettingsApp/OfflineModelPanel";
 import { copyText } from "@/lib/clipboard";
 
 /* ------------------------------------------------------------------ */
 /*  Types                                                              */
 /* ------------------------------------------------------------------ */
 
-type Section = "account" | "system" | "storage" | "memory" | "backup" | "updates" | "advanced" | "shortcuts" | "accessibility" | "desktop" | "users" | "themes" | "logs" | "notifications" | "lock" | "demo" | "wifi" | "bluetooth";
+type Section =
+  | "account"
+  | "system"
+  | "storage"
+  | "memory"
+  | "backup"
+  | "updates"
+  | "advanced"
+  | "shortcuts"
+  | "accessibility"
+  | "desktop"
+  | "users"
+  | "themes"
+  | "logs"
+  | "notifications"
+  | "lock"
+  | "demo"
+  | "wifi"
+  | "bluetooth"
+  | "offline_model";
 
 interface SectionDef {
   id: Section;
@@ -106,11 +128,12 @@ const SECTIONS: SectionDef[] = [
   { id: "notifications", label: "Notifications", icon: Bell },
   { id: "lock", label: "Lock screen", icon: Lock },
   { id: "demo", label: "Demo mode", icon: Presentation },
+  { id: "offline_model", label: "Offline model", icon: Cpu },
 ];
 
 // Sections that require admin privileges to view (GHSA-47g9: backend already
 // 403s these for non-admins, this hides them from the sidebar/content too).
-const ADMIN_ONLY = new Set(["system", "storage", "memory", "backup", "updates", "advanced", "users", "logs", "demo", "wifi", "bluetooth"]);
+const ADMIN_ONLY = new Set(["system", "storage", "memory", "backup", "updates", "advanced", "logs", "demo", "wifi", "bluetooth", "offline_model"]);
 
 const PLACEHOLDER_SYSTEM: SystemInfo = {
   cpu: "Detecting...",
@@ -566,6 +589,7 @@ function MemorySection() {
 function BackupSection() {
   const [backupStatus, setBackupStatus] = useState<string | null>(null);
   const [creating, setCreating] = useState(false);
+  const [restoreStatus, setRestoreStatus] = useState<string | null>(null);
 
   const createBackup = async () => {
     setCreating(true);
@@ -581,6 +605,29 @@ function BackupSection() {
       setBackupStatus("Could not reach backup endpoint. API not available yet.");
     }
     setCreating(false);
+  };
+
+  const handleRestore = async (file: File) => {
+    const confirmed = window.confirm(
+      "Restore will overwrite config.yaml and installed data. Continue?",
+    );
+    if (!confirmed) {
+      return;
+    }
+    setRestoreStatus(null);
+    const formData = new FormData();
+    formData.append("file", file);
+    try {
+      const res = await fetch("/api/restore", { method: "POST", body: formData });
+      const data = await res.json();
+      if (res.ok) {
+        setRestoreStatus(data.status ?? "Restore completed.");
+      } else {
+        setRestoreStatus(data.error ?? `Restore failed (${res.status}).`);
+      }
+    } catch {
+      setRestoreStatus("Could not reach restore endpoint.");
+    }
   };
 
   return (
@@ -614,8 +661,25 @@ function BackupSection() {
           <label className="flex flex-col items-center gap-2 p-6 rounded-lg border-2 border-dashed border-white/10 hover:border-white/20 transition-colors cursor-pointer">
             <Upload size={24} className="text-shell-text-tertiary" />
             <span className="text-xs text-shell-text-tertiary">Click to select a backup file</span>
-            <input type="file" accept=".tar.gz,.zip,.bak" className="hidden" aria-label="Upload backup file" />
+            <input
+              type="file"
+              accept=".tar.gz,.tgz"
+              className="hidden"
+              aria-label="Upload backup file"
+              onChange={(e) => {
+                const file = e.target.files?.[0];
+                if (file) {
+                  handleRestore(file);
+                  e.target.value = "";
+                }
+              }}
+            />
           </label>
+          {restoreStatus && (
+            <p className={`mt-2 text-xs ${restoreStatus.toLowerCase().includes("error") || restoreStatus.toLowerCase().includes("failed") ? "text-amber-400" : "text-emerald-400"}`}>
+              {restoreStatus}
+            </p>
+          )}
         </div>
       </Card>
     </section>
@@ -851,6 +915,8 @@ export function DesktopDockSection() {
   const dockPosition = useDockStore((s) => s.position);
   const applyDockSize = useDockStore((s) => s.setIconSize);
   const applyDockPosition = useDockStore((s) => s.setPosition);
+  const fullscreenOnLaunch = useLayoutStore((s) => s.fullscreenOnLaunch);
+  const setFullscreenOnLaunch = useLayoutStore((s) => s.setFullscreenOnLaunch);
 
   const wallpaperId = useThemeStore((s) => s.wallpaperId);
   const wallpaperImage = useThemeStore((s) => s.wallpaperImage);
@@ -925,6 +991,23 @@ export function DesktopDockSection() {
               </Button>
             ))}
           </div>
+        </Card>
+
+        <Card className="p-4 flex items-center justify-between gap-3">
+          <div className="flex-1 min-w-0">
+            <Label htmlFor="fullscreen-on-launch" className="text-sm font-medium text-shell-text">
+              Browser fullscreen at launch
+            </Label>
+            <p className="text-xs text-shell-text-tertiary mt-0.5">
+              Ask the browser to go fullscreen when you click Launch taOS, and show the "Return to fullscreen" pill. When off, future launches do not request fullscreen; to leave fullscreen now, exit it in your browser (Esc or F11).
+            </p>
+          </div>
+          <Switch
+            id="fullscreen-on-launch"
+            checked={fullscreenOnLaunch}
+            onCheckedChange={setFullscreenOnLaunch}
+            aria-label="Browser fullscreen at launch"
+          />
         </Card>
 
         <Card className="p-4">
@@ -1036,6 +1119,7 @@ export function SettingsApp({ windowId: _windowId, section: initialSection }: { 
     demo: <DemoModePanel />,
     wifi: <WifiPanel />,
     bluetooth: <BluetoothPanel />,
+    offline_model: <OfflineModelPanel />,
   };
 
   const handleSelectSection = (id: Section) => {

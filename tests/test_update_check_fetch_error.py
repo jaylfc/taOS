@@ -22,6 +22,9 @@ class TestUpdateCheckFetchError:
         branch = "dev"
 
         async def _fake_create_subprocess_exec(*args, **kwargs):
+            if args[:4] == ("git", "fetch", "origin", "--"):
+                assert kwargs.get("stderr") == asyncio.subprocess.STDOUT, (
+                    "git fetch must redirect stderr so error output is surfaced")
             stdout = kwargs.get("stdout")
             fake_proc = MagicMock()
             fake_proc.returncode = 1

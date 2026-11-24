@@ -33,12 +33,15 @@ router = APIRouter()
 
 _update_jobs: dict[str, dict] = {}
 
-# Admin-only fleet mutations / worker execution (tsk-exyzu4). Uses
-# `require_admin`, which accepts an admin session or the host local token
-# (taosctl, the taOS agent). This is broader than the `_require_admin` gate
-# used by revoke/block/unblock, which accepts only an admin session cookie. Worker-facing
-# paths (heartbeat, pairing, leases, capabilities) keep their HMAC /
-# possession gates and are deliberately not covered by this.
+# Admin-only fleet mutations / worker execution (tsk-exyzu4).
+# _ADMIN = [Depends(require_admin)] accepts admin session cookie OR host
+# local token (via auth_context.require_admin). Routes using _ADMIN:
+#   POST /api/cluster/route, POST /api/cluster/workers/{name}/deploy,
+#   POST /api/cluster/workers/{name}/remote, POST /api/cluster/move,
+#   POST /api/cluster/promote-archived.
+# Individual handlers that use _require_admin (from routes.auth) —
+# admin-only, no local token: unregister_worker, revoke/block/unblock,
+# drain, cancel-drain, update-worker, update-all.
 _ADMIN = [Depends(require_admin)]
 
 
@@ -319,14 +322,30 @@ class MoveRequest(BaseModel):
     to_worker: str
 
 
+# The cluster_read tier also filters each backend entry: a backend entry
+# carries its own url (the worker's LAN address), which the tier's
+# top-level allowlist exists to withhold (jaylfc, PR #4370). Only these
+# keys may reach a cluster_read caller.
+_CLUSTER_READ_BACKEND_KEYS = (
+    "name", "type", "capabilities", "models", "loaded_models", "status",
+)
+
+
+def _cluster_read_backend(backend: dict) -> dict:
+    return {key: backend[key] for key in _CLUSTER_READ_BACKEND_KEYS if key in backend}
+
+
 @router.get("/api/cluster/workers")
 async def list_workers(request: Request):
     is_admin = getattr(request.state, "is_admin", False)
     # taOS #3227: headless callers presenting a valid local token, device
     # token, or registry JWT on this exempt GET get the full worker view
-    # (the middleware sets headless_full_view). signing_key stays stripped
-    # for everyone -- see below.
+    # (the middleware sets headless_full_view). A registry JWT holding the
+    # cluster_read scope instead gets the restricted tier below (the
+    # middleware sets cluster_read_view): an allowlist of operational
+    # fields only. signing_key stays stripped for everyone -- see below.
     full_view = is_admin or getattr(request.state, "headless_full_view", False)
+    cluster_read_view = getattr(request.state, "cluster_read_view", False)
     cluster = request.app.state.cluster_manager
     pairing = getattr(request.app.state, "cluster_pairing", None)
     registry = getattr(request.app.state, "registry", None)
@@ -341,12 +360,35 @@ async def list_workers(request: Request):
         # non-utf8 signing key, and (2) even when serialization didn't
         # crash, the secret has no business being on the wire.
         d.pop("signing_key", None)
-        if not full_view:
+        if not full_view and not cluster_read_view:
             result.append({
                 "name": d["name"],
                 "status": d["status"],
                 "tier_id": d.get("tier_id", ""),
                 "kind": d.get("kind", "worker"),
+            })
+            continue
+        if cluster_read_view and not is_admin:
+            # Full but not admin (taOS #3227): an ALLOWLIST, not a denylist
+            # (jaylfc, PR #4370). The tier returns ONLY the fields below;
+            # dropping a few keys from the full record still leaked url and
+            # worker_url (the same LAN address removing host_lan_ip was
+            # meant to withhold) plus the storage and TLS fields. Least
+            # privilege wins: this tier applies even when the caller also
+            # qualified for headless_full_view -- a JWT holding both
+            # agents:read and cluster_read gets the narrower view.
+            result.append({
+                "name": d["name"],
+                "status": d["status"],
+                "tier_id": d.get("tier_id", ""),
+                "kind": d.get("kind", "worker"),
+                "capabilities": d.get("capabilities", []),
+                "backends": [
+                    _cluster_read_backend(b) for b in d.get("backends", [])
+                ],
+                "resources": d.get("resources", []),
+                "free_vram_mb": d.get("free_vram_mb"),
+                "models": d.get("models", []),
             })
             continue
         # Surface the persistent auth state from the pairing store so the
@@ -673,11 +715,31 @@ async def worker_heartbeat(request: Request, body: HeartbeatBody):
     if not ok:
         return JSONResponse({"error": "Worker not registered"}, status_code=404)
     cluster = request.app.state.cluster_manager
-    return {"status": "ok", "generation": cluster.generation}
+
+    # Include drain status in the response so the worker's self-update
+    # orchestrator can detect when in-flight leases are all released and
+    # proceed with the update without waiting the full timeout (taOS #890 C3).
+    worker_obj = cluster.get_worker(body.name)
+    drain_complete = False
+    if worker_obj is not None and worker_obj.status == "draining":
+        # get_leases() filters expired leases the monitor loop has not swept
+        # yet: they would hold the worker for the full drain timeout.
+        active = [
+            lease.lease_id for lease in cluster.get_leases()
+            if (parsed := cluster._parse_resource_id(lease.resource_id))
+            and parsed[0] == body.name
+        ]
+        drain_complete = len(active) == 0
+
+    return {"status": "ok", "generation": cluster.generation, "drain_complete": drain_complete}
 
 
-@router.delete("/api/cluster/workers/{name}", dependencies=_ADMIN)
+@router.delete("/api/cluster/workers/{name}")
 async def unregister_worker(request: Request, name: str):
+    # Admin check — only admin session, no local token
+    ok, _ = _require_admin(request)
+    if not ok:
+        return JSONResponse({"detail": "forbidden"}, status_code=403)
     # Revoke the pairing key BEFORE deleting the worker row. If the store is
     # unavailable or revoke raises, refuse with 503 so the row is never deleted
     # while its key survives. Never skip revoke even if the worker row is absent.
@@ -1175,6 +1237,12 @@ REMOTE_EXEC_ALLOWLIST = [
 ]
 
 
+# Per-worker deploy locks -- prevents concurrent install/restart on the
+# same worker (CodeRabbit finding on PR #1910).
+import collections
+_worker_deploy_locks: dict[str, asyncio.Lock] = collections.defaultdict(asyncio.Lock)
+
+
 @router.post("/api/cluster/workers/{name}/deploy", dependencies=_ADMIN)
 async def deploy_backend(request: Request, name: str, body: DeployRequest):
     """Trigger a backend install on a remote worker.
@@ -1182,6 +1250,14 @@ async def deploy_backend(request: Request, name: str, body: DeployRequest):
     The controller proxies this to the worker's deploy endpoint. The
     worker runs taos-deploy-helper.sh via passwordless sudo. Only
     commands in the fixed allowlist are accepted.
+
+    Operator action: gated by the operator session in AuthMiddleware (this
+    route is not session-exempt).  A worker holds no session cookie, so it is
+    already refused at the middleware; there is no HMAC gate here because the
+    only legitimate caller is the session-authenticated operator.
+
+    Per-worker asyncio.Lock prevents concurrent install/restart calls on
+    the same worker from double-installing.
     """
     cluster = request.app.state.cluster_manager
     worker = cluster.get_worker(name)
@@ -1195,16 +1271,19 @@ async def deploy_backend(request: Request, name: str, body: DeployRequest):
             status_code=400,
         )
 
-    import httpx
-    try:
-        async with httpx.AsyncClient(timeout=620) as client:
-            resp = await client.post(
-                f"{worker.url}/api/worker/deploy",
-                json={"command": body.command},
-            )
-            return resp.json()
-    except Exception as exc:
-        return JSONResponse({"error": str(exc)}, status_code=502)
+    # Serialise deploys per worker -- concurrent calls can double-install.
+    lock = _worker_deploy_locks[name]
+    async with lock:
+        import httpx
+        try:
+            async with httpx.AsyncClient(timeout=620) as client:
+                resp = await client.post(
+                    f"{worker.url}/api/worker/deploy",
+                    json={"command": body.command},
+                )
+                return resp.json()
+        except Exception as exc:
+            return JSONResponse({"error": str(exc)}, status_code=502)
 
 
 @router.post("/api/cluster/workers/{name}/remote", dependencies=_ADMIN)
@@ -1649,7 +1728,20 @@ async def _do_single_worker_update(cluster, worker) -> dict:
     On success: ``{"success": True, "worker": ..., "status": "updating", ...}``.
     On failure: ``{"success": False, "worker": ..., "error": "..."}``.
     Never raises -- all exceptions are caught and converted into error dicts.
+
+    Per-worker asyncio.Lock prevents concurrent update calls on the same
+    worker from double-draining or double-deploying (CodeRabbit, PR #1910).
     """
+    name = worker.name
+
+    # Serialise updates per worker -- concurrent calls can double-drain/deploy.
+    lock = _worker_deploy_locks[name]
+    async with lock:
+        return await _do_single_worker_update_locked(cluster, worker)
+
+
+async def _do_single_worker_update_locked(cluster, worker) -> dict:
+    """Inner implementation of _do_single_worker_update (lock held)."""
     name = worker.name
 
     # Step 1: Begin draining (with exception isolation -- drain_worker
@@ -1908,3 +2000,111 @@ async def get_update_all_job_status(request: Request, job_id: str):
     if job is None:
         return JSONResponse({"error": f"Job '{job_id}' not found"}, status_code=404)
     return job
+
+
+# ── Worker self-update outcome reporting (taOS #890 C3) ──────────────────
+
+
+class UpdateOutcomeBody(BaseModel):
+    """Payload for the worker to report its update outcome."""
+    name: str
+    outcome: str  # "success" | "rollback"
+    from_version: str = ""
+    to_version: str = ""
+    failure_reason: str = ""
+    rollback_to: str = ""
+
+
+@router.post("/api/cluster/workers/{name}/update-outcome")
+async def report_update_outcome(request: Request, name: str, body: UpdateOutcomeBody):
+    """Record the outcome of a worker self-update.
+
+    Called by the worker after restart + health-check, or on rollback.
+
+    HMAC-signed: the worker's signing key validates that the outcome
+    came from the actual worker, not a spoofed request.
+    """
+    try:
+        await require_worker_hmac(request)
+    except _HMACError as exc:
+        return exc.response
+
+    # Verify the HMAC-authenticated worker matches the body name.
+    # Without this, worker A could spoof an outcome report for
+    # worker B (the HMAC only proves the caller IS a paired worker,
+    # not WHICH worker).
+    if getattr(request.state, "hmac_worker_name", None) != name:
+        return JSONResponse(
+            {"error": "Worker name in header does not match path"},
+            status_code=403,
+        )
+
+    cluster = request.app.state.cluster_manager
+    worker = cluster.get_worker(name)
+    if not worker:
+        return JSONResponse({"error": f"Worker '{name}' not found"}, status_code=404)
+
+    outcome = body.outcome
+    logger.info(
+        "worker '%s' reported update outcome: %s (from=%s to=%s)",
+        name, outcome, body.from_version[:8], body.to_version[:8],
+    )
+
+    notifications = getattr(request.app.state, "notifications", None)
+
+    if outcome == "success":
+        # Worker is already back online via re-registration.
+        # Nothing to do — the heartbeat loop handles it.
+        logger.info("worker '%s' self-update SUCCESS", name)
+        # Emit a success notification so the operator has an audit trail.
+        if notifications:
+            try:
+                await notifications.emit_event(
+                    "worker.update-success",
+                    f"Worker '{name}' self-update succeeded",
+                    (
+                        f"Updated from {body.from_version[:8] or 'unknown'} "
+                        f"to {body.to_version[:8] or 'unknown'}."
+                    ),
+                    level="info",
+                )
+            except Exception:
+                logger.exception(
+                    "notification emit failed for update success"
+                )
+
+    elif outcome == "rollback":
+        # Worker rolled back after a failed health-check.
+        logger.warning(
+            "worker '%s' self-update ROLLBACK: %s (from %s to %s, rolled back to %s)",
+            name,
+            body.failure_reason or "unknown failure",
+            body.from_version[:8],
+            body.to_version[:8],
+            body.rollback_to[:8] or "checkpoint",
+        )
+        if notifications:
+            try:
+                await notifications.emit_event(
+                    "worker.update-rollback",
+                    f"Worker '{name}' rolled back after failed update",
+                    (
+                        f"Update from {body.from_version[:8]} to {body.to_version[:8]} "
+                        f"failed: {body.failure_reason or 'health check failed'}. "
+                        f"Rolled back to {body.rollback_to[:8] or 'checkpoint'}."
+                    ),
+                    level="warning",
+                )
+            except Exception:
+                logger.exception("notification emit failed for update rollback")
+
+    else:
+        return JSONResponse(
+            {"error": f"unknown outcome: {outcome}"}, status_code=400
+        )
+
+    return {
+        "worker": name,
+        "outcome": outcome,
+        "acknowledged": True,
+    }

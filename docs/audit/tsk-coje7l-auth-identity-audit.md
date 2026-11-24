@@ -348,3 +348,31 @@ identity-wide token rotation, a missing `iss` check, and one orphaned module)
 rather than bypassable vulnerabilities in the default configuration. Recommended
 follow-ups 1–3 are the highest-leverage; none are required for the system to be
 secure as currently deployed.
+
+---
+
+## 8. Local token binding security fixes (2026-11-23)
+
+Two security improvements were applied to per-agent local token bindings
+(`.auth_local_token_bindings.json`) as a fix-forward of PR #4349:
+
+### Canonical-id binding enforcement
+Per-agent local tokens minted at deploy time are now bound to the agent's
+`registry_canonical_id`. When such a token is presented, the middleware
+resolves the current config entry for the bound agent name and compares its
+`registry_canonical_id` against the token's binding. If the agent was replaced
+under the same name (different `canonical_id`), the token is rejected with 401.
+This prevents a surviving token from fencing onto a later agent that reuses the
+same slug.
+
+The host's own unbound local token (`.auth_local_token`) is unaffected and
+continues to map to the primary/admin user.
+
+### Empty/whitespace binding rejection
+A binding entry whose `name` field is empty, whitespace-only, or a legacy empty
+string now fails closed (401) instead of falling through as the primary-user
+admin credential. This closes a bypass where a malformed binding could grant
+admin access.
+
+Both fixes are covered by `tests/test_auth_middleware.py::TestBoundLocalTokenCanonicalMiddleware`
+and `tests/test_auth_middleware.py::TestLocalTokenEmptyBinding`.

@@ -31,6 +31,7 @@ from tinyagentos.chat.channel_store import ChatChannelStore
 from tinyagentos.notes.shared_docs_store import SharedDocsStore
 from tinyagentos.contacts_store import ContactsStore
 from tinyagentos.hub.identity import fingerprint as _compute_fingerprint
+from tinyagentos.secrets import SecretsStore, _encrypt
 
 
 # ---------------------------------------------------------------------------
@@ -738,6 +739,95 @@ class TestContactsStoreUpgrade:
             assert bad is not None
             assert bad["peer_fingerprint"] == "", (
                 "malformed-hex row must keep empty fingerprint, not crash"
+            )
+        finally:
+            await store.close()
+
+
+# ---------------------------------------------------------------------------
+# SecretsStore — write_once column added in _post_init (tsk-l57a6g)
+# ---------------------------------------------------------------------------
+# The v0 schema predates write_once: a secret created under it has no pinned
+# flag and must keep behaving exactly as before after the upgrade (decrypts,
+# write_once reads false, PUT value still 200).  Rotation for the taosmd
+# archive key is a NEW secret name, never an in-place value change, so every
+# pre-existing secret must remain mutable until explicitly pinned.
+
+SECRETS_V0_SCHEMA = """\
+CREATE TABLE IF NOT EXISTS secrets (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL UNIQUE,
+    category TEXT NOT NULL DEFAULT 'general',
+    value TEXT NOT NULL,
+    description TEXT DEFAULT '',
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS secret_access (
+    secret_id INTEGER NOT NULL,
+    agent_name TEXT NOT NULL,
+    PRIMARY KEY (secret_id, agent_name),
+    FOREIGN KEY (secret_id) REFERENCES secrets(id) ON DELETE CASCADE
+);
+CREATE TABLE IF NOT EXISTS secret_categories (
+    name TEXT PRIMARY KEY,
+    description TEXT DEFAULT ''
+);
+"""
+
+
+@pytest.mark.asyncio
+class TestSecretsStoreUpgrade:
+    async def test_upgrade_adds_write_once_column(self, tmp_path):
+        db_path = tmp_path / "secrets.db"
+        _seed_db(db_path, SECRETS_V0_SCHEMA)
+        store = SecretsStore(db_path)
+        await store.init()
+        try:
+            cols = _column_names(db_path, "secrets")
+            assert "write_once" in cols, "write_once column missing after upgrade"
+        finally:
+            await store.close()
+
+    async def test_upgrade_preserves_existing_secret_and_keeps_it_mutable(
+        self, tmp_path
+    ):
+        """A secret created under the pre-write_once schema must still decrypt,
+        read write_once as false, and accept a value PUT after upgrade."""
+        db_path = tmp_path / "secrets.db"
+        _seed_db(db_path, SECRETS_V0_SCHEMA)
+        key_dir = db_path.parent
+        now = int(time.time())
+        # Encrypt under the same Fernet key the upgraded store will use, so the
+        # pre-existing ciphertext is readable after init().
+        ciphertext = _encrypt("pre-existing-value", key_dir)
+        db = sqlite3.connect(str(db_path))
+        db.execute(
+            "INSERT INTO secrets (name, category, value, description, created_at,"
+            " updated_at) VALUES (?, ?, ?, ?, ?, ?)",
+            ("legacy-key", "credentials", ciphertext, "from v0", now, now),
+        )
+        db.commit()
+        db.close()
+
+        store = SecretsStore(db_path)
+        await store.init()
+        try:
+            secret = await store.get("legacy-key")
+            assert secret is not None, "pre-existing secret lost during upgrade"
+            assert secret["value"] == "pre-existing-value", (
+                "pre-existing secret no longer decrypts after upgrade"
+            )
+            assert secret["write_once"] is False, (
+                "pre-existing secret must read write_once=false after upgrade"
+            )
+            # A value change must still succeed: v0 secrets are mutable until
+            # explicitly pinned, so PUT returns 200 (not 409).
+            updated = await store.update("legacy-key", value="rotated-value")
+            assert updated is True, "value PUT on a v0 secret was refused"
+            rotated = await store.get("legacy-key")
+            assert rotated["value"] == "rotated-value", (
+                "v0 secret value did not change after PUT"
             )
         finally:
             await store.close()

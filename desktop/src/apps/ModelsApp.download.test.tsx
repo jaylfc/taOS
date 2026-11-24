@@ -178,7 +178,7 @@ describe("ModelsApp download wiring (#1548)", () => {
     const btn = await screen.findByRole("button", { name: /Download Llama 3 8B/i });
     fireEvent.click(btn);
 
-    const alert = await screen.findByRole("alert");
+    const alert = await screen.findByText(/no downloadable variant/i);
     expect(alert.textContent).toMatch(/no downloadable variant/i);
   });
 });

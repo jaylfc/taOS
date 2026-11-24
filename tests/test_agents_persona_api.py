@@ -56,3 +56,19 @@ class TestPatchAgentPersona:
     async def test_patch_persona_returns_404_for_unknown_agent(self, client, app):
         resp = await client.patch("/api/agents/no-such-agent/persona", json={"soul_md": "x"})
         assert resp.status_code == 404
+
+    async def test_patch_persona_does_not_return_llm_key(self, client, app):
+        app.state.config.agents.append({
+            "name": "atlas",
+            "display_name": "Atlas",
+            "host": "",
+            "color": "#888888",
+            "soul_md": "",
+            "agent_md": "",
+            "llm_key": "sk-test-secret-key",
+        })
+        resp = await client.patch("/api/agents/atlas/persona", json={})
+        assert resp.status_code == 200
+        data = resp.json()
+        assert "llm_key" not in data["agent"]
+        assert "sk-test-secret-key" not in resp.text

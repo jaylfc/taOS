@@ -37,6 +37,7 @@ from tinyagentos.agent_image import (
     is_image_present,
 )
 from tinyagentos.containers import (
+    _resolve_container_project,
     create_container, exec_in_container, push_file,
     start_container, stop_container, destroy_container,
     add_proxy_device,
@@ -179,6 +180,10 @@ class DeployRequest:
     # When non-empty, injected as TAOS_AGENT_TOKEN into the container env.
     # Additive: TAOS_LOCAL_TOKEN is unchanged.
     agent_token: str = ""
+    # Non-reusable registry identity for this agent. When set, the minted
+    # per-agent local token is bound to it so a surviving token cannot fence
+    # onto a later agent that reuses the same name.
+    registry_canonical_id: str | None = None
 
 
 # Where an agent container reaches its LLM: its OWN loopback, port 4000, the
@@ -369,7 +374,9 @@ async def deploy_agent(req: DeployRequest) -> dict:
     try:
         from tinyagentos.auth import AuthManager
         auth_mgr = AuthManager(req.data_dir)
-        agent_token = auth_mgr.mint_agent_local_token(req.name)
+        agent_token = auth_mgr.mint_agent_local_token(
+            req.name, canonical_id=req.registry_canonical_id
+        )
         env["TAOS_LOCAL_TOKEN"] = agent_token
     except Exception as exc:
         logger.error("deploy %s: failed to mint agent local token: %s", req.name, exc)
@@ -508,6 +515,19 @@ async def deploy_agent(req: DeployRequest) -> dict:
     if not result["success"]:
         return {"success": False, "error": _explain_container_failure(result.get("error")), "steps": steps}
     steps.append("container_created")
+
+    # Resolve the Incus project the container actually lives in so the agent
+    # record can pin it. Multi-user installs place agent containers in a
+    # restricted project (e.g. user-999); recording it lets
+    # GET /api/agents/containers match the right row when two projects each
+    # hold a taos-agent-<name>. Errors resolve to None (unknown) -- the record
+    # is left without a pin and the listing falls back to name matching.
+    try:
+        incus_project = await _resolve_container_project(container_name)
+    except (FileNotFoundError, OSError):
+        incus_project = None
+    if incus_project:
+        steps.append(f"project:{incus_project}")
 
     # Keep the bare name for the agent record, then qualify container_name with
     # the remote so every downstream incus op (exec/push/destroy) targets the
@@ -924,6 +944,7 @@ WantedBy=multi-user.target
             "name": req.name,
             "container": record_container,
             "ip": container_ip,
+            "incus_project": incus_project,
             "llm_key": llm_key,
             "steps": steps,
             "versioning": versioning,

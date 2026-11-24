@@ -198,7 +198,10 @@ async def create_pair_request(request: Request, body: CreatePairRequest):
                     data={"request_id": pair_request_id, "platform": body.platform},
                 )
             except Exception:
-                pass
+                logger.warning(
+                    "device_pair_requests: could not record bell notification",
+                    exc_info=True,
+                )
 
     # F3 / criterion 5: verify_code is returned ONLY here -- never on the poll.
     result: dict = {"pair_request_id": pair_request_id, "verify_code": verify_code}

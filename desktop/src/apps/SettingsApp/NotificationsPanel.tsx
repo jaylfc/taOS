@@ -47,6 +47,14 @@ export function NotificationsPanel() {
   const toggle = async (eventType: string, muted: boolean) => {
     setSaving(eventType);
     setError(null);
+    // Capture previous state for potential revert
+    let previousPrefs: NotifPref[] | null = null;
+    setPrefs((prev) => {
+      previousPrefs = prev ? [...prev] : null;
+      return prev
+        ? prev.map((p) => (p.event_type === eventType ? { ...p, muted } : p))
+        : prev;
+    });
     try {
       const res = await fetch(`/api/notifications/prefs/${encodeURIComponent(eventType)}`, {
         method: "PUT",
@@ -55,15 +63,17 @@ export function NotificationsPanel() {
       });
       if (!res.ok) {
         const data = await res.json().catch(() => ({}));
-        setError(data.error || `Failed to save (${res.status})`);
+        // Revert optimistic update on failure
+        if (previousPrefs) setPrefs(previousPrefs);
+        if (res.status === 403) {
+          setError("Only an admin can change this");
+        } else {
+          setError(data.error || `Failed to save (${res.status})`);
+        }
         return;
       }
-      setPrefs((prev) =>
-        prev
-          ? prev.map((p) => (p.event_type === eventType ? { ...p, muted } : p))
-          : prev
-      );
     } catch {
+      if (previousPrefs) setPrefs(previousPrefs);
       setError("Could not reach backend.");
     } finally {
       setSaving(null);

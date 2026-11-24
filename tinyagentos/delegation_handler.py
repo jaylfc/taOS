@@ -488,6 +488,7 @@ async def cascade_sponsor_revoke(
                 request.app.state.project_store,
                 project_id,
                 config=getattr(request.app.state, "config", None),
+                agent_registry=getattr(request.app.state, "agent_registry", None),
             )
             await msg_store.send_message(
                 channel_id=channel["id"],

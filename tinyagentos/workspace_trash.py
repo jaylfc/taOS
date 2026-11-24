@@ -43,6 +43,12 @@ class TrashRestoreConflict(Exception):
     """Raised when restoring would overwrite an existing file/directory."""
 
 
+class TrashRestoreOutsideRoot(Exception):
+    """Raised when a restore would write outside the workspace root the item
+    was deleted from, because the recorded original path does not resolve
+    inside that root (a corrupt or hand-edited sidecar)."""
+
+
 def _validate_item_id(item_id: str) -> None:
     """Reject any id that is not a canonical 32-char hex token.
 
@@ -144,10 +150,18 @@ def restore_trash_item(trash_dir: Path, workspace_root: Path, item_id: str) -> d
     # outside the trash dir.
     _assert_within(holder, trash_dir)
     source = holder / metadata["name"]
-    if not source.exists():
+    # A trashed symlink can dangle inside the holder (a relative link pointed
+    # at a sibling of the directory it was deleted from), and it is still the
+    # item: judge existence by the directory entry, not through the link.
+    if not (source.is_symlink() or source.exists()):
         raise TrashItemNotFound(item_id)
 
     dest = workspace_root / metadata["original_path"]
+    # The recorded path came from our own move_to_trash, but the sidecar can
+    # be corrupt or hand-edited: never restore outside the root the item was
+    # deleted from, and never create parent directories for one that does.
+    if not dest.resolve().is_relative_to(workspace_root.resolve()):
+        raise TrashRestoreOutsideRoot(metadata["original_path"])
     if dest.exists():
         raise TrashRestoreConflict(metadata["original_path"])
 

@@ -1,0 +1,65 @@
+# Headscale for the device-link test bed (pinned 0.29.1, the version taos.my
+# deploys). This is the BED's config, not a copy of deploy/headscale/config.yaml:
+# it differs only where a local, http-only, single-host bed has to.
+#
+# Same as production: node.expiry 0 (never; design 4.0), the repo's
+# policy.hujson (mounted from the taos.my checkout by compose), prefixes from
+# the standard CGNAT range, sqlite.
+# Different on purpose: plain-http server_url (a tailscale client accepts an
+# http login server; T0 checks this), no Caddy front, and the EMBEDDED DERP
+# (0.29 refuses to start with an empty DERP map).
+server_url: http://headscale:8080
+listen_addr: 0.0.0.0:8080
+metrics_listen_addr: 127.0.0.1:9090
+grpc_listen_addr: 127.0.0.1:50443
+grpc_allow_insecure: true
+
+noise:
+  private_key_path: /var/lib/headscale/noise_private.key
+
+# prefixes: appended by bed.sh up at run time (see render_headscale_configs).
+
+derp:
+  server:
+    enabled: true
+    region_id: 999
+    region_code: bed
+    region_name: bed-embedded
+    stun_listen_addr: 0.0.0.0:3478
+    private_key_path: /var/lib/headscale/derp_server_private.key
+    automatically_add_embedded_derp_region: true
+    verify_clients: false
+  urls: []
+  paths: []
+  auto_update_enabled: false
+
+disable_check_updates: true
+
+node:
+  # The explicit "never" (design 4.0). Not retroactive; the bed is always fresh.
+  expiry: 0
+  ephemeral:
+    inactivity_timeout: 30m
+
+database:
+  type: sqlite
+  sqlite:
+    path: /var/lib/headscale/db.sqlite
+
+policy:
+  mode: file
+  path: /etc/headscale/policy.hujson
+
+log:
+  level: info
+  format: text
+
+dns:
+  magic_dns: false
+  base_domain: bed.internal
+  override_local_dns: false
+  nameservers:
+    global: []
+
+unix_socket: /var/run/headscale/headscale.sock
+unix_socket_permission: "0770"

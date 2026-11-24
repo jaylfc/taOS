@@ -102,6 +102,9 @@ class _AgentSession:
         self._seen_final_ids: OrderedDict[str, None] = OrderedDict()
         # Set of trace_ids for which mark_seen has been called (idempotent guard).
         self._seen_trace_ids: set[str] = set()
+        # Per-session archive dedup set: reply_ids already archived, for idempotency.
+        # Bounded same as _seen_final_ids (OrderedDict with cap) to prevent unbounded growth.
+        self._archive_seen_ids: OrderedDict[str, None] = OrderedDict()
 
     def accumulate_delta(self, trace_id: str, content: str) -> None:
         if trace_id not in self._delta_buffers:
@@ -128,6 +131,15 @@ class _AgentSession:
         self._seen_final_ids[reply_id] = None
         if len(self._seen_final_ids) > _FINAL_ID_SEEN_CAP:
             self._seen_final_ids.popitem(last=False)
+
+    def is_archive_id_seen(self, reply_id: str) -> bool:
+        return reply_id in self._archive_seen_ids
+
+    def mark_archive_id_seen(self, reply_id: str) -> None:
+        """Record an archive reply id as seen, evicting the oldest past the cap."""
+        self._archive_seen_ids[reply_id] = None
+        if len(self._archive_seen_ids) > _FINAL_ID_SEEN_CAP:
+            self._archive_seen_ids.popitem(last=False)
 
 
 class BridgeSessionRegistry:
@@ -435,12 +447,10 @@ class BridgeSessionRegistry:
             reply_id = body.get("id")
             if not isinstance(reply_id, str) or not reply_id:
                 reply_id = None
-            if reply_id is not None and session.is_final_id_seen(reply_id):
-                logger.debug(
-                    "bridge_session: duplicate final reply id %s for agent %s, skipping",
-                    reply_id, slug,
-                )
-                return
+            # NOTE: we do NOT return early here. The existing
+            # is_final_id_seen / mark_final_id_seen mechanism (via _seen_final_ids)
+            # still runs at the end of this function for chat persistence tracking,
+            # but we do not short-circuit before the archive dedup below.
             accumulated = session.flush_delta(trace_id)
             final_content = content or accumulated
             pending_msg_id = session.pop_pending_msg(trace_id)
@@ -479,7 +489,41 @@ class BridgeSessionRegistry:
                     )
             # --- End: content_blocks handling ---
 
-            # Write trace event.
+            if self._archive is not None:
+                # Skip archive write if reply_id already archived (idempotency dedup).
+                # Replies without an id are not deduplicated.
+                if reply_id is not None and session.is_archive_id_seen(reply_id):
+                    logger.debug(
+                        "bridge_session: duplicate final reply id %s already archived for agent %s, skipping",
+                        reply_id, slug,
+                    )
+                else:
+                    try:
+                        await self._archive.record(
+                            event_type="final",
+                            data={
+                                "content": final_content,
+                                "trace_id": trace_id,
+                                "reply_id": reply_id,
+                                "channel_id": channel_id,
+                            },
+                            agent_name=slug,
+                            summary=final_content[:120] if final_content else "",
+                        )
+                        # Mark as archived only after successful write (not on failure),
+                        # so a failed archive write is retried.
+                        if reply_id is not None:
+                            session.mark_archive_id_seen(reply_id)
+                    except Exception:
+                        logger.exception("archive dual-write failed (final)")
+
+            # Chat persistence guard: if this reply_id was already seen, skip chat
+            # write entirely (but archive write above still ran / was attempted).
+            # Replies without an id are not deduplicated.
+            if reply_id is not None and session.is_final_id_seen(reply_id):
+                return
+
+            # Write trace event (only for new reply_ids).
             if self._trace_registry:
                 store = await self._trace_registry.get(slug)
                 await store.record(

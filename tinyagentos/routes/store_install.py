@@ -16,7 +16,7 @@ from dataclasses import asdict
 from pathlib import Path
 from urllib.parse import urlparse
 
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, Depends, Request
 from fastapi.responses import JSONResponse
 
 from tinyagentos.agent_image import (
@@ -25,6 +25,7 @@ from tinyagentos.agent_image import (
     base_image_url_for_alias,
     ensure_image_present,
 )
+from tinyagentos.auth_context import require_admin
 from tinyagentos.catalog.resolver import (
     DeviceCapability,
     ResolveErr,
@@ -814,7 +815,7 @@ async def install_progress_by_id(request: Request, install_id: str):
     return JSONResponse(entry.to_dict())
 
 
-@router.post("/api/store/install-v2")
+@router.post("/api/store/install-v2", dependencies=[Depends(require_admin)])
 async def install_app(request: Request):
     """Resolver-driven install. Chains backend → model in one user click.
 
@@ -1231,7 +1232,7 @@ async def store_signing_pubkey(request: Request):
     return JSONResponse({"public_key_pem": pub_pem.decode()})
 
 
-@router.post("/api/store/uninstall-v2")
+@router.post("/api/store/uninstall-v2", dependencies=[Depends(require_admin)])
 async def uninstall_app(request: Request):
     body = await request.json()
     app_id = body.get("app_id", "")

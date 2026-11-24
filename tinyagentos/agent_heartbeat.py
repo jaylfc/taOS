@@ -129,7 +129,8 @@ async def _wake_agent_with_task(app_state, agent: dict, task: dict) -> bool:
         try:
             from tinyagentos.projects.a2a import ensure_a2a_channel
             channel = await ensure_a2a_channel(
-                chat_channels, project_store, task["project_id"], config=config
+                chat_channels, project_store, task["project_id"], config=config,
+                agent_registry=getattr(app_state, "agent_registry", None),
             )
             await chat_messages.send_message(
                 channel_id=channel["id"],

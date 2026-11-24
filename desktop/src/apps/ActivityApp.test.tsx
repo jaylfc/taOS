@@ -174,6 +174,143 @@ describe("ActivityApp", () => {
     expect(screen.queryByText("Stats unavailable")).toBeNull();
   });
 
+  it("renders multiple GPU cards when gpus array is present", async () => {
+    const activity = makeActivity({
+      gpu: { load: null, vram_percent: null, vram_used_mb: null, vram_total_mb: null, type: "none" },
+      gpus: [
+        {
+          type: "nvidia",
+          model: "NVIDIA GeForce RTX 3090",
+          load: { load_percent: 45, freq_hz: 1800000000 },
+          vram_percent: 50,
+          vram_used_mb: 12288,
+          vram_total_mb: 24576,
+        },
+        {
+          type: "nvidia",
+          model: "NVIDIA GeForce RTX 3060",
+          load: { load_percent: 12, freq_hz: 1500000000 },
+          vram_percent: 33,
+          vram_used_mb: 4096,
+          vram_total_mb: 12288,
+        },
+        {
+          type: "intel",
+          model: "Intel UHD 770",
+          load: null,
+          vram_percent: null,
+          vram_used_mb: null,
+          vram_total_mb: null,
+        },
+      ],
+    });
+    vi.stubGlobal("fetch", mockFetch(baseResponses(activity)));
+    render(<ActivityApp windowId="win-1" />);
+    await flush();
+
+    // Should render 3 GPU cards
+    expect(screen.getByRole("heading", { name: "GPU 1" })).toBeTruthy();
+    expect(screen.getByRole("heading", { name: "GPU 2" })).toBeTruthy();
+    expect(screen.getByRole("heading", { name: "GPU 3" })).toBeTruthy();
+
+    // Check first GPU (RTX 3090) - text may be split across elements
+    expect(screen.getByText((content) => content.includes("RTX 3090"))).toBeTruthy();
+    expect(screen.getAllByText("Load")).toHaveLength(2); // Two GPUs have load
+    expect(screen.getAllByText("VRAM")).toHaveLength(2); // Two GPUs have VRAM
+    expect(screen.getByText(/12\.0 GB \/ 24\.0 GB/i)).toBeTruthy();
+
+    // Check second GPU (RTX 3060)
+    expect(screen.getByText((content) => content.includes("RTX 3060"))).toBeTruthy();
+    expect(screen.getByText(/4\.0 GB \/ 12\.0 GB/i)).toBeTruthy();
+
+    // Check third GPU (Intel UHD 770) - no stats available
+    expect(screen.getByText((content) => content.includes("UHD 770"))).toBeTruthy();
+    expect(screen.getByText("Stats unavailable")).toBeTruthy();
+  });
+
+  it("shows load, frequency and 'Shares system memory' for an Intel iGPU", async () => {
+    const activity = makeActivity({
+      gpu: { load: null, vram_percent: null, vram_used_mb: null, vram_total_mb: null, type: "none" },
+      gpus: [
+        {
+          type: "intel",
+          model: "Intel UHD Graphics 750",
+          load: { load_percent: 5, freq_hz: 1100000000, freq_max_hz: 1200000000 },
+          vram_percent: null,
+          vram_used_mb: null,
+          vram_total_mb: null,
+          shared_memory: true,
+        },
+      ],
+    });
+    vi.stubGlobal("fetch", mockFetch(baseResponses(activity)));
+    render(<ActivityApp windowId="win-1" />);
+    await flush();
+
+    expect(screen.getByRole("heading", { name: "GPU" })).toBeTruthy();
+    expect(screen.getByText((content) => String(content).includes("UHD Graphics 750"))).toBeTruthy();
+    expect(screen.getAllByText("Load")).toHaveLength(1);
+    expect(screen.getByText((content) => String(content).includes("1100 MHz"))).toBeTruthy();
+    expect(screen.getByText("Shares system memory")).toBeTruthy();
+    expect(screen.queryByText("Stats unavailable")).toBeNull();
+  });
+
+  it("renders Intel iGPU with frequency but null load_percent on first sample", async () => {
+    const activity = makeActivity({
+      gpu: { load: null, vram_percent: null, vram_used_mb: null, vram_total_mb: null, type: "none" },
+      gpus: [
+        {
+          type: "intel",
+          model: "Intel UHD Graphics 750",
+          // First sample: load_percent is null (no previous RC6 delta), but freq_hz is available
+          load: { load_percent: null, freq_hz: 1100000000, freq_max_hz: 1200000000 },
+          vram_percent: null,
+          vram_used_mb: null,
+          vram_total_mb: null,
+          shared_memory: true,
+        },
+      ],
+    });
+    vi.stubGlobal("fetch", mockFetch(baseResponses(activity)));
+    render(<ActivityApp windowId="win-1" />);
+    await flush();
+
+    expect(screen.getByRole("heading", { name: "GPU" })).toBeTruthy();
+    expect(screen.getByText((content) => String(content).includes("UHD Graphics 750"))).toBeTruthy();
+    // Load bar should not render when load_percent is null
+    expect(screen.queryAllByText("Load")).toHaveLength(0);
+    // But frequency should still be displayed
+    expect(screen.getByText((content) => String(content).includes("1100 MHz"))).toBeTruthy();
+    expect(screen.getByText("Shares system memory")).toBeTruthy();
+    expect(screen.queryByText("Stats unavailable")).toBeNull();
+  });
+
+  it("falls back to single gpu when gpus array is empty", async () => {
+    const activity = makeActivity({
+      hardware: {
+        board: "Raspberry Pi 5",
+        cpu: { model: "ARM GPIO rev1", arch: "aarch64", cores: 4, soc: "BCM2712" },
+        ram_mb: 8192,
+        gpu: { type: "nvidia", model: "NVIDIA GeForce RTX 3060", vram_mb: 12288 },
+      },
+      gpu: {
+        type: "nvidia",
+        load: { load_percent: 65, freq_hz: 1800000000 },
+        vram_percent: 70,
+        vram_used_mb: 8000,
+        vram_total_mb: 12000,
+      },
+      gpus: [],
+    });
+    vi.stubGlobal("fetch", mockFetch(baseResponses(activity)));
+    render(<ActivityApp windowId="win-1" />);
+    await flush();
+
+    expect(screen.getByRole("heading", { name: "GPU" })).toBeTruthy();
+    expect(screen.queryByRole("heading", { name: "GPU 1" })).toBeNull();
+    expect(screen.getByText((content) => content.includes("RTX 3060"))).toBeTruthy();
+  });
+
   it("renders the memory bar with RAM usage and the disk transfer rates", async () => {
     vi.stubGlobal("fetch", mockFetch(baseResponses()));
     render(<ActivityApp windowId="win-1" />);
