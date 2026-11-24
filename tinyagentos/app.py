@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import sys
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -14,6 +15,78 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
+
+
+def _check_and_convert_memory_store(data_dir: Path) -> tuple[bool, str | None]:
+    """Probe the taOSmd store format and run guarded conversion if needed.
+
+    Returns (ok, error_message). On success, ok=True and error_message=None.
+    On failure (newer format, conversion failed, conversion missing), ok=False
+    and error_message contains a plain user-facing explanation.
+    """
+    try:
+        from taosmd.store_probe import probe_store, ProbeState
+    except Exception as exc:  # pragma: no cover - missing taosmd or probe module
+        return False, (
+            "Memory store format check unavailable: the taosmd probe module "
+            f"could not be loaded ({type(exc).__name__}: {exc}). Memories are untouched."
+        )
+
+    report = probe_store(data_dir)
+    if report.state == ProbeState.CURRENT:
+        return True, None
+    if report.state == ProbeState.NEWER:
+        return False, (
+            "The memory store on disk was written by a newer version of the "
+            "memory service. This version cannot read it. The store is "
+            "unchanged and your memories are safe. Please update taOS to a "
+            "version that supports this store format."
+        )
+    if report.state == ProbeState.UNKNOWN:
+        return False, (
+            "The memory store format could not be determined (unreadable or "
+            "live writer detected). The store is unchanged and your memories "
+            "are safe. Ensure the memory service is stopped and retry."
+        )
+
+    # OLD format: attempt guarded conversion
+    try:
+        from taosmd.store_convert import convert_dense_store, EXIT_OK, EXIT_RESTORED, EXIT_REFUSED, EXIT_UNKNOWN_FORMAT, EXIT_ERROR
+    except Exception as exc:  # pragma: no cover - missing taosmd or convert module
+        return False, (
+            "The memory store needs conversion but the conversion tool is "
+            f"unavailable ({type(exc).__name__}: {exc}). The store is unchanged "
+            "and your memories are safe. Please update taOS to a version that "
+            "includes the conversion tool."
+        )
+
+    vector_db = data_dir / "vector-memory.db"
+    if not vector_db.exists():
+        # No vector store to convert; treat as current
+        return True, None
+
+    backup_dir = data_dir / "backups"
+    result = convert_dense_store(vector_db, backup_dir=backup_dir)
+
+    if result.exit_code == EXIT_OK:
+        if result.status == "converted":
+            logger.info("Memory store converted: %s", result.message)
+        return True, None
+    if result.exit_code == EXIT_RESTORED:
+        return False, (
+            "Memory store conversion failed and the original store was restored. "
+            "Your memories are untouched. The backup is kept at "
+            f"{result.backup_path}. Please check disk space and retry."
+        )
+    if result.exit_code in (EXIT_REFUSED, EXIT_UNKNOWN_FORMAT, EXIT_ERROR):
+        return False, (
+            "Memory store conversion was refused or failed: "
+            f"{result.message}. Your memories are untouched."
+        )
+    return False, (
+        f"Memory store conversion returned unexpected result: {result.message}. "
+        "Your memories are untouched."
+    )
 
 
 class _CacheAwareStaticFiles(StaticFiles):
@@ -613,6 +686,21 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
+        # Probe the memory store format and run guarded conversion if needed.
+        # This must run before any store initialization to avoid opening an
+        # old-format store with a newer service.
+        ok, err = _check_and_convert_memory_store(data_dir)
+        if not ok:
+            # Log the error and set a flag on app.state so routes can surface it.
+            # We do NOT raise here: a failed conversion must not brick the
+            # controller. The memory service (taosmd) runs separately and will
+            # fail to start on its own if the store is incompatible. The user
+            # sees the message in /api/health and the update flow.
+            logger.error("Memory store check failed: %s", err)
+            app.state.memory_store_error = err
+        else:
+            app.state.memory_store_error = None
+
         # Arm the startup guard: block non-exempt requests until init completes.
         app.state._startup_complete = False
         await agent_registry_store.init()
