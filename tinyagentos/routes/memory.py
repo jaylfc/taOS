@@ -291,45 +291,43 @@ async def memory_search(request: Request, body: SearchRequest):
             except Exception:
                 pass
 
-        try:
-            client = get_taosmd_client(request)
-            result = await client.answer_context(
-                query=body.query,
-                agent=agent_name,
-                budget_tokens=budget_tokens,
-                now=datetime.now(UTC).timestamp(),
-                reasoning_reserve=1024,
-                depth="standard",
-            )
-            # Convert answer_context result to search results format
-            # answer_context returns a context string; we parse it into chunks
-            # For now, return the context as a single result with metadata
-            return {
-                "results": [{
-                    "content": result.context,
-                    "metadata": {
-                        "answer_context": True,
-                        "dropped": result.dropped,
-                        "budget_tokens": result.budget_tokens,
-                        "used_tokens": result.used_tokens,
-                        "layers": result.layers,
-                        "depth": result.depth,
-                        "intent": result.intent,
-                    }
-                }] if result.context else [],
-                "query": body.query,
-                "agent": agent_name,
-                "answer_context_meta": {
+        client = get_taosmd_client(request)
+        # Use canonical identity (registry_canonical_id) if available, else config name
+        canonical_agent = agent_record.get("registry_canonical_id") or agent_name
+        result = await client.answer_context(
+            query=body.query,
+            agent=canonical_agent,
+            budget_tokens=budget_tokens,
+            now=datetime.now(UTC).timestamp(),
+            reasoning_reserve=1024,
+            depth="standard",
+        )
+        # Convert answer_context result to search results format
+        # answer_context returns a context string; we parse it into chunks
+        # For now, return the context as a single result with metadata
+        return {
+            "results": [{
+                "content": result.context,
+                "metadata": {
+                    "answer_context": True,
                     "dropped": result.dropped,
                     "budget_tokens": result.budget_tokens,
                     "used_tokens": result.used_tokens,
+                    "layers": result.layers,
+                    "depth": result.depth,
+                    "intent": result.intent,
                 }
+            }] if result.context else [],
+            "query": body.query,
+            "agent": agent_name,
+            "answer_context_meta": {
+                "dropped": result.dropped,
+                "budget_tokens": result.budget_tokens,
+                "used_tokens": result.used_tokens,
             }
-        except Exception as exc:
-            logger.warning("answer_context failed for agent %s: %s", agent_name, exc)
-            # Fall through to raw qmd search on failure
+        }
 
-    # Human callers or fallback: raw qmd search
+    # Human callers: raw qmd search
     db_path = _agent_db_path(request, body.agent)
     search_fn = _qmd_vsearch if body.mode == "semantic" else _qmd_search
 

@@ -111,7 +111,7 @@ async def agent_search(request: Request, q: str, agent_name: str, limit: int = 1
     """Read-only search endpoint for agents with user memory permission.
 
     Uses taOSmd answer_context for unified memory context with token budget
-    and dropped counts. Falls back to SQLite on failure.
+    and dropped counts.
     """
     config = request.app.state.config
     agents = getattr(config, "agents", None)
@@ -138,51 +138,45 @@ async def agent_search(request: Request, q: str, agent_name: str, limit: int = 1
         except Exception:
             pass
 
-    try:
-        client = get_taosmd_client(request)
-        result = await client.answer_context(
-            query=q,
-            agent=agent_name,
-            budget_tokens=budget_tokens,
-            reasoning_reserve=1024,
-            depth="standard",
-        )
-        # Convert answer_context result to user_memory chunk format
-        results = []
-        if result.context:
-            # Parse dated session blocks into chunks
-            # For now, return as a single chunk with metadata
-            results = [{
-                "hash": f"answer_ctx_{agent_name}",
-                "collection": "taosmd_context",
-                "title": f"taOSmd context for {agent_name}",
-                "content": result.context,
-                "metadata": {
-                    "answer_context": True,
-                    "dropped": result.dropped,
-                    "budget_tokens": result.budget_tokens,
-                    "used_tokens": result.used_tokens,
-                    "layers": result.layers,
-                    "depth": result.depth,
-                    "intent": result.intent,
-                },
-                "created_at": result.latency_ms,  # reuse field for timestamp
-            }]
-        return JSONResponse({
-            "results": results,
-            "query": q,
-            "agent": agent_name,
-            "answer_context_meta": {
+    client = get_taosmd_client(request)
+    result = await client.answer_context(
+        query=q,
+        agent=agent_name,
+        budget_tokens=budget_tokens,
+        reasoning_reserve=1024,
+        depth="standard",
+    )
+    # Convert answer_context result to user_memory chunk format
+    results = []
+    if result.context:
+        # Parse dated session blocks into chunks
+        # For now, return as a single chunk with metadata
+        results = [{
+            "hash": f"answer_ctx_{agent_name}",
+            "collection": "taosmd_context",
+            "title": f"taOSmd context for {agent_name}",
+            "content": result.context,
+            "metadata": {
+                "answer_context": True,
                 "dropped": result.dropped,
                 "budget_tokens": result.budget_tokens,
                 "used_tokens": result.used_tokens,
-            }
-        })
-    except Exception as exc:
-        logger.warning("answer_context failed for agent %s: %s", agent_name, exc)
-        # Fallback to raw SQLite search
-        results = await _store(request).search(USER_ID, q, limit=limit)
-        return JSONResponse({"results": results, "query": q, "agent": agent_name, "backend": "sqlite"})
+                "layers": result.layers,
+                "depth": result.depth,
+                "intent": result.intent,
+            },
+            "created_at": result.latency_ms,  # reuse field for timestamp
+        }]
+    return JSONResponse({
+        "results": results,
+        "query": q,
+        "agent": agent_name,
+        "answer_context_meta": {
+            "dropped": result.dropped,
+            "budget_tokens": result.budget_tokens,
+            "used_tokens": result.used_tokens,
+        }
+    })
 
 
 @router.get("/api/user-memory/browse")

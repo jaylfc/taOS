@@ -103,12 +103,12 @@ class TestAgentChatRouter:
         state.chat_messages.send_message.assert_not_awaited()
 
     @pytest.mark.asyncio
-    async def test_context_budget_uses_smallest_recipient_window(self):
-        """Shared context budgets for the smallest known window (#1740)."""
+    async def test_context_budget_per_agent_window(self):
+        """Per-agent context uses each agent's own model window for budget."""
         bridge = _FakeBridge()
         agents = [
-            {"name": "big", "status": "running", "model": "big-model"},
-            {"name": "small", "status": "running", "model": "small-model"},
+            {"name": "big", "status": "running", "model": "big-model", "registry_canonical_id": "canonical-big"},
+            {"name": "small", "status": "running", "model": "small-model", "registry_canonical_id": "canonical-small"},
         ]
         state = MagicMock()
         state.config = MagicMock()
@@ -132,12 +132,12 @@ class TestAgentChatRouter:
             "big-model": _FakeManifest("big-model", 32768),
             "small-model": _FakeManifest("small-model", 8192),
         })
-        # Mock taosmd_client
+        # Mock taosmd_client on the router instance
         mock_client = AsyncMock()
         mock_client.answer_context = AsyncMock(return_value=AnswerContextResult(
             context="test context",
             dropped=0,
-            budget_tokens=4096,  # 8192 // 2
+            budget_tokens=0,  # Will be set per call
             used_tokens=1000,
             layers={},
             depth="standard",
@@ -145,7 +145,7 @@ class TestAgentChatRouter:
             latency_ms=50.0,
         ))
         state.taosmd_client = mock_client
-        # lively group fans out to both agents so min window applies
+        # lively group fans out to both agents
         channel = {
             "id": "c1", "type": "group",
             "members": ["user", "big", "small"],
@@ -158,81 +158,28 @@ class TestAgentChatRouter:
             "id": "m1", "channel_id": "c1", "author_id": "user",
             "author_type": "user", "content": "hello", "created_at": 1.0,
         }
-        with patch(
-            "tinyagentos.agent_chat_router.answer_context",
-            return_value=AnswerContextResult(
-                context="test context",
-                dropped=0,
-                budget_tokens=4096,
-                used_tokens=1000,
-                layers={},
-                depth="standard",
-                intent="general",
-                latency_ms=50.0,
-            ),
-        ) as mock_answer:
-            await AgentChatRouter(state)._route(message, channel)
-        mock_answer.assert_awaited_once()
-        # min known window is 8192 -> budget 4096 (share of window)
-        call_kwargs = mock_answer.call_args.kwargs
-        assert call_kwargs["budget_tokens"] == 4096
+        router = AgentChatRouter(state)
+        # Override the client with our mock
+        router._taosmd_client = mock_client
+        await router._route(message, channel)
 
-    @pytest.mark.asyncio
-    async def test_context_budget_defaults_when_windows_unknown(self):
-        bridge = _FakeBridge()
-        agent = {"name": "openclaw", "status": "running", "model": "gpt-4o"}
-        state = _state_for(agent, bridge=bridge)
-        state.registry = _FakeRegistry({})
-        state.chat_messages.get_messages = AsyncMock(return_value=[
-            {"author_id": "user", "author_type": "user", "content": "hello"},
-        ])
-        state.chat_messages.set_metadata = AsyncMock()
-        # Mock taosmd_client
-        mock_client = AsyncMock()
-        mock_client.answer_context = AsyncMock(return_value=AnswerContextResult(
-            context="test context",
-            dropped=0,
-            budget_tokens=4000,
-            used_tokens=1000,
-            layers={},
-            depth="standard",
-            intent="general",
-            latency_ms=50.0,
-        ))
-        state.taosmd_client = mock_client
-        message = {
-            "id": "m1", "channel_id": "c1", "author_id": "user",
-            "author_type": "user", "content": "hello", "created_at": 1.0,
-        }
-        channel = {"id": "c1", "type": "dm", "members": ["user", "openclaw"]}
-        with patch(
-            "tinyagentos.agent_chat_router.answer_context",
-            return_value=AnswerContextResult(
-                context="test context",
-                dropped=0,
-                budget_tokens=4000,
-                used_tokens=1000,
-                layers={},
-                depth="standard",
-                intent="general",
-                latency_ms=50.0,
-            ),
-        ) as mock_answer:
-            await AgentChatRouter(state)._route(message, channel)
-        mock_answer.assert_awaited_once()
-        # No known windows -> default budget 4000
-        call_kwargs = mock_answer.call_args.kwargs
-        assert call_kwargs["budget_tokens"] == 4000
+        # Should call answer_context once PER agent (2 agents = 2 calls)
+        assert mock_client.answer_context.call_count == 2
+
+        # Verify budgets: big gets 32768//2=16384, small gets 8192//2=4096
+        call_args_list = mock_client.answer_context.call_args_list
+        budgets = {call.kwargs["agent"]: call.kwargs["budget_tokens"] for call in call_args_list}
+        assert budgets["canonical-big"] == 16384
+        assert budgets["canonical-small"] == 4096
 
     @pytest.mark.asyncio
     async def test_context_budget_capped_when_a_recipient_window_is_unknown(self):
-        """A mix of known-large and unknown-window recipients never budgets
-        above the historical default, so the unknown recipient cannot be
-        overflowed by the larger one (#1740 follow-up)."""
+        """A mix of known-large and unknown-window recipients:
+        known agent gets its share, unknown agent gets default."""
         bridge = _FakeBridge()
         agents = [
-            {"name": "big", "status": "running", "model": "big-model"},
-            {"name": "cloud", "status": "running", "model": "gpt-4o"},
+            {"name": "big", "status": "running", "model": "big-model", "registry_canonical_id": "canonical-big"},
+            {"name": "cloud", "status": "running", "model": "gpt-4o", "registry_canonical_id": "canonical-cloud"},
         ]
         state = MagicMock()
         state.config = MagicMock()
@@ -262,7 +209,7 @@ class TestAgentChatRouter:
         mock_client.answer_context = AsyncMock(return_value=AnswerContextResult(
             context="test context",
             dropped=0,
-            budget_tokens=4000,  # capped at default because of unknown window
+            budget_tokens=0,  # Will be set per call
             used_tokens=1000,
             layers={},
             depth="standard",
@@ -282,24 +229,18 @@ class TestAgentChatRouter:
             "id": "m1", "channel_id": "c1", "author_id": "user",
             "author_type": "user", "content": "hello", "created_at": 1.0,
         }
-        with patch(
-            "tinyagentos.agent_chat_router.answer_context",
-            return_value=AnswerContextResult(
-                context="test context",
-                dropped=0,
-                budget_tokens=4000,
-                used_tokens=1000,
-                layers={},
-                depth="standard",
-                intent="general",
-                latency_ms=50.0,
-            ),
-        ) as mock_answer:
-            await AgentChatRouter(state)._route(message, channel)
-        mock_answer.assert_awaited_once()
-        # 32768 alone would give 16384; the unknown recipient caps it at 4000.
-        call_kwargs = mock_answer.call_args.kwargs
-        assert call_kwargs["budget_tokens"] == 4000
+        router = AgentChatRouter(state)
+        router._taosmd_client = mock_client
+        await router._route(message, channel)
+
+        # Should call answer_context once PER agent (2 agents = 2 calls)
+        assert mock_client.answer_context.call_count == 2
+
+        # Verify budgets: big gets 32768//2=16384, cloud gets default 4000 (unknown window)
+        call_args_list = mock_client.answer_context.call_args_list
+        budgets = {call.kwargs["agent"]: call.kwargs["budget_tokens"] for call in call_args_list}
+        assert budgets["canonical-big"] == 16384
+        assert budgets["canonical-cloud"] == 4000
 
     @pytest.mark.asyncio
     async def test_skips_non_user_messages(self):

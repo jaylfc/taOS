@@ -7,7 +7,7 @@ import time
 from typing import Any
 
 from tinyagentos.agent_loop import AgentLoop, LoopAction
-from tinyagentos.taosmd_client import AnswerContextResult, answer_context
+from tinyagentos.taosmd_client import AnswerContextResult, TaOSmdClient, answer_context
 from tinyagentos.task_utils import _create_supervised_task
 
 logger = logging.getLogger(__name__)
@@ -43,6 +43,22 @@ class AgentChatRouter:
         # arriving mid-turn are queued by the loop and driven by the current
         # turn-holder at its safe point, preserving delivery order.
         self._agent_loops: dict[str, AgentLoop] = {}
+        # Cached taOSmd client (lazy init)
+        self._taosmd_client: TaOSmdClient | None = None
+
+    def _get_taosmd_client(self) -> TaOSmdClient:
+        """Get or create a TaOSmdClient from app state directly."""
+        if self._taosmd_client is None:
+            http_client = getattr(self._state, "http_client", None)
+            taosmd_url = getattr(self._state, "taosmd_url", None) or "http://localhost:8085"
+            in_process = getattr(self._state, "taosmd_in_process", False)
+
+            self._taosmd_client = TaOSmdClient(
+                http_client=http_client,
+                base_url=taosmd_url,
+                in_process=in_process,
+            )
+        return self._taosmd_client
 
     async def close(self) -> None:
         # Cancel + drain any in-flight ACP turns so shutdown doesn't orphan them.
@@ -227,73 +243,73 @@ class AgentChatRouter:
         bridge = getattr(self._state, "bridge_sessions", None)
         policy = getattr(self._state, "group_policy", None)
 
-        # Build the context window once per routed message, not per recipient.
-        # Use taOSmd answer_context for agent memory context (share of model window).
-        # Falls back to chat history context if answer_context unavailable.
-        context = []
-        answer_ctx_result: AnswerContextResult | None = None
-        if hasattr(self._state, "chat_messages"):
-            try:
-                from tinyagentos.agent_db import find_agent
+        leads = list((settings.get("leads") or []))
+        from tinyagentos.agent_manual import build_manual
+
+        for agent_name in recipients:
+            forced = force_by_slug.get(agent_name, False)
+            if not forced:
+                if next_hops > max_hops:
+                    continue
+                if policy is not None and not policy.try_acquire(policy_key, agent_name, settings):
+                    continue
+            agent = find_agent(config, agent_name)
+            guest = None
+            if agent is None:
                 from tinyagentos.chat.guest_agents import resolve_guest
-                from tinyagentos.cluster.model_resolver import _find_model_manifest
+                guest = await resolve_guest(self._state, agent_name)
+                if guest is None:
+                    continue
+                agent = guest
+            if guest is None and agent.get("status") != "running":
+                await self._post_system_reply(
+                    agent_name, channel["id"],
+                    f"[router] agent '{agent_name}' is not running (status={agent.get('status') or 'unknown'}).",
+                )
+                continue
+            if bridge is None:
+                await self._post_system_reply(
+                    agent_name, channel["id"],
+                    "[router] bridge registry not configured on this host.",
+                )
+                continue
 
-                # Find the smallest known context window among recipients for budget
-                known_windows: list[int] = []
-                any_unknown = False
-                registry = getattr(self._state, "registry", None)
-                for agent_name in recipients:
-                    agent = find_agent(config, agent_name)
-                    if agent is None:
-                        if await resolve_guest(self._state, agent_name):
-                            any_unknown = True
-                        continue
+            # Build per-agent memory context via taOSmd answer_context
+            # Use the agent's canonical identity and its own model's context window for budget
+            answer_ctx_result: AnswerContextResult | None = None
+            agent_context = []
+            if hasattr(self._state, "chat_messages"):
+                try:
+                    from tinyagentos.cluster.model_resolver import _find_model_manifest
+
+                    # Use this agent's model context window for budget (share, not whole)
+                    budget_tokens = 4000  # default
                     model_id = agent.get("model") or ""
-                    if not model_id:
-                        any_unknown = True
-                        continue
-                    try:
-                        manifest = _find_model_manifest(registry, model_id)
-                        ctx = (
-                            int(getattr(manifest, "context_window", 0) or 0)
-                            if manifest
-                            else 0
-                        )
-                        if ctx > 0:
-                            known_windows.append(ctx)
-                        else:
-                            any_unknown = True
-                    except Exception:  # noqa: BLE001
-                        any_unknown = True
-                        continue
+                    if model_id:
+                        try:
+                            registry = getattr(self._state, "registry", None)
+                            manifest = _find_model_manifest(registry, model_id)
+                            if manifest and getattr(manifest, "context_window", 0):
+                                budget_tokens = max(512, int(manifest.context_window) // 2)
+                        except Exception:
+                            pass
 
-                # Budget is a share of the smallest known window (not the whole window)
-                # Per taOSmd spec: use ~50% of the smallest window for history
-                min_window = min(known_windows) if known_windows else 0
-                budget_tokens = max(512, min_window // 2) if min_window else 4000
-                if any_unknown and known_windows:
-                    budget_tokens = min(budget_tokens, 4000)
+                    # Use canonical identity if available (registry_canonical_id)
+                    canonical_agent = agent.get("registry_canonical_id") or agent_name
 
-                # Call answer_context for the first recipient's agent (shared context)
-                # The context is built per-message, not per-recipient, so we use
-                # the first recipient's identity for the answer_context call.
-                primary_agent = recipients[0] if recipients else None
-                if primary_agent:
-                    find_agent(config, primary_agent)
                     answer_ctx_result = await answer_context(
                         query=message.get("content", ""),
-                        agent=primary_agent,
+                        agent=canonical_agent,
                         budget_tokens=budget_tokens,
                         now=time.time(),
                         reasoning_reserve=1024,
                         depth="standard",
-                        request=self._state,  # Pass app state for client lookup
+                        client=self._get_taosmd_client(),
                     )
                     # Use the assembled context from answer_context
                     if answer_ctx_result and answer_ctx_result.context:
-                        # Parse the context into message-like format for compatibility
-                        # answer_context returns dated session blocks; we wrap as a single system message
-                        context = [{"role": "system", "content": answer_ctx_result.context}]
+                        # answer_context returns dated session blocks; wrap as a single system message
+                        agent_context = [{"role": "system", "content": answer_ctx_result.context}]
                         # Store answer_context metadata in the triggering message for trace visibility
                         if self._state.chat_messages and message.get("id"):
                             try:
@@ -328,41 +344,10 @@ class AgentChatRouter:
                         from tinyagentos.chat.context_window import (
                             build_context_window,
                         )
-                        context = build_context_window(recent, limit=20, max_tokens=budget_tokens)
-            except Exception:
-                logger.warning("context fetch failed for channel %s", channel.get("id"), exc_info=True)
-                context = []
-
-        leads = list((settings.get("leads") or []))
-        from tinyagentos.agent_manual import build_manual
-
-        for agent_name in recipients:
-            forced = force_by_slug.get(agent_name, False)
-            if not forced:
-                if next_hops > max_hops:
-                    continue
-                if policy is not None and not policy.try_acquire(policy_key, agent_name, settings):
-                    continue
-            agent = find_agent(config, agent_name)
-            guest = None
-            if agent is None:
-                from tinyagentos.chat.guest_agents import resolve_guest
-                guest = await resolve_guest(self._state, agent_name)
-                if guest is None:
-                    continue
-                agent = guest
-            if guest is None and agent.get("status") != "running":
-                await self._post_system_reply(
-                    agent_name, channel["id"],
-                    f"[router] agent '{agent_name}' is not running (status={agent.get('status') or 'unknown'}).",
-                )
-                continue
-            if bridge is None:
-                await self._post_system_reply(
-                    agent_name, channel["id"],
-                    "[router] bridge registry not configured on this host.",
-                )
-                continue
+                        agent_context = build_context_window(recent, limit=20, max_tokens=budget_tokens)
+                except Exception:
+                    logger.warning("context fetch failed for agent %s", agent_name, exc_info=True)
+                    agent_context = []
 
             if guest is None and agent.get("framework") == "openclaw" and _openclaw_transport() == "acp":
                 # Fork-free path: drive the OpenClaw turn over ACP instead of the
@@ -382,7 +367,7 @@ class AgentChatRouter:
                 task.add_done_callback(self._acp_tasks.discard)
             else:
                 manual_text = build_manual(channel, agent_name, leads)
-                agent_context = [{"role": "system", "content": manual_text}, *context]
+                full_context = [{"role": "system", "content": manual_text}, *agent_context]
                 # Include answer_context metadata for trace visibility (dropped count, budget)
                 answer_meta = {}
                 if answer_ctx_result:
@@ -405,7 +390,7 @@ class AgentChatRouter:
                         "created_at": message.get("created_at"),
                         "hops_since_user": next_hops,
                         "force_respond": forced,
-                        "context": agent_context,
+                        "context": full_context,
                         "thread_id": thread_id,
                         "answer_context_meta": answer_meta,
                     },

@@ -144,9 +144,6 @@ class TaOSmdClient:
     ) -> AnswerContextResult:
         """Call answer_context via in-process taOSmd ContextAssembler."""
         try:
-            # Reserve tokens for reasoning from the budget
-            effective_budget = max(512, budget_tokens - reasoning_reserve)
-
             result = await self._context_assembler.assemble(
                 query=query,
                 agent_name=agent,
@@ -154,12 +151,13 @@ class TaOSmdClient:
                 project=project,
                 system_info=system_info,
                 depth=depth,
-                max_total_tokens=effective_budget,
+                max_total_tokens=budget_tokens,
+                reasoning_reserve=reasoning_reserve,
             )
 
             return AnswerContextResult(
                 context=result["context"],
-                dropped=0,  # In-process assembler doesn't report dropped yet
+                dropped=result.get("dropped", 0),
                 budget_tokens=budget_tokens,
                 used_tokens=result.get("total_tokens", 0),
                 layers=result.get("layers", {}),
