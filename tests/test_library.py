@@ -2872,3 +2872,66 @@ class TestWebProcessorP2:
         updated = await lib_store.get_item(item_id)
         meta = json.loads(updated["meta_json"])
         assert meta["text_status"] == "no_text_extracted"
+
+class TestYouTubeProcessorP2Regressions:
+    @pytest.mark.asyncio
+    async def test_private_video_with_geo_in_id_is_not_geo_blocked(self, lib_store, storage_dir):
+        """A private-video failure whose URL contains "geo" (in the video
+        ID) must classify as private, not geo_blocked."""
+        from unittest.mock import patch
+
+        item_id = await lib_store.create_item(
+            kind="url:youtube",
+            source_url="https://youtube.com/watch?v=geoABCDEFGH",
+        )
+
+        with patch(
+            "tinyagentos.knowledge_fetchers.youtube.fetch",
+            _async_raise(RuntimeError(
+                "yt-dlp metadata fetch failed for "
+                "'https://youtube.com/watch?v=geoABCDEFGH': "
+                "ERROR: This video is private"
+            )),
+        ):
+            await run_pipeline(lib_store, item_id, storage_dir)
+
+        item = await lib_store.get_item(item_id)
+        assert item["status"] == "error"
+        meta = json.loads(item["meta_json"])
+        assert meta["youtube_fetch_state"] == "private"
+
+    @pytest.mark.asyncio
+    async def test_preview_prefers_primary_transcript(self, lib_store, storage_dir):
+        """The card preview uses the primary transcript (fetch's content),
+        not whichever language sorts first in the transcripts list."""
+        from unittest.mock import patch
+
+        item_id = await lib_store.create_item(
+            kind="url:youtube",
+            source_url="https://youtube.com/watch?v=preview123",
+        )
+        item = await lib_store.get_item(item_id)
+
+        mock_result = {
+            "title": "Preview Video",
+            "author": "Chan",
+            "content": "Primary English transcript text.",
+            "description": "",
+            "thumbnail": None,
+            "transcripts": [
+                {"language": "ar", "content": "Arabic transcript text here."},
+                {"language": "en", "content": "Primary English transcript text."},
+            ],
+            "metadata": {"video_id": "preview123", "channel": "Chan", "chapters": []},
+        }
+
+        with patch(
+            "tinyagentos.knowledge_fetchers.youtube.fetch",
+            _async_return(mock_result),
+        ):
+            proc = YouTubeProcessor(lib_store, storage_dir)
+            await proc.process(item)
+
+        updated = await lib_store.get_item(item_id)
+        meta = json.loads(updated["meta_json"])
+        assert meta["preview"] == "Primary English transcript text."

@@ -908,7 +908,12 @@ def _classify_youtube_failure(exc: BaseException) -> tuple[str, str]:
     if isinstance(exc, asyncio.TimeoutError):
         return "timeout", "fetch timed out"
     message = str(exc).lower()
-    if "in your country" in message or "geo" in message:
+    if (
+        "in your country" in message
+        or "geo-block" in message
+        or "geoblock" in message
+        or "geographic" in message
+    ):
         return "geo_blocked", "geo-blocked"
     if "private" in message:
         return "private", "private"
@@ -1011,12 +1016,14 @@ class YouTubeProcessor(Processor):
         # collections handoff indexes it (library_collections lists
         # "description" among its text kinds). fetch() used to drop the
         # description entirely (#2059).
+        from tinyagentos.atomic_io import atomic_write_text
+
         description = result.get("description", "") or meta.get("description", "")
         if description:
             desc_dir = self.storage_dir / "descriptions"
             desc_dir.mkdir(parents=True, exist_ok=True)
             desc_path = desc_dir / f"{item_id}_description.txt"
-            desc_path.write_text(description, encoding="utf-8")
+            await asyncio.to_thread(atomic_write_text, desc_path, description)
             desc_meta = {"char_count": len(description), "source": "youtube"}
             await self.store.add_artifact(
                 item_id, kind="description", path=str(desc_path), meta=desc_meta,
@@ -1050,7 +1057,7 @@ class YouTubeProcessor(Processor):
             else:
                 fname = f"{item_id}_transcript_{language}.txt"
             transcript_path = transcript_dir / fname
-            transcript_path.write_text(text, encoding="utf-8")
+            await asyncio.to_thread(atomic_write_text, transcript_path, text)
             transcript_meta = {"char_count": len(text), "language": language}
             await self.store.add_artifact(
                 item_id, kind="transcript", path=str(transcript_path),
@@ -1074,7 +1081,7 @@ class YouTubeProcessor(Processor):
             )
 
         # Store preview for item card (transcript first, then description)
-        preview_source = preview_text or description
+        preview_source = result.get("content") or preview_text or description
         if preview_source:
             stored_meta["preview"] = preview_source[:200]
         await self.store.update_item(item_id, meta_json=stored_meta)
