@@ -48,14 +48,6 @@ def _mock_auth():
     return _Ctx()
 
 
-def _exempt_report_task(method: str, path: str) -> bool:
-    """Exempt the report_task route from auth middleware for HMAC tests."""
-    if method == "POST" and path == "/api/cluster/tasks/report":
-        return True
-    from tinyagentos.auth_middleware import _is_exempt as real_is_exempt
-    return real_is_exempt(method, path)
-
-
 # ---------------------------------------------------------------------------
 # Tests using the real client fixture (with admin auth via _mock_auth)
 # ---------------------------------------------------------------------------
@@ -622,6 +614,78 @@ async def test_report_task_blank_resource_id_422(client, app, tmp_data_dir):
     await app.state.trace_registry.close_all()
 
 
+@pytest.mark.asyncio
+async def test_report_task_refuses_unauthenticated(app, tmp_data_dir):
+    """Unauthenticated request (no cookie, no bearer, no HMAC headers) -> 403."""
+    app.state.trace_registry = TraceStoreRegistry(tmp_data_dir)
+
+    from httpx import ASGITransport, AsyncClient
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as anon_client:
+        resp = await anon_client.post(
+            "/api/cluster/tasks/report",
+            json={
+                "worker": "w1",
+                "resource_id": "gpu-cuda-0",
+                "caller": "ext-scheduler",
+                "duration_s": 1.0,
+                "status": "success",
+            },
+        )
+    assert resp.status_code == 403
+    assert resp.json()["error"] == "unidentified caller"
+
+    await app.state.trace_registry.close_all()
+
+
+@pytest.mark.asyncio
+async def test_report_task_refuses_invalid_bearer(app, tmp_data_dir):
+    """Request with invalid Bearer token -> 403."""
+    app.state.trace_registry = TraceStoreRegistry(tmp_data_dir)
+
+    from httpx import ASGITransport, AsyncClient
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as anon_client:
+        resp = await anon_client.post(
+            "/api/cluster/tasks/report",
+            headers={"Authorization": "Bearer invalid-token"},
+            json={
+                "worker": "w1",
+                "resource_id": "gpu-cuda-0",
+                "caller": "ext-scheduler",
+                "duration_s": 1.0,
+                "status": "success",
+            },
+        )
+    assert resp.status_code == 403
+    assert resp.json()["error"] == "unidentified caller"
+
+    await app.state.trace_registry.close_all()
+
+
+@pytest.mark.asyncio
+async def test_report_task_admin_session_works(client, app, tmp_data_dir):
+    """Admin session cookie works through the exempt path -> 200."""
+    app.state.trace_registry = TraceStoreRegistry(tmp_data_dir)
+
+    with patch("tinyagentos.routes.cluster._require_lease_access", side_effect=_allow_all), \
+         patch("tinyagentos.routes.cluster._identify_principal", side_effect=_allow_principal):
+        resp = await client.post(
+            "/api/cluster/tasks/report",
+            json={
+                "worker": "w1",
+                "resource_id": "gpu-cuda-0",
+                "caller": "ext-scheduler",
+                "duration_s": 1.0,
+                "status": "success",
+            },
+        )
+    assert resp.status_code == 200
+    assert resp.json()["status"] == "recorded"
+
+    await app.state.trace_registry.close_all()
+
+
 # ---------------------------------------------------------------------------
 # HMAC verification tests (exercise the real worker HMAC path)
 # ---------------------------------------------------------------------------
@@ -635,7 +699,7 @@ async def test_report_task_bad_signature_403(client, app, tmp_data_dir):
     - cluster_pairing is configured with a known signing key for worker w1
     - Request carries x-taos-worker-name, x-taos-timestamp, and a WRONG x-taos-signature
     - No admin or local-token credentials are sent
-    - Assert 403 is returned
+    - Assert 403 is returned with code bad_signature
     """
     app.state.trace_registry = TraceStoreRegistry(tmp_data_dir)
 
@@ -645,29 +709,40 @@ async def test_report_task_bad_signature_403(client, app, tmp_data_dir):
     pairing_store.get_signing_key.return_value = signing_key
     app.state.cluster_pairing = pairing_store
 
-    # Exempt this route from the auth middleware so the request reaches the handler
-    with patch("tinyagentos.auth_middleware._is_exempt", side_effect=_exempt_report_task):
-        # Prepare request body and WRONG signature
-        body = json.dumps({
-            "worker": "w1",
-            "resource_id": "gpu-cuda-0",
-            "caller": "ext-scheduler",
-            "duration_s": 1.0,
-            "status": "success",
-        }).encode()
-        wrong_sig = "deadbeef"  # deliberately wrong
-        headers = {
-            "X-TAOS-Worker-Name": "w1",
-            "X-TAOS-Timestamp": str(int(time.time())),
-            "X-TAOS-Signature": wrong_sig,
-            "Content-Type": "application/json",
-        }
+    # Wrap require_worker_hmac to capture the _HMACError
+    from tinyagentos.cluster.worker_auth import require_worker_hmac as real_require_worker_hmac
+    from tinyagentos.cluster.worker_auth import _HMACError
 
-        # Use a client WITHOUT session cookie (the fixture client has one)
-        # Create a fresh AsyncClient without cookies
-        from httpx import ASGITransport, AsyncClient
-        transport = ASGITransport(app=app)
-        async with AsyncClient(transport=transport, base_url="http://test") as hm_client:
+    captured_errors = []
+
+    async def capturing_require_worker_hmac(request):
+        try:
+            await real_require_worker_hmac(request)
+        except _HMACError as e:
+            captured_errors.append(e)
+            raise
+
+    # Prepare request body and WRONG signature
+    body = json.dumps({
+        "worker": "w1",
+        "resource_id": "gpu-cuda-0",
+        "caller": "ext-scheduler",
+        "duration_s": 1.0,
+        "status": "success",
+    }).encode()
+    wrong_sig = "deadbeef"  # deliberately wrong
+    headers = {
+        "X-TAOS-Worker-Name": "w1",
+        "X-TAOS-Timestamp": str(int(time.time())),
+        "X-TAOS-Signature": wrong_sig,
+        "Content-Type": "application/json",
+    }
+
+    # Use a client WITHOUT session cookie (the fixture client has one)
+    from httpx import ASGITransport, AsyncClient
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as hm_client:
+        with patch("tinyagentos.routes.cluster.require_worker_hmac", side_effect=capturing_require_worker_hmac):
             resp = await hm_client.post(
                 "/api/cluster/tasks/report",
                 content=body,
@@ -675,6 +750,10 @@ async def test_report_task_bad_signature_403(client, app, tmp_data_dir):
             )
 
     assert resp.status_code == 403, f"Expected 403 for bad signature, got {resp.status_code}: {resp.text}"
+    assert len(captured_errors) == 1, f"Expected exactly one captured error, got {len(captured_errors)}"
+    err = captured_errors[0]
+    error_body = json.loads(err.response.body)
+    assert error_body["code"] == "bad_signature", f"Expected bad_signature code, got {error_body}"
 
     await app.state.trace_registry.close_all()
 
@@ -686,7 +765,7 @@ async def test_report_task_valid_worker_signature_verifies_once(client, app, tmp
     Same setup as the bad-signature test but with a CORRECT signature.
     Wraps require_worker_hmac (patched where cluster.py looks it up, with
     wraps= the real function) and asserts the wrapper was called exactly once.
-    Response must not be 401/403.
+    Response must be 200 with status == "recorded".
     """
     app.state.trace_registry = TraceStoreRegistry(tmp_data_dir)
 
@@ -699,31 +778,31 @@ async def test_report_task_valid_worker_signature_verifies_once(client, app, tmp
     # Wrap require_worker_hmac to count calls (patch where cluster.py imports it)
     from tinyagentos.cluster.worker_auth import require_worker_hmac as real_require_worker_hmac
 
-    with patch("tinyagentos.auth_middleware._is_exempt", side_effect=_exempt_report_task), \
-         patch("tinyagentos.routes.cluster.require_worker_hmac", wraps=real_require_worker_hmac) as mock_require:
-        # Prepare request body and CORRECT signature
-        body = json.dumps({
-            "worker": "w1",
-            "resource_id": "gpu-cuda-0",
-            "caller": "ext-scheduler",
-            "duration_s": 1.0,
-            "status": "success",
-        }).encode()
-        headers = worker_request_signer(signing_key, "w1", "POST", "/api/cluster/tasks/report", body)
-        headers["Content-Type"] = "application/json"
+    # Prepare request body and CORRECT signature
+    body = json.dumps({
+        "worker": "w1",
+        "resource_id": "gpu-cuda-0",
+        "caller": "ext-scheduler",
+        "duration_s": 1.0,
+        "status": "success",
+    }).encode()
+    headers = worker_request_signer(signing_key, "w1", "POST", "/api/cluster/tasks/report", body)
+    headers["Content-Type"] = "application/json"
 
-        # Use a client WITHOUT session cookie
-        from httpx import ASGITransport, AsyncClient
-        transport = ASGITransport(app=app)
-        async with AsyncClient(transport=transport, base_url="http://test") as hm_client:
+    # Use a client WITHOUT session cookie
+    from httpx import ASGITransport, AsyncClient
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as hm_client:
+        with patch("tinyagentos.routes.cluster.require_worker_hmac", wraps=real_require_worker_hmac) as mock_require:
             resp = await hm_client.post(
                 "/api/cluster/tasks/report",
                 content=body,
                 headers=headers,
             )
 
-    # Response must not be 401/403 (should be 200 or other non-auth error)
-    assert resp.status_code not in (401, 403), f"Expected non-auth error, got {resp.status_code}: {resp.text}"
+    # Response must be 200 with status == "recorded"
+    assert resp.status_code == 200, f"Expected 200, got {resp.status_code}: {resp.text}"
+    assert resp.json()["status"] == "recorded"
     # require_worker_hmac must have been called exactly once
     assert mock_require.call_count == 1, f"require_worker_hmac called {mock_require.call_count} times, expected 1"
 
