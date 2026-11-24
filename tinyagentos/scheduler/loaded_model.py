@@ -97,6 +97,31 @@ DEFAULT_TTL_SECONDS: dict[str, float] = {
 }
 
 
+def purpose_to_model_class(purpose: str, size_mb: int | None = None) -> str:
+    """Map a purpose string (from _infer_purpose) to a ModelClass.
+
+    For chat models, the size determines CHAT_SMALL (<=4B params, roughly
+    <= 4000 MB for quantized models) vs CHAT_LARGE. When size is unknown,
+    default to CHAT_LARGE (safer, longer TTL).
+    """
+    mapping = {
+        "embeddings": ModelClass.EMBEDDING,
+        "image-generation": ModelClass.IMAGE_GEN,
+        "speech-to-text": ModelClass.STT,
+        "text-to-speech": ModelClass.TTS,
+        "code": ModelClass.REASONING,  # code models often used for reasoning
+        "vision": ModelClass.UNKNOWN,  # vision models vary widely
+    }
+    if purpose in mapping:
+        return mapping[purpose]
+    if purpose == "chat":
+        # Heuristic: <=4B params ~ <=4000MB for typical quantization
+        if size_mb is not None and size_mb <= 4000:
+            return ModelClass.CHAT_SMALL
+        return ModelClass.CHAT_LARGE
+    return ModelClass.UNKNOWN
+
+
 # ---------------------------------------------------------------------------
 # LoadedModel record
 # ---------------------------------------------------------------------------

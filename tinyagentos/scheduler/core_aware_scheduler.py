@@ -41,6 +41,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from typing import Any, Callable, Optional
 
 from tinyagentos.model_activity import (
@@ -223,7 +224,12 @@ class CoreAwareModelScheduler:
         self._emit("model_loaded", {"model_id": model.model_id, "backend": model.backend, "tp_mode": model.tp_mode})
 
     def begin_use(
-        self, model_id: str, backend_name: str, backend_type: str = "",
+        self,
+        model_id: str,
+        backend_name: str,
+        backend_type: str = "",
+        model_class: str = ModelClass.UNKNOWN,
+        ttl_seconds: float | None = None,
     ) -> LoadedModel:
         """Mark a model as in-use for the duration of a request.
 
@@ -235,6 +241,8 @@ class CoreAwareModelScheduler:
         ``backend_type`` (e.g. "rkllama", "anthropic") picks the resource
         shape; the shape lookup is keyed by TYPE, not by the configured
         backend's name. When omitted the name is used, as before.
+        ``model_class`` and ``ttl_seconds`` are stored on the resident for
+        idle TTL eviction (taOS #62).
         Increments the in_use_count and touches last_used_at.
         Returns the resident model record.
         """
@@ -254,6 +262,8 @@ class CoreAwareModelScheduler:
                     memory_mb=0,
                     priority=PriorityClass.INTERACTIVE,
                     pinned=False,
+                    model_class=model_class,
+                    ttl_seconds=ttl_seconds,
                 )
             else:
                 # Fast path for backends without discrete cores.
@@ -263,6 +273,8 @@ class CoreAwareModelScheduler:
                     memory_mb=0,
                     priority=PriorityClass.INTERACTIVE,
                     pinned=False,
+                    model_class=model_class,
+                    ttl_seconds=ttl_seconds,
                 )
             self.register_loaded(model)
         model.in_use_count += 1
@@ -310,7 +322,7 @@ class CoreAwareModelScheduler:
     def idle_expired(self, now: float | None = None) -> list[LoadedModel]:
         """Residents that have sat unused past their idle TTL.
 
-        Pure query — nothing is evicted. Pinned / always_resident
+        Pure query: nothing is evicted. Pinned / always_resident
         models are never listed. Ordered oldest-idle first so a
         caller that evicts one at a time frees the stalest model.
         """
@@ -345,7 +357,7 @@ class CoreAwareModelScheduler:
             # reachable -- so re-check membership AND expiry before evicting.
             # A model refreshed during an earlier eviction in this same sweep
             # must not be evicted mid-request off the stale snapshot.
-            if model.model_id not in self._residents:
+            if self._resident_key(model.model_id, model.backend) not in self._residents:
                 continue
             if not model.is_idle_expired(now):
                 continue

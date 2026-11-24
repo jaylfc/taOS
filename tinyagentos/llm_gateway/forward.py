@@ -40,6 +40,8 @@ from tinyagentos.llm_gateway.resolve import Route
 from tinyagentos.llm_usage.pricing import Cost, cost_of, find_price, price_usage
 from tinyagentos.llm_usage.usage import UNKNOWN, OpenAIStreamUsage, Usage, ensure_stream_usage, from_openai
 from tinyagentos.model_activity import MODEL_ROUTE, REQUEST_FINISH, REQUEST_START
+from tinyagentos.routes.models import _infer_purpose
+from tinyagentos.scheduler.loaded_model import purpose_to_model_class
 
 logger = logging.getLogger(__name__)
 
@@ -303,8 +305,15 @@ class _SchedulerInUse:
     def __enter__(self):
         if self._scheduler is not None and self._model_name and self._backend_name:
             try:
+                # Infer model class for idle TTL eviction (taOS #62).
+                purpose = _infer_purpose(self._model_name)
+                model_class = purpose_to_model_class(purpose)
                 self._scheduler.begin_use(
-                    self._model_name, self._backend_name, self._backend_type,
+                    self._model_name,
+                    self._backend_name,
+                    self._backend_type,
+                    model_class=model_class,
+                    ttl_seconds=None,  # use class default
                 )
                 self._begun = True
             except Exception:  # noqa: BLE001 - scheduler must never break a request

@@ -1559,19 +1559,60 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
         from tinyagentos.model_activity import ModelActivityFeed
         app.state.model_activity = ModelActivityFeed()
 
-<<<<<<< HEAD
         # Core-aware model scheduler (tsk-mo6f5o): manages resident model
         # records with NPU-core-aware scheduling and in-use accounting.
-        # Constructed with the activity feed for lifecycle events; NO evict_fn
-        # (eviction and unloading belong to the second card).
+        # Constructed with the activity feed for lifecycle events; evict_fn
+        # wires real backend unload for idle TTL eviction (taOS #62).
         from tinyagentos.scheduler.core_aware_scheduler import CoreAwareModelScheduler
         from tinyagentos.scheduler.resource_shape import get_default_shape
+        from tinyagentos.scheduler.loaded_model import LoadedModel
+        from tinyagentos.backend_unload import unload_model, unload_capable
+        import httpx
+
+        async def _evict_fn(model: LoadedModel) -> None:
+            """Evict a resident by asking its backend to unload it.
+
+            Only attempts unload for backends that support it (llama-swap on
+            dev; ollama/rkllama unloaders are planned separately). If the
+            backend is not unload-capable or the unload request fails, the
+            resident stays registered and will be retried on the next sweep.
+            """
+            if not unload_capable(model.backend):
+                # Backend has no unload mechanism (ollama, rkllama on dev).
+                # Do not claim memory was freed; log once and leave resident.
+                logger.info(
+                    "idle sweep: backend %r (type %s) has no unload mechanism; "
+                    "model %r not evicted (NPU memory acceptance for #62 pending unloaders)",
+                    model.backend, model.backend, model.model_id,
+                )
+                return
+            # Get backend URL from catalog
+            catalog = app.state.backend_catalog
+            entry = catalog._entries.get(model.backend)
+            if not entry or not entry.url:
+                logger.warning("idle sweep: no catalog entry for backend %r", model.backend)
+                return
+            async with httpx.AsyncClient() as client:
+                ok = await unload_model(
+                    client, backend_type=model.backend, base_url=entry.url,
+                    model=model.model_id, timeout=15.0,
+                )
+            if not ok:
+                logger.info(
+                    "idle sweep: unload of %r on %s %s failed; resident retained for retry",
+                    model.model_id, model.backend, entry.url,
+                )
+                return
+            # Unload succeeded: remove from registry (already done by _evict_reload
+            # before calling evict_fn, but we log success here).
+            logger.info("idle sweep: unloaded %r from %s", model.model_id, model.backend)
+
         app.state.model_scheduler = CoreAwareModelScheduler(
             shape_lookup=get_default_shape,
             activity_feed=app.state.model_activity,
+            evict_fn=_evict_fn,
         )
         # Idle TTL eviction (taOS #62): the catalog poll loop drives the sweep.
-        from tinyagentos.scheduler import backend_catalog
         backend_catalog.attach_idle_sweeper(app.state.model_scheduler.sweep_idle)
 
         # Wire NotificationStore → EventBus so SSE clients get instant push.

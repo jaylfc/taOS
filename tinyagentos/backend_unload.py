@@ -1,9 +1,14 @@
 """Per-backend model unload adapters: the residency backend of the GPU work
 queue (#3230; docs/design/plans/2026-07-17-gpu-work-queue-plan.md, slice B1).
 
-``unload_model`` is the queue's eviction mechanism. It is called only from the
-arbiter's admission/eviction path (spec section 3.3): there is no HTTP route
-or other hook for it, and nothing else should import this module.
+``unload_model`` is the queue's eviction mechanism. It is called from two
+places:
+  1. The arbiter's admission/eviction path (spec section 3.3).
+  2. The idle TTL sweep (taOS #62, tsk-hiew4m) driven by the backend
+     catalog poll loop.
+
+There is no HTTP route or other hook for it, and nothing else should import
+this module.
 
 Registered backends:
 
@@ -27,13 +32,12 @@ llama-cpp and vllm are single-model servers and stay not unload-capable;
 hailo-ollama is a deliberate follow-up, not silently included.
 
 Caller contract: a model with a request in flight must never be
-unloaded, and this module cannot check that — it is a primitive with no
+unloaded, and this module cannot check that: it is a primitive with no
 in-flight signal. The rule lives in one place: the caller (the arbiter's
-eviction path, per the plan) must only select candidates with no active
-ops (``active_ops == 0``; never-evict-active is structural, plan
-section 2). No production caller exists in this tree yet, so until that
-wiring lands nothing enforces the rule; it is stated here so the caller
-is built against it.
+eviction path, per the plan, and the idle sweep) must only select
+candidates with no active ops (``active_ops == 0``; never-evict-active is
+structural, plan section 2). The idle sweep enforces this by checking
+``in_use_count == 0`` before calling ``evict_fn``.
 """
 from __future__ import annotations
 
