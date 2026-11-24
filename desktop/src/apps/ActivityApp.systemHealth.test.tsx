@@ -160,52 +160,44 @@ describe("SystemHealthCard", () => {
     expect(openWindow).toHaveBeenCalledWith("providers", expect.anything());
   });
 
-  it("ignores a superseded refresh that resolves after a newer one", async () => {
-    vi.useFakeTimers();
-    try {
-      let resolveStale: (r: Response) => void = () => {};
-      let healthCheckCalls = 0;
-      mockEndpoints({
-        "/api/health-check": () => {
-          healthCheckCalls += 1;
-          if (healthCheckCalls === 1) {
-            return new Promise<Response>((resolve) => {
-              resolveStale = resolve;
-            });
-          }
-          return Promise.resolve(jsonResponse({ checks: CHECKS }));
-        },
-      });
-      render(<SystemHealthCard />);
-      // The first load is parked on its health-check. A focus refresh
-      // starts a second load (useRefreshOnFocus coalesces at 1000 ms),
-      // which resolves healthy and commits.
-      fireEvent.focus(window);
-      await act(async () => {
-        await vi.advanceTimersByTimeAsync(1000);
-      });
-      await act(async () => {
-        await Promise.resolve();
-      });
-      expect(screen.getByText("All systems healthy")).toBeInTheDocument();
-      // The stale first load now resolves with a dead container runtime;
-      // it must not overwrite the newer rows.
-      resolveStale(
-        jsonResponse({
-          checks: [
-            { name: "incusd", status: "error", detail: "Not running", response_ms: 1 },
-            { name: "Docker", status: "error", detail: "Not running", response_ms: 1 },
-          ],
-        }),
-      );
-      await act(async () => {
-        await Promise.resolve();
-      });
-      expect(screen.getByText("All systems healthy")).toBeInTheDocument();
-      expect(screen.queryByText("Some systems are down")).toBeNull();
-    } finally {
-      vi.useRealTimers();
-    }
+  it("coalesces refreshes while a load is in flight, then refreshes again once it lands", async () => {
+    let resolveFirst: (r: Response) => void = () => {};
+    let healthCheckCalls = 0;
+    mockEndpoints({
+      "/api/health-check": () => {
+        healthCheckCalls += 1;
+        if (healthCheckCalls === 1) {
+          return new Promise<Response>((resolve) => {
+            resolveFirst = resolve;
+          });
+        }
+        return Promise.resolve(jsonResponse({ checks: CHECKS }));
+      },
+    });
+    render(<SystemHealthCard />);
+    // The first load is parked on its health-check. A focus refresh
+    // (the hook coalesces focus bursts at 1000 ms) must not start a
+    // competing load — the running load's result is the freshest
+    // there is, however slow the probes are.
+    fireEvent.focus(window);
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 1300));
+    });
+    expect(healthCheckCalls).toBe(1);
+    // The parked load lands and commits normally — a slow health-check
+    // round is not discarded just for being slow.
+    resolveFirst(jsonResponse({ checks: CHECKS }));
+    await waitFor(
+      () => expect(screen.getByText("All systems healthy")).toBeInTheDocument(),
+      { timeout: 3000 },
+    );
+    // Once it has landed, the next refresh starts a fresh load.
+    fireEvent.focus(window);
+    await waitFor(() => expect(healthCheckCalls).toBe(2), { timeout: 3000 });
+    await waitFor(
+      () => expect(screen.getByText("All systems healthy")).toBeInTheDocument(),
+      { timeout: 3000 },
+    );
   });
 
   it("keeps the rest of the card alive when one endpoint fails", async () => {

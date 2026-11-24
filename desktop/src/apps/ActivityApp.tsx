@@ -329,11 +329,11 @@ export function ActivityApp({ windowId: _windowId }: { windowId: string }) {
 
   if (loading && !data) {
     return (
-      <div className="flex flex-col h-full bg-shell-bg-deep overflow-hidden">
+      <div className="flex flex-col h-full bg-shell-bg-deep overflow-y-auto">
         {/* The health glance (#621) mounts in every state — it is the
             diagnostic surface for exactly the case where the activity
             telemetry below is not answering. */}
-        <div className="p-4 pb-0">
+        <div className="shrink-0 p-4 pb-0">
           <SystemHealthCard />
         </div>
         <div className="flex flex-1 items-center justify-center">
@@ -345,8 +345,8 @@ export function ActivityApp({ windowId: _windowId }: { windowId: string }) {
 
   if (!data) {
     return (
-      <div className="flex flex-col h-full bg-shell-bg-deep overflow-hidden">
-        <div className="p-4 pb-0">
+      <div className="flex flex-col h-full bg-shell-bg-deep overflow-y-auto">
+        <div className="shrink-0 p-4 pb-0">
           <SystemHealthCard />
         </div>
         <div className="flex flex-1 flex-col items-center justify-center gap-2 text-shell-text-tertiary">

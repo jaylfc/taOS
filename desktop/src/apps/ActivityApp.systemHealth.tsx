@@ -127,31 +127,37 @@ export function SystemHealthCard() {
   const [rows, setRows] = useState<HealthRow[] | null>(null);
   const [busy, setBusy] = useState(true);
   const openWindow = useProcessStore((s) => s.openWindow);
-  const loadSeq = useRef(0);
+  const inFlight = useRef(false);
 
   const load = useCallback(async () => {
-    const seq = ++loadSeq.current;
+    // Coalesce overlapping refreshes (poll, focus, backend recovery,
+    // manual): /api/health-check runs its probes sequentially and can
+    // legitimately take longer than the 30 s poll interval, so a second
+    // load must neither discard the running one's result nor race it —
+    // the running load's rows are the freshest there are.
+    if (inFlight.current) return;
+    inFlight.current = true;
     setBusy(true);
-    const [health, healthCheck, agents, memoryStats] = await Promise.all([
-      fetchJsonOrNull("/api/health?detailed=true"),
-      fetchJsonOrNull("/api/health-check"),
-      fetchJsonOrNull("/api/agents"),
-      fetchJsonOrNull("/api/memory/stats"),
-    ]);
-    // A newer refresh (poll, focus, backend recovery, manual) may have
-    // started while this one was in flight — the health-check probes can
-    // be slow, so an older result must not overwrite newer rows.
-    if (seq !== loadSeq.current) return;
-    const checks = (healthCheck as { checks?: unknown } | null)?.checks;
-    setRows(
-      buildHealthRows({
-        health: (health as DetailedHealth | null) ?? null,
-        checks: Array.isArray(checks) ? (checks as HealthCheckEntry[]) : null,
-        agents: Array.isArray(agents) ? (agents as AgentSummary[]) : null,
-        memoryStats: (memoryStats as MemoryStats | null) ?? null,
-      }),
-    );
-    setBusy(false);
+    try {
+      const [health, healthCheck, agents, memoryStats] = await Promise.all([
+        fetchJsonOrNull("/api/health?detailed=true"),
+        fetchJsonOrNull("/api/health-check"),
+        fetchJsonOrNull("/api/agents"),
+        fetchJsonOrNull("/api/memory/stats"),
+      ]);
+      const checks = (healthCheck as { checks?: unknown } | null)?.checks;
+      setRows(
+        buildHealthRows({
+          health: (health as DetailedHealth | null) ?? null,
+          checks: Array.isArray(checks) ? (checks as HealthCheckEntry[]) : null,
+          agents: Array.isArray(agents) ? (agents as AgentSummary[]) : null,
+          memoryStats: (memoryStats as MemoryStats | null) ?? null,
+        }),
+      );
+    } finally {
+      inFlight.current = false;
+      setBusy(false);
+    }
   }, []);
 
   useEffect(() => {
