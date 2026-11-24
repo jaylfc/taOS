@@ -1204,44 +1204,14 @@ async def apply_update(request: Request):
             status_code=409,
         )
 
-    # Record the pre-update branch + commit before mutating the working tree so
-    # `taos rollback` can restore both after the most common update path.
-    # The record is written only when the update will actually advance HEAD
-    # (HEAD != the fetched tip of the tracked branch) or when no rollback
-    # record exists yet: a retry after a failed update must not overwrite the
-    # original pre-update target, because HEAD already contains that record's
-    # sha as an ancestor and no new commits are being applied. Best effort: a
-    # failed write must not block the update.
-    # The actual write happens below, once the fetch has returned the tracked
-    # branch tip we compare HEAD against.
-
-    # The desktop rebuild leaves the tree dirty in two ways, and a dirty
-    # tracked file makes the next git pull --ff-only refuse to overwrite the
-    # local and the Install Update button 500s:
-    #   - desktop/tsconfig.tsbuildinfo : touched on every tsc build
-    #   - desktop/package-lock.json : npm install rewrites it (esp. when an
-    #     incoming update also changes it, e.g. the esbuild bump in #849)
-    # Restore them before pulling; the pull restores the committed versions
-    # or the rebuild below regenerates the build outputs.
-    # NOTE: We no longer touch static/desktop here. The rebuild now stages
-    # into a temporary directory and atomically swaps it in on success, so
-    # browsers never see a missing or half-written bundle. The ff-only merge
-    # still works because static/desktop is either tracked (restored by pull)
-    # or untracked (left alone; the rebuild overwrites it atomically).
-    reset_proc = await asyncio.create_subprocess_exec(
-        "git", "checkout", "--",
-        "desktop/tsconfig.tsbuildinfo", "desktop/package-lock.json",
-        stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL,
-        cwd=str(project_dir),
-    )
-    await reset_proc.communicate()
-
-    # Any tracked source edits left after the build-artifact restore would make
-    # the ff-only pull below refuse (HTTP 500, user stuck). Stash them first so
-    # the update applies; the change is recoverable via `git stash pop`.
-    stashed_local = await _stash_local_source_changes(project_dir)
-
-    # Fetch first so we can verify GPG signature before merging.
+    # Fetch first so we can verify GPG signature before merging and record the
+    # pre-update branch + commit before mutating the working tree. The record is
+    # written only when the update will actually advance HEAD (HEAD != the fetched
+    # tip of the tracked branch) or when no rollback record exists yet: a retry
+    # after a failed update must not overwrite the original pre-update target,
+    # because HEAD already contains that record's sha as an ancestor and no new
+    # commits are being applied. Best effort: a failed write must not block the
+    # update.
     fetch_proc = await asyncio.create_subprocess_exec(
         "git", "fetch", "--quiet", "origin", "--", branch,
         stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT,
@@ -1282,19 +1252,38 @@ async def apply_update(request: Request):
     if not existing or head != tip:
         await record_current_rollback_target(project_dir)
 
+    # The desktop rebuild leaves the tree dirty in two ways, and a dirty
+    # tracked file makes the next git merge --ff-only refuse to overwrite the
+    # local and the Install Update button 500s:
+    #   - desktop/tsconfig.tsbuildinfo : touched on every tsc build
+    #   - desktop/package-lock.json : npm install rewrites it (esp. when an
+    #     incoming update also changes it, e.g. the esbuild bump in #849)
+    # Restore them before merging; the merge restores the committed versions
+    # or the rebuild below regenerates the build outputs.
+    # NOTE: We no longer touch static/desktop here. The rebuild now stages
+    # into a temporary directory and atomically swaps it in on success, so
+    # browsers never see a missing or half-written bundle. The ff-only merge
+    # still works because static/desktop is either tracked (restored by merge)
+    # or untracked (left alone; the rebuild overwrites it atomically).
+    reset_proc = await asyncio.create_subprocess_exec(
+        "git", "checkout", "--",
+        "desktop/tsconfig.tsbuildinfo", "desktop/package-lock.json",
+        stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL,
+        cwd=str(project_dir),
+    )
+    await reset_proc.communicate()
+
+    # Any tracked source edits left after the build-artifact restore would make
+    # the ff-only merge below refuse (HTTP 500, user stuck). Stash them first so
+    # the update applies; the change is recoverable via `git stash pop`.
+    stashed_local = await _stash_local_source_changes(project_dir)
+
     # ── GPG signature verification (defence-in-depth) ──────────────────
     from tinyagentos.gpg_verify import resolve_gpg_prefs, verify_remote_commit
     gpg_prefs = await resolve_gpg_prefs(request.app.state.desktop_settings)
-    remote_sha = ""
+    remote_sha = tip
     if gpg_prefs.enabled:
         try:
-            remote_proc = await asyncio.create_subprocess_exec(
-                "git", "rev-parse", f"origin/{branch}",
-                stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL,
-                cwd=str(project_dir),
-            )
-            remote_out, _ = await remote_proc.communicate()
-            remote_sha = remote_out.decode().strip() if remote_out else ""
             if remote_sha:
                 gpg_result = await verify_remote_commit(project_dir, remote_sha, gpg_prefs)
                 if not gpg_result.ok:
