@@ -227,6 +227,33 @@ describe("DiffBlock", () => {
     expect(container.textContent).toContain("+1");
     expect(container.textContent).toContain("-1");
   });
+
+  it("resets hunk state between files in a non-git two-file diff", () => {
+    // GNU `diff -ru` output has no "diff --git" lines; the second file's
+    // ---/+++ pair must classify as headers (via the first hunk's declared
+    // lengths completing it), not as a deletion and an addition.
+    const twoFile = [
+      "diff -ru old/one new/one",
+      "--- old/one",
+      "+++ new/one",
+      "@@ -1,1 +1,1 @@",
+      "-a",
+      "+b",
+      // (no "diff -ru" line before the second file: only the first hunk's
+      // declared lengths completing can reset the state in time)
+      "--- old/two",
+      "+++ new/two",
+      "@@ -1,1 +1,1 @@",
+      "-c",
+      "+d",
+    ].join("\n");
+    const { container } = render(<DiffBlock block={{ kind: "diff", diff: twoFile }} />);
+    expect(container.querySelectorAll('[data-diff-line="header"]')).toHaveLength(4);
+    expect(container.querySelectorAll('[data-diff-line="add"]')).toHaveLength(2);
+    expect(container.querySelectorAll('[data-diff-line="del"]')).toHaveLength(2);
+    expect(container.textContent).toContain("+2");
+    expect(container.textContent).toContain("-2");
+  });
 });
 
 describe("TableBlock", () => {

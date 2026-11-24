@@ -906,13 +906,38 @@ export function DiffBlock({ block }: { block: DiffContentBlock }): React.ReactEl
   // A trailing newline leaves a phantom empty final line; drop it.
   if (rawLines.length > 0 && rawLines[rawLines.length - 1] === "") rawLines.pop();
   let inHunk = false;
+  let oldLeft = 0;
+  let newLeft = 0;
   const lines = rawLines.map((line) => {
-    if (line.startsWith("diff --git ") || line.startsWith("diff --combined ")) {
+    // A "diff ..." line opens a new file section (git and GNU diff -ru
+    // forms alike): whatever hunk state the previous file ended in, the
+    // next ---/+++ pair is a file header again.
+    if (line.startsWith("diff ")) {
       inHunk = false;
       return { line, kind: "meta" as DiffLineKind };
     }
     const kind = classifyDiffLine(line, inHunk);
-    if (kind === "hunk") inHunk = true;
+    if (kind === "hunk") {
+      inHunk = true;
+      // A hunk's body length is declared in its header (@@ -a,b +c,d @@);
+      // tracking the remaining counts ends the hunk exactly, so the next
+      // file's headers classify as headers even without a "diff" line.
+      // An unparseable header leaves the counts infinite: stay in-hunk
+      // until a file boundary, the pre-fix behaviour.
+      const m = /^@@ -\d+(?:,(\d+))? \+\d+(?:,(\d+))? @@/.exec(line);
+      oldLeft = m ? Number(m[1] ?? 1) : Number.POSITIVE_INFINITY;
+      newLeft = m ? Number(m[2] ?? 1) : Number.POSITIVE_INFINITY;
+    } else if (inHunk) {
+      if (kind === "context") {
+        oldLeft -= 1;
+        newLeft -= 1;
+      } else if (kind === "del") {
+        oldLeft -= 1;
+      } else if (kind === "add") {
+        newLeft -= 1;
+      }
+      if (oldLeft <= 0 && newLeft <= 0) inHunk = false;
+    }
     return { line, kind };
   });
   const adds = lines.filter((l) => l.kind === "add").length;
