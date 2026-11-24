@@ -319,3 +319,82 @@ def test_failed_drain_does_not_stamp(host: FakeHost) -> None:
     )
     host.run()
     assert len(host.drain_calls) == 2, "the retry after a failed drain was skipped"
+
+
+class FakeHostNoShutdown:
+    """FakeHost variant where systemctl reports NO shutdown job queued."""
+
+    def __init__(self, tmp_path: Path) -> None:
+        self.runtime = tmp_path / "run" / "taos"
+        self.runtime.mkdir(parents=True)
+        self.runtime.chmod(0o750)
+        self.data = tmp_path / "install" / "data"
+        self.data.mkdir(parents=True)
+        self.data.chmod(0o700)
+        self.home = tmp_path / "home"
+        self.home.mkdir()
+        self.curl_log = tmp_path / "curl.log"
+        bindir = tmp_path / "bin"
+        bindir.mkdir()
+        curl = bindir / "curl"
+        curl.write_text(CURL_STUB)
+        curl.chmod(0o755)
+        # No shutdown job queued: systemctl list-jobs returns empty output.
+        systemctl = bindir / "systemctl"
+        systemctl.write_text('#!/bin/sh\necho ""\nexit 0\n')
+        systemctl.chmod(0o755)
+        self._bindir = bindir
+
+    def run(self, **overrides) -> subprocess.CompletedProcess:
+        env = os.environ.copy()
+        env["PATH"] = f"{self._bindir}:{env['PATH']}"
+        env["HOME"] = str(self.home)
+        env["CURL_LOG"] = str(self.curl_log)
+        env["RUNTIME_DIRECTORY"] = str(self.runtime)
+        env["TAOS_INSTALL_DIR"] = str(self.data.parent)
+        for key, value in overrides.items():
+            if value is None:
+                env.pop(key, None)
+            else:
+                env[key] = str(value)
+        return subprocess.run(
+            ["bash", str(SCRIPT)], env=env, capture_output=True, text=True, timeout=60
+        )
+
+    @property
+    def drain_calls(self) -> list[str]:
+        if not self.curl_log.exists():
+            return []
+        return [ln for ln in self.curl_log.read_text().splitlines() if ln.strip()]
+
+
+@pytest.fixture
+def host_no_shutdown(tmp_path: Path) -> FakeHostNoShutdown:
+    return FakeHostNoShutdown(tmp_path)
+
+
+def test_restart_shaped_stop_makes_no_prepare_shutdown_call(host_no_shutdown: FakeHostNoShutdown) -> None:
+    """A controller restart (systemctl restart, in-app update) has no shutdown
+    job queued. The script must exit early and NOT call prepare-shutdown."""
+    result = host_no_shutdown.run()
+    assert result.returncode == 0, result.stderr
+    assert not host_no_shutdown.drain_calls, (
+        f"/api/system/prepare-shutdown was called (expected: no call): {host_no_shutdown.drain_calls}"
+    )
+
+
+def test_reboot_shaped_stop_makes_exactly_one_prepare_shutdown_call(host: FakeHost) -> None:
+    """A real reboot/shutdown has a shutdown job queued. The script must call
+    prepare-shutdown exactly once (dedupe prevents double-call from ExecStop +
+    taos-pre-shutdown.service)."""
+    result = host.run()
+    assert result.returncode == 0, result.stderr
+    assert len(host.drain_calls) == 1, (
+        f"expected exactly one drain call, got {len(host.drain_calls)}: {host.drain_calls}"
+    )
+    # Second run within 60s should be deduped.
+    result = host.run()
+    assert result.returncode == 0, result.stderr
+    assert len(host.drain_calls) == 1, (
+        f"expected exactly one drain call after dedupe, got {len(host.drain_calls)}: {host.drain_calls}"
+    )
