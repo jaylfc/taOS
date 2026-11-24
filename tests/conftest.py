@@ -3,6 +3,7 @@ import hashlib
 import hmac
 import importlib.util
 import json as _json
+import logging
 import os
 import socket
 import sqlite3
@@ -1074,3 +1075,30 @@ async def client_with_qmd(app_with_qmd):
     await project_element_store.close()
     await app_with_qmd.state.qmd_client.close()
     await app_with_qmd.state.http_client.aclose()
+
+
+@pytest.fixture(autouse=True)
+def _restore_root_logger():
+    """Restore root logger level and handlers after each test.
+
+    create_app() calls configure_logging(), which, when the root logger already
+    has handlers, takes the root.setLevel() branch and leaves the root level at
+    INFO for the rest of the process. That leaks logging state between tests
+    and breaks tests that patch time.time() with a short list (Python 3.12
+    LogRecord.__init__ calls time.time()).  Snapshot the root level and a copy
+    of its handlers before the test and restore both afterwards so no logging
+    state survives past a test.
+    """
+    root = logging.getLogger()
+    saved_level = root.level
+    saved_handlers = list(root.handlers)
+    try:
+        yield
+    finally:
+        root.level = saved_level
+        added = [h for h in root.handlers if h not in saved_handlers]
+        for h in added:
+            root.removeHandler(h)
+        for h in saved_handlers:
+            if h not in root.handlers:
+                root.addHandler(h)
