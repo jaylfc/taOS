@@ -3,7 +3,8 @@
 The taOS client (Settings > Account, the off-network screen) calls same-origin
 /api/account/* so the taos.my base URL stays server-side and there is no CORS.
 We forward to {TAOS_ACCOUNT_BASE_URL}/api/auth/* with cookie pass-through both
-ways, so the taos.my session cookie round-trips through this host origin.
+ways, so the taos.my session cookie round-trips through this host origin under the
+``taosmy_`` cookie namespace (it must not collide with the local session).
 
 The taOS online account is a core feature for every instance, so the base URL
 defaults to https://taos.my; TAOS_ACCOUNT_BASE_URL stays an override for local or
@@ -22,8 +23,8 @@ import httpx
 from fastapi import APIRouter, Depends, Request, Response
 from fastapi.responses import JSONResponse
 
+from tinyagentos.issued_cookies import UPSTREAM_ACCOUNT_COOKIE_PREFIX
 from tinyagentos.taosnet import mesh, mesh_credentials
-from tinyagentos.issued_cookies import TAOS_ISSUED_COOKIES
 from tinyagentos.peer import resolve_local_identity_id
 from tinyagentos.auth_context import require_admin
 
@@ -119,13 +120,46 @@ def _append_header(resp: Response, name: str, value: str) -> None:
         pass
 
 
-def _rewrite_set_cookie(value: str, secure_ok: bool) -> str:
-    """Rescope an upstream Set-Cookie to this proxy origin so the browser
-    accepts it: drop the Domain attribute (the cookie was issued for taos.my but
-    the browser is talking to this host), and drop Secure when the proxy
-    connection is not HTTPS, since a Secure cookie is rejected over plain HTTP."""
-    kept: list[str] = []
-    for part in value.split(";"):
+# Upstream (taos.my) cookies live in their own namespace on this origin.
+#
+# taos.my names its session cookie ``taos_session`` -- the SAME name as this
+# controller's own session cookie. Relayed verbatim, a taos.my sign-in
+# overwrote the local session (the user was thrown to the lock screen), and the
+# follow-up /me had its cookie removed by a deny-list, so taos.my answered 401.
+# So the proxy renames at the boundary, in both directions:
+#   * downstream: every upstream Set-Cookie name gets this prefix
+#     (``taos_session`` -> ``taosmy_taos_session``);
+#   * upstream: ONLY cookies carrying this prefix are forwarded, with the
+#     prefix stripped. Everything else the browser holds (this origin's own
+#     cookies, present or future) can never reach taos.my.
+_UPSTREAM_COOKIE_PREFIX = UPSTREAM_ACCOUNT_COOKIE_PREFIX
+
+
+def _rewrite_set_cookie(value: str, secure_ok: bool) -> str | None:
+    """Namespace and rescope an upstream Set-Cookie for this proxy origin.
+
+    The cookie name is prefixed with ``taosmy_`` (see above) and the value is
+    preserved byte-for-byte. The Domain attribute is dropped (the cookie was
+    issued for taos.my but the browser is talking to this host), and Secure is
+    dropped when the proxy connection is not HTTPS, since a Secure cookie is
+    rejected over plain HTTP. A deletion (Max-Age=0 / past Expires) keeps its
+    attributes, so it deletes the prefixed cookie.
+
+    Returns ``None`` for a Set-Cookie with no ``=`` or an empty name: it is
+    dropped rather than relayed under some guessed name.
+
+    An upstream ``__Host-`` / ``__Secure-`` name becomes
+    ``taosmy___Host-...``: the prefix goes first, so the browser no longer
+    applies the special-prefix rules to it. That is intentional; those rules
+    are the upstream's contract with the upstream's own origin.
+    """
+    parts = value.split(";")
+    name, eq, val = parts[0].partition("=")
+    name = name.strip()
+    if not eq or not name:
+        return None
+    kept: list[str] = [f"{_UPSTREAM_COOKIE_PREFIX}{name}={val.strip()}"]
+    for part in parts[1:]:
         p = part.strip()
         low = p.lower()
         if low.startswith("domain="):
@@ -136,36 +170,26 @@ def _rewrite_set_cookie(value: str, secure_ok: bool) -> str:
     return "; ".join(kept)
 
 
-# Cookies this origin issues. The browser presents them on every same-origin
-# /api/account/* call, but none may be relayed to the upstream taos.my: a
-# taos.my log leak or compromise would otherwise expose valid local admin
-# session tokens -- and, until this was fixed, the CSRF token that satisfies
-# verify_csrf() for this origin. Only the cookies that belong upstream are
-# forwarded. See tinyagentos/issued_cookies.py for why this is a deny-list.
-_LOCAL_COOKIES = TAOS_ISSUED_COOKIES
+def _upstream_cookie_header(cookie_header: str) -> str | None:
+    """Build the Cookie header to send to taos.my from the browser's header.
 
-
-def _strip_local_session_cookie(cookie_header: str) -> str | None:
-    """Return ``cookie_header`` with every taOS-issued cookie removed.
-
-    Parses the incoming Cookie header and drops every cookie this origin issues,
-    preserving the rest (the upstream taos.my session cookie, etc.). Returns
-    ``None`` when no cookies remain, so the relayed request sends no Cookie
-    header at all. A malformed Cookie header is returned untouched rather than
-    dropping unrelated cookies.
+    ALLOW-list: only cookies named ``taosmy_<name>`` are forwarded, as
+    ``<name>=<value>``. Anything else (``taos_session``, ``csrf_token`` and every
+    other cookie this origin issues, now or later) is never forwarded. A bare
+    ``taosmy_`` (empty remainder) or a cookie with no ``=`` is dropped. Returns
+    ``None`` when nothing remains so no Cookie header is sent at all.
     """
     kept: list[str] = []
     for part in cookie_header.split(";"):
-        p = part.strip()
-        if not p:
+        name, eq, val = part.strip().partition("=")
+        name = name.strip()
+        if not eq or not name.startswith(_UPSTREAM_COOKIE_PREFIX):
             continue
-        name = p.split("=", 1)[0].strip().lower()
-        if name in _LOCAL_COOKIES:
+        bare = name[len(_UPSTREAM_COOKIE_PREFIX):]
+        if not bare:
             continue
-        kept.append(p)
-    if not kept:
-        return None
-    return "; ".join(kept)
+        kept.append(f"{bare}={val.strip()}")
+    return "; ".join(kept) or None
 
 
 async def _forward_to(
@@ -179,7 +203,7 @@ async def _forward_to(
     headers: dict[str, str] = {}
     cookie = request.headers.get("cookie")
     if cookie:
-        relayed = _strip_local_session_cookie(cookie)
+        relayed = _upstream_cookie_header(cookie)
         if relayed:
             headers["Cookie"] = relayed
     if body is None and method == "POST":
@@ -197,10 +221,21 @@ async def _forward_to(
             upstream = await http.request(
                 method, base + path, content=body, headers=headers
             )
-    except httpx.HTTPError:
+    except httpx.HTTPError as exc:
+        logger.warning(
+            "account proxy: %s %s unreachable (%s)", method, path.split("?", 1)[0], type(exc).__name__
+        )
         return JSONResponse(
             {"error": "account service unreachable"}, status_code=503
         )
+    # Status and content type only: never the body, the query string or a cookie.
+    logger.info(
+        "account proxy: %s %s -> %s %s",
+        method,
+        path.split("?", 1)[0],
+        upstream.status_code,
+        upstream.headers.get("content-type", "-"),
+    )
     # Relay the upstream body + content-type verbatim (do not assume JSON), so
     # error pages, redirects, and non-JSON bodies pass through unmangled.
     resp = Response(
@@ -215,13 +250,15 @@ async def _forward_to(
     if _trust_forwarded_proto():
         fwd = request.headers.get("x-forwarded-proto", "").split(",")[0].strip().lower()
     secure_ok = request.url.scheme == "https" or fwd == "https"
-    # Relay the session cookie (rescoped to this origin) plus a small allowlist of
+    # Relay the session cookie (namespaced and rescoped to this origin) plus a small allowlist of
     # response headers so redirects (Location) and auth challenges survive.
     _RELAY = {"location", "cache-control", "www-authenticate"}
     for name, value in upstream.headers.multi_items():
         low = name.lower()
         if low == "set-cookie":
-            _append_header(resp, "set-cookie", _rewrite_set_cookie(value, secure_ok))
+            rewritten = _rewrite_set_cookie(value, secure_ok)
+            if rewritten is not None:
+                _append_header(resp, "set-cookie", rewritten)
         elif low in _RELAY:
             _append_header(resp, low, value)
     return resp
