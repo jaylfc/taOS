@@ -237,6 +237,11 @@ private Q_SLOTS:
     {
         start(true);
         loaded();
+        // the installed list and the model variants come from their own requests: wait for what is asserted
+        QVERIFY(waitFor([this] {
+            return m_e->app(u"uptime-kuma"_s)[u"runtimePort"_s].toInt() == 3001
+                && m_e->app(u"qwen3-8b"_s)[u"modelVariants"_s].toList().size() == 2;
+        }));
         QVERIFY(m_e->isAdmin());
         QVERIFY(ids(m_e->list(u"apps"_s)).contains(u"searxng"_s));
         QVERIFY(ids(m_e->list(u"apps"_s)).contains(u"openclaw"_s));       // agent frameworks live in Apps

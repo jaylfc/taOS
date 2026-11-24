@@ -191,9 +191,16 @@ jobs:
         run: |
           export XDG_RUNTIME_DIR="$(mktemp -d)"; chmod 700 "$XDG_RUNTIME_DIR"
           rc=0
-          for b in build-qt build-apps build-activity build-settings; do
+          for b in build-qt build-apps; do
             echo "== $b"
             ctest --test-dir "$b" --output-on-failure -j1 || rc=1
+          done
+          # activity and settings pull the foundation in EXCLUDE_FROM_ALL: its tests are not built there
+          # (they run in build-qt), so leave them out of these two runs.
+          foundation='^(tst_client|tst_stream|tst_session|tst_jsonmodel|tst_livequery|tst_app|tst_real|dummyapp-runs|dummyapp-desktop-file|bad-app-id-is-refused|titlebar-renders)$'
+          for b in build-activity build-settings; do
+            echo "== $b"
+            ctest --test-dir "$b" --output-on-failure -j1 -E "$foundation" || rc=1
           done
           exit $rc
       - name: Screenshots of every app (offscreen, fake controllers)
