@@ -10,6 +10,7 @@ untouched by this directory.
 | `greeter/` : `taos-greeter`, the login screen (a greetd greeter) | version 0 (section below) |
 | `overview/` : `taos-overview`, the Alt+Tab window switcher and the workspace overview | version 0 (section below) |
 | `weather/` : `taos-weather-cache` and its systemd units | opt-in weather for the login screen |
+| `notifyd/` : `taos-notifyd`, the freedesktop notification server | version 0 (section below) |
 | `common/` | theme loader and glass style shared by the bar, the greeter and the overview |
 | `protocols/` | vendored Wayland protocol XML (ext-foreign-toplevel-list, ext-image-capture-source, ext-image-copy-capture) |
 | `taos-shell-session` | session entry point and supervisor |
@@ -311,6 +312,53 @@ the bar, asserts via `swaymsg` that the usable area starts at y=40 and is 1040
 high (scale 1.5: 680 logical), checks hot-plugging an output, SIGTERM and the
 absence of QML warnings, and writes `grim` screenshots for dark, light and
 scale 1.5. See the script header for its environment.
+
+## Notifications (`taos-notifyd`)
+
+A UI-less Qt service (QtCore, QtDBus, QtNetwork) that owns `org.freedesktop.Notifications` on the person's
+session bus (Notify, CloseNotification, GetCapabilities, GetServerInformation, NotificationClosed,
+ActionInvoked; spec 1.2) and forwards every notification it accepts to the person's own controller with
+`POST /api/notifications/os`, so anything that uses `notify-send` or the desktop interface lands in the
+Notifications app. **Opt-in**: it is not in the default components, because it has no popup yet and would take the
+notification bus name from whatever shows them today. Enable it by adding `taos-notifyd` to `TAOS_SHELL_COMPONENTS`
+(in `/etc/taos/shell.env`), or install with `install-desktop.sh --with-notifyd`. Later installs and updates keep it when it is already in the
+line (a person's choice is never undone); `--without-notifyd` takes it out. Once enabled, `taos-shell-session`
+supervises it; the bus name is the single-instance lock (it never replaces another server: if the name is taken it
+writes `idle` and the reason to `$XDG_STATE_HOME/taos/notifyd/status` and exits 0).
+
+* **Never lost.** The notification is written to disk (file fsynced, renamed, directory fsynced) before
+  `Notify` returns, in `$XDG_STATE_HOME/taos/notifyd/` (mode 0700, files 0600), and deleted only when the
+  controller answers 200 with the route's JSON. One record is in flight at a time, oldest first, retried
+  with backoff (1 s doubling to 60 s; `Retry-After` honoured on 429; 401, 403, 404, 5xx and a dead controller
+  all keep the record). A 400, 413 or 422 moves the record to `rejected/` and raises a visible warning record. If the warning cannot be numbered (the id
+  counter cannot be saved), the refusal is logged and `status` reports `rejected_unwarned` and a `warning`; the warning
+  record is raised as soon as the counter works again.
+  The client id is minted once at accept, so a retry after a lost answer stores one row. It is
+  `n<install id>.<boot id>.<counter>`: the install id is random, made once per state directory, the boot id is
+  random per run, so a wiped directory or a lost counter never reuses an id. A counter that cannot be saved fails
+  the `Notify` call with a D-Bus error.
+* **Bounded.** More than 500 pending non-critical records: the oldest 50 are dropped, but only after a
+  critical warning record ("Some notifications were dropped") is on disk and full copies are appended to
+  `dropped.jsonl`. Critical (urgency 2) records are never dropped; at 5000 pending records `Notify` fails with
+  a D-Bus error, so the app sees it.
+* **Credentials.** The shared desktop session file `$XDG_RUNTIME_DIR/taos/session` (owner only, 0600),
+  read afresh for each attempt: its controller, exact User-Agent, session token and CSRF token. With no
+  sign-in yet, notifications are buffered and sent once the person signs in.
+* **Filters.** `TAOS_NOTIFYD_DROP_ENTRIES` (comma separated desktop entries or app names, empty by default):
+  `Notify` from these returns normally and is not buffered (the phone sets the kiosk browser here: its web
+  notifications already exist as controller rows, spec test N9). Transient notifications are not kept (there is
+  no popup to show them), but each one is counted in the `status` file (counts, never content); critical ones
+  are kept like any other. Markup is removed from every text field, and the Notifications app shows app
+  supplied text as plain text (`TaosText` defaults to `Text.PlainText`). A replace only applies to a
+  notification the same bus connection raised in this run.
+* **Lock rule** (`src/lockgate.*`, spec 7.8, test L8): `GET /auth/lock-state` with the console header; only
+  the exact `{"locked":false,"session":n}` is unlocked, everything else is locked. `popupForm()` gives what a
+  popup may show at the person's lock level. There is no popup yet, so nothing draws it.
+* **Not built yet:** a popup, the action return path (ActionInvoked, dismiss in the Notifications app closing
+  the notification in the sender; it needs a controller route for actions and a per-user event the daemon
+  subscribes to), and archiving the row on `CloseNotification`.
+
+Logs carry counts and app keys, never titles or bodies.
 
 ## Session entry point: `taos-shell-session`
 

@@ -182,6 +182,25 @@ private Q_SLOTS:
         QCOMPARE(feed->property("unreadCount").toInt(), 5);
     }
 
+    void notifications_app_supplied_text_is_plain_text_never_markup()
+    {
+        openApp(u"notifications"_s);
+        QObject *feed = m_win->findChild<QObject *>(u"feed"_s);
+        QVERIFY(waitFor([&] { return rows(feed) == 6; }));
+        QVERIFY(waitFor([&] { return feed->property("live").toBool(); }));
+        const QString title = u"<img src=\"http://127.0.0.1:9/beacon.png\">Mail <b>from</b> Alex"_s;
+        const QString message = u"<a href=\"http://127.0.0.1:9/\">click</a> <img src=x>"_s;
+        m_fake->config({{u"add_notification"_s, QJsonObject{{u"title"_s, title}, {u"message"_s, message}, {u"source"_s, u"os:mail"_s}}}});
+        QVERIFY(waitFor([&] { return rows(feed) == 7; }));
+        auto shown = [&](const QString &text) {
+            return findItems(m_win->contentItem(), [&](QQuickItem *i) { return i->property("text").toString() == text; });
+        };
+        QVERIFY(waitFor([&] { return !shown(title).isEmpty() && !shown(message).isEmpty(); }));
+        for (const QString &t : {title, message})
+            for (QQuickItem *i : shown(t))
+                QCOMPARE(i->property("textFormat").toInt(), int(Qt::PlainText)); // not Auto, not Rich, not Styled
+    }
+
     void notifications_row_tap_emits_an_open_request_and_marks_read()
     {
         openApp(u"notifications"_s);

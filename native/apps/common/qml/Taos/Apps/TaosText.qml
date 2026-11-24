@@ -8,6 +8,9 @@ Text {
     font.family: Look.family
     font.pixelSize: Look.body
     color: Look.text
+    // Plain text unless a caller asks otherwise: this component shows strings that apps, agents and
+    // other people supply, and Qt's automatic detection would render markup in them (even fetch an <img>).
+    textFormat: Text.PlainText
     elide: Text.ElideNone
     wrapMode: Text.NoWrap
     renderType: Text.NativeRendering
