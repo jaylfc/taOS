@@ -15,6 +15,7 @@ from __future__ import annotations
 import json
 import time
 import uuid
+from urllib.parse import urlparse
 
 import aiosqlite
 
@@ -68,9 +69,22 @@ CREATE TABLE IF NOT EXISTS library_rules (
     created_at REAL NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_lr_pattern ON library_rules(source_pattern);
+
+CREATE TABLE IF NOT EXISTS library_settings (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL DEFAULT ''
+);
 """
 
 _VALID_STATUSES = frozenset({"pending", "processing", "ready", "error"})
+
+# Settings (#2060): qualities are stored in the backend vocabulary - the
+# same set HeavyDownloadProcessor accepts. The old desktop pane labels
+# (low/medium/high) were a mock-only scale and are not valid stored values.
+LIBRARY_QUALITIES = ("360", "480", "720", "1080", "best")
+DEFAULT_PREFERRED_QUALITY = "720"
+# Matches the desktop pane's long-standing default cap (50 GiB).
+DEFAULT_STORAGE_CAP_BYTES = 50 * 1024 * 1024 * 1024
 
 
 class LibraryStore(BaseStore):
@@ -323,6 +337,89 @@ class LibraryStore(BaseStore):
         )
         await self._db.commit()
 
+    # -- settings ---------------------------------------------------------
+
+    async def _get_setting_raw(self, key: str) -> str | None:
+        rows = await self._db.execute_fetchall(
+            "SELECT value FROM library_settings WHERE key = ?", (key,)
+        )
+        return rows[0][0] if rows else None
+
+    async def _set_setting_raw(self, key: str, value: str) -> None:
+        await self._db.execute(
+            "INSERT INTO library_settings (key, value) VALUES (?, ?) "
+            "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            (key, value),
+        )
+
+    async def get_settings(self) -> dict:
+        """Return the persisted library settings with defaults applied.
+
+        The Library is a single shared store (the UI is an admin session),
+        so settings are library-global: ``preferred_quality`` in the
+        backend quality vocabulary (360/480/720/1080/best) and a single
+        ``storage_cap_bytes`` compared against total library bytes.
+        A cap of 0 disables the cap.
+        """
+        quality = await self._get_setting_raw("preferred_quality")
+        if quality not in LIBRARY_QUALITIES:
+            quality = DEFAULT_PREFERRED_QUALITY
+        cap_raw = await self._get_setting_raw("storage_cap_bytes")
+        try:
+            cap = int(cap_raw) if cap_raw is not None else DEFAULT_STORAGE_CAP_BYTES
+        except (TypeError, ValueError):
+            cap = DEFAULT_STORAGE_CAP_BYTES
+        if cap < 0:
+            cap = DEFAULT_STORAGE_CAP_BYTES
+        return {"preferred_quality": quality, "storage_cap_bytes": cap}
+
+    async def update_settings(
+        self,
+        preferred_quality: str | None = None,
+        storage_cap_bytes: int | None = None,
+    ) -> dict:
+        """Persist settings; unspecified fields keep their current values.
+
+        Raises ValueError for an unknown quality or a negative cap.
+        Returns the full settings dict after the update.
+        """
+        if preferred_quality is not None:
+            if preferred_quality not in LIBRARY_QUALITIES:
+                raise ValueError(
+                    f"Invalid preferred_quality {preferred_quality!r}; "
+                    f"must be one of {list(LIBRARY_QUALITIES)}"
+                )
+            await self._set_setting_raw("preferred_quality", preferred_quality)
+        if storage_cap_bytes is not None:
+            if isinstance(storage_cap_bytes, bool) or not isinstance(
+                storage_cap_bytes, int
+            ):
+                raise ValueError("storage_cap_bytes must be an integer")
+            if storage_cap_bytes < 0:
+                raise ValueError(
+                    "storage_cap_bytes must be >= 0 (0 disables the cap)"
+                )
+            await self._set_setting_raw(
+                "storage_cap_bytes", str(storage_cap_bytes)
+            )
+        await self._db.commit()
+        return await self.get_settings()
+
+    async def storage_cap_status(self) -> dict:
+        """Cap accounting: the configured cap, current total bytes, and
+        whether heavy downloads are paused at the cap."""
+        settings = await self.get_settings()
+        cap = settings["storage_cap_bytes"]
+        rows = await self._db.execute_fetchall(
+            "SELECT COALESCE(SUM(bytes), 0) FROM library_items"
+        )
+        total = int(rows[0][0]) if rows else 0
+        return {
+            "cap_bytes": cap,
+            "total_bytes": total,
+            "paused_at_cap": bool(cap > 0 and total >= cap),
+        }
+
     # -- source rules -----------------------------------------------------
 
     async def create_rule(
@@ -395,10 +492,55 @@ class LibraryStore(BaseStore):
             "SELECT COUNT(*) as total_count, COALESCE(SUM(bytes), 0) as total_bytes "
             "FROM library_items"
         )
-        if total:
-            return {
-                "total_count": total[0]["total_count"],
-                "total_bytes": total[0]["total_bytes"],
-                "by_kind": by_kind,
-            }
-        return {"total_count": 0, "total_bytes": 0, "by_kind": {}}
+        total_count = total[0]["total_count"] if total else 0
+        total_bytes = total[0]["total_bytes"] if total else 0
+
+        # Per-source accounting (#2060): bytes grouped by source key (the
+        # URL host for URL items, the item kind otherwise), plus the
+        # largest items, so the UI can surface where the bytes live.
+        item_rows = await self._db.execute_fetchall(
+            "SELECT id, kind, source_url, title, bytes FROM library_items "
+            "ORDER BY bytes DESC"
+        )
+        by_source: dict[str, dict] = {}
+        top_items: list[dict] = []
+        for row in item_rows:
+            key = self._source_key(row["kind"], row["source_url"])
+            entry = by_source.setdefault(key, {"count": 0, "bytes": 0})
+            entry["count"] += 1
+            entry["bytes"] += row["bytes"]
+            if len(top_items) < 50:
+                top_items.append({
+                    "id": row["id"],
+                    "title": row["title"],
+                    "source_type": key,
+                    "bytes": row["bytes"],
+                })
+        sources = [
+            {"source_type": key, "bytes": v["bytes"], "item_count": v["count"]}
+            for key, v in sorted(
+                by_source.items(), key=lambda kv: kv[1]["bytes"], reverse=True
+            )
+        ]
+
+        cap_status = await self.storage_cap_status()
+        return {
+            "total_count": total_count,
+            "total_bytes": total_bytes,
+            "by_kind": by_kind,
+            "by_source": by_source,
+            "sources": sources,
+            "items": top_items,
+            "cap_bytes": cap_status["cap_bytes"],
+            "paused_at_cap": cap_status["paused_at_cap"],
+        }
+
+    @staticmethod
+    def _source_key(kind: str, source_url: str) -> str:
+        """Accounting key for an item's source: the URL host for URL
+        items, the item kind otherwise (uploads, pasted text)."""
+        if source_url:
+            host = urlparse(source_url).netloc.lower()
+            if host:
+                return host
+        return kind

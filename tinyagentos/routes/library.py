@@ -458,8 +458,38 @@ async def trigger_download(
             status_code=400,
         )
 
+    # Storage cap (#2060): surface a paused state instead of silently
+    # queueing a download that cannot run. run_heavy_pipeline enforces
+    # the same check for the auto-download path; this pre-check keeps
+    # the manual trigger honest in its response and job record.
+    cap_status = await store.storage_cap_status()
+    if cap_status["paused_at_cap"]:
+        job_id = await store.create_job(item_id, "heavy_download")
+        await store.update_job(
+            job_id,
+            state="paused",
+            error=(
+                f"Storage cap reached: {cap_status['total_bytes']} of "
+                f"{cap_status['cap_bytes']} bytes used; download paused."
+            ),
+        )
+        return JSONResponse(
+            {
+                "item_id": item_id,
+                "status": "paused",
+                "reason": "storage_cap",
+                "cap_bytes": cap_status["cap_bytes"],
+                "total_bytes": cap_status["total_bytes"],
+            },
+            status_code=202,
+        )
+
     storage_dir = _library_dir(request)
-    quality_val = quality or item.get("quality", "") or "720"
+    quality_val = (
+        quality
+        or item.get("quality", "")
+        or (await store.get_settings())["preferred_quality"]
+    )
 
     task_set = getattr(request.app.state, "_background_tasks", None)
     coro = _heavy_download_task(request.app, item_id, store, storage_dir, quality_val)
@@ -504,12 +534,16 @@ async def download_status(request: Request, item_id: str):
     download_path = item.get("download_path", "")
     download_bytes = item.get("download_bytes", 0)
 
+    cap_status = await store.storage_cap_status()
     return {
         "item_id": item_id,
         "downloaded": bool(download_path),
         "download_path": download_path,
         "download_bytes": download_bytes,
         "jobs": heavy_jobs,
+        "storage_cap_bytes": cap_status["cap_bytes"],
+        "total_bytes": cap_status["total_bytes"],
+        "paused_at_cap": cap_status["paused_at_cap"],
     }
 
 
@@ -527,6 +561,14 @@ async def create_rule(
 ):
     """Create a source rule for automatic heavy download triggers."""
     store = await _get_library_store(request)
+    existing = await store.list_rules()
+    if any(
+        r["source_pattern"].lower() == source_pattern.lower() for r in existing
+    ):
+        return JSONResponse(
+            {"error": f"A rule for {source_pattern!r} already exists"},
+            status_code=409,
+        )
     rule_id = await store.create_rule(
         source_pattern=source_pattern,
         quality=quality or "720",
@@ -556,6 +598,57 @@ async def delete_rule(request: Request, rule_id: str):
 
     await store.delete_rule(rule_id)
     return {"status": "deleted", "rule_id": rule_id}
+
+
+# ---------------------------------------------------------------------------
+# Library settings (#2060)
+# ---------------------------------------------------------------------------
+
+
+@router.get("/api/library/settings")
+async def get_library_settings(request: Request):
+    """Return the persisted library settings (preferred quality, cap)."""
+    store = await _get_library_store(request)
+    return await store.get_settings()
+
+
+@router.put("/api/library/settings")
+async def update_library_settings(request: Request):
+    """Update library settings from a JSON body.
+
+    Accepts any subset of {preferred_quality, storage_cap_bytes};
+    omitted fields keep their current values. Qualities use the backend
+    vocabulary (360/480/720/1080/best); storage_cap_bytes must be a
+    non-negative integer (0 disables the cap).
+    """
+    store = await _get_library_store(request)
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse(
+            {"error": "Request body must be JSON"}, status_code=400,
+        )
+    if not isinstance(body, dict):
+        return JSONResponse(
+            {"error": "Request body must be a JSON object"}, status_code=400,
+        )
+    updates = {
+        k: body[k]
+        for k in ("preferred_quality", "storage_cap_bytes")
+        if k in body
+    }
+    if not updates:
+        return JSONResponse(
+            {
+                "error": "Provide at least one of: "
+                         "preferred_quality, storage_cap_bytes"
+            },
+            status_code=400,
+        )
+    try:
+        return await store.update_settings(**updates)
+    except ValueError as exc:
+        return JSONResponse({"error": str(exc)}, status_code=400)
 
 
 # ---------------------------------------------------------------------------

@@ -1574,9 +1574,34 @@ async def run_heavy_pipeline(
         if rules:
             quality = rules[0].get("quality", "") or "720"
 
-    # Fallback to item's quality field, then default 720
+    # Fallback to item's quality field, then the persisted preferred
+    # quality from the library settings (#2060), which itself defaults
+    # to 720.
     if not quality:
-        quality = item.get("quality", "") or "720"
+        quality = item.get("quality", "") or (
+            await store.get_settings()
+        )["preferred_quality"]
+
+    # Storage cap (#2060): when the library is at its configured cap,
+    # pause instead of downloading. The pause is surfaced on the
+    # heavy_download job and in the return value - never silent.
+    cap_status = await store.storage_cap_status()
+    if cap_status["paused_at_cap"]:
+        job_id = await store.create_job(item_id, "heavy_download")
+        await store.update_job(
+            job_id,
+            state="paused",
+            error=(
+                f"Storage cap reached: {cap_status['total_bytes']} of "
+                f"{cap_status['cap_bytes']} bytes used; download paused."
+            ),
+        )
+        return {
+            "status": "paused",
+            "reason": "storage_cap",
+            "cap_bytes": cap_status["cap_bytes"],
+            "total_bytes": cap_status["total_bytes"],
+        }
 
     # Create a job entry
     await store.create_job(item_id, "heavy_download")
