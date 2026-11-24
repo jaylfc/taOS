@@ -1502,7 +1502,11 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
         # Constructed with the activity feed for lifecycle events; NO evict_fn
         # (eviction and unloading belong to the second card).
         from tinyagentos.scheduler.core_aware_scheduler import CoreAwareModelScheduler
-        app.state.model_scheduler = CoreAwareModelScheduler(activity_feed=app.state.model_activity)
+        from tinyagentos.scheduler.resource_shape import get_default_shape
+        app.state.model_scheduler = CoreAwareModelScheduler(
+            shape_lookup=get_default_shape,
+            activity_feed=app.state.model_activity,
+        )
 
         # Wire NotificationStore → EventBus so SSE clients get instant push.
         # The emitter is best-effort: failures are logged and never break add().

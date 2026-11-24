@@ -276,6 +276,35 @@ def _notify_lifecycle(state: Any, backend_name: str) -> None:
         logger.warning("llm_gateway: lifecycle notify failed", exc_info=True)
 
 
+class _SchedulerInUse:
+    """Context manager for scheduler in-use tracking.
+
+    Calls begin_use on enter and end_use on exit (even on exception).
+    Best-effort: scheduler errors are logged and never fail the request.
+    """
+
+    def __init__(self, state: Any, model_name: str, backend_name: str):
+        self._scheduler = getattr(state, "model_scheduler", None)
+        self._model_name = model_name
+        self._backend_name = backend_name
+
+    def __enter__(self):
+        if self._scheduler is not None and self._model_name and self._backend_name:
+            try:
+                self._scheduler.begin_use(self._model_name, self._backend_name)
+            except Exception:  # noqa: BLE001 - scheduler must never break a request
+                logger.warning("llm_gateway: scheduler begin_use failed", exc_info=True)
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        if self._scheduler is not None and self._model_name:
+            try:
+                self._scheduler.end_use(self._model_name)
+            except Exception:  # noqa: BLE001
+                logger.warning("llm_gateway: scheduler end_use failed", exc_info=True)
+        return False  # Don't suppress exceptions
+
+
 def _record_spend(state: Any, principal: str, cost_usd: float) -> None:
     if cost_usd is None or cost_usd <= 0:
         return
@@ -515,79 +544,47 @@ async def _chat_completion_one(
         headers["authorization"] = f"Bearer {api_key}"
     what = f"the backend for model {route.model_name!r}"
 
-    # Mark model as in-use in the scheduler (best-effort, never fails the request)
-    scheduler = getattr(state, "model_scheduler", None)
-    if scheduler is not None:
+    with _SchedulerInUse(state, route.model_name, route.backend_name):
+        started = _record_request_start(state, route, principal)
         try:
-            scheduler.begin_use(route.model_name, route.backend_name)
-        except Exception:  # noqa: BLE001 - scheduler must never break a request
-            logger.warning("llm_gateway: scheduler begin_use failed", exc_info=True)
+            async with httpx.AsyncClient(timeout=TIMEOUT, follow_redirects=False) as client:
+                resp = await client.post(url, json=payload, headers=headers)
+        except httpx.TimeoutException as exc:
+            _record_request_finish(state, route, principal, started, reason="timeout")
+            raise upstream_error(f"{what} timed out") from None
+        except httpx.HTTPError as exc:
+            _record_request_finish(state, route, principal, started, reason="unreachable")
+            raise upstream_error(f"{what} could not be reached") from None
 
-    started = _record_request_start(state, route, principal)
-    try:
-        async with httpx.AsyncClient(timeout=TIMEOUT, follow_redirects=False) as client:
-            resp = await client.post(url, json=payload, headers=headers)
-    except httpx.TimeoutException as exc:
-        _record_request_finish(state, route, principal, started, reason="timeout")
-        if scheduler is not None:
-            try:
-                scheduler.end_use(route.model_name)
-            except Exception:  # noqa: BLE001
-                logger.warning("llm_gateway: scheduler end_use failed", exc_info=True)
-        raise upstream_error(f"{what} timed out") from None
-    except httpx.HTTPError as exc:
-        _record_request_finish(state, route, principal, started, reason="unreachable")
-        if scheduler is not None:
-            try:
-                scheduler.end_use(route.model_name)
-            except Exception:  # noqa: BLE001
-                logger.warning("llm_gateway: scheduler end_use failed", exc_info=True)
-        raise upstream_error(f"{what} could not be reached") from None
-
-    err = _status_error(resp, route, api_key)
-    if err is not None:
-        _record_request_finish(state, route, principal, started, reason=f"http_{resp.status_code}")
-        if scheduler is not None:
-            try:
-                scheduler.end_use(route.model_name)
-            except Exception:  # noqa: BLE001
-                logger.warning("llm_gateway: scheduler end_use failed", exc_info=True)
-        raise err
-    try:
-        data = resp.json()
-    except ValueError:
-        data = None
-    if not isinstance(data, dict):
-        _record_request_finish(state, route, principal, started, reason="bad_response")
-        if scheduler is not None:
-            try:
-                scheduler.end_use(route.model_name)
-            except Exception:  # noqa: BLE001
-                logger.warning("llm_gateway: scheduler end_use failed", exc_info=True)
-        raise upstream_error(f"{what} returned a response that is not a JSON object")
-    _mirror_choices(data, "message")
-
-    request_text = json.dumps(body)
-    response_text = json.dumps(data)
-    usage = from_openai(data)
-    if not usage.known:
-        cost = Cost(None, False, "usage not reported by the backend")
-        await _record_trace(state, principal, route.upstream_model, usage, cost, route.backend_name, request_text, response_text, 0, "success", estimated=True)
-        estimate = _conservative_budget_estimate(route.backend_name, route.upstream_model, request_text, response_text)
-        if estimate > 0:
-            _record_spend(state, principal, estimate)
-    else:
-        cost = cost_of(route.backend_type or route.backend_name, route.upstream_model, usage)
-        await _record_trace(state, principal, route.upstream_model, usage, cost, route.backend_name, request_text, response_text, 0, "success", estimated=False)
-        if cost and cost.usd and cost.usd > 0:
-            _record_spend(state, principal, cost.usd)
-    _record_request_finish(state, route, principal, started, usage=usage)
-    _notify_lifecycle(state, route.backend_name)
-    if scheduler is not None:
+        err = _status_error(resp, route, api_key)
+        if err is not None:
+            _record_request_finish(state, route, principal, started, reason=f"http_{resp.status_code}")
+            raise err
         try:
-            scheduler.end_use(route.model_name)
-        except Exception:  # noqa: BLE001
-            logger.warning("llm_gateway: scheduler end_use failed", exc_info=True)
+            data = resp.json()
+        except ValueError:
+            data = None
+        if not isinstance(data, dict):
+            _record_request_finish(state, route, principal, started, reason="bad_response")
+            raise upstream_error(f"{what} returned a response that is not a JSON object")
+        _mirror_choices(data, "message")
+
+        request_text = json.dumps(body)
+        response_text = json.dumps(data)
+        usage = from_openai(data)
+        if not usage.known:
+            cost = Cost(None, False, "usage not reported by the backend")
+            await _record_trace(state, principal, route.upstream_model, usage, cost, route.backend_name, request_text, response_text, 0, "success", estimated=True)
+            estimate = _conservative_budget_estimate(route.backend_name, route.upstream_model, request_text, response_text)
+            if estimate > 0:
+                _record_spend(state, principal, estimate)
+        else:
+            cost = cost_of(route.backend_type or route.backend_name, route.upstream_model, usage)
+            await _record_trace(state, principal, route.upstream_model, usage, cost, route.backend_name, request_text, response_text, 0, "success", estimated=False)
+            if cost and cost.usd and cost.usd > 0:
+                _record_spend(state, principal, cost.usd)
+        _record_request_finish(state, route, principal, started, usage=usage)
+        _notify_lifecycle(state, route.backend_name)
     return data
 
 

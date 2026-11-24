@@ -205,21 +205,39 @@ class CoreAwareModelScheduler:
     def begin_use(self, model_id: str, backend_name: str) -> LoadedModel:
         """Mark a model as in-use for the duration of a request.
 
-        If the model is not yet registered, create a no-core record and
-        register it. Increments the in_use_count and touches last_used_at.
+        If the model is not yet registered, create a record and register it.
+        For backends with discrete NPU cores (rkllama), the model is already
+        loaded by the time the request reaches the gateway; register it with
+        the cores the backend shape reports, without contention resolution.
+        For backends without discrete cores, use the no-core fast path.
+        Increments the in_use_count and touches last_used_at.
         Returns the resident model record.
         """
         model = self._residents.get(model_id)
         if model is None:
-            # Fast path for backends without discrete cores: create a
-            # record without side effects and register it.
-            model = self._make_no_core_model(
-                model_id=model_id,
-                backend_name=backend_name,
-                memory_mb=0,
-                priority=PriorityClass.INTERACTIVE,
-                pinned=False,
-            )
+            shape = self._shape_lookup(backend_name)
+            if shape.has_cores():
+                # NPU backend: model is already loaded on the backend.
+                # Register with the cores the shape reports (all available
+                # cores as a conservative default), without contention
+                # resolution. The actual tp_mode is managed by the backend.
+                model = self._build_npu_model(
+                    model_id=model_id,
+                    backend_name=backend_name,
+                    cores=list(shape.cores or []),
+                    memory_mb=0,
+                    priority=PriorityClass.INTERACTIVE,
+                    pinned=False,
+                )
+            else:
+                # Fast path for backends without discrete cores.
+                model = self._make_no_core_model(
+                    model_id=model_id,
+                    backend_name=backend_name,
+                    memory_mb=0,
+                    priority=PriorityClass.INTERACTIVE,
+                    pinned=False,
+                )
             self.register_loaded(model)
         model.in_use_count += 1
         model.touch()
@@ -527,8 +545,14 @@ class CoreAwareModelScheduler:
         """Shrink a resident to a smaller core mask.
 
         Updates the registry and invokes reload_fn if one was provided.
-        Emits a 'model_shrunk' event.
+        Emits a 'model_shrunk' event. Skips if model is currently in-use.
         """
+        if model.in_use_count > 0:
+            logger.info(
+                "scheduler: skip shrink-reload for %r (in_use_count=%d)",
+                model.model_id, model.in_use_count,
+            )
+            return
         old_tp = model.tp_mode
         new_tp = _cores_to_tp_mode(new_cores)
         logger.info(
@@ -552,8 +576,14 @@ class CoreAwareModelScheduler:
         """Evict a resident model from the registry.
 
         Removes the model record, invokes evict_fn if one was provided,
-        and emits a 'model_evicted' event.
+        and emits a 'model_evicted' event. Skips if model is currently in-use.
         """
+        if model.in_use_count > 0:
+            logger.info(
+                "scheduler: skip eviction for %r (in_use_count=%d)",
+                model.model_id, model.in_use_count,
+            )
+            return
         logger.info(
             "scheduler: evicting %r (priority=%s)", model.model_id, model.priority
         )

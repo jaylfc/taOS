@@ -690,8 +690,3 @@ async def chat_completion_stream_anthropic(
         # A client abort closes THIS generator: close the retry loop with it so
         # the attempt's accounting runs before aclose() returns, not at gc.
         await outer.aclose()
-        if scheduler is not None and model_name:
-            try:
-                scheduler.end_use(model_name)
-            except Exception:  # noqa: BLE001
-                logger.warning("llm_gateway: scheduler end_use failed", exc_info=True)
