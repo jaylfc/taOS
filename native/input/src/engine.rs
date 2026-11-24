@@ -5,6 +5,7 @@ use crate::auth::Auth;
 use crate::gesture::Dir;
 use crate::inject::Injector;
 use crate::netpolicy::Policy;
+use crate::secure::Identity;
 use crate::swayipc;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -13,6 +14,9 @@ use std::time::Instant;
 
 pub struct Engine {
     pub auth: Auth,
+    pub identity: Identity,
+    /// Host header values this engine answers to (its own address and port).
+    pub hosts: Vec<String>,
     pub injector: Injector,
     pub policy: Policy,
     pub url: String,
@@ -25,6 +29,8 @@ pub struct Engine {
 impl Engine {
     pub fn new(
         auth: Auth,
+        identity: Identity,
+        hosts: Vec<String>,
         injector: Injector,
         policy: Policy,
         url: String,
@@ -32,6 +38,8 @@ impl Engine {
     ) -> Arc<Engine> {
         Arc::new(Engine {
             auth,
+            identity,
+            hosts,
             injector,
             policy,
             url,

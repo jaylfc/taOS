@@ -14,7 +14,33 @@
     set: function (k, v) { try { localStorage.setItem("taos.input." + k, v); return true; } catch (e) { return false; } },
     del: function (k) { try { localStorage.removeItem("taos.input." + k); } catch (e) { /* nothing to do */ } }
   };
-  var memToken = null; // used only when storage is refused, so pairing still works for this visit
+  // The device key (raw bytes) lives in this origin's IndexedDB. WebCrypto, and so non-extractable keys, does not exist on plain HTTP.
+  var memCreds = null; // used only when IndexedDB is refused, so pairing still works for this visit
+  var idb = {
+    open: function () {
+      return new Promise(function (res, rej) {
+        try {
+          var r = indexedDB.open("taos-input", 1);
+          r.onupgradeneeded = function () { r.result.createObjectStore("kv"); };
+          r.onsuccess = function () { res(r.result); };
+          r.onerror = function () { rej(r.error); };
+        } catch (e) { rej(e); }
+      });
+    },
+    run: function (mode, fn) {
+      return idb.open().then(function (db) {
+        return new Promise(function (res, rej) {
+          var tx = db.transaction("kv", mode), out = fn(tx.objectStore("kv"));
+          tx.oncomplete = function () { res(out && out.result); };
+          tx.onerror = function () { rej(tx.error); };
+        });
+      });
+    },
+    get: function (k) { return idb.run("readonly", function (s) { return s.get(k); }).catch(function () { return null; }); },
+    put: function (k, v) { return idb.run("readwrite", function (s) { return s.put(v, k); }); },
+    del: function (k) { return idb.run("readwrite", function (s) { return s.delete(k); }).catch(function () { return null; }); }
+  };
+  var creds = null;
 
   var settings = {
     sens: parseFloat(store.get("sens")) || 2.0,
@@ -23,7 +49,6 @@
   };
 
   function view(name) { app.setAttribute("data-view", name); }
-  function token() { return store.get("token") || memToken; }
 
   // ---- layout: follow the visible area when the phone keyboard opens ----
   function fit() {
@@ -62,26 +87,28 @@
     if (code.length !== 6) { pairError("Enter the six digit code."); return; }
     pairError("");
     pairGo.disabled = true;
-    fetch("/api/pair", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ code: code, name: nameEl.value.trim() })
-    }).then(function (r) {
-      return r.json().catch(function () { return { ok: false, error: "Unexpected answer from the desktop." }; });
-    }).then(function (j) {
+    var name = nameEl.value.trim();
+    TaosCrypto.pair(function (path, body) {
+      return fetch(path, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) })
+        .then(function (r) { return r.json().catch(function () { return { ok: false, error: "unexpected answer from the desktop" }; }); })
+        .then(function (j) {
+          if (!j || !j.ok) { throw new Error((j && j.error) ? j.error.charAt(0).toUpperCase() + j.error.slice(1) + "." : "Could not pair."); }
+          return j;
+        });
+    }, code, name).then(function (c) {
+      c.name = name;
+      creds = c;
+      store.set("name", name);
+      return idb.put("creds", c).catch(function () { memCreds = c; });
+    }).then(function () {
       pairGo.disabled = false;
-      if (j && j.ok && j.token) {
-        if (!store.set("token", j.token)) { memToken = j.token; }
-        store.set("name", nameEl.value.trim());
-        codeEl.value = "";
-        start();
-      } else {
-        pairError((j && j.error) ? j.error.charAt(0).toUpperCase() + j.error.slice(1) + "." : "Could not pair.");
-        codeEl.select();
-      }
-    }).catch(function () {
+      codeEl.value = "";
+      start();
+    }).catch(function (e) {
       pairGo.disabled = false;
-      pairError("Cannot reach the desktop. Check that this phone is on the same Wi-Fi.");
+      var m = e && e.message ? e.message : "Could not pair.";
+      pairError(/fetch|network|Failed/i.test(m) ? "Cannot reach the desktop. Check that this phone is on the same Wi-Fi." : m);
+      codeEl.select();
     });
   }
   $("pair-form").addEventListener("submit", submitPair);
@@ -91,7 +118,7 @@
   });
 
   // ---- connection ----
-  var ws = null, wsOpen = false, retry = 0, retryTimer = null, everOpened = false, failures = 0;
+  var conn = null, wsOpen = false, retry = 0, retryTimer = null, everOpened = false, failures = 0;
   var statusEl = $("status"), statusText = $("status-text"), banner = $("banner");
   var rtt = null, pingN = 0, pingTimer = null, pingSent = {};
   var compositorUp = true;
@@ -108,58 +135,57 @@
   }
 
   function send(obj) {
-    if (ws && wsOpen) { ws.send(JSON.stringify(obj)); return true; }
+    if (conn && wsOpen) { return conn.send(obj); }
     return false;
   }
 
   function connect() {
     clearTimeout(retryTimer);
-    var t = token();
-    if (!t) { view("pair"); return; }
+    if (!creds) { view("pair"); return; }
     setStatus("connecting", failures ? "Reconnecting" : "Connecting");
-    var sock;
-    try {
-      sock = new WebSocket((location.protocol === "https:" ? "wss://" : "ws://") + location.host + "/ws", ["taos-input.v1", t]);
-    } catch (e) { scheduleRetry(); return; }
-    ws = sock;
-    sock.onopen = function () {
-      wsOpen = true; everOpened = true; failures = 0; retry = 0;
-      setStatus("connected", "Connected");
-      showBanner("");
-      send({ t: "cfg", sens: settings.sens, natural: settings.natural });
-      sendMods();
-      pingTimer = setInterval(ping, 2000);
-      ping();
-      keepAwake();
-    };
-    sock.onmessage = function (e) {
-      var m; try { m = JSON.parse(e.data); } catch (x) { return; }
-      if (m.t === "hello") {
-        compositorUp = m.compositor !== false;
-        if (!compositorUp) { desktopDown(); }
-      } else if (m.t === "haptic") {
-        buzz(m.k === "drag" ? 18 : 8);
-        $("pad").setAttribute("data-drag", m.k === "drag" ? "1" : "0");
-      } else if (m.t === "pong") {
-        if (pingSent[m.n]) {
-          rtt = Math.round(performance.now() - pingSent[m.n]); delete pingSent[m.n];
-          if (compositorUp) { setStatus("connected", "Connected · " + rtt + " ms"); }
-          $("rtt-line").textContent = "Connection: " + rtt + " ms to the desktop.";
+    var mine;
+    var handlers = {
+      onopen: function () {
+        wsOpen = true; everOpened = true; failures = 0; retry = 0;
+        setStatus("connected", "Connected");
+        showBanner("");
+        send({ t: "cfg", sens: settings.sens, natural: settings.natural });
+        sendMods();
+        pingTimer = setInterval(ping, 2000);
+        ping();
+        keepAwake();
+      },
+      onmessage: function (m) {
+        if (m.t === "hello") {
+          compositorUp = m.compositor !== false;
+          if (!compositorUp) { desktopDown(); }
+        } else if (m.t === "haptic") {
+          buzz(m.k === "drag" ? 18 : 8);
+          $("pad").setAttribute("data-drag", m.k === "drag" ? "1" : "0");
+        } else if (m.t === "pong") {
+          if (pingSent[m.n]) {
+            rtt = Math.round(performance.now() - pingSent[m.n]); delete pingSent[m.n];
+            if (compositorUp) { setStatus("connected", "Connected \u00b7 " + rtt + " ms"); }
+            $("rtt-line").textContent = "Connection: " + rtt + " ms to the desktop.";
+          }
+        } else if (m.t === "state") {
+          compositorUp = !!m.compositor;
+          if (compositorUp) { setStatus("connected", "Connected"); showBanner(""); } else { desktopDown(); }
         }
-      } else if (m.t === "state") {
-        compositorUp = !!m.compositor;
-        if (compositorUp) { setStatus("connected", "Connected"); showBanner(""); } else { desktopDown(); }
+      },
+      onclose: function () {
+        if (conn !== mine) { return; }
+        var was = wsOpen;
+        wsOpen = false; clearInterval(pingTimer); pingSent = {};
+        releaseUi();
+        if (!was) { failures++; }
+        scheduleRetry();
       }
     };
-    sock.onclose = function () {
-      var was = wsOpen;
-      wsOpen = false; clearInterval(pingTimer); pingSent = {};
-      releaseUi();
-      if (ws !== sock) { return; }
-      if (!was) { failures++; }
-      scheduleRetry();
-    };
-    sock.onerror = function () { /* onclose follows */ };
+    try {
+      mine = TaosCrypto.connect((location.protocol === "https:" ? "wss://" : "ws://") + location.host + "/ws", creds, WebSocket, handlers);
+    } catch (e) { scheduleRetry(); return; }
+    conn = mine;
   }
 
   function desktopDown() {
@@ -193,7 +219,7 @@
   document.addEventListener("visibilitychange", function () {
     if (document.visibilityState === "visible") {
       keepAwake();
-      if (!wsOpen) { clearTimeout(retryTimer); connect(); }
+      if (!wsOpen && creds) { clearTimeout(retryTimer); connect(); }
     }
   });
 
@@ -392,20 +418,20 @@
   });
   hapEl.addEventListener("change", function () { settings.haptics = hapEl.checked; store.set("haptics", settings.haptics ? "1" : "0"); buzz(10); });
   $("forget").addEventListener("click", function () {
-    store.del("token"); memToken = null; everOpened = false; failures = 0;
+    idb.del("creds"); creds = null; memCreds = null; everOpened = false; failures = 0;
     sheet.hidden = true;
-    if (ws) { var s = ws; ws = null; try { s.close(); } catch (e) { /* ignore */ } }
+    if (conn) { var c = conn; conn = null; c.close(); }
     wsOpen = false; clearTimeout(retryTimer); clearInterval(pingTimer);
     view("pair"); pairError("");
   });
 
   function start() {
-    if (!token()) { view("pair"); return; }
+    if (!creds) { view("pair"); return; }
     view("control");
     failures = 0; retry = 0;
-    if (ws) { var old = ws; ws = null; try { old.close(); } catch (e) { /* ignore */ } }
+    if (conn) { var old = conn; conn = null; old.close(); }
     connect();
   }
   paintMods();
-  start();
+  idb.get("creds").then(function (c) { creds = c || memCreds; start(); });
 })();

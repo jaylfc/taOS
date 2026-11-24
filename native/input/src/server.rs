@@ -6,12 +6,14 @@
 //! the WebSocket needs a device token in its handshake, and a handshake
 //! without a valid token never becomes a WebSocket at all.
 
+use crate::auth::PairError;
 use crate::engine::{tokens_css, Engine};
 use crate::proto::{ClientMsg, ServerMsg, Session};
+use crate::secure::{self, Channel, SUBPROTOCOL, T_AUTH, T_HELLO, T_SERVER};
 use std::io::{Read, Write};
 use std::net::{IpAddr, Shutdown, TcpListener, TcpStream};
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tungstenite::handshake::server::{ErrorResponse, Request, Response};
 use tungstenite::http::{header::HeaderValue, StatusCode};
@@ -24,15 +26,15 @@ const APP_CSS: &str = include_str!("../web/app.css");
 const MANIFEST: &str = include_str!("../web/manifest.webmanifest");
 const ICON_SVG: &str = include_str!("../web/icon.svg");
 const ICON_PNG: &[u8] = include_bytes!("../web/icon-180.png");
+const CRYPTO_JS: &str = include_str!("../web/crypto.js");
+const NOBLE_JS: &str = include_str!("../web/vendor/noble.js");
 
-pub const SUBPROTOCOL: &str = "taos-input.v1";
 const MAX_HEAD: usize = 8192;
 const MAX_CONNS: usize = 32;
 const IDLE_LIMIT: Duration = Duration::from_secs(15);
 const MAX_MSGS_PER_SEC: u32 = 4000;
 
 static LIVE: AtomicUsize = AtomicUsize::new(0);
-static PAIR_GATE: Mutex<Vec<Instant>> = Mutex::new(Vec::new());
 
 pub fn serve(engine: Arc<Engine>, listener: TcpListener) {
     for conn in listener.incoming() {
@@ -149,13 +151,67 @@ fn handle(engine: &Arc<Engine>, mut s: TcpStream) {
         if s.read_exact(&mut consumed).is_err() {
             return;
         }
-        http(engine, &mut s, head);
+        http(engine, &mut s, head, peer.ip());
     }
 }
 
-fn http(engine: &Arc<Engine>, s: &mut TcpStream, head: Head) {
-    let path = head.path.split('?').next().unwrap_or("/");
-    match (head.method.as_str(), path) {
+/// Requests are only served for the address the engine listens on (or a name
+/// the owner added): a page in the phone's browser that was rebound to this
+/// address through DNS carries another Host and gets nothing.
+fn host_ok(engine: &Engine, head: &Head) -> bool {
+    head.get("host")
+        .map(|h| engine.hosts.iter().any(|a| a.eq_ignore_ascii_case(h)))
+        .unwrap_or(false)
+}
+
+fn origin_ok(head: &Head) -> bool {
+    match (head.get("origin"), head.get("host")) {
+        (Some(o), Some(h)) => origin_matches(o, h),
+        (Some(_), None) => false,
+        (None, _) => true,
+    }
+}
+
+fn http(engine: &Arc<Engine>, s: &mut TcpStream, head: Head, src: IpAddr) {
+    let path = head.path.split('?').next().unwrap_or("/").to_string();
+    // Take the body off the socket before any refusal, so the refusal is
+    // delivered instead of the connection being reset on unread data.
+    let len: usize = head
+        .get("content-length")
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(0);
+    let mut body = vec![0u8; if len <= 4096 { len } else { 0 }];
+    if s.read_exact(&mut body).is_err() {
+        return;
+    }
+    if len > 4096 {
+        return respond(
+            s,
+            "413 Payload Too Large",
+            "text/plain",
+            b"too large",
+            "no-store",
+        );
+    }
+    if !host_ok(engine, &head) {
+        return respond(
+            s,
+            "421 Misdirected Request",
+            "text/plain",
+            b"wrong host",
+            "no-store",
+        );
+    }
+    if !origin_ok(&head) {
+        return respond(
+            s,
+            "403 Forbidden",
+            "text/plain",
+            b"wrong origin",
+            "no-store",
+        );
+    }
+    match (head.method.as_str(), path.as_str()) {
         ("GET", "/") | ("GET", "/index.html") => respond(
             s,
             "200 OK",
@@ -168,6 +224,20 @@ fn http(engine: &Arc<Engine>, s: &mut TcpStream, head: Head) {
             "200 OK",
             "text/javascript; charset=utf-8",
             APP_JS.as_bytes(),
+            "no-cache",
+        ),
+        ("GET", "/crypto.js") => respond(
+            s,
+            "200 OK",
+            "text/javascript; charset=utf-8",
+            CRYPTO_JS.as_bytes(),
+            "no-cache",
+        ),
+        ("GET", "/vendor/noble.js") => respond(
+            s,
+            "200 OK",
+            "text/javascript; charset=utf-8",
+            NOBLE_JS.as_bytes(),
             "no-cache",
         ),
         ("GET", "/app.css") => respond(
@@ -199,7 +269,7 @@ fn http(engine: &Arc<Engine>, s: &mut TcpStream, head: Head) {
             "no-cache",
         ),
         ("GET", "/icon-180.png") => respond(s, "200 OK", "image/png", ICON_PNG, "no-cache"),
-        ("POST", "/api/pair") => pair(engine, s, &head),
+        ("POST", p) if p.starts_with("/api/pair/") => pair(engine, s, &head, &body, p, src),
         _ => respond(s, "404 Not Found", "text/plain", b"not found", "no-store"),
     }
 }
@@ -214,69 +284,108 @@ fn json(s: &mut TcpStream, status: &str, v: serde_json::Value) {
     );
 }
 
-/// At most 20 pairing attempts a minute from anyone, on top of the code's own
-/// five-guess limit.
-fn pair_gate_open() -> bool {
-    let mut g = PAIR_GATE.lock().unwrap();
-    let now = Instant::now();
-    g.retain(|t| now.duration_since(*t) < Duration::from_secs(60));
-    if g.len() >= 20 {
-        return false;
+pub fn unhex(s: &str) -> Option<Vec<u8>> {
+    if s.len() % 2 != 0 || s.len() > 4096 || !s.is_ascii() {
+        return None;
     }
-    g.push(now);
-    true
+    (0..s.len() / 2)
+        .map(|i| u8::from_str_radix(&s[2 * i..2 * i + 2], 16).ok())
+        .collect()
 }
 
-fn pair(engine: &Arc<Engine>, s: &mut TcpStream, head: &Head) {
-    let len: usize = head
-        .get("content-length")
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(0);
-    if len == 0 || len > 1024 {
+fn fail(s: &mut TcpStream, e: PairError) {
+    let status = match e {
+        PairError::RateLimited => "429 Too Many Requests",
+        PairError::BadRequest | PairError::UnknownSession => "400 Bad Request",
+        _ => "403 Forbidden",
+    };
+    if matches!(e, PairError::WrongCode) {
+        std::thread::sleep(Duration::from_millis(300));
+    }
+    json(
+        s,
+        status,
+        serde_json::json!({"ok": false, "error": e.to_string()}),
+    );
+}
+
+#[derive(serde::Deserialize)]
+struct PairReq {
+    #[serde(default)]
+    pid: String,
+    #[serde(default)]
+    ya: String,
+    #[serde(default)]
+    confirm: String,
+    #[serde(default)]
+    blob: String,
+}
+
+fn pair(
+    engine: &Arc<Engine>,
+    s: &mut TcpStream,
+    head: &Head,
+    body: &[u8],
+    path: &str,
+    src: IpAddr,
+) {
+    let json_type = head
+        .get("content-type")
+        .map(|c| c.to_ascii_lowercase().starts_with("application/json"))
+        .unwrap_or(false);
+    if !json_type || body.is_empty() {
         return json(
             s,
             "400 Bad Request",
             serde_json::json!({"ok": false, "error": "bad request"}),
         );
     }
-    let mut body = vec![0u8; len];
-    if s.read_exact(&mut body).is_err() {
-        return;
-    }
-    if !pair_gate_open() {
-        return json(
-            s,
-            "429 Too Many Requests",
-            serde_json::json!({"ok": false, "error": "slow down"}),
-        );
-    }
-    #[derive(serde::Deserialize)]
-    struct Req {
-        code: String,
-        #[serde(default)]
-        name: String,
-    }
-    let Ok(req) = serde_json::from_slice::<Req>(&body) else {
+    let Ok(req) = serde_json::from_slice::<PairReq>(body) else {
         return json(
             s,
             "400 Bad Request",
             serde_json::json!({"ok": false, "error": "bad request"}),
         );
     };
-    match engine.auth.pair(&req.code, &req.name) {
-        Ok((id, token)) => json(
-            s,
-            "200 OK",
-            serde_json::json!({"ok": true, "id": id, "token": token}),
-        ),
-        Err(e) => {
-            std::thread::sleep(Duration::from_millis(300));
-            json(
+    match path {
+        "/api/pair/begin" => match engine.auth.pair_begin(src) {
+            Ok((pid, sid)) => json(
                 s,
-                "403 Forbidden",
-                serde_json::json!({"ok": false, "error": e.to_string()}),
-            )
+                "200 OK",
+                serde_json::json!({"ok": true, "pid": pid, "sid": crate::auth::hex(&sid)}),
+            ),
+            Err(e) => fail(s, e),
+        },
+        "/api/pair/init" => {
+            let Some(ya) = unhex(&req.ya).and_then(|v| <[u8; 32]>::try_from(v).ok()) else {
+                return fail(s, PairError::BadRequest);
+            };
+            match engine.auth.pair_init(src, &req.pid, &ya) {
+                Ok((yb, confirm)) => json(
+                    s,
+                    "200 OK",
+                    serde_json::json!({"ok": true, "yb": crate::auth::hex(&yb), "confirm": crate::auth::hex(&confirm)}),
+                ),
+                Err(e) => fail(s, e),
+            }
         }
+        "/api/pair/finish" => {
+            let (Some(confirm), Some(blob)) = (unhex(&req.confirm), unhex(&req.blob)) else {
+                return fail(s, PairError::BadRequest);
+            };
+            match engine
+                .auth
+                .pair_finish(src, &req.pid, &confirm, &blob, &engine.identity.public())
+            {
+                Ok((id, reply)) => json(
+                    s,
+                    "200 OK",
+                    serde_json::json!({"ok": true, "id": id, "blob": crate::auth::hex(&reply)}),
+                ),
+                Err(e) => fail(s, e),
+            }
+        }
+        _ => respond(s, "404 Not Found", "text/plain", b"not found", "no-store"),
     }
 }
 
@@ -294,14 +403,80 @@ pub fn origin_matches(origin: &str, host: &str) -> bool {
     rest.eq_ignore_ascii_case(host)
 }
 
+type Ws = tungstenite::WebSocket<TcpStream>;
+
+fn read_binary(ws: &mut Ws, secs: u64) -> Option<Vec<u8>> {
+    let end = Instant::now() + Duration::from_secs(secs);
+    while Instant::now() < end {
+        match ws.read() {
+            Ok(Message::Binary(b)) => return Some(b.to_vec()),
+            Ok(Message::Ping(_)) | Ok(Message::Pong(_)) => {}
+            Ok(_) => return None,
+            Err(tungstenite::Error::Io(e))
+                if matches!(
+                    e.kind(),
+                    std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+                ) => {}
+            Err(_) => return None,
+        }
+    }
+    None
+}
+
+/// Run the handshake; on success returns the device and the open channel.
+fn handshake(engine: &Arc<Engine>, ws: &mut Ws) -> Option<(crate::auth::Device, Channel)> {
+    let _ = ws
+        .get_mut()
+        .set_read_timeout(Some(Duration::from_millis(200)));
+    let hello = read_binary(ws, 5)?;
+    if hello.len() != 1 + 6 + 16 + 65 || hello[0] != T_HELLO {
+        return None;
+    }
+    let id: [u8; 6] = hello[1..7].try_into().ok()?;
+    let nc: [u8; 16] = hello[7..23].try_into().ok()?;
+    let ec: [u8; 65] = hello[23..88].try_into().ok()?;
+    let dev = engine.auth.device(&crate::auth::hex(&id))?;
+    let ec_pub = secure::parse_public(&ec)?;
+    let mut ns = [0u8; 16];
+    crate::auth::random_bytes(&mut ns).ok()?;
+    let es_secret = secure::new_secret();
+    let es = secure::public_bytes(&es_secret);
+    let t = secure::transcript(&id, &nc, &ns, &ec, &es);
+    let sig = engine.identity.sign(secure::ROLE_SERVER, &t);
+    let mut reply = vec![T_SERVER];
+    reply.extend_from_slice(&ns);
+    reply.extend_from_slice(&es);
+    reply.extend_from_slice(&sig);
+    ws.send(Message::binary(reply)).ok()?;
+    let auth = read_binary(ws, 5)?;
+    if auth.len() != 1 + 64 || auth[0] != T_AUTH {
+        return None;
+    }
+    let dev_pub = unhex(&dev.pubkey)?;
+    if !secure::verify(&dev_pub, secure::ROLE_DEVICE, &t, &auth[1..]) {
+        return None;
+    }
+    let shared = secure::ecdh(&es_secret, &ec_pub);
+    Some((dev, Channel::new(&shared, &nc, &ns, true)))
+}
+
+fn send_msg(ws: &mut Ws, chan: &mut Channel, m: &ServerMsg) -> bool {
+    let Ok(t) = serde_json::to_vec(m) else {
+        return false;
+    };
+    match chan.seal(&t) {
+        Ok(frame) => ws.send(Message::binary(frame)).is_ok(),
+        Err(_) => false,
+    }
+}
+
 fn ws_session(engine: &Arc<Engine>, stream: TcpStream, _peer: IpAddr) {
-    let mut device = None;
     #[allow(clippy::result_large_err)] // the error type is the library's own callback signature
     let verify = |req: &Request, mut resp: Response| -> Result<Response, ErrorResponse> {
         let h = req.headers();
         let host = h.get("host").and_then(|v| v.to_str().ok()).unwrap_or("");
-        if host.is_empty() {
-            return Err(deny(StatusCode::BAD_REQUEST, "no host"));
+        if !engine.hosts.iter().any(|a| a.eq_ignore_ascii_case(host)) {
+            return Err(deny(StatusCode::MISDIRECTED_REQUEST, "wrong host"));
         }
         if let Some(o) = h.get("origin").and_then(|v| v.to_str().ok()) {
             if !origin_matches(o, host) {
@@ -312,14 +487,8 @@ fn ws_session(engine: &Arc<Engine>, stream: TcpStream, _peer: IpAddr) {
             .get("sec-websocket-protocol")
             .and_then(|v| v.to_str().ok())
             .unwrap_or("");
-        let mut parts = offered.split(',').map(|p| p.trim());
-        if parts.next() != Some(SUBPROTOCOL) {
-            return Err(deny(StatusCode::UNAUTHORIZED, "unauthorized"));
-        }
-        let token = parts.next().unwrap_or("");
-        match engine.auth.verify(token) {
-            Some(d) => device = Some(d),
-            None => return Err(deny(StatusCode::UNAUTHORIZED, "unauthorized")),
+        if !offered.split(',').any(|p| p.trim() == SUBPROTOCOL) {
+            return Err(deny(StatusCode::BAD_REQUEST, "unsupported protocol"));
         }
         resp.headers_mut().insert(
             "Sec-WebSocket-Protocol",
@@ -328,12 +497,16 @@ fn ws_session(engine: &Arc<Engine>, stream: TcpStream, _peer: IpAddr) {
         Ok(resp)
     };
     let cfg = WebSocketConfig::default()
-        .max_message_size(Some(16 * 1024))
-        .max_frame_size(Some(16 * 1024));
+        .max_message_size(Some(secure::MAX_FRAME))
+        .max_frame_size(Some(secure::MAX_FRAME));
     let Ok(mut ws) = tungstenite::accept_hdr_with_config(stream, verify, Some(cfg)) else {
         return;
     };
-    let Some(dev) = device else { return };
+    // Nothing is read as input until both sides have signed the handshake.
+    let Some((dev, mut chan)) = handshake(engine, &mut ws) else {
+        let _ = ws.close(None);
+        return;
+    };
     let _ = ws
         .get_mut()
         .set_read_timeout(Some(Duration::from_millis(20)));
@@ -342,13 +515,7 @@ fn ws_session(engine: &Arc<Engine>, stream: TcpStream, _peer: IpAddr) {
     engine.auth.touch(&dev.id);
     let mut session = Session::new();
     let mut up = engine.injector.compositor_up();
-    let send = |ws: &mut tungstenite::WebSocket<TcpStream>, m: &ServerMsg| -> bool {
-        match serde_json::to_string(m) {
-            Ok(t) => ws.send(Message::text(t)).is_ok(),
-            Err(_) => false,
-        }
-    };
-    let apply = |fx: crate::proto::Effects, ws: &mut tungstenite::WebSocket<TcpStream>| -> bool {
+    let apply = |fx: crate::proto::Effects, ws: &mut Ws, chan: &mut Channel| -> bool {
         for c in fx.cmds {
             engine.injector.send(c);
         }
@@ -356,13 +523,14 @@ fn ws_session(engine: &Arc<Engine>, stream: TcpStream, _peer: IpAddr) {
             let e = engine.clone();
             std::thread::spawn(move || e.workspace(d));
         }
-        fx.replies.iter().all(|m| send(ws, m))
+        fx.replies.iter().all(|m| send_msg(ws, chan, m))
     };
 
-    let mut ok = send(
+    let mut ok = send_msg(
         &mut ws,
+        &mut chan,
         &ServerMsg::Hello {
-            proto: 1,
+            proto: 2,
             name: dev.name.clone(),
             compositor: up,
         },
@@ -384,7 +552,10 @@ fn ws_session(engine: &Arc<Engine>, stream: TcpStream, _peer: IpAddr) {
             break;
         }
         match ws.read() {
-            Ok(Message::Text(t)) => {
+            Ok(Message::Binary(b)) => {
+                // Any frame that does not authenticate, or is not the next
+                // one in order, ends the connection.
+                let Ok(plain) = chan.open(&b) else { break };
                 last_rx = Instant::now();
                 if window.0.elapsed() > Duration::from_secs(1) {
                     window = (Instant::now(), 0);
@@ -393,14 +564,13 @@ fn ws_session(engine: &Arc<Engine>, stream: TcpStream, _peer: IpAddr) {
                 if window.1 > MAX_MSGS_PER_SEC {
                     break;
                 }
-                if let Ok(m) = serde_json::from_str::<ClientMsg>(&t) {
+                if let Ok(m) = serde_json::from_slice::<ClientMsg>(&plain) {
                     let fx = session.on_message(m, engine.now_ms());
-                    ok = apply(fx, &mut ws);
+                    ok = apply(fx, &mut ws, &mut chan);
                 }
             }
-            Ok(Message::Close(_)) => break,
-            Ok(Message::Binary(_)) => break,
-            Ok(_) => last_rx = Instant::now(),
+            Ok(Message::Close(_)) | Ok(Message::Text(_)) => break,
+            Ok(_) => {}
             Err(tungstenite::Error::Io(e))
                 if matches!(
                     e.kind(),
@@ -410,12 +580,12 @@ fn ws_session(engine: &Arc<Engine>, stream: TcpStream, _peer: IpAddr) {
         }
         let fx = session.tick(engine.now_ms());
         if ok {
-            ok = apply(fx, &mut ws);
+            ok = apply(fx, &mut ws, &mut chan);
         }
         let now_up = engine.injector.compositor_up();
         if now_up != up {
             up = now_up;
-            ok = ok && send(&mut ws, &ServerMsg::State { compositor: up });
+            ok = ok && send_msg(&mut ws, &mut chan, &ServerMsg::State { compositor: up });
         }
     }
     // Whatever way this ended, nothing the controller held stays held.

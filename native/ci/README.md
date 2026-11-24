@@ -8,7 +8,7 @@
 | toolchain | Qt 6.12.1 with aqtinstall (`install-qt.sh`), LayerShellQt built from pinned source (`build-layershell.sh`: Ubuntu has no usable LayerShellQt and its extra-cmake-modules is too old). Cached. |
 | lint | `check_tokens.py` (no new hard-coded colours) and `qmllint.sh` (errors fail, warnings are reported). |
 | rust | `cargo test --workspace` in `native/`. |
-| input-e2e | Installs sway and foot and runs `cargo test -p taos-input` with `TAOS_E2E=1` (private headless sway, pixman; a missing tool fails). |
+| input-e2e | Installs sway and foot and runs `cargo test -p taos-input -p taos-cast` (including the SIGKILL watchdog tests and the node interop test) with `TAOS_E2E=1` (private headless sway, pixman; a missing tool fails). |
 | shell | Builds `native/shell`, runs its ctest tests offscreen. |
 | apps | Builds `native/qt`, `native/apps`, `native/apps/activity`, `native/apps/settings`; runs their ctest tests offscreen; renders screenshots of every app (`shots.sh`) and uploads them as the `native-screenshots` artifact. Look at it before you ask for review and attach the relevant images to your PR. |
 

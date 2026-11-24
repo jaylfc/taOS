@@ -21,6 +21,7 @@ pub enum Cmd {
     Pair,
     Supervise(StartArgs),
     Watchdog,
+    ShowCode(String),
     Help,
 }
 
@@ -114,6 +115,7 @@ pub fn parse(args: &[String]) -> Result<Cli, String> {
         "restore" => Cmd::Restore,
         "pair" => Cmd::Pair,
         "_watchdog" => Cmd::Watchdog,
+        "_show-code" => Cmd::ShowCode(flags.first().ok_or("_show-code needs a file")?.to_string()),
         "-h" | "--help" | "help" => Cmd::Help,
         other => return Err(format!("unknown command {other}")),
     };

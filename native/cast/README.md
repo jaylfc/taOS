@@ -28,7 +28,7 @@ The size is never probed from the receiver; pass `--size` explicitly.
 Unless `--no-input`, `start` talks to the taos-input control socket (`$XDG_RUNTIME_DIR/taos-input/control.sock`,
 override with `TAOS_INPUT_CONTROL`): JSON line request, one JSON line reply. It starts `taos-input serve`
 if nothing answers (and stops it again only if it started it), asks `{"op":"pair"}` for a code, prints the
-controller URL and code, and shows them on the TV with `swaynag` (best effort). `taos-cast pair` asks for a fresh code.
+controller URL and code, and shows them on the TV with `a `foot` window` (best effort). `taos-cast pair` asks for a fresh code.
 
 ## Agent path
 
@@ -47,3 +47,16 @@ Add `--json`: exactly one JSON object on stdout, exit code 0 on success and 1 on
 
 `cargo test -p taos-cast`. The e2e tests need `sway` and run in a private headless session with two
 headless outputs as stand-in monitors and stub `wf-recorder`/`tvpipe`; set `TAOS_E2E=1` to fail instead of skip when sway is missing.
+
+## Pairing code display and restore details
+
+The pairing code is never put in a process argument (other local users could read it from /proc). It is written to
+`code.json` (0600) in the 0700 runtime directory, and a `foot` window on the cast output (app id `taos-cast-code`)
+runs `taos-cast _show-code <file>`, which only receives the file name. The window and the file go away when the code
+expires, as soon as the engine reports a new paired device, and on stop or restore. Without `foot` nothing is shown
+and the CLI output is the only place the code appears.
+
+Restore treats a monitor that was unplugged during the cast as restored (it is reported on stderr), so it always
+finishes and clears its state. A leftover restore record older than ten minutes that still fails is dropped, so it
+cannot refuse every later start. Tests: `TAOS_E2E=1 cargo test --locked -p taos-cast` needs sway and foot and fails
+(does not skip) when either is missing.

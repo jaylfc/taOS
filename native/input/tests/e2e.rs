@@ -17,8 +17,7 @@ use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
-use tungstenite::client::IntoClientRequest;
-use tungstenite::{Message, WebSocket};
+use taos_input::client::{self, Conn, Creds};
 
 const ENGINE: &str = env!("CARGO_BIN_EXE_taos-input");
 
@@ -285,10 +284,37 @@ fn http(
     body: &str,
     src: Option<IpAddr>,
 ) -> Result<(u16, String), String> {
+    http_with(
+        port,
+        method,
+        path,
+        body,
+        src,
+        &[("Content-Type", "application/json")],
+    )
+}
+
+fn http_with(
+    port: u16,
+    method: &str,
+    path: &str,
+    body: &str,
+    src: Option<IpAddr>,
+    extra: &[(&str, &str)],
+) -> Result<(u16, String), String> {
     let mut s = connect_from(port, src).map_err(|e| e.to_string())?;
     s.set_read_timeout(Some(Duration::from_secs(5))).ok();
-    write!(s, "{method} {path} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len())
-        .map_err(|e| e.to_string())?;
+    let mut head = format!(
+        "{method} {path} HTTP/1.1\r\nConnection: close\r\nContent-Length: {}\r\n",
+        body.len()
+    );
+    if !extra.iter().any(|(k, _)| k.eq_ignore_ascii_case("host")) {
+        head.push_str(&format!("Host: 127.0.0.1:{port}\r\n"));
+    }
+    for (k, v) in extra {
+        head.push_str(&format!("{k}: {v}\r\n"));
+    }
+    write!(s, "{head}\r\n{body}").map_err(|e| e.to_string())?;
     let mut raw = String::new();
     s.read_to_string(&mut raw).map_err(|e| e.to_string())?;
     let status = raw
@@ -311,74 +337,63 @@ fn connect_from(port: u16, src: Option<IpAddr>) -> std::io::Result<TcpStream> {
     Ok(sock.into())
 }
 
-/// Mint a code through the control socket, pair over HTTP, return the token.
-fn pair(e: &Engine, name: &str) -> String {
+/// Mint a code through the control socket and pair as a phone.
+fn pair(e: &Engine, name: &str) -> Creds {
+    pair_from(e, name, None)
+}
+
+fn pair_from(e: &Engine, name: &str, src: Option<IpAddr>) -> Creds {
     let code = ctl(e, json!({"op": "pair"}))["code"]
         .as_str()
         .unwrap()
         .to_string();
-    let (st, body) = http(
-        e.port,
-        "POST",
-        "/api/pair",
-        &json!({"code": code, "name": name}).to_string(),
-        None,
-    )
-    .unwrap();
-    assert_eq!(st, 200, "{body}");
-    serde_json::from_str::<Value>(&body).unwrap()["token"]
-        .as_str()
-        .unwrap()
-        .to_string()
+    pair_code(e, &code, name, src).expect("pairing")
 }
 
-type Ws = WebSocket<TcpStream>;
+fn pair_code(e: &Engine, code: &str, name: &str, src: Option<IpAddr>) -> Result<Creds, String> {
+    let port = e.port;
+    client::pair(
+        || connect_from(port, src),
+        &format!("127.0.0.1:{port}"),
+        code,
+        name,
+    )
+}
 
-#[allow(clippy::result_large_err)]
+type Ws = Conn;
+
 fn ws_try(
     port: u16,
-    token: &str,
+    creds: &Creds,
     origin: Option<&str>,
     src: Option<IpAddr>,
-) -> Result<Ws, tungstenite::Error> {
-    let mut req = format!("ws://127.0.0.1:{port}/ws").into_client_request()?;
-    let proto = if token.is_empty() {
-        "taos-input.v1".to_string()
-    } else {
-        format!("taos-input.v1, {token}")
-    };
-    req.headers_mut()
-        .insert("Sec-WebSocket-Protocol", proto.parse().unwrap());
-    if let Some(o) = origin {
-        req.headers_mut().insert("Origin", o.parse().unwrap());
-    }
-    let stream = connect_from(port, src).map_err(tungstenite::Error::Io)?;
-    stream.set_read_timeout(Some(Duration::from_secs(5))).ok();
-    tungstenite::client(req, stream)
-        .map(|(ws, _)| ws)
-        .map_err(|e| match e {
-            tungstenite::HandshakeError::Failure(e) => e,
-            tungstenite::HandshakeError::Interrupted(_) => tungstenite::Error::ConnectionClosed,
-        })
+) -> Result<Ws, String> {
+    let stream = connect_from(port, src).map_err(|e| e.to_string())?;
+    client::connect(stream, &format!("127.0.0.1:{port}"), origin, creds)
+        .map_err(|e| format!("{e:?}"))
 }
 
-fn ws(port: u16, token: &str) -> Ws {
-    ws_try(port, token, None, None).expect("authenticated connection")
+/// An authenticated connection: the engine has answered "hello" over the channel.
+fn ws(port: u16, creds: &Creds) -> Ws {
+    let mut c = ws_try(port, creds, None, None).expect("handshake");
+    assert_eq!(c.recv(3000).expect("hello")["t"], "hello");
+    c
+}
+
+/// Did the engine accept this credential? (It sends "hello" only then.)
+fn accepted(port: u16, creds: &Creds) -> bool {
+    match ws_try(port, creds, None, None) {
+        Ok(mut c) => c.recv(2000).map(|m| m["t"] == "hello").unwrap_or(false),
+        Err(_) => false,
+    }
 }
 
 fn send(ws: &mut Ws, v: Value) {
-    ws.send(Message::text(v.to_string())).expect("send");
+    ws.send(&v).expect("send");
 }
 
-/// Read the next text message, if one arrives within `ms`.
 fn recv(ws: &mut Ws, ms: u64) -> Option<Value> {
-    ws.get_mut()
-        .set_read_timeout(Some(Duration::from_millis(ms)))
-        .ok();
-    match ws.read() {
-        Ok(Message::Text(t)) => serde_json::from_str(&t).ok(),
-        _ => None,
-    }
+    ws.recv(ms)
 }
 
 /// Page clock for touch events.
@@ -491,9 +506,8 @@ fn pointer_motion_buttons_and_scroll_arrive() {
     let eng = start_engine(&env, &[]);
     let probe = Probe::start(&mut env, "probe");
     wait_compositor(&eng, true);
-    let token = pair(&eng, "Test phone");
-    let mut ws = ws(eng.port, &token);
-    assert_eq!(recv(&mut ws, 2000).unwrap()["t"], "hello");
+    let creds = pair(&eng, "Test phone");
+    let mut ws = ws(eng.port, &creds);
 
     // Relative motion lands exactly where it was told to.
     let base = settle(&mut ws, &probe);
@@ -647,8 +661,8 @@ fn text_arrives_exactly_including_unicode_and_shortcuts_work() {
         }),
         "terminal never got focus"
     );
-    let token = pair(&eng, "Test phone");
-    let mut ws = ws(eng.port, &token);
+    let creds = pair(&eng, "Test phone");
+    let mut ws = ws(eng.port, &creds);
     let lines = [
         "Hello, World! h\u{e9}llo w\u{f6}rld \u{f1} \u{65e5}\u{672c}\u{8a9e} \u{1f600} \u{df} \u{20ac}\n",
         "ABC xyz 0123456789 !@#$%^&*()_+-=[]{}|;':\",./<>?`~\\\n",
@@ -692,8 +706,8 @@ fn super_bindings_fire_with_a_tap_combo_and_with_a_sticky_modifier() {
     let _sway = env.start_sway();
     let eng = start_engine(&env, &[]);
     wait_compositor(&eng, true);
-    let token = pair(&eng, "Test phone");
-    let mut ws = ws(eng.port, &token);
+    let creds = pair(&eng, "Test phone");
+    let mut ws = ws(eng.port, &creds);
     send(&mut ws, json!({"t": "key", "k": "F9", "m": ["super"]}));
     assert!(
         wait_until(10, || env.root.join("super-ok").exists()),
@@ -709,143 +723,288 @@ fn super_bindings_fire_with_a_tap_combo_and_with_a_sticky_modifier() {
 }
 
 #[test]
-fn nothing_is_accepted_without_a_valid_token_from_a_lan_peer() {
-    if !need(&["sway"], "auth") {
-        // The engine runs without a compositor for these checks, sway is only
-        // asked for so a CI image without it is noticed.
-    }
+fn nothing_is_accepted_without_valid_credentials_from_a_lan_peer() {
     let env = Env::new("auth");
-    let eng = start_engine(&env, &[]);
+    let eng = start_engine(&env, &["--allow-net", "127.0.0.2/32"]);
+    let host = format!("127.0.0.1:{}", eng.port);
 
-    // No pairing code has been minted: pairing is refused.
-    let (st, _) = http(
-        eng.port,
-        "POST",
-        "/api/pair",
-        r#"{"code":"123456","name":"x"}"#,
-        None,
-    )
-    .unwrap();
-    assert_eq!(st, 403);
+    // No pairing code has been minted: pairing is refused before it starts.
+    assert!(pair_code(&eng, "123456", "x", None).is_err());
 
-    // No token at all, and a token that is not one.
-    let st = |r: Result<Ws, tungstenite::Error>| match r {
-        Err(tungstenite::Error::Http(resp)) => resp.status().as_u16(),
-        Ok(_) => 101,
-        Err(e) => panic!("unexpected {e:?}"),
+    // Pair for real, then try credentials that are well formed but wrong.
+    let good = pair(&eng, "Phone");
+    assert!(accepted(eng.port, &good));
+    let impostor = Creds {
+        id: good.id,
+        secret: taos_input::secure::new_secret(),
+        engine_pub: good.engine_pub,
     };
-    assert_eq!(st(ws_try(eng.port, "", None, None)), 401);
-    assert_eq!(st(ws_try(eng.port, &"0".repeat(64), None, None)), 401);
-    assert_eq!(st(ws_try(eng.port, "short", None, None)), 401);
+    assert!(
+        !accepted(eng.port, &impostor),
+        "right device id, wrong device secret"
+    );
+    let stranger_id = Creds {
+        id: [9; 6],
+        secret: taos_input::secure::new_secret(),
+        engine_pub: good.engine_pub,
+    };
+    assert!(!accepted(eng.port, &stranger_id), "unknown device id");
+    // A phone that pinned some other engine's key refuses to talk to this one.
+    let other_engine = Creds {
+        id: good.id,
+        secret: good.secret.clone(),
+        engine_pub: taos_input::secure::public_bytes(&taos_input::secure::new_secret()),
+    };
+    assert!(
+        ws_try(eng.port, &other_engine, None, None).is_err(),
+        "phone must refuse an engine it did not pair with"
+    );
 
-    // Wrong code, then the right one (once).
+    // Frames sent before the handshake completes do nothing and end the connection.
+    let stream = connect_from(eng.port, None).unwrap();
+    let mut req =
+        tungstenite::client::IntoClientRequest::into_client_request(format!("ws://{host}/ws"))
+            .unwrap();
+    req.headers_mut()
+        .insert("Sec-WebSocket-Protocol", "taos-input.v2".parse().unwrap());
+    let (mut raw, _) = tungstenite::client(req, stream).unwrap();
+    let _ = raw.send(tungstenite::Message::text(r#"{"t":"ptr","dx":5,"dy":5}"#));
+    raw.get_mut()
+        .set_read_timeout(Some(Duration::from_secs(3)))
+        .ok();
+    assert!(
+        !matches!(raw.read(), Ok(tungstenite::Message::Binary(_))),
+        "no reply to an unauthenticated message"
+    );
+
+    // A wrong code never pairs; guesses are counted per source address.
     let code = ctl(&eng, json!({"op": "pair"}))["code"]
         .as_str()
         .unwrap()
         .to_string();
     let wrong = if code == "000000" { "000001" } else { "000000" };
-    let (s, _) = http(
-        eng.port,
-        "POST",
-        "/api/pair",
-        &json!({"code": wrong}).to_string(),
-        None,
-    )
-    .unwrap();
-    assert_eq!(s, 403);
-    let (s, body) = http(
-        eng.port,
-        "POST",
-        "/api/pair",
-        &json!({"code": code, "name": "Phone"}).to_string(),
-        None,
-    )
-    .unwrap();
-    assert_eq!(s, 200);
-    let token = serde_json::from_str::<Value>(&body).unwrap()["token"]
-        .as_str()
-        .unwrap()
-        .to_string();
-    let (s, _) = http(
-        eng.port,
-        "POST",
-        "/api/pair",
-        &json!({"code": code}).to_string(),
-        None,
-    )
-    .unwrap();
-    assert_eq!(s, 403, "a code works once");
+    let attacker: IpAddr = "127.0.0.2".parse().unwrap();
+    for _ in 0..3 {
+        assert!(pair_code(&eng, wrong, "x", Some(attacker)).is_err());
+    }
+    let err = pair_code(&eng, &code, "x", Some(attacker)).err().unwrap();
+    assert!(
+        err.contains("too many"),
+        "the attacker is cut off for this code: {err}"
+    );
+    // The owner still pairs with the very same code (the attacker did not burn it).
+    let owner = pair_code(&eng, &code, "Owner", None).expect("owner pairs");
+    assert!(accepted(eng.port, &owner));
+    assert!(
+        pair_code(&eng, &code, "again", None).is_err(),
+        "a code works once"
+    );
 
-    // Five wrong guesses kill the code even for the right one.
+    // HTTP hygiene on the pairing endpoint: JSON only, own Origin only, own Host only.
+    let b = json!({}).to_string();
     let code2 = ctl(&eng, json!({"op": "pair"}))["code"]
         .as_str()
         .unwrap()
         .to_string();
-    let wrong2 = if code2 == "000000" {
-        "000001"
-    } else {
-        "000000"
-    };
-    for _ in 0..5 {
-        let (s, _) = http(
+    assert_eq!(
+        http_with(
             eng.port,
             "POST",
-            "/api/pair",
-            &json!({"code": wrong2}).to_string(),
+            "/api/pair/begin",
+            &b,
             None,
+            &[("Content-Type", "text/plain")]
         )
-        .unwrap();
-        assert_eq!(s, 403);
-    }
-    let (s, _) = http(
-        eng.port,
-        "POST",
-        "/api/pair",
-        &json!({"code": code2}).to_string(),
-        None,
-    )
-    .unwrap();
-    assert_eq!(s, 403, "the code is dead after five wrong guesses");
-
-    // The right token works, a page from another site does not, a stranger's
-    // source address does not (even with the right token).
+        .unwrap()
+        .0,
+        400
+    );
     assert_eq!(
-        st(ws_try(eng.port, &token, Some("http://evil.example"), None)),
+        http_with(
+            eng.port,
+            "POST",
+            "/api/pair/begin",
+            &b,
+            None,
+            &[
+                ("Content-Type", "application/json"),
+                ("Origin", "http://evil.example")
+            ]
+        )
+        .unwrap()
+        .0,
         403
     );
     assert_eq!(
-        st(ws_try(
+        http_with(
             eng.port,
-            &token,
-            Some(&format!("http://127.0.0.1:{}", eng.port)),
-            None
-        )),
-        101
+            "POST",
+            "/api/pair/begin",
+            &b,
+            None,
+            &[
+                ("Content-Type", "application/json"),
+                ("Host", "evil.example")
+            ]
+        )
+        .unwrap()
+        .0,
+        421,
+        "DNS rebinding: a request addressed to another name gets nothing"
     );
-    let stranger: IpAddr = "127.0.0.2".parse().unwrap();
-    assert!(
-        ws_try(eng.port, &token, None, Some(stranger)).is_err(),
-        "a peer outside the allowed networks must be refused"
+    assert_eq!(
+        http_with(eng.port, "GET", "/", "", None, &[("Host", "evil.example")])
+            .unwrap()
+            .0,
+        421
     );
-    assert!(
-        http(eng.port, "GET", "/", "", Some(stranger)).is_err(),
-        "no page for a stranger either"
+    assert_eq!(
+        http_with(
+            eng.port,
+            "POST",
+            "/api/pair/begin",
+            &b,
+            None,
+            &[
+                ("Content-Type", "application/json"),
+                ("Origin", &format!("http://{host}"))
+            ]
+        )
+        .unwrap()
+        .0,
+        200
     );
+    let _ = code2;
+
+    // WebSocket: another site's page and a rebound host are refused.
+    assert!(ws_try(eng.port, &owner, Some("http://evil.example"), None).is_err());
+    let own_origin = format!("http://{host}");
+    assert!(ws_try(eng.port, &owner, Some(&own_origin), None).is_ok());
+
+    // A peer outside the allowed networks gets nothing, even with good credentials.
+    let outsider: IpAddr = "127.0.0.3".parse().unwrap();
+    assert!(ws_try(eng.port, &owner, None, Some(outsider)).is_err());
+    assert!(http(eng.port, "GET", "/", "", Some(outsider)).is_err());
     assert_eq!(http(eng.port, "GET", "/", "", None).unwrap().0, 200);
 
     // Revoking cuts the device off, including a live connection.
-    let mut live = ws(eng.port, &token);
-    assert_eq!(recv(&mut live, 2000).unwrap()["t"], "hello");
-    let id = ctl(&eng, json!({"op": "devices"}))["devices"][0]["id"]
-        .as_str()
+    let mut live = ws(eng.port, &owner);
+    let devices = ctl(&eng, json!({"op": "devices"}));
+    let id = taos_input::auth::hex(&owner.id);
+    assert!(devices["devices"]
+        .as_array()
         .unwrap()
-        .to_string();
+        .iter()
+        .any(|d| d["id"] == id.as_str()));
     assert_eq!(ctl(&eng, json!({"op": "revoke", "id": id}))["removed"], 1);
     assert!(
-        wait_until(5, || recv(&mut live, 100).is_none() && live.read().is_err()),
+        wait_until(6, || {
+            let _ = live.send(&json!({"t": "ping", "n": 1}));
+            live.recv(150).is_none() && live.send(&json!({"t": "ping", "n": 2})).is_err()
+        }),
         "revoked device stayed connected"
     );
-    assert_eq!(st(ws_try(eng.port, &token, None, None)), 401);
+    assert!(!accepted(eng.port, &owner));
+}
+
+#[test]
+fn session_attacks_are_refused_and_inject_nothing() {
+    if !need(&["sway", "swaymsg"], "session attacks") {
+        return;
+    }
+    let mut env = Env::new("attacks");
+    let _sway = env.start_sway();
+    let eng = start_engine(&env, &[]);
+    let probe = Probe::start(&mut env, "probe");
+    wait_compositor(&eng, true);
+    let creds = pair(&eng, "Phone");
+    let mut ok = ws(eng.port, &creds);
+    let base = settle(&mut ok, &probe);
+    let motions = |p: &Probe| p.events().iter().filter(|e| e["e"] == "motion").count();
+    let closed = |c: &mut Ws| {
+        wait_until(6, || {
+            c.recv(150).is_none() && c.send(&json!({"t": "ping", "n": 1})).is_err()
+        })
+    };
+    drop(ok);
+
+    // Control: a genuine frame moves the pointer exactly once.
+    let mut c = ws(eng.port, &creds);
+    send(&mut c, json!({"t": "ptr", "dx": 10, "dy": 0}));
+    assert!(wait_until(5, || probe
+        .last_pos()
+        .map(|p| near(p, (base.0 + 10.0, base.1), 0.5))
+        .unwrap_or(false)));
+    let n = motions(&probe);
+
+    // Replay: the same bytes again. Refused, and no second motion.
+    let frame = c
+        .chan
+        .seal(
+            json!({"t": "ptr", "dx": 10, "dy": 0})
+                .to_string()
+                .as_bytes(),
+        )
+        .unwrap();
+    c.ws.send(tungstenite::Message::binary(frame.clone()))
+        .unwrap();
+    assert!(wait_until(5, || motions(&probe) > n));
+    let n = motions(&probe);
+    c.ws.send(tungstenite::Message::binary(frame)).unwrap();
+    assert!(closed(&mut c), "replayed frame must end the connection");
+    std::thread::sleep(Duration::from_millis(300));
+    assert_eq!(motions(&probe), n, "the replay moved the pointer");
+
+    // Tampered ciphertext: one bit flipped. Refused, no motion.
+    let mut c = ws(eng.port, &creds);
+    let mut frame = c
+        .chan
+        .seal(
+            json!({"t": "ptr", "dx": 77, "dy": 0})
+                .to_string()
+                .as_bytes(),
+        )
+        .unwrap();
+    let last = frame.len() - 1;
+    frame[last] ^= 1;
+    c.ws.send(tungstenite::Message::binary(frame)).unwrap();
+    assert!(closed(&mut c), "tampered frame must end the connection");
+
+    // Reordered counter: frame 1 before frame 0. Refused, neither moves the pointer.
+    let mut c = ws(eng.port, &creds);
+    let f0 = c
+        .chan
+        .seal(
+            json!({"t": "ptr", "dx": 55, "dy": 0})
+                .to_string()
+                .as_bytes(),
+        )
+        .unwrap();
+    let f1 = c
+        .chan
+        .seal(
+            json!({"t": "ptr", "dx": 55, "dy": 0})
+                .to_string()
+                .as_bytes(),
+        )
+        .unwrap();
+    c.ws.send(tungstenite::Message::binary(f1)).unwrap();
+    assert!(closed(&mut c), "out of order frame must end the connection");
+    let _ = f0;
+
+    // A plaintext JSON text frame on an authenticated connection is refused.
+    let mut c = ws(eng.port, &creds);
+    c.ws.send(tungstenite::Message::text(r#"{"t":"ptr","dx":99,"dy":0}"#))
+        .unwrap();
+    assert!(closed(&mut c));
+
+    std::thread::sleep(Duration::from_millis(400));
+    assert_eq!(motions(&probe), n, "no attack moved the pointer");
+    let p = probe.last_pos().unwrap();
+    assert!(
+        near(p, (base.0 + 20.0, base.1), 0.5),
+        "the pointer only made the two genuine moves: {p:?}"
+    );
 }
 
 #[test]
@@ -887,8 +1046,8 @@ fn a_dropped_connection_releases_held_buttons_and_modifiers() {
     let eng = start_engine(&env, &[]);
     let probe = Probe::start(&mut env, "probe");
     wait_compositor(&eng, true);
-    let token = pair(&eng, "Test phone");
-    let mut ws = ws(eng.port, &token);
+    let creds = pair(&eng, "Test phone");
+    let mut ws = ws(eng.port, &creds);
     settle(&mut ws, &probe);
     send(&mut ws, json!({"t": "btn", "b": "left", "d": true}));
     send(&mut ws, json!({"t": "mods", "m": ["ctrl"]}));
@@ -901,7 +1060,7 @@ fn a_dropped_connection_releases_held_buttons_and_modifiers() {
         "control not held"
     );
     // The phone goes away without saying goodbye.
-    let stream = ws.get_ref().try_clone().unwrap();
+    let stream = ws.ws.get_ref().try_clone().unwrap();
     drop(ws);
     stream.shutdown(std::net::Shutdown::Both).ok();
     assert!(
@@ -928,9 +1087,8 @@ fn a_compositor_restart_is_survived() {
     let mut sway = env.start_sway();
     let eng = start_engine(&env, &[]);
     wait_compositor(&eng, true);
-    let token = pair(&eng, "Test phone");
-    let mut ws = ws(eng.port, &token);
-    assert_eq!(recv(&mut ws, 2000).unwrap()["t"], "hello");
+    let creds = pair(&eng, "Test phone");
+    let mut ws = ws(eng.port, &creds);
     send(&mut ws, json!({"t": "btn", "b": "left", "d": true}));
     send(&mut ws, json!({"t": "mods", "m": ["ctrl"]}));
 
@@ -1023,8 +1181,8 @@ fn a_three_finger_swipe_switches_workspace() {
             .unwrap_or_default()
     };
     assert_eq!(focused(&env), "1");
-    let token = pair(&eng, "Test phone");
-    let mut ws = ws(eng.port, &token);
+    let creds = pair(&eng, "Test phone");
+    let mut ws = ws(eng.port, &creds);
     let c = Clock(Instant::now());
     let swipe = |ws: &mut Ws, dir: f64| {
         for i in 0..3u32 {
@@ -1071,8 +1229,8 @@ fn pointer_latency_is_measured_and_small() {
     let eng = start_engine(&env, &[]);
     let probe = Probe::start(&mut env, "probe");
     wait_compositor(&eng, true);
-    let token = pair(&eng, "Test phone");
-    let mut ws = ws(eng.port, &token);
+    let creds = pair(&eng, "Test phone");
+    let mut ws = ws(eng.port, &creds);
     let base = settle(&mut ws, &probe);
     let mut sent: Vec<(f64, u64)> = Vec::new();
     for i in 1..=200 {
@@ -1109,5 +1267,31 @@ fn pointer_latency_is_measured_and_small() {
         "latency p50 {:.1} ms, p95 {:.1} ms",
         p(0.5),
         p(0.95)
+    );
+}
+
+#[test]
+fn the_phone_pages_own_crypto_interoperates_with_the_engine() {
+    if !need(&["node"], "page crypto interop") {
+        return;
+    }
+    let env = Env::new("interop");
+    let eng = start_engine(&env, &[]);
+    let script = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/js/interop.cjs");
+    let out = Command::new("node")
+        .arg("--experimental-websocket")
+        .arg(&script)
+        .arg(eng.port.to_string())
+        .arg(&eng.control)
+        .output()
+        .expect("run node");
+    let text = format!(
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        out.status.success() && text.contains("INTEROP OK"),
+        "{text}"
     );
 }

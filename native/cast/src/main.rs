@@ -2,6 +2,7 @@
 //! taos-cast: cast the taOS desktop to a TV and always put the monitor back.
 
 mod cli;
+mod codeview;
 mod engine;
 mod restore;
 mod slrw;
@@ -226,6 +227,7 @@ fn main() {
         }),
         Cmd::Supervise(a) => supervise::supervise(a),
         Cmd::Watchdog => supervise::watchdog(),
+        Cmd::ShowCode(f) => codeview::show(std::path::Path::new(&f)),
     };
     if let Err(e) = r {
         fail(j, &e);

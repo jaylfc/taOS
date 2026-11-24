@@ -398,9 +398,7 @@ impl Agents {
 
     /// `GET /api/agents/containers`: the live containers keyed by agent name.
     pub async fn containers(&self) -> Result<Vec<Container>> {
-        self.client
-            .json(Req::get("/api/agents/containers"))
-            .await
+        self.client.json(Req::get("/api/agents/containers")).await
     }
 
     /// Run a lifecycle action: `POST /api/agents/{name}/{action}`.
@@ -422,9 +420,7 @@ impl Agents {
 
     /// `GET /api/taos-agent/config`: the built-in agent's model and harness.
     pub async fn taos_agent(&self) -> Result<TaosAgentConfig> {
-        self.client
-            .json(Req::get("/api/taos-agent/config"))
-            .await
+        self.client.json(Req::get("/api/taos-agent/config")).await
     }
 
     async fn containers_best_effort(&self) -> HashMap<String, Container> {
@@ -449,7 +445,8 @@ impl Agents {
         if !wanted {
             return HashMap::new();
         }
-        let rows: Result<Vec<RegistryRow>> = self.client.json(Req::get("/api/agents/registry")).await;
+        let rows: Result<Vec<RegistryRow>> =
+            self.client.json(Req::get("/api/agents/registry")).await;
         match rows {
             Ok(rows) => rows
                 .into_iter()
@@ -524,7 +521,13 @@ mod tests {
     #[test]
     fn live_state_overlay_matches_the_web_rules() {
         let cases: &[(&str, bool, Option<&str>, AgentState, bool)] = &[
-            ("stopped", false, Some("Running"), AgentState::Running, false),
+            (
+                "stopped",
+                false,
+                Some("Running"),
+                AgentState::Running,
+                false,
+            ),
             ("running", false, Some("Frozen"), AgentState::Paused, true),
             ("running", true, Some("Stopped"), AgentState::Stopped, false),
             ("running", false, Some("Error"), AgentState::Error, false),
@@ -535,7 +538,13 @@ mod tests {
             ("running", false, None, AgentState::Running, false),
             ("deploying", false, None, AgentState::Deploying, false),
             // an unknown live status keeps the stored one
-            ("stopped", false, Some("Starting"), AgentState::Stopped, false),
+            (
+                "stopped",
+                false,
+                Some("Starting"),
+                AgentState::Stopped,
+                false,
+            ),
         ];
         for (stored, paused, live, want, frozen) in cases {
             let mut a = agent(stored, *paused);

@@ -62,6 +62,8 @@ try:
         ctx = br.new_context(viewport={"width": 390, "height": 844}, device_scale_factor=3, has_touch=True, is_mobile=True,
                              color_scheme="dark", user_agent="Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 Mobile/15E148")
         page = ctx.new_page()
+        # A phone reaches the engine over plain HTTP, where WebCrypto does not exist.
+        page.add_init_script("Object.defineProperty(Crypto.prototype, 'subtle', {get(){return undefined}})")
         errors = []
         page.on("pageerror", lambda e: errors.append(str(e)))
         page.on("console", lambda m: errors.append(m.text) if m.type == "error" and "403" not in m.text else None)  # 403 is the wrong code on purpose

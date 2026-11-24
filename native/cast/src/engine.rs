@@ -77,3 +77,12 @@ pub fn spawn() -> Result<Child, String> {
     let _ = child.wait();
     Err("taos-input did not come up in 5 s".into())
 }
+
+/// How many phones are paired right now (None if the engine does not say).
+pub fn device_count() -> Option<usize> {
+    request(json!({"op": "status"}))
+        .ok()?
+        .get("devices")?
+        .as_array()
+        .map(Vec::len)
+}

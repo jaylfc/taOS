@@ -62,20 +62,28 @@ fn client(engine: &Arc<Engine>, s: UnixStream) {
     let _ = s.set_read_timeout(Some(Duration::from_secs(30)));
     let Ok(mut w) = s.try_clone() else { return };
     let mut session = Session::new();
+    let mut injected = false;
     for line in BufReader::new(s).lines() {
-        let Ok(line) = line else { return };
+        let Ok(line) = line else { break };
         if line.len() > 65536 {
-            return;
+            break;
         }
         let reply = match serde_json::from_str::<Value>(&line) {
-            Ok(v) => handle(engine, &mut session, &v),
+            Ok(v) => {
+                injected |= v.get("op").and_then(|o| o.as_str()) == Some("inject");
+                handle(engine, &mut session, &v)
+            }
             Err(e) => json!({"ok": false, "error": format!("not JSON: {e}")}),
         };
-        if writeln!(w, "{reply}").is_err() {
-            return;
+        if writeln!(w, "{reply}").is_err() || engine.stopping() {
+            break;
         }
-        if engine.stopping() {
-            return;
+    }
+    // Whatever way this client left (closed, died, timed out), what it was
+    // holding down is let go, as for a phone.
+    if injected {
+        for c in session.finish().cmds {
+            engine.injector.send(c);
         }
     }
 }

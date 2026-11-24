@@ -81,7 +81,7 @@ impl Args {
 
 fn usage() -> ExitCode {
     eprintln!(
-        "usage: taos-input serve [--bind auto|IP] [--port N] [--allow-net CIDR]... [--state-dir DIR] [--control PATH]\n\
+        "usage: taos-input serve [--bind auto|IP] [--port N] [--allow-net CIDR]... [--allow-host HOST:PORT]... [--state-dir DIR] [--control PATH]\n\
          \x20                       [--theme-file PATH] [--theme-mode dark|light]\n\
          \x20      taos-input status | pair | devices | revoke <id>|--all | stop | ctl '<json>'   [--control PATH]"
     );
@@ -98,6 +98,7 @@ fn serve(mut a: Args) -> Result<(), String> {
         .transpose()?
         .unwrap_or(DEFAULT_PORT);
     let nets = a.flags("--allow-net");
+    let extra_hosts = a.flags("--allow-host");
     let theme_file = a.flag("--theme-file");
     let theme_mode = a.flag("--theme-mode").unwrap_or_else(|| "dark".into());
     if !a.rest.is_empty() {
@@ -133,13 +134,23 @@ fn serve(mut a: Args) -> Result<(), String> {
     let sdir = state_dir(&state_over);
     std::fs::create_dir_all(&sdir).map_err(|e| format!("{}: {e}", sdir.display()))?;
     let auth = Auth::open(&sdir.join("devices.json"))?;
+    let identity = taos_input::secure::Identity::load_or_create(&sdir.join("identity.key"))?;
+    let mut hosts = vec![format!(
+        "{}:{}",
+        match local.ip() {
+            IpAddr::V4(v) => v.to_string(),
+            IpAddr::V6(v) => format!("[{v}]"),
+        },
+        local.port()
+    )];
+    hosts.extend(extra_hosts);
     let cpath = control_path(&control_over);
     let ctl = control::bind(&cpath)?;
     let connector: Connector =
         Box::new(|| WaylandSink::connect().map(|s| Box::new(s) as Box<dyn Sink>));
     let injector = Injector::spawn(connector);
     let theme = theme_file.map(|p| (PathBuf::from(p), theme_mode));
-    let engine = Engine::new(auth, injector, policy, url.clone(), theme);
+    let engine = Engine::new(auth, identity, hosts, injector, policy, url.clone(), theme);
 
     let (stop_tx, stop_rx) = std::sync::mpsc::channel::<()>();
     {

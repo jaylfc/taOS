@@ -11,6 +11,8 @@ use std::os::unix::fs::PermissionsExt;
 use std::os::unix::net::UnixListener;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 struct Rig {
@@ -147,6 +149,7 @@ fn cast(r: &Rig, args: &[&str]) -> (bool, Value) {
         .args(args)
         .env("PATH", path)
         .env("SWAYSOCK", &r.sock)
+        .env("WAYLAND_DISPLAY", wayland_display(r))
         .env("XDG_RUNTIME_DIR", r.root.join("run"))
         .env("TMPDIR", &r.root)
         .env("TAOS_INPUT_CONTROL", r.root.join("control.sock"))
@@ -157,6 +160,31 @@ fn cast(r: &Rig, args: &[&str]) -> (bool, Value) {
     let v = serde_json::from_str(out.trim())
         .unwrap_or_else(|_| panic!("not json: {out} {}", String::from_utf8_lossy(&o.stderr)));
     (o.status.success(), v)
+}
+
+fn wayland_display(r: &Rig) -> String {
+    fs::read_dir(r.root.join("run"))
+        .unwrap()
+        .flatten()
+        .map(|e| e.file_name().to_string_lossy().to_string())
+        .find(|n| n.starts_with("wayland-") && !n.ends_with(".lock"))
+        .unwrap_or_default()
+}
+
+/// Pids whose command line mentions `needle` (the whole process table).
+fn pids_with_arg(needle: &str) -> Vec<u32> {
+    let me = std::process::id();
+    fs::read_dir("/proc")
+        .unwrap()
+        .flatten()
+        .filter_map(|e| e.file_name().to_string_lossy().parse::<u32>().ok())
+        .filter(|p| *p != me)
+        .filter(|p| {
+            fs::read(format!("/proc/{p}/cmdline"))
+                .map(|b| String::from_utf8_lossy(&b).contains(needle))
+                .unwrap_or(false)
+        })
+        .collect()
 }
 
 fn pid_of(r: &Rig, f: &str) -> u32 {
@@ -174,15 +202,24 @@ fn pid_alive(p: u32) -> bool {
 
 /// A stand-in for the taos-input control socket (answers status and pair).
 fn fake_engine(r: &Rig) {
+    fake_engine_with(r, 300, Arc::new(AtomicBool::new(false)));
+}
+
+/// `paired` flips the reported device count from 0 to 1.
+fn fake_engine_with(r: &Rig, expires_in: u64, paired: Arc<AtomicBool>) {
     let l = UnixListener::bind(r.root.join("control.sock")).unwrap();
     std::thread::spawn(move || {
         for s in l.incoming().flatten() {
             let mut line = String::new();
             BufReader::new(&s).read_line(&mut line).unwrap();
             let reply = if line.contains("pair") {
-                r#"{"ok":true,"code":"482913","expires_in":300,"url":"http://controller.test:7981/"}"#
+                format!(
+                    r#"{{"ok":true,"code":"482913","expires_in":{expires_in},"url":"http://controller.test:7981/"}}"#
+                )
+            } else if paired.load(Ordering::SeqCst) {
+                r#"{"ok":true,"url":"http://controller.test:7981/","devices":[{"id":"a"}]}"#.into()
             } else {
-                r#"{"ok":true,"url":"http://controller.test:7981/"}"#
+                r#"{"ok":true,"url":"http://controller.test:7981/","devices":[]}"#.into()
             };
             let mut s = s;
             writeln!(s, "{reply}").unwrap();
@@ -329,4 +366,137 @@ fn failed_start_leaves_the_monitors_alone() {
     assert!(!ok, "{v}");
     assert!(wait_until(10, || outputs(&r).len() == 2));
     assert_restored(&r);
+}
+
+#[test]
+fn an_unplugged_monitor_does_not_wedge_restore() {
+    let Some(r) = rig("unplug") else { return };
+    fake_engine(&r);
+    let v = start(&r, &[]);
+    let virt = v["output"].as_str().unwrap().to_string();
+    let monitors: Vec<String> = outputs(&r)
+        .into_iter()
+        .map(|o| o.0)
+        .filter(|n| *n != virt)
+        .collect();
+    assert_eq!(monitors.len(), 2);
+    // The cable is pulled while casting.
+    msg(&r, &["output", &monitors[0], "unplug"]);
+    assert!(wait_until(5, || !outputs(&r)
+        .iter()
+        .any(|o| o.0 == monitors[0])));
+    let (ok, v) = cast(&r, &["stop"]);
+    assert!(ok, "stop must finish even with a missing monitor: {v}");
+    let o = outputs(&r);
+    assert_eq!(o.len(), 1, "only the remaining monitor: {o:?}");
+    assert!(o[0].1 && o[0].0 == monitors[1], "it is enabled: {o:?}");
+    let run = r.root.join("run/taos-cast");
+    assert!(
+        wait_until(5, || !run.join("state.json").exists()
+            && !run.join("state.restoring").exists()),
+        "state cleared"
+    );
+    assert_eq!(cast(&r, &["status"]).1["status"], "idle");
+    let again = cast(&r, &["start", "--to", "Test TV", "--size", "1280x720"]);
+    assert!(again.0, "a new start works: {}", again.1);
+    assert!(cast(&r, &["stop"]).0);
+}
+
+/// The supervisor and everything below it.
+fn descendants(root: u32) -> Vec<u32> {
+    let mut all: Vec<(u32, u32)> = vec![];
+    for e in fs::read_dir("/proc").unwrap().flatten() {
+        let Ok(p) = e.file_name().to_string_lossy().parse::<u32>() else {
+            continue;
+        };
+        if let Ok(st) = fs::read_to_string(format!("/proc/{p}/stat")) {
+            if let Some(rest) = st.rsplit_once(") ").map(|x| x.1) {
+                if let Some(pp) = rest.split(' ').nth(1).and_then(|v| v.parse().ok()) {
+                    all.push((p, pp));
+                }
+            }
+        }
+    }
+    let mut out = vec![root];
+    let mut i = 0;
+    while i < out.len() {
+        let cur = out[i];
+        out.extend(all.iter().filter(|(_, pp)| *pp == cur).map(|(p, _)| *p));
+        i += 1;
+    }
+    out
+}
+
+fn have_foot() -> bool {
+    if Command::new("foot").arg("--version").output().is_ok() {
+        return true;
+    }
+    assert!(
+        std::env::var("TAOS_E2E").is_err(),
+        "TAOS_E2E=1 but foot is missing"
+    );
+    eprintln!("skipping: foot is not installed");
+    false
+}
+
+#[test]
+fn the_pairing_code_is_never_in_an_argument_and_leaves_the_screen() {
+    if !have_foot() {
+        return;
+    }
+    let Some(r) = rig("code") else { return };
+    let paired = Arc::new(AtomicBool::new(false));
+    fake_engine_with(&r, 5, paired.clone());
+    start(&r, &[]);
+    assert!(
+        wait_until(10, || !pids_with_arg("_show-code").is_empty()),
+        "the code window never appeared"
+    );
+    let file = r.root.join("run/taos-cast/code.json");
+    assert_eq!(
+        fs::metadata(&file).unwrap().permissions().mode() & 0o777,
+        0o600
+    );
+    let sup = serde_json::from_str::<Value>(
+        &fs::read_to_string(r.root.join("run/taos-cast/state.json")).unwrap(),
+    )
+    .unwrap()["supervisor"]["pid"]
+        .as_u64()
+        .unwrap() as u32;
+    let tree = descendants(sup);
+    assert!(
+        tree.len() >= 4,
+        "supervisor, watchdog, recorder, tvpipe, window: {tree:?}"
+    );
+    for p in tree {
+        let c = fs::read(format!("/proc/{p}/cmdline")).unwrap_or_default();
+        assert!(
+            !String::from_utf8_lossy(&c).contains("482913"),
+            "the code is in the argument list of process {p}"
+        );
+    }
+    // It expires: the window exits and the file is removed.
+    assert!(
+        wait_until(15, || pids_with_arg("_show-code").is_empty()
+            && !file.exists()),
+        "code window or file still there after expiry"
+    );
+    assert!(cast(&r, &["stop"]).0);
+
+    // A new cast with a long code: it goes away as soon as a phone pairs.
+    fake_engine_gone(&r);
+    fake_engine_with(&r, 300, paired.clone());
+    start(&r, &[]);
+    assert!(wait_until(10, || !pids_with_arg("_show-code").is_empty()));
+    paired.store(true, Ordering::SeqCst);
+    assert!(
+        wait_until(10, || pids_with_arg("_show-code").is_empty()
+            && !file.exists()),
+        "the code stayed on screen after pairing"
+    );
+    assert!(cast(&r, &["stop"]).0);
+}
+
+fn fake_engine_gone(r: &Rig) {
+    let _ = fs::remove_file(r.root.join("control.sock"));
 }

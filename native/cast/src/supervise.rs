@@ -3,7 +3,7 @@
 
 use crate::cli::StartArgs;
 use crate::state::{self, Proc, State};
-use crate::{engine, restore, slrw, sway};
+use crate::{codeview, engine, restore, slrw, sway};
 use serde_json::json;
 use std::io::Read;
 use std::path::Path;
@@ -169,6 +169,8 @@ fn run(
     }
 
     let (mut url, mut code) = (None, None);
+    let mut expires_in = 300u64;
+    let mut devices_before = None;
     if !a.no_input {
         let mut started = false;
         if !engine::running() {
@@ -189,20 +191,43 @@ fn run(
             if let Ok(v) = engine::pair() {
                 url = v["url"].as_str().map(String::from);
                 code = v["code"].as_str().map(String::from);
+                expires_in = v["expires_in"].as_u64().unwrap_or(300);
             }
         }
         if let (Some(u), Some(c)) = (&url, &code) {
-            let msg = format!("taOS controller: open {u} on your phone, code {c}");
-            if let Ok(n) = Command::new("swaynag")
-                .args(["-o", &out, "-m", &msg])
-                .stdin(Stdio::null())
-                .stdout(Stdio::null())
-                .stderr(Stdio::null())
-                .spawn()
-            {
-                let p = proc_of("swaynag", &n);
-                update(dir, |s| s.procs.push(p))?;
-                kids.push(("swaynag".into(), n));
+            let ttl = Duration::from_secs(expires_in);
+            if let Ok(file) = codeview::write(dir, u, c, ttl) {
+                // A terminal window on the cast screen; the code is read from
+                // the 0600 file, never passed as an argument.
+                if let Ok(exe) = std::env::current_exe() {
+                    if let Ok(n) = Command::new("foot")
+                        .args(["-a", "taos-cast-code", "-T", "taOS controller", "--"])
+                        .arg(exe)
+                        .arg("_show-code")
+                        .arg(&file)
+                        .stdin(Stdio::null())
+                        .stdout(Stdio::null())
+                        .stderr(Stdio::null())
+                        .spawn()
+                    {
+                        let p = proc_of("codeview", &n);
+                        update(dir, |s| s.procs.push(p))?;
+                        kids.push(("codeview".into(), n));
+                        let o = out.clone();
+                        std::thread::spawn(move || {
+                            for _ in 0..30 {
+                                std::thread::sleep(Duration::from_millis(100));
+                                let c = format!(
+                                    "[app_id=\"taos-cast-code\"] move container to output {o}"
+                                );
+                                if sway::command(&c).is_ok() {
+                                    break;
+                                }
+                            }
+                        });
+                        devices_before = engine::device_count();
+                    }
+                }
             }
         }
     }
@@ -252,14 +277,15 @@ fn run(
         s.url = url.clone();
         s.code = code.clone();
     })?;
+    let mut last_poll = std::time::Instant::now();
     let reason = loop {
         if term.load(Ordering::Relaxed) {
             break "stopped".to_string();
         }
         let mut gone = None;
         for (role, c) in kids.iter_mut() {
-            if role == "swaynag" {
-                continue; // dismissed by the person: not an end of the cast
+            if role == "codeview" {
+                continue; // closed by the person or expired: not an end of the cast
             }
             if let Ok(Some(st)) = c.try_wait() {
                 gone = Some(format!("{role} exited ({st})"));
@@ -269,14 +295,40 @@ fn run(
         if let Some(g) = gone {
             break g;
         }
+        if let Some(before) = devices_before {
+            if last_poll.elapsed() >= Duration::from_secs(1) {
+                last_poll = std::time::Instant::now();
+                let paired = engine::device_count().is_some_and(|n| n > before);
+                let closed = kids
+                    .iter_mut()
+                    .find(|(r, _)| r == "codeview")
+                    .is_none_or(|(_, c)| matches!(c.try_wait(), Ok(Some(_))));
+                if paired || closed {
+                    close_code(dir, kids);
+                    devices_before = None;
+                }
+            }
+        }
         std::thread::sleep(Duration::from_millis(100));
     };
+    close_code(dir, kids);
     for (_, c) in kids.iter_mut() {
         let _ = c.kill();
         let _ = c.wait();
     }
     let _ = copier.join();
     Ok(reason)
+}
+
+/// Take the pairing code off the screen and off disk.
+fn close_code(dir: &Path, kids: &mut [(String, Child)]) {
+    for (r, c) in kids.iter_mut() {
+        if r == "codeview" {
+            let _ = c.kill();
+            let _ = c.wait();
+        }
+    }
+    codeview::remove(dir);
 }
 
 /// Waits for EOF on stdin (the supervisor closed or lost its end) and restores.

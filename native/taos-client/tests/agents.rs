@@ -20,7 +20,10 @@ async fn list_merges_containers_and_sorts_by_display_name() {
     let list = client.agents().list(false).await.expect("list");
     let names: Vec<_> = list.iter().map(|a| a.name.as_str()).collect();
     // display names: Builder, legacy (slug), nostatus (slug), Researcher, scribe (slug)
-    assert_eq!(names, ["builder", "legacy", "nostatus", "researcher", "scribe"]);
+    assert_eq!(
+        names,
+        ["builder", "legacy", "nostatus", "researcher", "scribe"]
+    );
 
     let by = |n: &str| list.iter().find(|a| a.name == n).unwrap();
     let r = by("researcher");
@@ -54,7 +57,10 @@ async fn the_secret_key_field_is_not_modelled() {
     mount_list(&server).await;
     let list = client.agents().list(false).await.expect("list");
     let dump = serde_json::to_string(&list).unwrap();
-    assert!(!dump.contains("never-sent") && !dump.contains("llm_key"), "{dump}");
+    assert!(
+        !dump.contains("never-sent") && !dump.contains("llm_key"),
+        "{dump}"
+    );
 }
 
 #[tokio::test]
@@ -63,7 +69,10 @@ async fn a_failing_containers_call_does_not_fail_the_list() {
     get_fixture(&server, "/api/agents", "agents_list.json").await;
     Mock::given(method("GET"))
         .and(path("/api/agents/containers"))
-        .respond_with(ResponseTemplate::new(500).set_body_raw(r#"{"error":"incus down"}"#, "application/json"))
+        .respond_with(
+            ResponseTemplate::new(500)
+                .set_body_raw(r#"{"error":"incus down"}"#, "application/json"),
+        )
         .mount(&server)
         .await;
     let list = client.agents().list(false).await.expect("list still works");
@@ -92,7 +101,10 @@ async fn a_registry_refusal_leaves_owners_empty_but_lists() {
     mount_list(&server).await;
     Mock::given(method("GET"))
         .and(path("/api/agents/registry"))
-        .respond_with(ResponseTemplate::new(403).set_body_raw(r#"{"detail":"forbidden"}"#, "application/json"))
+        .respond_with(
+            ResponseTemplate::new(403)
+                .set_body_raw(r#"{"detail":"forbidden"}"#, "application/json"),
+        )
         .mount(&server)
         .await;
     let list = client.agents().list(true).await.expect("list");
@@ -105,7 +117,10 @@ async fn list_403_and_401_are_reported() {
     let (server, client) = signed_in().await;
     Mock::given(method("GET"))
         .and(path("/api/agents"))
-        .respond_with(ResponseTemplate::new(403).set_body_raw(r#"{"detail":"forbidden"}"#, "application/json"))
+        .respond_with(
+            ResponseTemplate::new(403)
+                .set_body_raw(r#"{"detail":"forbidden"}"#, "application/json"),
+        )
         .mount(&server)
         .await;
     match client.agents().list(false).await {
@@ -138,15 +153,24 @@ async fn get_403_and_404_map_with_the_controllers_words() {
     let (server, client) = signed_in().await;
     Mock::given(method("GET"))
         .and(path("/api/agents/theirs"))
-        .respond_with(ResponseTemplate::new(403).set_body_raw(r#"{"detail":"forbidden"}"#, "application/json"))
+        .respond_with(
+            ResponseTemplate::new(403)
+                .set_body_raw(r#"{"detail":"forbidden"}"#, "application/json"),
+        )
         .mount(&server)
         .await;
     Mock::given(method("GET"))
         .and(path("/api/agents/ghost"))
-        .respond_with(ResponseTemplate::new(404).set_body_raw(r#"{"error":"Agent 'ghost' not found"}"#, "application/json"))
+        .respond_with(
+            ResponseTemplate::new(404)
+                .set_body_raw(r#"{"error":"Agent 'ghost' not found"}"#, "application/json"),
+        )
         .mount(&server)
         .await;
-    assert!(matches!(client.agents().get("theirs").await, Err(Error::Forbidden { .. })));
+    assert!(matches!(
+        client.agents().get("theirs").await,
+        Err(Error::Forbidden { .. })
+    ));
     match client.agents().get("ghost").await {
         Err(Error::NotFound { message }) => assert_eq!(message, "Agent 'ghost' not found"),
         other => panic!("{other:?}"),
@@ -157,10 +181,21 @@ async fn get_403_and_404_map_with_the_controllers_words() {
 async fn lifecycle_posts_to_the_right_route_with_csrf() {
     let (server, client) = signed_in().await;
     for a in ["start", "restart", "pause", "resume"] {
-        mount(&server, "POST", &format!("/api/agents/a%20b/{a}"), r#"{"success":true}"#).await;
+        mount(
+            &server,
+            "POST",
+            &format!("/api/agents/a%20b/{a}"),
+            r#"{"success":true}"#,
+        )
+        .await;
     }
     // the name is one path segment, however odd
-    for a in [Lifecycle::Start, Lifecycle::Restart, Lifecycle::Pause, Lifecycle::Resume] {
+    for a in [
+        Lifecycle::Start,
+        Lifecycle::Restart,
+        Lifecycle::Pause,
+        Lifecycle::Resume,
+    ] {
         let out = client.agents().act("a b", a).await.expect("act");
         assert!(out.ok, "{a:?}");
     }
@@ -174,8 +209,16 @@ async fn lifecycle_refusals_keep_the_controllers_sentence() {
     let (server, client) = signed_in().await;
     for (verb, status, body) in [
         ("start", 403u16, r#"{"detail":"forbidden"}"#),
-        ("pause", 409, r#"{"error":"Agent 'x' is not running (container is Stopped)"}"#),
-        ("restart", 500, r#"{"error":"Could not restart agent 'x': no space"}"#),
+        (
+            "pause",
+            409,
+            r#"{"error":"Agent 'x' is not running (container is Stopped)"}"#,
+        ),
+        (
+            "restart",
+            500,
+            r#"{"error":"Could not restart agent 'x': no space"}"#,
+        ),
         ("resume", 404, r#"{"error":"Agent 'x' not found"}"#),
     ] {
         Mock::given(method("POST"))
@@ -185,16 +228,27 @@ async fn lifecycle_refusals_keep_the_controllers_sentence() {
             .await;
     }
     let a = client.agents();
-    assert!(matches!(a.act("x", Lifecycle::Start).await, Err(Error::Forbidden { .. })));
+    assert!(matches!(
+        a.act("x", Lifecycle::Start).await,
+        Err(Error::Forbidden { .. })
+    ));
     match a.act("x", Lifecycle::Pause).await {
-        Err(Error::Conflict { message }) => assert!(message.contains("is not running"), "{message}"),
+        Err(Error::Conflict { message }) => {
+            assert!(message.contains("is not running"), "{message}")
+        }
         other => panic!("{other:?}"),
     }
     match a.act("x", Lifecycle::Restart).await {
-        Err(Error::Server { status: 500, message }) => assert!(message.contains("no space")),
+        Err(Error::Server {
+            status: 500,
+            message,
+        }) => assert!(message.contains("no space")),
         other => panic!("{other:?}"),
     }
-    assert!(matches!(a.act("x", Lifecycle::Resume).await, Err(Error::NotFound { .. })));
+    assert!(matches!(
+        a.act("x", Lifecycle::Resume).await,
+        Err(Error::NotFound { .. })
+    ));
 }
 
 #[tokio::test]
@@ -214,10 +268,21 @@ async fn a_stop_that_did_not_stop_is_not_ok() {
         r#"{"prepare_report":{},"stop_result":{"success":true,"output":""},"force_killed":false}"#,
     )
     .await;
-    let bad = client.agents().act("x", Lifecycle::Stop).await.expect("200");
+    let bad = client
+        .agents()
+        .act("x", Lifecycle::Stop)
+        .await
+        .expect("200");
     assert!(!bad.ok);
     assert_eq!(bad.message, "device busy");
-    assert!(client.agents().act("y", Lifecycle::Stop).await.expect("200").ok);
+    assert!(
+        client
+            .agents()
+            .act("y", Lifecycle::Stop)
+            .await
+            .expect("200")
+            .ok
+    );
 }
 
 #[tokio::test]
@@ -251,9 +316,19 @@ async fn each_agent_names_its_device_with_kind_and_reachability() {
     let here = dev("researcher");
     assert!(here.local && here.name.is_empty() && here.reach == "online");
     let phone = dev("scribe");
-    assert_eq!((phone.name.as_str(), phone.kind.as_str(), phone.reach.as_str()), ("pixel", "phone", "online"));
+    assert_eq!(
+        (
+            phone.name.as_str(),
+            phone.kind.as_str(),
+            phone.reach.as_str()
+        ),
+        ("pixel", "phone", "online")
+    );
     let off = dev("builder");
-    assert_eq!((off.name.as_str(), off.reach.as_str()), ("ghost-box", "offline"));
+    assert_eq!(
+        (off.name.as_str(), off.reach.as_str()),
+        ("ghost-box", "offline")
+    );
 }
 
 #[tokio::test]
@@ -262,10 +337,16 @@ async fn a_refused_cluster_list_makes_remote_devices_unknown_not_failed() {
     get_fixture(&server, "/api/agents", "agents_list.json").await;
     Mock::given(method("GET"))
         .and(path("/api/cluster/workers"))
-        .respond_with(ResponseTemplate::new(403).set_body_raw(r#"{"detail":"forbidden"}"#, "application/json"))
+        .respond_with(
+            ResponseTemplate::new(403)
+                .set_body_raw(r#"{"detail":"forbidden"}"#, "application/json"),
+        )
         .mount(&server)
         .await;
     let list = client.agents().list(false).await.expect("list");
     let d = &list.iter().find(|a| a.name == "scribe").unwrap().device;
-    assert_eq!((d.name.as_str(), d.reach.as_str(), d.kind.as_str()), ("pixel", "unknown", ""));
+    assert_eq!(
+        (d.name.as_str(), d.reach.as_str(), d.kind.as_str()),
+        ("pixel", "unknown", "")
+    );
 }

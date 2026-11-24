@@ -463,7 +463,10 @@ pub unsafe extern "C" fn taos_stream_open(
         let handle = runtime().spawn(async move {
             // Streams spawn their own task, so create it inside the runtime.
             let mut stream: std::pin::Pin<
-                Box<dyn futures_util::Stream<Item = taos_client::Result<taos_client::events::Event>> + Send>,
+                Box<
+                    dyn futures_util::Stream<Item = taos_client::Result<taos_client::events::Event>>
+                        + Send,
+                >,
             > = if path == taos_client::chat::WS_PATH {
                 Box::pin(client.chat_stream(opts))
             } else {
