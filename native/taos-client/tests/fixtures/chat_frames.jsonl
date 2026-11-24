@@ -1,0 +1,12 @@
+{"type":"message","seq":1,"id":"m9","channel_id":"ch2","author_id":"alpha","author_type":"agent","content":"","state":"pending","created_at":1760000500.1}
+{"type":"message_delta","seq":2,"message_id":"m9","delta":"Hel"}
+{"type":"message_state","seq":3,"message_id":"m9","state":"complete"}
+{"type":"typing","kind":"human","slug":"alex"}
+{"type":"typing","seq":4,"channel_id":"ch2","user_id":"alpha","user_type":"agent"}
+{"type":"thinking","slug":"alpha","state":"start","phase":"tool","detail":"searching"}
+{"type":"reaction_update","seq":5,"message_id":"m9","reactions":{"+1":["u1"]}}
+{"type":"message_edit","seq":6,"message_id":"m9","content":"Hello","edited_at":1760000600}
+{"type":"message_delete","seq":7,"message_id":"m9","channel_id":"ch2"}
+{"type":"receipt","message_id":"m1","agent_id":"alpha","reader_type":"agent","delivered_at":1760000001,"seen_at":null}
+{"type":"error","channel_id":"ch2","error":"unaddressed slash command"}
+{"type":"component_action","message_id":"m1","action":"x"}

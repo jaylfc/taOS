@@ -1,0 +1,1 @@
+{"id": "qwen-7b-q2", "url": "https://example.test/m.gguf", "dest": "/x", "total_bytes": 1000, "downloaded_bytes": 1000, "percent": 100.0, "status": "complete", "error": null, "started_at": 1760000000.0, "completed_at": 1760000010.0}

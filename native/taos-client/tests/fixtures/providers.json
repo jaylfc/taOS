@@ -1,0 +1,1 @@
+[{"name": "openai", "type": "openai", "url": "https://api.openai.com/v1", "api_key": "sk-must-never-be-modeled", "status": "ok", "response_ms": 12, "models": [{"name": "gpt-x", "size_mb": 0}, "plain-id"], "models_seeded": false, "source": "local", "enabled": true, "category": "cloud", "lifecycle_state": null}]

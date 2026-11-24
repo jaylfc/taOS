@@ -1,0 +1,13 @@
+[
+  {"name": "researcher", "display_name": "Researcher", "host": "localhost", "color": "#3b82f6", "emoji": "R",
+   "status": "running", "vectors": 1204, "framework": "openclaw", "model": "qwen3-8b", "paused": false,
+   "registry_canonical_id": "researcher-20261101-101500", "memory_mode": "both", "framework_version_sha": "ab12cd3",
+   "on_worker_failure": "pause", "fallback_models": [], "kv_cache_quant_k": "fp16", "llm_key": "never-sent"},
+  {"name": "scribe", "display_name": "", "host": "localhost", "color": "#10b981", "status": "running",
+   "vectors": 0, "framework": "hermes", "model": "", "paused": true,
+   "registry_canonical_id": "scribe-20261102-090000", "remote": "pixel"},
+  {"name": "builder", "display_name": "Builder", "host": "worker-2", "status": "stopped", "vectors": 17.0,
+   "framework": "opencode", "model": null, "paused": false, "registry_canonical_id": "builder-20261103-120000", "remote": "ghost-box"},
+  {"name": "legacy", "status": "error", "vectors": null, "paused": false},
+  {"name": "nostatus"}
+]

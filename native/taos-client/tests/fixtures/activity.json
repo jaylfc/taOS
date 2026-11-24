@@ -1,0 +1,12 @@
+{"timestamp": 1760000000.5,
+ "hardware": {"board": "rk3588", "cpu": {"model": "Cortex-A76", "arch": "aarch64", "soc": "rk3588", "cores": 8}, "gpu": {"type": "none", "model": "", "vram_mb": 0}, "npu": {"type": "rknpu", "device": "/dev/rknpu", "tops": 6, "cores": 3}, "ram_mb": 16384},
+ "cpu": {"cores": [{"core": 0, "load_percent": 12, "freq_khz": 1800000, "min_khz": 400000, "governor": "schedutil"}, {"core": 1, "load_percent": 3}], "load_avg": [0.5, 0.4, 0.3], "overall_percent": 7.5},
+ "memory": {"total_mb": 16000, "used_mb": 4000, "available_mb": 12000, "percent": 25.0, "swap_total_mb": 0, "swap_used_mb": 0, "swap_percent": 0.0},
+ "npu": {"cores": null, "freq_hz": null, "type": "rknpu", "tops": 6},
+ "gpu": {"load": {}, "vram_percent": null, "vram_used_mb": null, "vram_total_mb": null, "type": "none"},
+ "thermal": [{"name": "soc", "temp_c": 48.5}],
+ "zram": {},
+ "disk": {"io_rate": {"read_bps": 0, "write_bps": 2048}, "usage_percent": 41.2, "total_gb": 256, "used_gb": 105},
+ "network": {},
+ "processes": [{"pid": 1, "name": "init", "user": "root", "rss_mb": "12", "cpu_percent": 0.1}],
+ "surprise": "ignored"}

@@ -1,0 +1,5 @@
+[
+  {"name": "taos-agent-researcher", "agent_name": "researcher", "status": "Running", "ip": "10.0.0.21", "memory_mb": 812.5, "cpu_cores": 2},
+  {"name": "taos-agent-scribe", "agent_name": "scribe", "status": "Frozen", "ip": "10.0.0.22", "memory_mb": 300, "cpu_cores": 1},
+  {"name": "taos-agent-builder", "agent_name": "builder", "status": "Stopped", "ip": null, "memory_mb": null, "cpu_cores": null}
+]

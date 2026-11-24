@@ -1,0 +1,1 @@
+{"ok": true, "user": {"id": "usr_1", "username": "alex", "full_name": "Alex", "email": "", "is_admin": true, "pending": false, "last_login_at": 1760000000.5, "created_at": "2026-01-02T03:04:05Z", "capabilities": ["files", "chat"], "has_pin": true, "future_field": {"x": 1}}}

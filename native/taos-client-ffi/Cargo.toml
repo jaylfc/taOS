@@ -1,0 +1,29 @@
+[package]
+name = "taos-client-ffi"
+version = "0.1.0"
+description = "C ABI over taos-client for the Qt (C++) side of the native apps"
+edition.workspace = true
+rust-version.workspace = true
+license-file.workspace = true
+repository.workspace = true
+publish = false
+
+# staticlib: linked into libtaosqt. rlib: lets `cargo test` call the exported
+# functions directly. No cdylib: one copy of the runtime per process.
+[lib]
+crate-type = ["staticlib", "rlib"]
+
+# This crate is the one place in the workspace that needs `unsafe` (the C
+# ABI boundary). It does not inherit the workspace lint (which forbids it);
+# every unsafe block is in src/lib.rs and documented.
+[lints.rust]
+unsafe_code = "deny"
+unsafe_op_in_unsafe_fn = "deny"
+
+[dependencies]
+taos-client = { path = "../taos-client" }
+futures-util = { version = "0.3", default-features = false, features = ["std"] }
+serde = "1"
+serde_json = "1"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "sync"] }
+

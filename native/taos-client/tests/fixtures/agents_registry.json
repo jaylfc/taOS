@@ -1,0 +1,4 @@
+[
+  {"canonical_id": "researcher-20261101-101500", "display_name": "Researcher", "framework": "openclaw", "user_id": "u-alex", "status": "active", "handle": "researcher"},
+  {"canonical_id": "scribe-20261102-090000", "display_name": "Scribe", "framework": "hermes", "user_id": "u-amy", "status": "active", "handle": "scribe"}
+]

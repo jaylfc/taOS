@@ -1,0 +1,30 @@
+[package]
+name = "taos-client"
+version = "0.1.0"
+description = "Shared, GUI-toolkit-independent Rust client for the taOS controller API"
+edition.workspace = true
+rust-version.workspace = true
+license-file.workspace = true
+repository.workspace = true
+publish = false
+
+[lints]
+workspace = true
+
+[dependencies]
+bytes = "1"
+fastrand = "2"
+futures-util = { version = "0.3", default-features = false, features = ["std"] }
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "stream", "multipart"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+serde_path_to_error = "0.1"
+thiserror = "2"
+tokio = { version = "1", features = ["rt", "macros", "time", "sync", "fs", "net", "io-util"] }
+tokio-util = { version = "0.7", features = ["io"] }
+url = "2"
+
+[dev-dependencies]
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "sync", "fs", "net", "io-util", "test-util"] }
+# 0.6.5 uses let-chains and needs Rust 1.88; keep the dev build on the 1.85 MSRV.
+wiremock = ">=0.6.0, <0.6.5"

@@ -1,0 +1,2 @@
+{"model": "qwen3-8b", "permitted_models": ["qwen3-8b", "gemma-3"], "persona": "", "key_masked": "sk-...abcd",
+ "framework": "opencode", "framework_preference": null, "framework_reason": null, "device_class": "desktop", "system": true}

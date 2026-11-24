@@ -1,0 +1,6 @@
+{"messages":[
+{"id":"m1","channel_id":"ch2","author_id":"u1","author_type":"user","content":"hello **there**","content_type":"text","created_at":1760000000.5,"state":"complete"},
+{"id":"m2","channel_id":"ch2","author_id":"alpha","author_type":"agent","content":"hi","created_at":"1760000060","reactions":{"+1":["u1"]},"edited_at":1760000070},
+{"id":"m3","channel_id":"ch2","author_id":"alpha","author_type":"agent","content":"","created_at":1760000100,"state":"streaming","content_blocks":[{"kind":"thinking","text":"hm"},{"kind":"tool_call","call_id":"c1","name":"search","status":"running"},{"kind":"text","text":"working"}]},
+{"id":"m4","channel_id":"ch2","author_id":"u1","author_type":"user","content":"oops","created_at":1760000200,"deleted_at":1760000300,"thread_id":null,"reply_count":2,"last_reply_at":1760000250}
+]}
