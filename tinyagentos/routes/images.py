@@ -125,12 +125,21 @@ def _get_image_backend(
             return healthy[0].url, healthy[0].type, healthy[0].name
 
     # 3. No live catalog (scheduler not started yet): use static config.
-    sdcpp = [b for b in config.backends if b.get("type") == "sd-cpp"]
-    generic = [b for b in config.backends if b.get("type") in ("rkllama", "ollama")]
-    for backend in (
-        sorted(sdcpp, key=lambda b: b.get("priority", 99))
-        + sorted(generic, key=lambda b: b.get("priority", 99))
-    ):
+    #    Priority decides, as documented for the catalog path above; the
+    #    type preference only breaks ties. Grouping by type first would
+    #    let a default-priority auto-registered entry (priority 99 — every
+    #    catalog service with a lifecycle.backend_type lands here via
+    #    auto_register_from_manifest) displace an explicitly configured
+    #    backend with a better priority: the auto-registered sd-cpp entry
+    #    (#63) hijacked image generation from a configured rkllama, and
+    #    the generate route then parsed a non-sd-cpp response as an
+    #    sd-cpp one (KeyError: 'images').
+    candidates = [b for b in config.backends if b.get("type") in preference]
+    candidates.sort(
+        key=lambda b: (b.get("priority", 99), preference[b["type"]])
+    )
+    if candidates:
+        backend = candidates[0]
         return backend["url"], backend["type"], backend.get("name")
 
     return None, "", None

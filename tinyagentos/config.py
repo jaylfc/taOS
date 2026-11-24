@@ -621,6 +621,11 @@ def auto_register_from_manifest(
     # keep_alive_minutes above, which stops the whole service.
     if lifecycle.get("ttl_seconds") is not None:
         entry["ttl_seconds"] = lifecycle["ttl_seconds"]
+    if isinstance(lifecycle.get("lazy"), dict):
+        # Lazy lifecycle wrapper (#63): lazy_backend_wiring builds a
+        # LazyBackendProxy from this block at app startup. Carried verbatim;
+        # the wiring validates it and skips malformed blocks.
+        entry["lazy"] = lifecycle["lazy"]
 
     config.backends.append(entry)
     return True
