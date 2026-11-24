@@ -41,9 +41,17 @@ into the tree.
   * `covers/*.jpg` (15 files): the banner art of the web Store (`desktop/public/store-covers` in this repository),
     which are the projects' own promotional pictures or screenshots, converted from webp. They identify the apps and
     are not covered by this tree's licence; each stays under its owner's terms.
-* Fonts: none are bundled. The UI asks for `Inter`, `Noto Sans` or `DejaVu Sans` from the system.
+* Fonts: the UI asks for `Inter`, `Noto Sans` or `DejaVu Sans` from the system and bundles none, except the Parallax
+  theme (`shell/themes/parallax/fonts/`), which carries six TrueType files used under the SIL Open Font License 1.1,
+  each family with its licence text beside it (`OFL-<family>.txt`) and listed in `shell/themes/parallax/NOTICE`:
+  Chakra Petch (Copyright 2018 The Chakra Petch Project Authors), IBM Plex Mono (Copyright 2018 IBM Corp.) and
+  Barlow (Copyright 2017 The Barlow Project Authors). The fonts are unmodified.
 * Sounds: none.
-* Wallpapers and images: none are in this tree. The greeter and session read wallpapers from
+* Wallpapers: `shell/themes/parallax/wallpaper-ember.png`, `wallpaper-paper.png`, `wallpaper-signal.png` and
+  `shell/themes/workbench/wallpaper.png` were generated for the themes from plain shapes and gradients (a polar grid
+  and scattered points, a flat gradient) and are part of taOS, AGPL-3.0-or-later. No photograph or third-party image
+  is used.
+* Other wallpapers: none are in this tree. The greeter and session read wallpapers from
   `/usr/share/taos/wallpapers` (or `TAOS_WALLPAPER_DIR`); when no wallpaper is installed they draw
   a plain colour. A wallpaper set, if one is installed, is licensed separately by its own notice.
 * Weather data and the WMO code table: see `shell/THIRD-PARTY.md`. `shell/weather/wmo-codes.tsv` is a

@@ -1,0 +1,105 @@
+{
+  "id": "workbench",
+  "name": "Workbench",
+  "description": "A light grey workstation look: square bevelled surfaces, a taskbar with a start button, no top bar.",
+  "variants": [
+    "light",
+    "dark"
+  ],
+  "swatches": {
+    "light": [
+      "#C6C6C6",
+      "#D2D2D2",
+      "#1B4F7A"
+    ],
+    "dark": [
+      "#2B2B2B",
+      "#353535",
+      "#7FB2E5"
+    ]
+  },
+  "colors": {
+    "light": {
+      "ground": "#C6C6C6",
+      "surface": "#D2D2D2",
+      "raised": "#E6E6E6",
+      "stroke": "#5C5C5C",
+      "hairline": "#8A8A8A",
+      "text": "#101010",
+      "textSecondary": "#383838",
+      "textTertiary": "#4E4E4E",
+      "accent": "#1B4F7A",
+      "accentText": "#FFFFFF",
+      "warning": "#7A4A00",
+      "danger": "#A01C1C",
+      "ok": "#1E6B3C",
+      "series1": "#1B4F7AB3",
+      "series2": "#1B4F7A59",
+      "selection": "#1B4F7A33",
+      "focusRing": "#1B4F7A",
+      "live": "#1B4F7A",
+      "track": "#9A9A9A",
+      "scrollbar": "#6E6E6E"
+    },
+    "dark": {
+      "ground": "#2B2B2B",
+      "surface": "#353535",
+      "raised": "#454545",
+      "stroke": "#A0A0A0",
+      "hairline": "#6A6A6A",
+      "text": "#EDEDED",
+      "textSecondary": "#C4C4C4",
+      "textTertiary": "#A8A8A8",
+      "accent": "#7FB2E5",
+      "accentText": "#08131F",
+      "warning": "#E0B060",
+      "danger": "#F08A80",
+      "ok": "#7CC796",
+      "series1": "#7FB2E5B3",
+      "series2": "#7FB2E559",
+      "selection": "#7FB2E54D",
+      "focusRing": "#7FB2E5",
+      "live": "#7FB2E5",
+      "track": "#5A5A5A",
+      "scrollbar": "#8A8A8A"
+    }
+  },
+  "skin": {
+    "radiusScale": 0,
+    "borderWidth": 1,
+    "shadowStrength": 0,
+    "fontFamily": "DejaVu Sans",
+    "fontSize": 12,
+    "iconStroke": 1.5,
+    "titleBarHeight": 26,
+    "windowButtons": {
+      "shape": "square",
+      "size": 16,
+      "side": "right",
+      "order": [
+        "minimise",
+        "full",
+        "close"
+      ]
+    },
+    "barSurface": "raised",
+    "dockSurface": "raised",
+    "activeTitle": "accent",
+    "density": "compact",
+    "windowRadius": 0,
+    "windowGap": 0,
+    "wallpaper": "wallpaper.png",
+    "titleAlign": "left"
+  },
+  "layout": {
+    "topBar": false,
+    "dock": "taskbar",
+    "taskbarHeight": 38,
+    "dockEdge": "bottom",
+    "launcher": "anchored",
+    "startLabel": "Apps"
+  },
+  "motion": {
+    "reduce": false
+  }
+}

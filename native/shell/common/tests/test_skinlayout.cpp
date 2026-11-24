@@ -343,6 +343,21 @@ private slots:
         runCli({"option", "mine"}, &rc, &err);
         QCOMPARE(rc, 2);
     }
+    void bundledThemesShip() {
+        for (const char *id : {"parallax", "workbench"}) {
+            int rc = 0;
+            QString err;
+            runCli({"validate", QStringLiteral(TAOS_COMMON_DIR "/../themes/") + id}, &rc, &err);
+            QVERIFY2(rc == 0, qPrintable(QString(id) + ": " + err));
+        }
+    }
+    void workbenchShipsAndIsValid() {
+        int rc = 0;
+        QString err;
+        const QString out = runCli({"validate", QStringLiteral(TAOS_COMMON_DIR "/../themes/workbench")}, &rc, &err);
+        QVERIFY2(rc == 0, qPrintable(err));
+        QVERIFY(out.contains("dock mode taskbar, top bar no"));
+    }
 };
 
 QTEST_MAIN(TestSkinLayout)

@@ -214,7 +214,34 @@ for t in "$here"/shell/common/resources/themes/*/; do
     cp "$t"theme.json "$themes_dir/$n/theme.json.new"
     mv -f "$themes_dir/$n/theme.json.new" "$themes_dir/$n/theme.json"
 done
+# themes that ship as folders (Workbench, Parallax): the whole folder, wallpapers and fonts included, replaced file by file
+for t in "$here"/shell/themes/*/; do
+    [ -f "$t"theme.json ] || continue
+    n=$(basename "$t")
+    mkdir -p "$themes_dir/$n"
+    (cd "$t" && find . -type f) | while IFS= read -r f; do
+        mkdir -p "$themes_dir/$n/$(dirname "$f")"
+        cp "$t$f" "$themes_dir/$n/$f.new"
+        mv -f "$themes_dir/$n/$f.new" "$themes_dir/$n/$f"
+    done
+done
 echo "installed themes to $themes_dir"
+# Fonts a theme bundles (themes/<id>/fonts/*.ttf): fontconfig must know them so the compositor's title bars (pango) can use
+# them too. One drop-in names the theme folder; no font is copied anywhere else.
+fc_dir=$R/etc/fonts/conf.d
+mkdir -p "$fc_dir"
+cat >"$stage/fc.conf" <<'FC'
+<?xml version="1.0"?>
+<!DOCTYPE fontconfig SYSTEM "fonts.dtd">
+<!-- Installed by native/install-desktop.sh: the fonts the taOS themes bundle (usr/share/taos/themes/<id>/fonts). -->
+<fontconfig>
+  <dir>/usr/share/taos/themes</dir>
+</fontconfig>
+FC
+put "$stage/fc.conf" "$fc_dir/60-taos-theme-fonts.conf" 0644
+if [ -z "$root" ] && command -v fc-cache >/dev/null 2>&1; then
+    fc-cache -s "$themes_dir" 2>/dev/null && echo "fontconfig cache refreshed for $themes_dir"
+fi
 
 mkdir -p "$sway_d"
 for f in "$stage"/sway.d/*.conf; do put "$f" "$sway_d/$(basename "$f")" 0644; done

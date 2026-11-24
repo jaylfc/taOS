@@ -1,0 +1,158 @@
+{
+  "id": "parallax",
+  "name": "Parallax",
+  "description": "Warm black, one signal colour, cream for what you must not miss: an instrument strip, hex cells, a command ring.",
+  "variants": [
+    "dark"
+  ],
+  "swatches": {
+    "dark": [
+      "#12100E",
+      "#1B1714",
+      "#6FD3CF"
+    ]
+  },
+  "colors": {
+    "dark": {
+      "ground": "#12100E",
+      "surface": "#1B1714",
+      "raised": "#26211C",
+      "stroke": "#6FD3CF6B",
+      "hairline": "#E9DCB830",
+      "text": "#E6DFCE",
+      "textSecondary": "#A29B8B",
+      "textTertiary": "#8E8778",
+      "accent": "#6FD3CF",
+      "accentText": "#0C0A09",
+      "warning": "#E8A23D",
+      "danger": "#E2604F",
+      "ok": "#7BC796",
+      "series1": "#6FD3CFB3",
+      "series2": "#6FD3CF59",
+      "selection": "#6FD3CF33",
+      "focusRing": "#E9DCB8",
+      "live": "#6FD3CF",
+      "track": "#E9DCB82E",
+      "scrollbar": "#E9DCB84D",
+      "attention": "#E9DCB8",
+      "accentDim": "#3C8784"
+    }
+  },
+  "skin": {
+    "radiusScale": 0,
+    "borderWidth": 1,
+    "shadowStrength": 0.6,
+    "fontFamily": "Barlow",
+    "fontDisplay": "Chakra Petch",
+    "fontData": "IBM Plex Mono",
+    "fonts": [
+      "ChakraPetch-Medium.ttf",
+      "ChakraPetch-SemiBold.ttf",
+      "IBMPlexMono-Regular.ttf",
+      "IBMPlexMono-Medium.ttf",
+      "Barlow-Regular.ttf",
+      "Barlow-Medium.ttf"
+    ],
+    "fontSize": 13,
+    "iconStroke": 1.5,
+    "titleBarHeight": 30,
+    "windowButtons": {
+      "shape": "glyph",
+      "size": 14,
+      "side": "right",
+      "order": [
+        "minimise",
+        "full",
+        "close"
+      ]
+    },
+    "barSurface": "translucent",
+    "dockSurface": "translucent",
+    "activeTitle": "surface",
+    "titleAlign": "left",
+    "titleCase": "upper",
+    "titleTracking": 0.16,
+    "focusBorder": "accent",
+    "brackets": true,
+    "blur": true,
+    "texture": "scanlines",
+    "density": "regular",
+    "windowRadius": 0,
+    "windowGap": 10,
+    "wallpaper": "wallpaper-signal.png"
+  },
+  "layout": {
+    "topBar": true,
+    "barStyle": "strip",
+    "barHeight": 34,
+    "barEdge": "top",
+    "clock": "right",
+    "dock": "cells",
+    "cellShape": "hex",
+    "launcher": "ring"
+  },
+  "options": {
+    "accent": {
+      "label": "Accent",
+      "default": "signal",
+      "choices": {
+        "signal": {
+          "label": "Signal",
+          "colors": {
+            "accent": "#6FD3CF",
+            "accentDim": "#3C8784",
+            "stroke": "#6FD3CF6B",
+            "selection": "#6FD3CF33",
+            "live": "#6FD3CF",
+            "series1": "#6FD3CFB3",
+            "series2": "#6FD3CF59"
+          },
+          "wallpaper": "wallpaper-signal.png"
+        },
+        "ember": {
+          "label": "Ember",
+          "colors": {
+            "accent": "#E8A23D",
+            "accentDim": "#8A5F20",
+            "stroke": "#E8A23D6B",
+            "selection": "#E8A23D33",
+            "live": "#E8A23D",
+            "series1": "#E8A23DB3",
+            "series2": "#E8A23D59"
+          },
+          "wallpaper": "wallpaper-ember.png"
+        },
+        "paper": {
+          "label": "Paper",
+          "colors": {
+            "accent": "#E9DCB8",
+            "accentDim": "#8D8468",
+            "stroke": "#E9DCB86B",
+            "selection": "#E9DCB833",
+            "live": "#E9DCB8",
+            "series1": "#E9DCB8B3",
+            "series2": "#E9DCB859"
+          },
+          "wallpaper": "wallpaper-paper.png"
+        }
+      }
+    },
+    "depth": {
+      "label": "Window depth",
+      "default": "off",
+      "choices": {
+        "off": {
+          "label": "Off"
+        },
+        "on": {
+          "label": "On",
+          "available": false,
+          "note": "tilted windows need a compositor effect that does not exist yet"
+        }
+      }
+    }
+  },
+  "motion": {
+    "reduce": false
+  }
+}
