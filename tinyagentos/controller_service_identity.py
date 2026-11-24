@@ -25,14 +25,21 @@ FIVE PROPERTIES, each of which is a requirement rather than a nicety:
    (0600) on the install that minted it.  Nothing ships a credential between
    installs, and it is never read from or written to an environment variable.
 
-4. CONSERVATIVE.  One scope, ``records:write``: enough for the controller to
-   name itself as the writer of history records, and nothing else.  Anything
-   more goes through the normal scope-request flow.  The token carries the
-   scope as a space-separated ``scope`` claim and an ``exp`` claim.
+4. CONSERVATIVE.  One grant, ``records:write``: enough for the controller to
+   name itself as the writer of history records, and nothing else.  Scopes are
+   GRANTS in the registry grants feed (GET /api/agents/registry/grants), one
+   record per scope, exact-match; the token carries no scope claim.  The grant
+   is created once, with the identity, and never re-asserted afterwards, so
+   revoking it sticks.  Token claims (the memory service's contract): ``iss``
+   "taos-registry", ``sub`` the canonical_id, integer ``iat`` and ``exp``
+   (lifetime at most 24 hours), ``kind`` "service", ``jti``; no ``aud``.
+   taOS's own verifiers read the older ``principal_type`` claim, which is
+   emitted too.
 
 5. RENEWED BY THE CONTROLLER.  The token lives ``TOKEN_TTL_SECONDS``.  Start-up
    and a background loop renew it once it is missing, malformed, not the
-   expected shape, or within ``RENEW_BEFORE_SECONDS`` of ``exp``.  A renewal
+   expected shape, or two thirds through its life (``RENEW_BEFORE_SECONDS``
+   left), so it is never presented near ``exp``.  A renewal
    writes the new file atomically BEFORE the old token is superseded, so a
    failed renewal leaves the old token in place and working until it expires.
    Nothing here blocks start-up.
@@ -63,9 +70,10 @@ from tinyagentos.auto_update import install_id as read_install_id
 
 logger = logging.getLogger(__name__)
 
-# The one scope the controller needs: name itself as the writer of history
-# records.  Deliberately nothing else.
-CONTROLLER_SCOPES = ("records:write",)
+# The grants the controller holds: name itself as the writer of history
+# records.  Deliberately nothing else (not a2a_send: nothing requires the
+# controller to send on the bus; records:read and a2a_read are reserved).
+CONTROLLER_GRANTS = ("records:write",)
 
 # Bus/registry handle for the controller.  Each install has its own registry
 # database, so a stable handle is fine within an install; the canonical_id
@@ -86,11 +94,11 @@ _SLUG_INSTALL_CHARS = 8
 TOKEN_DIR = ".secrets"
 TOKEN_FILENAME = "taos_controller_token"
 
-# Lifetime and renewal.  A token lives 30 days and is renewed once fewer than
-# 10 remain; the loop looks every hour, so a controller that is up renews with
-# days to spare and one that was down renews on its next start.
-TOKEN_TTL_SECONDS = 30 * 24 * 3600
-RENEW_BEFORE_SECONDS = 10 * 24 * 3600
+# Lifetime and renewal.  The memory service allows at most 24 hours and gives
+# no leeway on the bus path, so a token lives 24 hours and is renewed once a
+# third of its life is left (two thirds elapsed); the loop looks every hour.
+TOKEN_TTL_SECONDS = 24 * 3600
+RENEW_BEFORE_SECONDS = TOKEN_TTL_SECONDS // 3
 RENEWAL_INTERVAL_SECONDS = 3600.0
 
 
@@ -99,17 +107,31 @@ def controller_token_path(data_dir: Path | str) -> Path:
     return Path(data_dir) / TOKEN_DIR / TOKEN_FILENAME
 
 
-def controller_record(record: dict, *, on_behalf_of: str = "") -> dict:
-    """Return a copy of a record the controller is about to write, naming the
-    person it is written for.
+ON_BEHALF_OF_KINDS = ("person", "agent")
 
-    The writer of the record is the controller (its service token); when the
-    write is made for a person, that person travels in ``on_behalf_of`` so the
-    record names both.  No person means no field.  The input is not mutated.
+
+def controller_record(record: dict, *, on_behalf_of: Optional[dict] = None) -> dict:
+    """Return a copy of a record envelope the controller is about to write,
+    naming who it is written for.
+
+    ``on_behalf_of`` is ``{"kind": "person" | "agent", "id": "<canonical_id>"}``
+    (same identifier namespace as the token's ``sub``) and travels in the
+    envelope, never in the token.  The receiver records the token's ``sub`` as
+    the actor.  Any other kind, an empty or non-string id, or extra keys raise
+    ``ValueError``; ``None`` means the controller writes for nobody and the
+    field is absent.  The input is not mutated.
     """
     out = dict(record)
-    if on_behalf_of:
-        out["on_behalf_of"] = on_behalf_of
+    if on_behalf_of is None:
+        return out
+    if not isinstance(on_behalf_of, dict) or set(on_behalf_of) != {"kind", "id"}:
+        raise ValueError('on_behalf_of must be {"kind": ..., "id": ...}')
+    kind, ident = on_behalf_of["kind"], on_behalf_of["id"]
+    if kind not in ON_BEHALF_OF_KINDS:
+        raise ValueError(f"on_behalf_of kind must be one of {ON_BEHALF_OF_KINDS}")
+    if not isinstance(ident, str) or not ident.strip():
+        raise ValueError("on_behalf_of id must be a non-empty string")
+    out["on_behalf_of"] = {"kind": kind, "id": ident}
     return out
 
 
@@ -144,16 +166,17 @@ def _token_state(
         claims = verify_registry_token(raw, _public_pem(signing_key_pem), check_exp=False)
     except ValueError:
         return True, False
-    exp = claims.get("exp")
+    exp, iat = claims.get("exp"), claims.get("iat")
     if (
         claims.get("sub") != canonical_id
         or claims.get("principal_type") != "service"
-        or claims.get("scope") != " ".join(CONTROLLER_SCOPES)
-        or isinstance(exp, bool)
-        or not isinstance(exp, (int, float))
+        or claims.get("kind") != "service"
+        or "aud" in claims
+        or any(isinstance(v, bool) or not isinstance(v, int) for v in (exp, iat))
+        or exp - iat > TOKEN_TTL_SECONDS
     ):
-        # Right signature, wrong shape (a token from before exp and scope
-        # existed, say): replace it and retire the old one.
+        # Right signature, wrong shape (an earlier draft of the claims, say):
+        # replace it and retire the old one.
         return True, True
     return (exp - now) < RENEW_BEFORE_SECONDS, True
 
@@ -164,9 +187,18 @@ def _mint(record: dict, signing_key_pem: bytes, iat: int) -> str:
         signing_key_pem,
         principal_type="service",
         iat=iat,
-        scope=" ".join(CONTROLLER_SCOPES),
         exp=iat + TOKEN_TTL_SECONDS,
     )
+
+
+async def _mint_not_future(record: dict, signing_key_pem: bytes, iat: int) -> str:
+    """Mint at *iat*, first waiting out the (sub-second to few-second) gap if a
+    rotation cutoff sits just ahead of the clock: the memory service must
+    never see an ``iat`` in the future."""
+    wait = iat - time.time()
+    if wait > 0:
+        await asyncio.sleep(wait)
+    return _mint(record, signing_key_pem, iat)
 
 
 def _store_token(data_dir: Path | str, token: str) -> bool:
@@ -204,8 +236,8 @@ async def _issue_token(
     now = int(time.time())
     target = now
     if supersede:
-        target = max(now + 1, int(record.get("token_min_iat") or 0) + 1)
-    token = _mint(record, signing_key_pem, target)
+        target = max(now, int(record.get("token_min_iat") or 0) + 1)
+    token = await _mint_not_future(record, signing_key_pem, target)
     if not _store_token(data_dir, token):
         return None
     if not supersede:
@@ -217,7 +249,7 @@ async def _issue_token(
         if updated is not None and cutoff != target:
             # A concurrent rotation moved the cutoff past ours; re-mint at the
             # cutoff that landed so the credential on disk clears it.
-            token = _mint(record, signing_key_pem, cutoff)
+            token = await _mint_not_future(record, signing_key_pem, cutoff)
             if not _store_token(data_dir, token):
                 return None
     except Exception as exc:
@@ -282,6 +314,7 @@ async def ensure_controller_service_identity(
         )
         return None
 
+    created = record is None
     if record is None:
         short = install[:_SLUG_INSTALL_CHARS]
         record = await registry.register(
@@ -299,10 +332,13 @@ async def ensure_controller_service_identity(
             record["canonical_id"], short, user_id,
         )
 
-    # add_grant is idempotent, so this re-asserts the baseline on every boot.
-    # Anything a user ADDED is untouched -- this only ever adds.
-    for scope in CONTROLLER_SCOPES:
-        await grants.add_grant(record["canonical_id"], scope)
+    # The grant records are created with the identity, or if provisioning never
+    # got as far as a first token (a crash between the two).  They are NOT
+    # re-asserted on later starts or renewal passes: an owner who revokes
+    # ``records:write`` must find it still revoked.
+    if created or not controller_token_path(data_dir).exists():
+        for scope in CONTROLLER_GRANTS:
+            await grants.add_grant(record["canonical_id"], scope)
 
     needs, has_old = _token_state(
         data_dir, signing_key_pem, record["canonical_id"], time.time()

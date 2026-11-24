@@ -136,10 +136,6 @@ VALID_SCOPES = frozenset({
     "blobs:write",
     # Read blobs from the memory service.
     "blobs:read",
-    # Send on the A2A bus. Maps to the existing a2a_send grant: the bus send
-    # route already authorizes via a2a_send, so bus:send is that grant under
-    # the memory-service vocabulary name.
-    "bus:send",
     # Read from the A2A bus.
     "bus:read",
     # Read the controller's own bus inbox.

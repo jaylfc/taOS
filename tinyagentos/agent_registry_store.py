@@ -429,7 +429,6 @@ def mint_registry_token(
     project_id: Optional[str] = None,
     principal_type: str = "agent",
     iat: Optional[int] = None,
-    scope: Optional[str] = None,
     exp: Optional[int] = None,
 ) -> str:
     """Return a signed compact EdDSA JWT: <header>.<payload>.<signature> (base64url).
@@ -450,9 +449,11 @@ def mint_registry_token(
       framework     - agent framework at registration time (agent tokens only)
       project_id    - project binding, present only when non-empty; absent means
                       the token is global (not bound to any project)
-      scope         - space-separated scope names, present only when *scope* is
-                      given (service tokens; agent and human tokens never carry
-                      it, their authority comes from grants)
+      kind          - "service", present only on service tokens.  The memory
+                      service reads ``kind``; taOS's own verifiers read
+                      ``principal_type``.  Both are emitted and both say
+                      "service".  Authority is never in the token: scopes are
+                      grants in the registry grants feed.
       exp           - unix expiry, present only when *exp* is given (service
                       tokens); ``verify_registry_token`` rejects a token past it.
                       Agent and human tokens carry no exp.
@@ -484,8 +485,8 @@ def mint_registry_token(
         claims["framework"] = framework
     if project_id:
         claims["project_id"] = project_id
-    if scope:
-        claims["scope"] = scope
+    if principal_type == "service":
+        claims["kind"] = "service"
     if exp is not None:
         claims["exp"] = int(exp)
     payload = _b64url_encode(

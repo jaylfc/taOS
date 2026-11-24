@@ -114,11 +114,9 @@ _ALLOWED_SCOPES = frozenset({
     "memory_write",
     "cluster_read",
     # Memory-service record/blob/bus/secrets/archive scopes (tsk-6dhfkd).
-    # bus:send is the memory-service vocabulary name for the existing a2a_send
-    # grant; both are listed so the two vocabularies stay in sync.
     "records:write", "records:read",
     "blobs:write", "blobs:read",
-    "bus:send", "bus:read", "bus:inbox",
+    "bus:read", "bus:inbox",
     "secrets:reveal", "archive:admin",
 })
 

@@ -34,7 +34,6 @@ AGREED_SCOPES = {
     "records:read",
     "blobs:write",
     "blobs:read",
-    "bus:send",
     "bus:read",
     "bus:inbox",
     "secrets:reveal",
@@ -327,22 +326,67 @@ import time
 from tinyagentos import controller_service_identity as csi
 
 
-def _svc_token(cid, priv, *, exp, iat=None, scope="records:write"):
-    return mint_registry_token(
-        cid, priv, principal_type="service", scope=scope, iat=iat, exp=exp
-    )
+def _svc_token(cid, priv, *, exp, iat=None):
+    return mint_registry_token(cid, priv, principal_type="service", iat=iat, exp=exp)
 
 
 @pytest.mark.asyncio
 class TestServiceTokenClaims:
-    async def test_scope_claim_is_space_separated_and_exp_is_set(self, tmp_path):
+    async def test_minted_claim_set_matches_the_memory_service_contract(self, tmp_path):
         _r, _g, data_dir, keypair, rec = await _ensure(tmp_path)
         claims = verify_registry_token(
             csi.controller_token_path(data_dir).read_text(), keypair[1]
         )
-        assert claims["scope"] == "records:write"
-        assert claims["exp"] - claims["iat"] == csi.TOKEN_TTL_SECONDS
+        # Exactly these claims: the contract's required set, the optional jti,
+        # and principal_type, which taOS's own verifiers read.
+        assert set(claims) == {"iss", "sub", "iat", "exp", "jti", "kind", "principal_type"}
+        assert claims["iss"] == "taos-registry"
+        assert claims["sub"] == rec["canonical_id"] and isinstance(claims["sub"], str)
+        assert claims["kind"] == "service"
         assert claims["principal_type"] == "service"
+        assert type(claims["iat"]) is int and type(claims["exp"]) is int
+        assert "aud" not in claims and "scope" not in claims
+        assert 0 < claims["exp"] - claims["iat"] <= 24 * 3600
+        assert claims["iat"] <= time.time()
+
+    async def test_token_is_not_presented_near_expiry_early_renewal(self, tmp_path):
+        registry, grants, data_dir, keypair, rec = await _ensure(tmp_path)
+        path = csi.controller_token_path(data_dir)
+        now = int(time.time())
+
+        async def _run():
+            await csi.ensure_controller_service_identity(
+                registry=registry, grants=grants, data_dir=data_dir,
+                signing_key_pem=keypair[0], user_id="user-1",
+            )
+
+        # 15h old (9h left): more than a third of its life remains, kept.
+        young = _svc_token(rec["canonical_id"], keypair[0], iat=now - 15 * 3600,
+                           exp=now + 9 * 3600)
+        path.write_text(young)
+        await _run()
+        assert path.read_text() == young
+        # 17h old (7h left): two thirds elapsed, renewed.
+        old = _svc_token(rec["canonical_id"], keypair[0], iat=now - 17 * 3600,
+                         exp=now + 7 * 3600)
+        path.write_text(old)
+        await _run()
+        assert path.read_text() != old
+        assert verify_registry_token(path.read_text(), keypair[1])["exp"] - time.time() > 23 * 3600
+
+    async def test_draft_thirty_day_token_is_replaced(self, tmp_path):
+        registry, grants, data_dir, keypair, rec = await _ensure(tmp_path)
+        path = csi.controller_token_path(data_dir)
+        now = int(time.time())
+        long_lived = _svc_token(rec["canonical_id"], keypair[0], iat=now - 10,
+                                exp=now - 10 + 30 * 24 * 3600)
+        path.write_text(long_lived)
+        await csi.ensure_controller_service_identity(
+            registry=registry, grants=grants, data_dir=data_dir,
+            signing_key_pem=keypair[0], user_id="user-1",
+        )
+        c = verify_registry_token(path.read_text(), keypair[1])
+        assert c["exp"] - c["iat"] <= 24 * 3600
 
     async def test_expired_service_token_fails_verification(self, tmp_path):
         _r, _g, _d, keypair = await _stores(tmp_path)
@@ -383,7 +427,7 @@ class TestAtomicTokenWriteAndStatusLookup:
             signing_key_pem=keypair[0], user_id="user-1",
         )
         claims = verify_registry_token(path.read_text(), keypair[1])
-        assert claims["scope"] == "records:write" and claims["exp"]
+        assert claims["kind"] == "service" and claims["exp"]
 
     async def test_no_temp_files_left_and_mode_0600_after_rotation(self, tmp_path):
         registry, _g, data_dir, keypair, rec = await _ensure(tmp_path)
@@ -562,12 +606,80 @@ class TestNoLeaksInLogs:
 
 
 class TestOnBehalfOf:
-    def test_record_names_the_person(self):
-        out = csi.controller_record({"kind": "history", "body": "x"}, on_behalf_of="user-9")
-        assert out["on_behalf_of"] == "user-9"
-        assert out["kind"] == "history"
+    def test_envelope_shape_person_and_agent(self):
+        for kind in ("person", "agent"):
+            out = csi.controller_record(
+                {"kind": "history", "body": "x"},
+                on_behalf_of={"kind": kind, "id": "user-9"},
+            )
+            assert out["on_behalf_of"] == {"kind": kind, "id": "user-9"}
+            assert out["kind"] == "history"
+
+    @pytest.mark.parametrize("bad", [
+        {"kind": "service", "id": "x"},
+        {"kind": "person", "id": ""},
+        {"kind": "person", "id": "   "},
+        {"kind": "person", "id": None},
+        {"kind": "person"},
+        {"id": "x"},
+        {"kind": "person", "id": "x", "extra": 1},
+        "user-9",
+    ])
+    def test_anything_else_is_refused(self, bad):
+        with pytest.raises(ValueError):
+            csi.controller_record({"kind": "history"}, on_behalf_of=bad)
 
     def test_no_person_means_no_field_and_input_is_not_mutated(self):
         rec = {"kind": "history"}
         out = csi.controller_record(rec)
         assert "on_behalf_of" not in out and rec == {"kind": "history"}
+
+
+class TestBusSendNameIsGone:
+    def test_bus_send_appears_nowhere_in_the_product(self):
+        import pathlib
+
+        root = pathlib.Path(csi.__file__).parent
+        hits = [
+            str(p) for p in root.rglob("*.py") if "bus:send" in p.read_text(errors="ignore")
+        ]
+        assert hits == []
+
+    def test_bus_send_is_not_an_accepted_scope(self):
+        from tinyagentos.routes.agent_registry import _ALLOWED_SCOPES
+
+        assert "bus:send" not in VALID_SCOPES and "bus:send" not in _ALLOWED_SCOPES
+        assert "a2a_send" in VALID_SCOPES
+
+
+@pytest.mark.asyncio
+class TestGrantsFeedAndRevocation:
+    async def _feed(self, app, cid):
+        uid = app.state.auth.get_primary_user()["id"]
+        sess = app.state.auth.create_session(user_id=uid, long_lived=True)
+        from httpx import ASGITransport, AsyncClient
+
+        async with AsyncClient(
+            transport=ASGITransport(app=app), base_url="http://test",
+            cookies={"taos_session": sess},
+        ) as c:
+            r = await c.get("/api/agents/registry/grants", params={"canonical_id": cid})
+        assert r.status_code == 200, r.text
+        return sorted(g["scope"] for g in r.json()["grants"])
+
+    async def test_feed_has_exactly_records_write_and_revocation_sticks(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(csi, "RENEWAL_INTERVAL_SECONDS", 0.05)
+        work = tmp_path / "w"
+        work.mkdir()
+        async with _lifespan(work) as app:
+            cid = next(r["canonical_id"] for r in await app.state.agent_registry.list_all()
+                       if r["origin"] == "taos-controller")
+            assert await self._feed(app, cid) == ["records:write"]
+            await app.state.agent_grants.revoke_grant(cid, "records:write")
+            assert await self._feed(app, cid) == []
+            # Let the renewal loop pass several times: it must not bring it back.
+            await asyncio.sleep(0.5)
+            assert await self._feed(app, cid) == []
+        # Nor does a restart.
+        async with _lifespan(work) as app2:
+            assert await self._feed(app2, cid) == []
