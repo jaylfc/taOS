@@ -1275,6 +1275,7 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
             chat_channels=chat_channels,
             chat_hub=chat_hub,
             archive=getattr(app.state, "archive", None),
+            in_use=app.state.in_use,
         )
         app.state.bridge_sessions._router = app.state.agent_chat_router
         app.state.bridge_sessions._guest_outbox = guest_outbox
@@ -1777,6 +1778,13 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
                     logger.debug("shutdown: close failed for app.state.%s", _name, exc_info=True)
 
     app = FastAPI(title="TinyAgentOS", version="0.1.0", lifespan=lifespan)
+
+    # Busy counters shared by the LLM gateway, the bridge session registry
+    # and the /api/health probe. Created here (eager, at app build time) so
+    # the lifespan can wire them into BridgeSessionRegistry below.
+    from tinyagentos.in_use import InUseCounters
+
+    app.state.in_use = InUseCounters()
 
     # An unreadable account store must never be answered with a plausible
     # empty result — "no such user" and "cannot read the users" are different

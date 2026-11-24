@@ -968,8 +968,16 @@ async def chat_completion_stream(
 
     Retries only before any byte has been sent to the caller. Once the first
     chunk is yielded the stream is not retried, to avoid duplicating output.
+
+    The in_use counter is incremented when the stream is opened (before the
+    first frame is fetched), and released via a guard that covers:
+    - generator close (client disconnect/cancel)
+    - Starlette background task (response closed without iteration)
+    - early return paths (first-frame error, empty stream)
     """
     from fastapi.responses import JSONResponse, StreamingResponse
+
+    in_use = getattr(state, "in_use", None)
 
     gen = _stream_with_retry(
         routes,
@@ -977,16 +985,50 @@ async def chat_completion_stream(
         state,
         principal,
     )
+
+    # Fetch first frame BEFORE creating the response, so a GatewayError
+    # becomes a proper error response (not a 200 stream that breaks).
     try:
         first = await gen.__anext__()
     except StopAsyncIteration:
+        # Empty stream - return empty streaming response, no counter increment
         return StreamingResponse((), media_type="text/event-stream", headers={"cache-control": "no-cache"})
     except GatewayError as exc:
+        # First-frame error - return the error response with correct status
         return exc.response()
 
-    async def _full():
-        yield first
-        async for chunk in gen:
-            yield chunk
+    # Stream has a first frame: increment counter now (stream is open)
+    if in_use is not None:
+        in_use.increment_gateway_stream()
 
-    return StreamingResponse(_full(), media_type="text/event-stream", headers={"cache-control": "no-cache"})
+    # Guard object that releases the counter exactly once on any exit path
+    class _Guard:
+        __slots__ = ("released",)
+        def __init__(self) -> None:
+            self.released = False
+        def release(self) -> None:
+            if not self.released and in_use is not None:
+                self.released = True
+                in_use.decrement_gateway_stream()
+
+    guard = _Guard()
+
+    async def _full():
+        try:
+            yield first
+            async for chunk in gen:
+                yield chunk
+        finally:
+            guard.release()
+
+    # Also release if the response is closed without the generator being fully consumed
+    # (Starlette calls background tasks on response close)
+    async def _background_release() -> None:
+        guard.release()
+
+    return StreamingResponse(
+        _full(),
+        media_type="text/event-stream",
+        headers={"cache-control": "no-cache"},
+        background=_background_release,
+    )
