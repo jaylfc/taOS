@@ -1,0 +1,57 @@
+[
+ {
+  "name": "HDMI-A-2",
+  "make": "Fabrikam",
+  "model": "Projector",
+  "serial": "Unknown",
+  "active": true,
+  "dpms": true,
+  "power": true,
+  "layout": "output",
+  "scale": 1.0,
+  "scale_filter": "nearest",
+  "transform": "normal",
+  "adaptive_sync_status": "disabled",
+  "current_workspace": "1",
+  "modes": [
+   {
+    "width": 1920,
+    "height": 1080,
+    "refresh": 50000,
+    "picture_aspect_ratio": "none"
+   },
+   {
+    "width": 1920,
+    "height": 1080,
+    "refresh": 60000,
+    "picture_aspect_ratio": "none"
+   },
+   {
+    "width": 1280,
+    "height": 720,
+    "refresh": 60000,
+    "picture_aspect_ratio": "none"
+   },
+   {
+    "width": 3840,
+    "height": 2160,
+    "refresh": 30000,
+    "picture_aspect_ratio": "none"
+   }
+  ],
+  "current_mode": {
+   "width": 1920,
+   "height": 1080,
+   "refresh": 50000,
+   "picture_aspect_ratio": "none"
+  },
+  "rect": {
+   "x": 0,
+   "y": 0,
+   "width": 1920,
+   "height": 1080
+  },
+  "focused": true,
+  "hdr": false
+ }
+]

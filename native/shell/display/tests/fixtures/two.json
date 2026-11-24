@@ -1,0 +1,100 @@
+[
+ {
+  "name": "eDP-1",
+  "make": "LGD",
+  "model": "0x05F1",
+  "serial": "Unknown",
+  "active": true,
+  "dpms": true,
+  "power": true,
+  "layout": "output",
+  "scale": 1.0,
+  "scale_filter": "nearest",
+  "transform": "normal",
+  "adaptive_sync_status": "disabled",
+  "current_workspace": "1",
+  "modes": [
+   {
+    "width": 1920,
+    "height": 1080,
+    "refresh": 60000,
+    "picture_aspect_ratio": "none"
+   },
+   {
+    "width": 1920,
+    "height": 1080,
+    "refresh": 48000,
+    "picture_aspect_ratio": "none"
+   }
+  ],
+  "current_mode": {
+   "width": 1920,
+   "height": 1080,
+   "refresh": 60000,
+   "picture_aspect_ratio": "none"
+  },
+  "rect": {
+   "x": 0,
+   "y": 0,
+   "width": 1920,
+   "height": 1080
+  },
+  "focused": true,
+  "hdr": false
+ },
+ {
+  "name": "DP-2",
+  "make": "Contoso",
+  "model": "P27-4K",
+  "serial": "SN77",
+  "active": true,
+  "dpms": true,
+  "power": true,
+  "layout": "output",
+  "scale": 1.0,
+  "scale_filter": "nearest",
+  "transform": "normal",
+  "adaptive_sync_status": "disabled",
+  "current_workspace": "1",
+  "modes": [
+   {
+    "width": 3840,
+    "height": 2160,
+    "refresh": 60000,
+    "picture_aspect_ratio": "none"
+   },
+   {
+    "width": 3840,
+    "height": 2160,
+    "refresh": 30000,
+    "picture_aspect_ratio": "none"
+   },
+   {
+    "width": 2560,
+    "height": 1440,
+    "refresh": 144000,
+    "picture_aspect_ratio": "none"
+   },
+   {
+    "width": 1920,
+    "height": 1080,
+    "refresh": 60000,
+    "picture_aspect_ratio": "none"
+   }
+  ],
+  "current_mode": {
+   "width": 2560,
+   "height": 1440,
+   "refresh": 144000,
+   "picture_aspect_ratio": "none"
+  },
+  "rect": {
+   "x": 0,
+   "y": 0,
+   "width": 2560,
+   "height": 1440
+  },
+  "focused": true,
+  "hdr": false
+ }
+]

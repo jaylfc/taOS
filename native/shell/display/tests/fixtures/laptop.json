@@ -1,0 +1,63 @@
+[
+ {
+  "name": "eDP-1",
+  "make": "BOE",
+  "model": "NE135A1M-NY1",
+  "serial": "0x0000",
+  "active": true,
+  "dpms": true,
+  "power": true,
+  "layout": "output",
+  "scale": 1.0,
+  "scale_filter": "nearest",
+  "transform": "normal",
+  "adaptive_sync_status": "disabled",
+  "current_workspace": "1",
+  "modes": [
+   {
+    "width": 2880,
+    "height": 1920,
+    "refresh": 120000,
+    "picture_aspect_ratio": "none"
+   },
+   {
+    "width": 2880,
+    "height": 1920,
+    "refresh": 60000,
+    "picture_aspect_ratio": "none"
+   },
+   {
+    "width": 2880,
+    "height": 1920,
+    "refresh": 48000,
+    "picture_aspect_ratio": "none"
+   },
+   {
+    "width": 1920,
+    "height": 1200,
+    "refresh": 60000,
+    "picture_aspect_ratio": "none"
+   },
+   {
+    "width": 1280,
+    "height": 800,
+    "refresh": 60000,
+    "picture_aspect_ratio": "none"
+   }
+  ],
+  "current_mode": {
+   "width": 2880,
+   "height": 1920,
+   "refresh": 60000,
+   "picture_aspect_ratio": "none"
+  },
+  "rect": {
+   "x": 0,
+   "y": 0,
+   "width": 2880,
+   "height": 1920
+  },
+  "focused": true,
+  "hdr": false
+ }
+]

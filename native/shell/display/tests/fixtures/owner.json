@@ -1,0 +1,75 @@
+[
+ {
+  "name": "HDMI-A-1",
+  "make": "Acme",
+  "model": "UW43",
+  "serial": "S0042",
+  "active": true,
+  "dpms": true,
+  "power": true,
+  "layout": "output",
+  "scale": 1.0,
+  "scale_filter": "nearest",
+  "transform": "normal",
+  "adaptive_sync_status": "disabled",
+  "current_workspace": "1",
+  "modes": [
+   {
+    "width": 3840,
+    "height": 1200,
+    "refresh": 60000,
+    "picture_aspect_ratio": "none"
+   },
+   {
+    "width": 3840,
+    "height": 1200,
+    "refresh": 100000,
+    "picture_aspect_ratio": "none"
+   },
+   {
+    "width": 3840,
+    "height": 1200,
+    "refresh": 120000,
+    "picture_aspect_ratio": "none"
+   },
+   {
+    "width": 3840,
+    "height": 2160,
+    "refresh": 60000,
+    "picture_aspect_ratio": "none"
+   },
+   {
+    "width": 3840,
+    "height": 2160,
+    "refresh": 30000,
+    "picture_aspect_ratio": "none"
+   },
+   {
+    "width": 2560,
+    "height": 1600,
+    "refresh": 60000,
+    "picture_aspect_ratio": "none"
+   },
+   {
+    "width": 1920,
+    "height": 1080,
+    "refresh": 60000,
+    "picture_aspect_ratio": "none"
+   }
+  ],
+  "current_mode": {
+   "width": 3840,
+   "height": 1200,
+   "refresh": 60000,
+   "picture_aspect_ratio": "none"
+  },
+  "rect": {
+   "x": 0,
+   "y": 0,
+   "width": 3840,
+   "height": 1200
+  },
+  "focused": true,
+  "hdr": false
+ }
+]
