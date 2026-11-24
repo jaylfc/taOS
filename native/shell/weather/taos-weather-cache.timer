@@ -1,0 +1,12 @@
+[Unit]
+Description=Refresh the taOS login screen weather every 30 minutes
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=30min
+RandomizedDelaySec=60
+Persistent=true
+AccuracySec=1min
+
+[Install]
+WantedBy=timers.target
