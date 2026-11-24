@@ -7,9 +7,7 @@ import os
 import re
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, HTTPException, Request
-from fastapi.responses import JSONResponse
-
+from fastapi import APIRouter, HTTPException, Request
 
 logger = logging.getLogger(__name__)
 
@@ -79,7 +77,7 @@ async def _run_list(helper: str) -> list[dict]:
         return valid
     except FileNotFoundError:
         return []
-    except Exception as exc:  # noqa: BLE001
+    except Exception:  # noqa: BLE001
         logger.exception("taos-switch-os list raised")
         return []
 
@@ -196,7 +194,7 @@ async def switch_other_system(sys_id: str, request: Request):
         raise HTTPException(status_code=503, detail="this phone is not set up to switch systems")
     except HTTPException:
         raise
-    except Exception as exc:  # noqa: BLE001
+    except Exception:  # noqa: BLE001
         logger.exception("taos-switch-os go raised")
         raise HTTPException(status_code=502, detail="switch command failed")
 

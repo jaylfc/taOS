@@ -11,9 +11,7 @@ import asyncio
 import json
 import logging
 import mimetypes
-import os
 import posixpath
-import re
 import time
 from pathlib import Path
 from urllib.parse import unquote
@@ -636,8 +634,8 @@ def _parse_epub_xml(raw: bytes):
     """
     _reject_dtd_constructs(raw)
     try:
-        from defusedxml.ElementTree import fromstring as _defused_fromstring
         from defusedxml.common import DefusedXmlException
+        from defusedxml.ElementTree import fromstring as _defused_fromstring
     except ImportError:
         import xml.etree.ElementTree as ET  # noqa: S314 -- entities rejected at the parser level above
         return ET.fromstring(raw)
@@ -1171,8 +1169,9 @@ class WebProcessor(Processor):
         if not source_url:
             return artifacts
 
-        import httpx
         from urllib.parse import urljoin
+
+        import httpx
 
         from tinyagentos.routes.desktop_browser.ssrf import (
             SsrfBlockedError,

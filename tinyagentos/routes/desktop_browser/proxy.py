@@ -62,7 +62,6 @@ from tinyagentos.routes.desktop_browser.ssrf import (
     validate_url_or_raise,
 )
 
-
 _logger = logging.getLogger(__name__)
 
 _MAX_REDIRECTS = 5

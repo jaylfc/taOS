@@ -51,7 +51,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import sqlite3
 import weakref
 from contextlib import asynccontextmanager
 

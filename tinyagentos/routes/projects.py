@@ -1,23 +1,22 @@
 from __future__ import annotations
 
+import asyncio as _asyncio
+import json as _json
 import logging
 import time as _time
 import uuid
-
-import asyncio as _asyncio
-import json as _json
+from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
-from typing import Literal
 
 from tinyagentos.agent_token_auth import (
     PROJECT_SCOPE_MISMATCH_DETAIL,
     check_agent_project_grants,
     check_agent_scope_for_project,
 )
-from tinyagentos.auth_context import CurrentUser, current_user
+from tinyagentos.auth_context import CurrentUser, current_user, require_owner_or_admin
 from tinyagentos.notification_labels import (
     actor_label,
     project_audience,
@@ -628,7 +627,7 @@ class CreateTaskIn(_TaskRequestModelMixin, BaseModel):
     @model_validator(mode="after")
     def _assert_body_for_claimable(self) -> CreateTaskIn:
         labels = self.labels
-        has_claimable = any(l.strip().lower() == "claimable" for l in labels)
+        has_claimable = any(label.strip().lower() == "claimable" for label in labels)
         if has_claimable and not self.body.strip():
             raise ValueError(
                 "Claimable cards must have a non-empty body"

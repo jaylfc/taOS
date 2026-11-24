@@ -1,9 +1,9 @@
 from __future__ import annotations
+
 import asyncio
+import logging
 import sys
 import threading
-import logging
-from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
@@ -22,6 +22,7 @@ def run_tray(controller_url: str, name: str | None = None):
     """Run the worker as a system tray application."""
     import pystray
     from pystray import MenuItem as Item
+
     from tinyagentos.worker.agent import WorkerAgent
 
     agent = WorkerAgent(controller_url, name)

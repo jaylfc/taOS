@@ -37,6 +37,7 @@ def main() -> None:
     args = parser.parse_args()
 
     import httpx
+
     from tinyagentos.worker.pairing import (
         default_state_dir,
         load_signing_key,

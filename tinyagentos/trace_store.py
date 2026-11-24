@@ -805,15 +805,20 @@ class AgentTraceStore:
                         clauses = []
                         params: list[Any] = []
                         if kind is not None:
-                            clauses.append("kind = ?"); params.append(kind)
+                            clauses.append("kind = ?")
+                            params.append(kind)
                         if channel_id is not None:
-                            clauses.append("channel_id = ?"); params.append(channel_id)
+                            clauses.append("channel_id = ?")
+                            params.append(channel_id)
                         if trace_id is not None:
-                            clauses.append("trace_id = ?"); params.append(trace_id)
+                            clauses.append("trace_id = ?")
+                            params.append(trace_id)
                         if since is not None:
-                            clauses.append("created_at >= ?"); params.append(since)
+                            clauses.append("created_at >= ?")
+                            params.append(since)
                         if until is not None:
-                            clauses.append("created_at <= ?"); params.append(until)
+                            clauses.append("created_at <= ?")
+                            params.append(until)
                         where = (" WHERE " + " AND ".join(clauses)) if clauses else ""
                         sql = f"SELECT * FROM trace_events{where} ORDER BY created_at DESC LIMIT ?"
                         params.append(limit)

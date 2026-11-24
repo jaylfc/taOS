@@ -3,20 +3,19 @@ from __future__ import annotations
 import asyncio
 import html
 import json
+import logging
 import math
-import random
+import os
 import re
 import secrets
 import socket
-from pathlib import Path
-import logging
-import os
 import threading
 import time
 import zlib
 from collections import OrderedDict
-from urllib.parse import urlparse
 from datetime import datetime, timedelta
+from pathlib import Path
+from urllib.parse import urlparse
 
 import httpx
 from fastapi import APIRouter, Depends, Request
@@ -27,7 +26,9 @@ from fastapi.responses import (
     Response,
     StreamingResponse,
 )
+
 from tinyagentos.agent_avatars import LOCK_AVATAR_DIR, _avatar_slug
+from tinyagentos.atomic_io import atomic_write_text
 from tinyagentos.auth import (
     PIN_MAX_LEN,
     PIN_MIN_LEN,
@@ -37,7 +38,6 @@ from tinyagentos.auth import (
     is_console_origin,
     validate_pin,
 )
-from tinyagentos.atomic_io import atomic_write_text
 from tinyagentos.demo_mode import demo_env
 from tinyagentos.middleware.csrf import session_csrf_ok, verify_csrf
 from tinyagentos.routes.onscreen_keyboard import OSK_SCRIPT, osk_assets
@@ -12600,7 +12600,7 @@ async def set_lock_volume(request: Request):
     except (TypeError, ValueError):
         return JSONResponse({"error": "percent required"}, status_code=400)
 
-    from tinyagentos.audio_cli import set_volume_argv, run_sync_with_process
+    from tinyagentos.audio_cli import run_sync_with_process, set_volume_argv
 
     env = dict(os.environ, XDG_RUNTIME_DIR="/run/user/%d" % os.getuid())
     run_sync_with_process(set_volume_argv("@DEFAULT_AUDIO_SINK@", percent / 100.0), env["XDG_RUNTIME_DIR"])

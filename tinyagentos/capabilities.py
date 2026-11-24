@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-
 CAPABILITIES = {
     "keyword-search": {"always": True},
     "agent-deploy": {"min_ram_mb": 2048},

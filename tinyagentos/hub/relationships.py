@@ -25,7 +25,8 @@ from __future__ import annotations
 
 from typing import Optional
 
-from tinyagentos.hub import identity, store as hub_store
+from tinyagentos.hub import identity
+from tinyagentos.hub import store as hub_store
 
 # Local relationship kinds persisted in ``hub_relationships``. "friend" is the only
 # kind the presence gate authorizes (design: presence lookup requires "an accepted

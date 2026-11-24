@@ -16,8 +16,8 @@ Design rules (bus 1319):
 """
 from __future__ import annotations
 
-from typing import Any
 import logging
+from typing import Any
 from urllib.parse import urlparse
 
 _VERSION = 1

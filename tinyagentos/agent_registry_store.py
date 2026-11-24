@@ -15,7 +15,6 @@ import asyncio
 import hashlib
 import json
 import logging
-import os
 import re
 import time
 import uuid
@@ -347,7 +346,6 @@ def load_or_create_signing_keypair(data_dir: Path) -> tuple[bytes, bytes]:
     serialize the generate-or-load and atomic_write (tmp + rename) for the
     write so concurrent processes never see an empty or partial key.
     """
-    from filelock import FileLock
     from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
     from cryptography.hazmat.primitives.serialization import (
         Encoding,
@@ -356,6 +354,8 @@ def load_or_create_signing_keypair(data_dir: Path) -> tuple[bytes, bytes]:
         PublicFormat,
         load_pem_private_key,
     )
+    from filelock import FileLock
+
     from tinyagentos.atomic_io import atomic_write_bytes
 
     data_dir.mkdir(parents=True, exist_ok=True)
@@ -484,8 +484,8 @@ def verify_registry_token(token: str, public_key_pem: bytes) -> dict:
     Returns the decoded payload dict on success.
     Raises ``ValueError`` on invalid format or bad signature.
     """
-    from cryptography.hazmat.primitives.serialization import load_pem_public_key
     from cryptography.exceptions import InvalidSignature
+    from cryptography.hazmat.primitives.serialization import load_pem_public_key
 
     parts = token.split(".")
     if len(parts) != 3:

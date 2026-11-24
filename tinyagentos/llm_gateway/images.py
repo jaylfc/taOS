@@ -39,7 +39,6 @@ def _shrink_one(url: str) -> str:
     with _DECODE_SLOTS:
         try:
             prefix, b64 = url.split(";base64,", 1)
-            media_type = _media_type_from_header(prefix)
             raw = base64.b64decode(b64)
         except Exception:  # noqa: BLE001
             return url

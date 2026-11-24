@@ -14,13 +14,13 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
+from tinyagentos.projects.canvas.render import render_snapshot_png
+from tinyagentos.projects.canvas.snapshotter import CanvasSnapshotter
 from tinyagentos.projects.canvas.store import (
     CanvasPermissionError,
     ProjectCanvasStore,
 )
 from tinyagentos.projects.canvas.unfurl import fetch_link_metadata
-from tinyagentos.projects.canvas.render import render_snapshot_png
-from tinyagentos.projects.canvas.snapshotter import CanvasSnapshotter
 
 
 @dataclass

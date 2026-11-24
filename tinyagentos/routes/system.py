@@ -14,7 +14,7 @@ from fastapi.responses import JSONResponse
 
 from tinyagentos.auth_context import require_admin
 from tinyagentos.cluster import backend_services
-from tinyagentos.restart_orchestrator import write_pending_restart, read_pending_restart
+from tinyagentos.restart_orchestrator import write_pending_restart
 
 logger = logging.getLogger(__name__)
 
@@ -141,8 +141,8 @@ async def _do_restart(app_state) -> None:
     # 2b. Darwin launchd helper bootstrap
     if sys.platform == "darwin":
         from tinyagentos.launchd_migration import (
-            clear_pending_launchd_reload,
             HELPER_PLIST_PATH,
+            clear_pending_launchd_reload,
             read_pending_launchd_reload,
         )
         if read_pending_launchd_reload():

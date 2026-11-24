@@ -19,6 +19,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
 
@@ -757,7 +758,6 @@ async def _handle_collab_invite(
     invite_id = body_data.get("invite_id", "unknown")
     project_name = body_data.get("project_name", "unknown project")
     inviter = body_data.get("inviter", contact_id)
-    pin_required = body_data.get("pin_required", True)
     rec = contact_rec or {}
     inviter_label = (
         (rec.get("display_name") or "").strip()

@@ -6,7 +6,7 @@ import platform
 import re
 import shutil
 import subprocess
-from dataclasses import dataclass, field, asdict
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
 
@@ -654,9 +654,6 @@ def _parse_nvidia_smi_gpus(output: str) -> list[tuple[GpuInfo, str]]:
         try:
             idx = int(parts[0])
             model = parts[1]
-            util = int(parts[2]) if parts[2] else 0
-            freq_mhz = int(parts[3]) if parts[3] else 0
-            mem_used = int(parts[4]) if parts[4] else 0
             mem_total = int(parts[5]) if parts[5] else 0
             pci_addr = _normalize_pci_addr(parts[6]) if len(parts) == 7 else f"nvidia-index-{idx:02d}"
         except ValueError:

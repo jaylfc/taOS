@@ -9,8 +9,6 @@ from pathlib import Path
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse
 
-from tinyagentos.desktop_settings import DesktopSettingsStore
-
 logger = logging.getLogger(__name__)
 
 HELPER_PATH = Path(os.getenv("TAOS_LLM_HELPER", "/usr/local/sbin/taos-llm"))

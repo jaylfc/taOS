@@ -16,7 +16,6 @@ import time
 from dataclasses import dataclass
 from typing import Callable
 
-
 MAX_DRIFT_MS = 60_000  # 60 seconds; a peer clock this far ahead is rejected
 
 

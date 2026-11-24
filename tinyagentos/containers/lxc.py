@@ -11,8 +11,8 @@ import shlex
 import signal
 import subprocess
 
-from .backend import ContainerBackend, ContainerInfo, PtyHandle, _parse_memory
 from . import SNAPSHOT_TIMEOUT_S
+from .backend import ContainerBackend, ContainerInfo, PtyHandle, _parse_memory
 
 logger = logging.getLogger(__name__)
 

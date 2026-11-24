@@ -9,30 +9,15 @@ import time
 import uuid
 from collections import OrderedDict
 
+import taosmd.agents as tm_agents
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict
 
-import taosmd.agents as tm_agents
-
-from tinyagentos.agent_db import find_agent, get_agent_summaries
 from tinyagentos.agent_controller_listener import agent_controller_live_port
-from tinyagentos.llm_gateway.cutover import llm_gateway_live_port, llm_gateway_models_check
+from tinyagentos.agent_db import find_agent
 from tinyagentos.agent_registry_store import mint_registry_token
 from tinyagentos.agent_token_auth import _get_grants_store, _get_keypair
-from tinyagentos.config import (
-    _reserved_agent_slugs,
-    _reserved_slugs_lock,
-    release_agent_slug,
-    reserve_agent_slug,
-    save_config_locked,
-    slugify_agent_name,
-    unique_agent_slug,
-    validate_agent_name,
-)
-from tinyagentos.routes import agent_archive
-from tinyagentos.routes import agent_deploy
-from tinyagentos.routes import agent_import
 from tinyagentos.auth_context import (
     CurrentUser,
     current_user,
@@ -40,6 +25,18 @@ from tinyagentos.auth_context import (
     require_agent_owner_or_admin,
     resolve_agent_owner,
 )
+from tinyagentos.config import (
+    _reserved_agent_slugs,
+    _reserved_slugs_lock,
+    release_agent_slug,
+    reserve_agent_slug,
+    save_config_locked,
+    slugify_agent_name,
+    validate_agent_name,
+)
+from tinyagentos.llm_gateway.cutover import llm_gateway_live_port, llm_gateway_models_check
+from tinyagentos.routes import agent_archive, agent_deploy, agent_import
+
 logger = logging.getLogger(__name__)
 
 EXPORT_VERSION = 1
@@ -997,7 +994,7 @@ async def deploy_agent_endpoint(request: Request, body: DeployAgentRequest):
         deploy_tasks = request.app.state.deploy_tasks
         deploy_tasks[body.name] = {"status": "deploying", "name": body.name}
 
-        from tinyagentos.deployer import deploy_agent, DeployRequest
+        from tinyagentos.deployer import DeployRequest, deploy_agent
         llm_proxy = getattr(request.app.state, "llm_proxy", None)
         secrets_store = getattr(request.app.state, "secrets", None)
         grants_store_for_revoke = grants_store_for_deploy
@@ -1266,7 +1263,7 @@ async def bulk_stop_agents(request: Request):
     In-flight agent framework work is cancelled by the prepare step;
     LLM calls and tool invocations are terminated when the container dies.
     """
-    from tinyagentos.containers import stop_container, list_containers
+    from tinyagentos.containers import list_containers, stop_container
 
     config = request.app.state.config
     orchestrator = getattr(request.app.state, "orchestrator", None)
@@ -1451,7 +1448,7 @@ async def stop_agent(request: Request, name: str, user: CurrentUser = Depends(cu
     is still running, sends SIGKILL (incus stop --force) to guarantee termination.
     """
     await require_agent_owner_or_admin(request, user, name)
-    from tinyagentos.containers import stop_container, list_containers
+    from tinyagentos.containers import list_containers, stop_container
 
     config = request.app.state.config
     agent = find_agent(config, name)
@@ -2163,6 +2160,7 @@ async def get_agent_wake_budget(request: Request, name: str):
     no current task.
     """
     from pathlib import Path
+
     from tinyagentos.wake_budget import get_agent_consumption, get_next_scheduled_wake, resolve_budget
     config = request.app.state.config
     agent = find_agent(config, name)

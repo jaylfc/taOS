@@ -11,6 +11,7 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse
+
 from tinyagentos.auth_context import (
     CurrentUser,
     current_user,

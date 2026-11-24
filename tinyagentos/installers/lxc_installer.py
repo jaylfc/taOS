@@ -3,9 +3,10 @@ from __future__ import annotations
 import logging
 import secrets
 import shlex
+
+import tinyagentos.containers as containers
 from tinyagentos.installers.base import AppInstaller
 from tinyagentos.installers.port_allocator import allocate_host_port
-import tinyagentos.containers as containers
 
 logger = logging.getLogger(__name__)
 

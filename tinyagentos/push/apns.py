@@ -9,7 +9,8 @@ from typing import Protocol
 
 import httpx
 from cryptography.hazmat.primitives import hashes, serialization
-from cryptography.hazmat.primitives.asymmetric import ec, utils as asym_utils
+from cryptography.hazmat.primitives.asymmetric import ec
+from cryptography.hazmat.primitives.asymmetric import utils as asym_utils
 
 logger = logging.getLogger(__name__)
 

@@ -14,7 +14,6 @@ import time
 from dataclasses import dataclass, field
 from typing import Any
 
-
 # ---------------------------------------------------------------------------
 # Priority class constants
 # ---------------------------------------------------------------------------

@@ -1,5 +1,6 @@
 """PocketFlow adapter — translates messages to PocketFlow graph execution calls."""
 import os
+
 from fastapi import FastAPI
 
 app = FastAPI()
@@ -8,8 +9,8 @@ app = FastAPI()
 @app.post("/message")
 async def handle_message(msg: dict):
     try:
-        from pocketflow import Node, Flow
         import openai
+        from pocketflow import Flow, Node
 
         class ChatNode(Node):
             def prep(self, shared):

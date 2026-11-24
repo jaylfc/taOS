@@ -18,10 +18,10 @@ from typing import Any, Optional
 import httpx
 from fastapi import APIRouter, HTTPException, Query, Request, WebSocket
 from fastapi.responses import RedirectResponse, StreamingResponse
-from tinyagentos.issued_cookies import TAOS_ISSUED_COOKIES
 
-from tinyagentos.shortcuts.tickets import validate_ticket, _GLOBAL_JTI_TRACKER
 from tinyagentos.cluster.worker_registry import get_local_worker
+from tinyagentos.issued_cookies import TAOS_ISSUED_COOKIES
+from tinyagentos.shortcuts.tickets import _GLOBAL_JTI_TRACKER, validate_ticket
 
 logger = logging.getLogger(__name__)
 

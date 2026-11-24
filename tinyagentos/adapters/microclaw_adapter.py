@@ -1,5 +1,6 @@
 """MicroClaw adapter — proxies messages to the MicroClaw gateway."""
 import os
+
 from fastapi import FastAPI
 
 app = FastAPI()

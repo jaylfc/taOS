@@ -1,11 +1,10 @@
 from __future__ import annotations
 
+import taosmd
+import taosmd.agents as tm_agents
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
-
-import taosmd
-import taosmd.agents as tm_agents
 from taosmd.agents import AgentNotFoundError
 
 router = APIRouter()

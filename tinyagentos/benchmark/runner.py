@@ -15,14 +15,13 @@ from __future__ import annotations
 import argparse
 import asyncio
 import logging
-import os
 import platform
 import random
 import socket
 import statistics
 import string
 import time
-from typing import Any, Awaitable, Callable, Optional
+from typing import Awaitable, Callable, Optional
 
 import httpx
 

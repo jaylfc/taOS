@@ -15,7 +15,6 @@ import logging
 import os
 import plistlib
 import shlex
-import shutil
 from pathlib import Path
 
 from tinyagentos.atomic_io import atomic_write_bytes

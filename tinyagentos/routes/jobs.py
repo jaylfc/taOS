@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import logging
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
 
@@ -14,6 +13,7 @@ async def _get_queue(request: Request):
     queue = getattr(request.app.state, "job_queue", None)
     if queue is None:
         from pathlib import Path
+
         from tinyagentos.scheduling.job_queue import JobQueue
         data_dir = getattr(request.app.state, "data_dir", Path("data"))
         queue = JobQueue(db_path=data_dir / "job-queue.db")

@@ -16,13 +16,13 @@ import logging
 import uuid
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, Request, UploadFile, File, Form
+from fastapi import APIRouter, Depends, File, Form, Request, UploadFile
 from fastapi.responses import JSONResponse
 
 from tinyagentos.auth_context import CurrentUser
 from tinyagentos.device_auth import current_user_or_device
-from tinyagentos.library_pipeline import run_pipeline
 from tinyagentos.library_collections import handoff_to_collections
+from tinyagentos.library_pipeline import run_pipeline
 from tinyagentos.task_utils import _create_supervised_task
 
 logger = logging.getLogger(__name__)

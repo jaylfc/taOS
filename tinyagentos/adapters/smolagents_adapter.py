@@ -1,5 +1,6 @@
 """SmolAgents adapter — translates messages to SmolAgents code agent calls."""
 import os
+
 from fastapi import FastAPI
 
 app = FastAPI()

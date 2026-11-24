@@ -1,13 +1,14 @@
 from __future__ import annotations
 
 import asyncio
+import fcntl
 import json
 import os
 import pty
 import signal
 import struct
-import fcntl
 import termios
+
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
 router = APIRouter()

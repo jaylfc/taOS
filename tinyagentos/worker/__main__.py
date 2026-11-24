@@ -22,6 +22,7 @@ def _is_headless_env() -> bool:
 
 def _run_headless(controller: str, name: str | None) -> None:
     import asyncio
+
     from tinyagentos.worker.agent import WorkerAgent
     agent = WorkerAgent(controller, name)
     try:

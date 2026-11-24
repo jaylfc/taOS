@@ -7,7 +7,6 @@ import os as _os
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Literal
 
 import yaml
 from slugify import slugify

@@ -7,11 +7,11 @@ from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
+import tinyagentos.auto_update as _auto_update
+from tinyagentos import framework_update as _runner
 from tinyagentos.agent_db import find_agent
 from tinyagentos.config import save_config_locked
 from tinyagentos.frameworks import FRAMEWORKS
-from tinyagentos import framework_update as _runner
-import tinyagentos.auto_update as _auto_update
 
 router = APIRouter()
 

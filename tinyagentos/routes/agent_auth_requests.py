@@ -27,11 +27,11 @@ import logging
 from datetime import datetime, timedelta, timezone
 from typing import Any, Coroutine, Optional
 
+from aiosqlite import IntegrityError
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field, StrictInt
 
-from aiosqlite import IntegrityError
 from tinyagentos.agent_registry_store import (
     TOKEN_STORAGE_GUIDANCE,
     agent_slug_or_fallback,
@@ -1005,12 +1005,10 @@ async def approve_request_record(
     # spelling lands on the same key -- and the exact lookup still runs first as
     # the indexed common case (see get_by_handle_normalised).
     existing_active = await registry.get_by_handle(handle, status="active")
-    collision_via_normalised = False
     if existing_active is None:
         existing_active = await registry.get_by_handle_normalised(
             handle, status="active"
         )
-        collision_via_normalised = existing_active is not None
     # taOS #2114: if no ACTIVE agent owns the handle, check for an existing
     # agent in ANY status. Reusing the canonical identity (instead of minting
     # a fresh one) keeps the documented model where an agent's canonical id

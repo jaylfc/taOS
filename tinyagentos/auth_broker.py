@@ -25,6 +25,8 @@ from urllib.parse import urlsplit
 import aiosqlite
 
 from tinyagentos.base_store import BaseStore, PendingCapExceeded
+
+
 class OpenRequestExists(Exception):
     """Raised when a create operation would exceed the one-open-request-per-kind limit."""
 

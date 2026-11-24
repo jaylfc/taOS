@@ -1,8 +1,8 @@
 from __future__ import annotations
 
 import hashlib
-
 import math
+
 
 def eligible(worker) -> bool:
     status = worker.get("status") if isinstance(worker, dict) else getattr(worker, "status", None)

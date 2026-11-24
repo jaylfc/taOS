@@ -298,8 +298,8 @@ def configure_container_runtime(config: object = None) -> str | None:
     ``"podman"``, ``"native"``), or ``None`` (after logging a warning) if no
     runtime is available.
     """
-    from tinyagentos.containers.lxc import LXCBackend
     from tinyagentos.containers.docker import DockerBackend
+    from tinyagentos.containers.lxc import LXCBackend
 
     runtime = getattr(config, "container_runtime", "auto")
     if runtime == "auto":

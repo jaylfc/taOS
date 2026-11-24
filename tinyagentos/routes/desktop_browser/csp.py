@@ -19,7 +19,6 @@ test surface lands ahead of the consumer.
 """
 from __future__ import annotations
 
-
 _DIRECTIVES = (
     # default-src is the catch-all; everything else inherits unless
     # explicitly named below.

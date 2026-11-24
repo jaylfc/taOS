@@ -10,18 +10,18 @@ import string
 from pathlib import Path
 
 import httpx
-from fastapi import APIRouter, Form, Request, UploadFile, File
-from fastapi.responses import JSONResponse, FileResponse, RedirectResponse, Response, StreamingResponse
-from tinyagentos.issued_cookies import TAOS_ISSUED_COOKIES
+from fastapi import APIRouter, File, Form, Request, UploadFile
+from fastapi.responses import FileResponse, JSONResponse, RedirectResponse, Response, StreamingResponse
 from pydantic import BaseModel
 from starlette.background import BackgroundTask
 
 from tinyagentos.code_analyzer import analyze_app_source, has_critical
+from tinyagentos.issued_cookies import TAOS_ISSUED_COOKIES
 from tinyagentos.middleware.upload_body_limit import register_upload_cap
-from tinyagentos.userspace.broker import handle_capability, GATED_CAPS
+from tinyagentos.userspace.broker import handle_capability
 from tinyagentos.userspace.capabilities import capability_ceiling, default_provenance_for_trust
 from tinyagentos.userspace.container_deploy import deploy_app_container, destroy_app_container
-from tinyagentos.userspace.package import build_package, extract_package, parse_manifest, PackageError
+from tinyagentos.userspace.package import PackageError, build_package, extract_package, parse_manifest
 from tinyagentos.userspace.url_guard import (
     resolve_safe_public_ip,
     userspace_fetch_client,

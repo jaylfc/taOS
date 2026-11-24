@@ -12,7 +12,6 @@ may do.  ``list_active_grants`` is the feed @taOSmd polls later.
 """
 
 import asyncio
-import json
 from datetime import datetime, timezone
 from typing import Optional
 

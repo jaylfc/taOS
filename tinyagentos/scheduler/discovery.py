@@ -18,8 +18,8 @@ from tinyagentos.hardware import (
     metal_available,
 )
 from tinyagentos.scheduler.backend_catalog import BackendCatalog
-from tinyagentos.scheduler.history_store import HistoryStore
 from tinyagentos.scheduler.gpu_arbiter import _probe_nvidia_vram
+from tinyagentos.scheduler.history_store import HistoryStore
 from tinyagentos.scheduler.resource import Resource, Tier
 from tinyagentos.scheduler.scheduler import Scheduler
 from tinyagentos.scheduler.score_cache import ScoreCache

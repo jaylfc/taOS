@@ -174,7 +174,8 @@ class AgentBrowsersManager:
                 async with session.ws_connect(ws_url, timeout=10) as ws:
                     await ws.send_json({"id": 1, "method": "Page.captureScreenshot"})
                     async for msg in ws:
-                        import json, base64
+                        import base64
+                        import json
                         data = json.loads(msg.data)
                         if data.get("id") == 1:
                             return base64.b64decode(data["result"]["data"])

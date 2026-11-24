@@ -1,5 +1,6 @@
 """OpenAI Agents SDK adapter."""
 import os
+
 from fastapi import FastAPI
 
 app = FastAPI()

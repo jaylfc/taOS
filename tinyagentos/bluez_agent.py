@@ -3,8 +3,9 @@ import re
 from typing import Any
 
 try:
-    from dbus_fast.annotations import DBusSignature
     from typing import Annotated
+
+    from dbus_fast.annotations import DBusSignature
 
     ObjPath = Annotated[str, DBusSignature("o")]
     U32 = Annotated[int, DBusSignature("u")]
@@ -134,9 +135,8 @@ class PairingSession:
 def build_agent_interface(session: PairingSession) -> Any:
     """Build a dbus_fast ServiceInterface for org.bluez.Agent1 based on a PairingSession."""
     try:
-        import dbus_fast
-        from dbus_fast.service import ServiceInterface, dbus_method
         from dbus_fast.errors import DBusError
+        from dbus_fast.service import ServiceInterface, dbus_method
     except ImportError:
         class _DummyServiceInterface:
             pass

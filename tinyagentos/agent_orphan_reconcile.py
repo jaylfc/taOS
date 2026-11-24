@@ -102,12 +102,11 @@ async def reconcile_orphaned_agent_containers(
     """
     from datetime import datetime, timezone
 
+    from tinyagentos.config import save_config_locked
     from tinyagentos.containers import (
         snapshot_create,
         stop_container,
-        destroy_container,
     )
-    from tinyagentos.config import save_config_locked
 
     config = request.app.state.config
     orphans = await find_orphaned_agent_containers(config)

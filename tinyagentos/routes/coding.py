@@ -248,7 +248,7 @@ async def workspace_diff(request: Request, workspace_id: str):
                 except OSError:
                     content = ""
                 lines = content.splitlines(keepends=True)
-                patch_lines = [f"+{l}" for l in lines]
+                patch_lines = [f"+{line}" for line in lines]
                 patch = (
                     f"--- /dev/null\n+++ b/{rel_path}\n@@ -0,0 +1,{len(lines)} @@\n"
                     + "".join(patch_lines)

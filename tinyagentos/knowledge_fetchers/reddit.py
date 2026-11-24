@@ -6,10 +6,9 @@ Provides async functions to fetch Reddit threads, subreddit listings,
 saved posts, and helpers to format content as flat markdown.
 """
 
-import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import TYPE_CHECKING
-from urllib.parse import urlparse, urlunparse, urlencode, parse_qs
+from urllib.parse import urlencode, urlparse, urlunparse
 
 if TYPE_CHECKING:
     import httpx

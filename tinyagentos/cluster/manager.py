@@ -1,4 +1,5 @@
 from __future__ import annotations
+
 import asyncio
 import json
 import logging
@@ -293,7 +294,7 @@ class ClusterManager:
                                     await self._notifications.emit_event(
                                         "worker.leave",
                                         f"Worker '{worker.name}' timed out during update",
-                                        f"Worker was stuck in 'updating' state. Forced offline to allow re-onboarding.",
+                                        "Worker was stuck in 'updating' state. Forced offline to allow re-onboarding.",
                                         level="warning",
                                     )
                                 except Exception:

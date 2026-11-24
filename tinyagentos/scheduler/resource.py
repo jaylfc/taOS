@@ -16,7 +16,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
-from typing import Awaitable, Callable, Optional
+from typing import Callable, Optional
 
 import psutil
 

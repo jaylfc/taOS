@@ -1,5 +1,6 @@
 """Hermes adapter — proxies messages to the Hermes OpenAI-compatible API server."""
 import os
+
 import httpx
 from fastapi import FastAPI
 

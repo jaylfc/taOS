@@ -31,15 +31,15 @@ is plaintext here and slice 7 wraps it.
 from __future__ import annotations
 
 import asyncio
-import weakref
-
 import base64
 import hashlib
 import io
+import weakref
 from datetime import datetime, timezone
 from typing import Optional
 
-from tinyagentos.hub import identity, store as hub_store
+from tinyagentos.hub import identity
+from tinyagentos.hub import store as hub_store
 
 # Post visibility tiers (design "Privacy tiers"). Slice 7 adds real friends-only
 # encryption; until then a "circle" post is enforced by serve-authorization only

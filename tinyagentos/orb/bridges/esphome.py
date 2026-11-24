@@ -6,7 +6,7 @@ ESPHome ships a host-side tool; installed() checks shutil.which.
 
 import shutil
 
-from . import BridgeResult, orbs_running, orb_host, target
+from . import BridgeResult, orb_host, orbs_running, target
 
 BRIDGE_ID = "esphome"
 TITLE = "ESPHome"

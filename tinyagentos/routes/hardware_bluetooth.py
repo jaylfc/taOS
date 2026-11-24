@@ -327,7 +327,8 @@ async def discovery_bluetooth(body: BtDiscoveryBody):
 
         # Read back Discovering property
         try:
-            from dbus_fast import Message as Message2, MessageType as MessageType2
+            from dbus_fast import Message as Message2
+            from dbus_fast import MessageType as MessageType2
             reply = await asyncio.wait_for(
                 bus.call(
                     Message2(

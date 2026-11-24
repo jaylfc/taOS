@@ -69,13 +69,13 @@ def _optional(args, *fields) -> dict:
 
 
 def _list(args, client):
-    return client.get(f"/api/relationships/groups")
+    return client.get("/api/relationships/groups")
 
 
 def _create(args, client):
     body = {"name": args.name}
     body.update(_optional(args, "description", "lead_agent", "color"))
-    return client.post(f"/api/relationships/groups", body=body)
+    return client.post("/api/relationships/groups", body=body)
 
 
 def _update(args, client):
@@ -104,11 +104,11 @@ def _agent(args, client):
 
 def _allow(args, client):
     body = {"from_agent": args.from_agent, "to_agent": args.to_agent}
-    return client.post(f"/api/relationships/permissions", body=body)
+    return client.post("/api/relationships/permissions", body=body)
 
 
 def _revoke(args, client):
     # The route reads a JSON body on DELETE; client.delete() sends none, so go
     # through request() directly.
     body = {"from_agent": args.from_agent, "to_agent": args.to_agent}
-    return client.request("DELETE", f"/api/relationships/permissions", body=body)
+    return client.request("DELETE", "/api/relationships/permissions", body=body)

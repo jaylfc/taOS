@@ -142,6 +142,6 @@ async def resolve(state, requested: str) -> Route:
             )
     route = find_route(await routing_table(state), name)
     if route is None:
-        suffix = f" (taos-default points at it)" if name != requested else ""
+        suffix = " (taos-default points at it)" if name != requested else ""
         raise model_not_found(f"model {name!r} not found{suffix}")
     return route

@@ -27,6 +27,7 @@ class BrowserCookieStore:
 
     async def init(self) -> None:
         import asyncio
+
         from tinyagentos.routes.desktop_browser.schema import COOKIE_SCHEMA
 
         def _setup() -> None:

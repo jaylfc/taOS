@@ -1,9 +1,9 @@
 from __future__ import annotations
 
 import json
+import logging
 import time
 import uuid
-import logging
 from pathlib import Path
 
 from tinyagentos.base_store import BaseStore
@@ -341,7 +341,8 @@ class KnowledgeStore(BaseStore):
                 LIMIT ?
             """
             fts_params = (safe_query, user_id, limit)
-            fallback_params_fn = lambda pattern: (pattern, pattern, pattern, user_id, limit)
+            def fallback_params_fn(pattern):
+                return (pattern, pattern, pattern, user_id, limit)
             fallback_sql = """
                 SELECT id, source_type, source_url, source_id, title, author, summary,
                        content, media_path, thumbnail, categories, tags, metadata,
@@ -363,7 +364,8 @@ class KnowledgeStore(BaseStore):
                 LIMIT ?
             """
             fts_params = (safe_query, limit)
-            fallback_params_fn = lambda pattern: (pattern, pattern, pattern, limit)
+            def fallback_params_fn(pattern):
+                return (pattern, pattern, pattern, limit)
             fallback_sql = """
                 SELECT id, source_type, source_url, source_id, title, author, summary,
                        content, media_path, thumbnail, categories, tags, metadata,

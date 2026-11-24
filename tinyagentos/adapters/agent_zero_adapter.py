@@ -1,5 +1,6 @@
 """Agent Zero adapter — proxies messages to the Agent Zero HTTP API."""
 import os
+
 from fastapi import FastAPI
 
 app = FastAPI()

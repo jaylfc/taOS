@@ -12,20 +12,19 @@ import logging
 import time
 from typing import Any
 
+from tinyagentos.agent_heartbeat import wake_agent_with_task
+from tinyagentos.agent_token_auth import active_project_grants
+from tinyagentos.projects.a2a import ensure_a2a_channel
+from tinyagentos.projects.agent_ref import resolve_agent_refs
 from tinyagentos.projects.dispatch_policy import (
-    Assignment,
     is_board_dispatchable,
     is_candidate,
     select_assignments,
 )
-from tinyagentos.projects.agent_ref import AgentRef, resolve_agent_refs
-from tinyagentos.projects.task_store import ProjectTaskStore
+from tinyagentos.projects.dispatcher_store import DispatcherConfig, DispatcherStore
 from tinyagentos.projects.project_store import ProjectStore
-from tinyagentos.projects.dispatcher_store import DispatcherStore, DispatcherConfig
-from tinyagentos.agent_token_auth import active_project_grants
+from tinyagentos.projects.task_store import ProjectTaskStore
 from tinyagentos.wake_budget import can_wake, record_scheduled_wake
-from tinyagentos.agent_heartbeat import wake_agent_with_task
-from tinyagentos.projects.a2a import ensure_a2a_channel
 
 logger = logging.getLogger(__name__)
 

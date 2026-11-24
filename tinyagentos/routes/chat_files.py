@@ -175,7 +175,6 @@ async def attachment_from_path(body: dict, request: Request):
     }
     if slug:
         identity = _file_identity(src)
-        registry_path = _registry_path(data_dir)
         lock_path = _registry_lock_path(data_dir)
         with FileLock(str(lock_path), timeout=10):
             registry = _load_registry(data_dir)

@@ -5,7 +5,7 @@ import asyncio
 import json
 import logging
 
-from .backend import ContainerBackend, ContainerInfo, _parse_memory
+from .backend import ContainerBackend, ContainerInfo
 
 logger = logging.getLogger(__name__)
 

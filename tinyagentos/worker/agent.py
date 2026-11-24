@@ -1,4 +1,5 @@
 from __future__ import annotations
+
 import asyncio
 import ipaddress
 import json
@@ -8,11 +9,16 @@ import platform
 import socket
 import time
 from pathlib import Path
+from typing import TYPE_CHECKING
 from urllib.parse import urlparse, urlsplit
+
 import httpx
 import psutil
 
 from tinyagentos.hardware import METAL_RESOURCE_NAME
+
+if TYPE_CHECKING:
+    from tinyagentos.worker.update_check import WorkerUpdateService
 
 logger = logging.getLogger(__name__)
 
@@ -944,9 +950,10 @@ class WorkerAgent:
                        caller should enter the needs-re-pair state instead
                        of retrying register every 5s.
         """
-        from tinyagentos.hardware import detect_hardware
-        from dataclasses import asdict
         import json as _json
+        from dataclasses import asdict
+
+        from tinyagentos.hardware import detect_hardware
 
         # Re-read the key from disk on every attempt so that running the pair
         # CLI (which persists a new key) recovers the agent without a restart.
@@ -1122,8 +1129,9 @@ class WorkerAgent:
         matches (migration case); the run loop enters the needs-re-pair
         state on this code.
         """
-        from tinyagentos.cluster.worker_capacity import capacity_snapshot, gpu_vram_snapshot
         import json as _json
+
+        from tinyagentos.cluster.worker_capacity import capacity_snapshot, gpu_vram_snapshot
 
         # Re-read the key from disk on every attempt so that running the pair
         # CLI (which persists a new key) recovers the agent without a restart.
@@ -1142,8 +1150,9 @@ class WorkerAgent:
             )
             return 0
 
-        from tinyagentos.hardware import detect_hardware
         from dataclasses import asdict
+
+        from tinyagentos.hardware import detect_hardware
 
         try:
             from tinyagentos.worker.pairing import sign_request_headers

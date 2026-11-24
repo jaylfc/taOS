@@ -19,7 +19,6 @@ from __future__ import annotations
 
 from lxml import html as lxml_html
 
-
 _SCRIPT_SRC = "/__taos/copilot.js"
 _WS_META_NAME = "taos-copilot-ws"
 _PAGE_BASE_META_NAME = "taos-page-base"

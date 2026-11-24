@@ -4,7 +4,7 @@ Reference adapter for the PycoClaw WebREPL interface.
 The host tool is the Scripto Studio PWA in a browser, nothing on PATH.
 """
 
-from . import BridgeResult, orbs_running, orb_host, target
+from . import BridgeResult, orb_host, orbs_running, target
 
 BRIDGE_ID = "pycoclaw"
 TITLE = "PycoClaw"

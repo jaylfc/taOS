@@ -11,7 +11,6 @@ because the history is an observability aid, not a durable audit log.
 """
 from __future__ import annotations
 
-import json
 import logging
 from pathlib import Path
 from typing import Optional

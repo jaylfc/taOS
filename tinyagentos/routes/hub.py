@@ -35,15 +35,16 @@ import urllib.parse
 from pathlib import Path
 from typing import Optional
 
-from fastapi import APIRouter, Depends, Request, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel
 
 from tinyagentos import peer as peer_channel
+from tinyagentos import task_utils
 from tinyagentos.auth_context import CurrentUser, current_user
 from tinyagentos.contacts_store import generate_peer_token
-from tinyagentos import task_utils
-from tinyagentos.hub import identity, posts, relationships, store as hub_store
+from tinyagentos.hub import identity, posts, relationships
+from tinyagentos.hub import store as hub_store
 from tinyagentos.routes.account_proxy import _forward_to
 
 logger = logging.getLogger(__name__)

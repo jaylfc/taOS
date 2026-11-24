@@ -44,7 +44,7 @@ import secrets
 import time
 from urllib.parse import urlsplit
 
-from fastapi import Depends, FastAPI, Query, Request
+from fastapi import FastAPI, Query, Request
 from fastapi.responses import JSONResponse, RedirectResponse
 from starlette.middleware.base import BaseHTTPMiddleware
 

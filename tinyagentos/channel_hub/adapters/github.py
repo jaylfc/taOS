@@ -11,7 +11,7 @@ import json
 import logging
 from pathlib import Path
 
-from tinyagentos.channel_hub.message import IncomingMessage, OutgoingMessage
+from tinyagentos.channel_hub.message import IncomingMessage
 
 logger = logging.getLogger(__name__)
 

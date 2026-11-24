@@ -1,5 +1,7 @@
 from __future__ import annotations
+
 import re
+
 
 class ThemeError(Exception):
     """Raised when a theme config is invalid or unsafe."""

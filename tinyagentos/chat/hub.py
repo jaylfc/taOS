@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import time
+
 from fastapi import WebSocket
 
 _TYPING_TTL = 5.0  # seconds

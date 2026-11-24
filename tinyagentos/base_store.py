@@ -1,7 +1,8 @@
 from __future__ import annotations
+
 import sqlite3
-from pathlib import Path
 from enum import Enum
+from pathlib import Path
 
 
 class Engine(Enum):
@@ -82,6 +83,7 @@ class BaseStore:
 
     async def _init_sqlite(self) -> None:
         import aiosqlite
+
         from tinyagentos.db_migrations import apply_wal_pragmas_async, run_migrations_async
 
         connect_kwargs = {"isolation_level": None} if self.AUTOCOMMIT else {}

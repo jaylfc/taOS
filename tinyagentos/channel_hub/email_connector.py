@@ -1,12 +1,14 @@
 from __future__ import annotations
+
 import asyncio
 import email
 import imaplib
 import logging
 import smtplib
 import time
-from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
+from email.mime.text import MIMEText
+
 from tinyagentos.channel_hub.message import IncomingMessage, OutgoingMessage
 
 logger = logging.getLogger(__name__)

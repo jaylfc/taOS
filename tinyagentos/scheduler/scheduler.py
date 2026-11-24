@@ -39,7 +39,7 @@ import asyncio
 import collections
 import logging
 import time
-from typing import Optional, TYPE_CHECKING
+from typing import TYPE_CHECKING, Optional
 
 from tinyagentos.scheduler.resource import Resource
 from tinyagentos.scheduler.types import (

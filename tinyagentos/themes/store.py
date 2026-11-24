@@ -1,6 +1,10 @@
 from __future__ import annotations
-import json, time
+
+import json
+import time
+
 from tinyagentos.base_store import BaseStore
+
 
 class ThemeStore(BaseStore):
     """Registry of installed themes. BaseStore.init() runs SCHEMA + sets self._db."""

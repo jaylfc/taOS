@@ -11,7 +11,6 @@ import yaml
 from tinyagentos.installers.base import AppInstaller, run_cmd
 from tinyagentos.installers.port_allocator import allocate_host_port
 
-
 logger = logging.getLogger(__name__)
 
 def _healthcheck_enabled(hc) -> bool:
@@ -174,7 +173,6 @@ class DockerInstaller(AppInstaller):
                         # Host:container format, e.g., "6333:6333"
                         try:
                             host_port_str, container_port_str = port.split(":", 1)
-                            host_port = int(host_port_str)
                             container_port = int(container_port_str)
                             container_ports.append(container_port)
                         except ValueError:

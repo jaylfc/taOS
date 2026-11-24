@@ -8,13 +8,15 @@ from urllib.parse import urlsplit
 
 if TYPE_CHECKING:
     import httpx
-    from tinyagentos.knowledge_store import KnowledgeStore
+
     from tinyagentos.knowledge_categories import CategoryEngine
+    from tinyagentos.knowledge_store import KnowledgeStore
     from tinyagentos.notifications import NotificationStore
 
 # Import readability for extraction
-from readability import Document
 import html as _html_mod
+
+from readability import Document
 
 logger = logging.getLogger(__name__)
 
@@ -332,7 +334,9 @@ class IngestPipeline:
             return await self._download_article(url, title, metadata)
         if source_type == "reddit":
             from tinyagentos.knowledge_fetchers.reddit import (
-                fetch_thread, flatten_to_text, extract_metadata,
+                extract_metadata,
+                fetch_thread,
+                flatten_to_text,
             )
             post, comments = await fetch_thread(url, self._http_client)
             content = flatten_to_text(post, comments)
@@ -351,7 +355,13 @@ class IngestPipeline:
             )
         if source_type == "github":
             from tinyagentos.knowledge_fetchers.github import (
-                parse_github_url, fetch_repo, fetch_issue, fetch_releases, extract_metadata as gh_meta,
+                extract_metadata as gh_meta,
+            )
+            from tinyagentos.knowledge_fetchers.github import (
+                fetch_issue,
+                fetch_releases,
+                fetch_repo,
+                parse_github_url,
             )
             owner, repo, content_type, number = parse_github_url(url)
             if content_type == "issue" or content_type == "pull":
@@ -372,7 +382,10 @@ class IngestPipeline:
                 return data.get("readme_content", ""), data.get("name", title), f"{owner}", metadata
         if source_type == "x":
             from tinyagentos.knowledge_fetchers.x import (
-                fetch_tweet_ytdlp, stitch_thread_text, extract_metadata as x_meta,
+                extract_metadata as x_meta,
+            )
+            from tinyagentos.knowledge_fetchers.x import (
+                fetch_tweet_ytdlp,
             )
             tweet = await fetch_tweet_ytdlp(url)
             if tweet:

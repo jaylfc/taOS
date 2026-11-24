@@ -8,6 +8,7 @@ from .image import NAME_LEN, check_image
 from .store_client import Client
 from .transport import find_port, open_port
 
+
 def _progress_printer():
     last = [-1]
 

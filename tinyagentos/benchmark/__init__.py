@@ -13,9 +13,9 @@ Policy:
 See docs/design/resource-scheduler.md §Backend-driven discovery and the
 worker benchmark system Phase 1 issue on the project board.
 """
+from tinyagentos.benchmark.runner import BenchmarkRunner
 from tinyagentos.benchmark.store import BenchmarkStore
 from tinyagentos.benchmark.suite import BenchmarkSuite, SuiteResult, SuiteTask
-from tinyagentos.benchmark.runner import BenchmarkRunner
 
 __all__ = [
     "BenchmarkRunner",

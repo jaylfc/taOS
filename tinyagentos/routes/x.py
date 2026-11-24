@@ -10,7 +10,6 @@ All routes live under /api/x/. The router reads these from
 """
 
 import logging
-from pathlib import Path
 
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import JSONResponse
@@ -19,10 +18,10 @@ from pydantic import BaseModel
 from tinyagentos.auth_context import CurrentUser, current_user
 from tinyagentos.knowledge_fetchers.x import (
     XWatchStore,
+    extract_metadata,
     fetch_tweet_ytdlp,
     reconstruct_thread,
     stitch_thread_text,
-    extract_metadata,
 )
 
 logger = logging.getLogger(__name__)

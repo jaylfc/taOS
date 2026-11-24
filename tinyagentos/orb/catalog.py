@@ -3,10 +3,10 @@ import hashlib
 import json
 import os
 
+from .catalog_sig import CatalogKindInvalid
 from .frames import OrbError
 from .image import BLOCK, TAOS_INDEX, check_image
 from .protocol import Extent
-from .catalog_sig import CatalogKindInvalid
 
 # ------------------------------------------------------------------ catalog (SPEC-orb-store.md s11) ----
 # Firmware catalog kinds: None (legacy, no kind field) or "orb-firmware"
@@ -114,10 +114,10 @@ def status_of(cat, entry):
     latest = latest_version(app)
     if latest is None:
         return "unknown"
-    i, l = app["versions"].index(inst), app["versions"].index(latest)
-    if i == l:
+    i, latest_i = app["versions"].index(inst), app["versions"].index(latest)
+    if i == latest_i:
         return "latest"
-    if i < l:
+    if i < latest_i:
         return "newer than catalog"
     if entry.get("pinned"):
         return "pinned (latest %s)" % latest["version"]

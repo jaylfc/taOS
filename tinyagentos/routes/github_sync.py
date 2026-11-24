@@ -10,17 +10,16 @@ Only issues are synced; pull requests are skipped (see github_sync module).
 
 from __future__ import annotations
 
-import httpx
-from fastapi import APIRouter, Request
-from fastapi.responses import JSONResponse
-from pydantic import BaseModel
-
 import asyncio
 import re
 
+import httpx
+from fastapi import APIRouter, Depends, Request
+from fastapi.responses import JSONResponse
+from pydantic import BaseModel
+
 from tinyagentos.auth_context import CurrentUser, current_user
 from tinyagentos.github_sync import sync_issues_to_board
-from fastapi import Depends
 
 router = APIRouter()
 

@@ -1,5 +1,6 @@
 """NullClaw adapter — proxies messages to the NullClaw gateway."""
 import os
+
 import httpx
 from fastapi import FastAPI
 

@@ -29,6 +29,7 @@ logger = logging.getLogger(__name__)
 # A valid GPG key fingerprint is 40 hex characters, optionally with spaces.
 # We strip spaces before validating because gpg accepts both forms.
 import re as _re
+
 _FINGERPRINT_RE = _re.compile(r'^[0-9A-Fa-f]{40}$')
 
 

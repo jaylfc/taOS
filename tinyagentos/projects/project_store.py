@@ -341,14 +341,18 @@ class ProjectStore(ProjectsDBStore):
         sets: list[str] = []
         params: list = []
         if name is not None:
-            sets.append("name = ?"); params.append(name)
+            sets.append("name = ?")
+            params.append(name)
         if description is not None:
-            sets.append("description = ?"); params.append(description)
+            sets.append("description = ?")
+            params.append(description)
         if settings is not None:
-            sets.append("settings = ?"); params.append(json.dumps(settings))
+            sets.append("settings = ?")
+            params.append(json.dumps(settings))
         if not sets:
             return
-        sets.append("updated_at = ?"); params.append(time.time())
+        sets.append("updated_at = ?")
+        params.append(time.time())
         params.append(project_id)
         async with self._tx():
             # The same case-insensitive name check create_project runs, for the

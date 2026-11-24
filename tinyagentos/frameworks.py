@@ -4,7 +4,6 @@ from __future__ import annotations
 from tinyagentos.hardware import _snap_ram_to_canonical_gb
 from tinyagentos.shortcuts.validation import validate_shortcuts
 
-
 DEFAULT_FRAMEWORK = "hermes"
 
 

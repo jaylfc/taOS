@@ -1,9 +1,10 @@
 from __future__ import annotations
-import asyncio
+
 import logging
+
 import httpx
-from fastapi import Request
-from tinyagentos.channel_hub.message import IncomingMessage, OutgoingMessage
+
+from tinyagentos.channel_hub.message import IncomingMessage
 
 logger = logging.getLogger(__name__)
 

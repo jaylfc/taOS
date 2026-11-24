@@ -28,20 +28,19 @@ from fastapi.responses import JSONResponse, StreamingResponse
 
 from tinyagentos.auth import get_current_user
 from tinyagentos.routes.desktop_browser import push, router
-from tinyagentos.routes.desktop_browser.copilot_agent_ws import (
-    _BACKGROUND_TASKS,
-    _log_task_exception,
-)
 from tinyagentos.routes.desktop_browser.cookie_jar import (
     load_jar_for_request,
     persist_response_cookies,
+)
+from tinyagentos.routes.desktop_browser.copilot_agent_ws import (
+    _BACKGROUND_TASKS,
+    _log_task_exception,
 )
 from tinyagentos.routes.desktop_browser.ssrf import (
     SsrfBlockedError,
     guarded_async_client,
     validate_url_or_raise,
 )
-
 
 _logger = logging.getLogger(__name__)
 

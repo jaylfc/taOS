@@ -65,8 +65,9 @@ def list_usb_orbs() -> list[dict]:
 
 def browse_lan_orbs(timeout: float = 2.0) -> list[dict]:
     """Browse the LAN for taOS Orbs via mDNS. Browses for `timeout` seconds, then adds up to 1 second per discovered name for service lookups; async callers must use asyncio.to_thread."""
-    from zeroconf import ServiceBrowser, Zeroconf
     import time
+
+    from zeroconf import ServiceBrowser, Zeroconf
     
     zc = Zeroconf()
     collected_names = []
@@ -83,7 +84,7 @@ def browse_lan_orbs(timeout: float = 2.0) -> list[dict]:
     
     listener = _Listener()
     try:
-        browser = ServiceBrowser(zc, ORB_SERVICE_TYPE, listener)
+        _browser = ServiceBrowser(zc, ORB_SERVICE_TYPE, listener)
         time.sleep(timeout)
         
         # Deduplicate names
@@ -104,8 +105,9 @@ def browse_lan_orbs(timeout: float = 2.0) -> list[dict]:
 
 def ipv4_broadcast_addresses() -> list[str]:
     """Get per-interface IPv4 broadcast addresses (default for probe_agent_buddy)."""
-    import psutil
     import socket
+
+    import psutil
     
     broadcast_set = set()
     

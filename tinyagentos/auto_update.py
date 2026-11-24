@@ -22,11 +22,13 @@ import os
 import platform
 import sys
 from pathlib import Path
-from typing import Optional
+from typing import TYPE_CHECKING, Optional
 
-import tinyagentos.github_releases as github_releases
 import tinyagentos
+import tinyagentos.github_releases as github_releases
 
+if TYPE_CHECKING:
+    from tinyagentos.gpg_verify import GpgPrefs, GpgVerificationResult
 logger = logging.getLogger(__name__)
 
 # Conservative git ref-name validation. The tracked branch flows into git
@@ -450,10 +452,10 @@ class AutoUpdateService:
         from the correct (GPG) namespace rather than the auto-update namespace.
         """
         from tinyagentos.gpg_verify import (
-            verify_remote_commit,
-            resolve_gpg_prefs,
-            GpgVerificationResult,
             GpgPrefs,
+            GpgVerificationResult,
+            resolve_gpg_prefs,
+            verify_remote_commit,
         )
         try:
             gpg_prefs = await resolve_gpg_prefs(self._settings)

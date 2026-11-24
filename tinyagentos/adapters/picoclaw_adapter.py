@@ -1,5 +1,6 @@
 """PicoClaw adapter — proxies messages to the PicoClaw gateway."""
 import os
+
 import httpx
 from fastapi import FastAPI
 

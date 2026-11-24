@@ -1,5 +1,6 @@
 """Generic adapter — receives messages, calls framework, returns response."""
 import os
+
 from fastapi import FastAPI
 
 app = FastAPI()

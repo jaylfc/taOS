@@ -7,6 +7,9 @@ from fastapi import APIRouter, Depends, Request
 from fastapi.responses import JSONResponse, PlainTextResponse, Response, StreamingResponse
 from starlette.requests import ClientDisconnect
 
+import tinyagentos.llm_gateway.resolve as resolve_mod
+from tinyagentos.llm_gateway import stt, tts
+from tinyagentos.llm_gateway.anthropic import chat_completion_anthropic
 from tinyagentos.llm_gateway.auth import GatewayCaller, gateway_caller
 from tinyagentos.llm_gateway.errors import (
     GatewayError,
@@ -16,17 +19,13 @@ from tinyagentos.llm_gateway.errors import (
     model_not_permitted,
 )
 from tinyagentos.llm_gateway.forward import (
-    OLLAMA_PROVIDERS,
-    forwardable,
     chat_completion,
     chat_completion_stream,
+    forwardable,
     resolve_api_key,
 )
-from tinyagentos.llm_gateway.anthropic import chat_completion_anthropic
-from tinyagentos.llm_gateway import stt, tts
+from tinyagentos.llm_gateway.images import has_image_parts, shrink_images
 from tinyagentos.llm_gateway.resolve import TAOS_DEFAULT, find_routes, model_names, routing_table
-from tinyagentos.llm_gateway.images import shrink_images, has_image_parts
-import tinyagentos.llm_gateway.resolve as resolve_mod
 
 PREFIX = "/api/llm/v1"
 OPENAI_PROVIDER = "openai"
@@ -97,7 +96,7 @@ async def chat_completions(request: Request, caller: GatewayCaller = Depends(gat
             )
     routes = find_routes(await routing_table(state), name)
     if not routes:
-        suffix = f" (taos-default points at it)" if name != requested else ""
+        suffix = " (taos-default points at it)" if name != requested else ""
         raise model_not_found(f"model {name!r} not found{suffix}")
     route = routes[0]
     alias_grant = requested == TAOS_DEFAULT and caller.may_use(TAOS_DEFAULT)
@@ -112,6 +111,7 @@ async def chat_completions(request: Request, caller: GatewayCaller = Depends(gat
         principal = caller.caller_id
         if body.get("stream"):
             from fastapi.responses import StreamingResponse
+
             from tinyagentos.llm_gateway.anthropic import chat_completion_stream_anthropic
             gen = chat_completion_stream_anthropic(routes, body, principal, state)
             try:

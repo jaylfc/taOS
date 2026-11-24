@@ -4,7 +4,7 @@ Reference adapter for the MimiClaw WebSocket interface.
 MimiClaw has no host-side tool; installed() returns None.
 """
 
-from . import BridgeResult, orbs_running, orb_host, target
+from . import BridgeResult, orb_host, orbs_running, target
 
 BRIDGE_ID = "mimiclaw"
 TITLE = "MimiClaw"

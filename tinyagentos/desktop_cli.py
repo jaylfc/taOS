@@ -9,8 +9,7 @@ from __future__ import annotations
 import os
 import subprocess
 import sys
-from argparse import ArgumentParser, ArgumentError
-from pathlib import Path
+from argparse import ArgumentParser
 
 from tinyagentos.app import PROJECT_DIR
 

@@ -11,7 +11,7 @@ import logging
 
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
 
 from tinyagentos.auth_context import CurrentUser, current_user
 from tinyagentos.coding_sessions.store import VALID_CLIS, VALID_LAUNCH_TARGETS

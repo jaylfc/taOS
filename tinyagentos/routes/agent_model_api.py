@@ -160,7 +160,7 @@ async def chat_completions(request: Request):
         return _openai_error(str(e), type="invalid_request_error", code="invalid_request", status=400)
     except _TurnError as e:
         return _openai_error(str(e), type="server_error", code="agent_error", status=502)
-    except Exception as e:  # defensive: never leak internals as a 500 trace
+    except Exception:  # defensive: never leak internals as a 500 trace
         logger.exception("agent_model_api: turn failed")
         return _openai_error(
             "agent turn failed", type="server_error", code="agent_error", status=502
@@ -295,7 +295,6 @@ def _chat_completion(content: str, model: str) -> JSONResponse:
 
 def _chat_completion_stream(content: str, model: str):
     """OpenAI SSE stream envelope (single completion chunk)."""
-    from fastapi.responses import StreamingResponse
 
     def _gen():
         yield f"data: {json.dumps({'id': f'chatcmpl-{_short_id()}', 'object': 'chat.completion.chunk', 'created': int(time.time()), 'model': model, 'choices': [{'index': 0, 'delta': {'role': 'assistant', 'content': content}, 'finish_reason': 'stop'}]})}\n\n"

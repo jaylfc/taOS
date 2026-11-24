@@ -11,10 +11,6 @@ taOS #640 — Fix 1: persist worker registry (dict lost on restart).
 
 from __future__ import annotations
 
-import json
-import time
-from pathlib import Path
-
 import aiosqlite
 
 from tinyagentos.base_store import BaseStore

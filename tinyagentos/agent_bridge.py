@@ -18,7 +18,6 @@ from typing import Any
 from fastapi import Depends, FastAPI, Header, HTTPException
 from pydantic import BaseModel
 
-
 # ---------------------------------------------------------------------------
 # Request / response models
 # ---------------------------------------------------------------------------

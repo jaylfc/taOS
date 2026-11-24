@@ -1,7 +1,10 @@
 from __future__ import annotations
+
 import logging
+
 import httpx
 from fastapi import HTTPException
+
 from tinyagentos.cluster.manager import ClusterManager
 from tinyagentos.cluster.placement import rank as _placement_rank
 

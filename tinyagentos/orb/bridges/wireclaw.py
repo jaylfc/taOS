@@ -4,8 +4,9 @@ Reference adapter for the WireClaw web configuration interface.
 WireClaw has no host-side tool; installed() returns bool based on nats CLI availability.
 """
 
-from . import BridgeResult, orbs_running, orb_host, target
 import shutil
+
+from . import BridgeResult, orb_host, orbs_running, target
 
 BRIDGE_ID = "wireclaw"
 TITLE = "WireClaw"

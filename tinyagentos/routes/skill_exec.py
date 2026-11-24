@@ -16,6 +16,7 @@ from pathlib import Path
 
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
+
 from tinyagentos.routes.decisions import SERVER_RAISED_KEY
 
 logger = logging.getLogger(__name__)
@@ -159,8 +160,9 @@ async def _skill_list_files(args: dict, request: Request) -> dict:
 
 async def _skill_web_search(args: dict, request: Request) -> dict:
     """Search the web via SearXNG (if available)."""
-    import httpx
     import os
+
+    import httpx
 
     query = args.get("query", "")
     max_results = args.get("max_results", 5)

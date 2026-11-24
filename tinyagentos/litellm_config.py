@@ -17,9 +17,11 @@ from tinyagentos.providers import (
     ALL_TYPES,
     BACKEND_TYPE_MAP,
     CHAT_BACKEND_TYPE_MAP,
-    CLOUD_TYPES as CLOUD_BACKEND_TYPES,
     NEEDS_API_BASE_TYPES,
     inference_api_base,
+)
+from tinyagentos.providers import (
+    CLOUD_TYPES as CLOUD_BACKEND_TYPES,
 )
 
 logger = logging.getLogger(__name__)

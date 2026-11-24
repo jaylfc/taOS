@@ -50,7 +50,7 @@ class StrikeStore(BaseStore):
         caller can decide whether the threshold was just crossed).
         """
         now = time.time()
-        sid = await self._insert_with_retry(
+        await self._insert_with_retry(
             """INSERT INTO task_strikes
                (id, task_id, step, log_tail, actor, created_at)
                VALUES (?, ?, ?, ?, ?, ?)""",

@@ -21,9 +21,9 @@ from typing import Any, AsyncGenerator
 import anyio
 import httpx
 
-from tinyagentos.llm_gateway.errors import GatewayError, upstream_error, bad_request, rate_limit_error
-from tinyagentos.llm_usage.usage import from_anthropic, AnthropicStreamUsage
+from tinyagentos.llm_gateway.errors import GatewayError, bad_request, rate_limit_error, upstream_error
 from tinyagentos.llm_gateway.forward import _notify_lifecycle
+from tinyagentos.llm_usage.usage import AnthropicStreamUsage, from_anthropic
 
 ANTHROPIC_API_BASE = "https://api.anthropic.com"
 ANTHROPIC_VERSION = "2023-06-01"
@@ -265,9 +265,9 @@ async def _call_anthropic(
         async with httpx.AsyncClient(timeout=httpx.Timeout(connect=10.0, read=120.0, write=30.0, pool=10.0)) as client:
             resp = await client.post(url, json=request, headers=headers)
     except httpx.TimeoutException as exc:
-        raise upstream_error(f"the Anthropic API timed out") from exc
+        raise upstream_error("the Anthropic API timed out") from exc
     except httpx.HTTPError as exc:
-        raise upstream_error(f"the Anthropic API could not be reached") from exc
+        raise upstream_error("the Anthropic API could not be reached") from exc
 
     err = await _anthropic_status_error(resp, api_key, api_key_for_redaction)
     if err is not None:
@@ -468,7 +468,13 @@ async def chat_completion_anthropic(
     state: Any,
 ) -> dict:
     """Translate OpenAI request to Anthropic and back (non-streaming) with failover."""
-    from tinyagentos.llm_gateway.forward import _call_with_retry, _record_trace, _record_spend, _conservative_budget_estimate, resolve_api_key
+    from tinyagentos.llm_gateway.forward import (
+        _call_with_retry,
+        _conservative_budget_estimate,
+        _record_spend,
+        _record_trace,
+        resolve_api_key,
+    )
     from tinyagentos.llm_usage.pricing import Cost, cost_of
     from tinyagentos.llm_usage.usage import from_anthropic
 
@@ -525,7 +531,13 @@ async def chat_completion_stream_anthropic(
     state: Any,
 ) -> AsyncGenerator[bytes, None]:
     """Translate OpenAI streaming request to Anthropic and stream back with failover."""
-    from tinyagentos.llm_gateway.forward import _stream_with_retry, _record_trace, _record_spend, _conservative_budget_estimate, resolve_api_key
+    from tinyagentos.llm_gateway.forward import (
+        _conservative_budget_estimate,
+        _record_spend,
+        _record_trace,
+        _stream_with_retry,
+        resolve_api_key,
+    )
     from tinyagentos.llm_usage.pricing import Cost, cost_of
     from tinyagentos.llm_usage.usage import Usage
 

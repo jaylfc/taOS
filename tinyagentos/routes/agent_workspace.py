@@ -5,7 +5,7 @@ import json
 import logging
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, HTTPException, Request, UploadFile, File, Form, Query
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Request, UploadFile
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from pydantic import BaseModel
 

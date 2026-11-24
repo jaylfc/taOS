@@ -1,11 +1,13 @@
 from __future__ import annotations
+
 import re
 from pathlib import Path
-from fastapi import APIRouter, Request, UploadFile, File
-from fastapi.responses import JSONResponse, FileResponse
+
+from fastapi import APIRouter, File, Request, UploadFile
+from fastapi.responses import FileResponse, JSONResponse
 
 from tinyagentos.middleware.upload_body_limit import register_upload_cap
-from tinyagentos.themes.package import extract_theme_package, ThemePackageError
+from tinyagentos.themes.package import ThemePackageError, extract_theme_package
 
 router = APIRouter()
 

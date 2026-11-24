@@ -53,6 +53,7 @@ def main() -> None:
 
 async def _run(args) -> None:
     import httpx
+
     from tinyagentos.worker.pairing import (
         default_state_dir,
         run_manual_pairing,
@@ -106,6 +107,7 @@ async def _signed_register(
 ) -> None:
     """POST /api/cluster/workers with HMAC auth so the worker is known before incus-enroll."""
     import httpx
+
     from tinyagentos.worker.pairing import sign_request_headers
 
     controller_url = controller_url.rstrip("/")

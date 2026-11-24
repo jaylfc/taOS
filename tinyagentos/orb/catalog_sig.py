@@ -112,8 +112,8 @@ def verify_catalog(catalog_bytes: bytes, sig_bytes: bytes | None, keys: dict[str
         raise CatalogKeyUnknown(f"key {key_id} not pinned")
 
     # Load public key and verify
-    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
     from cryptography.exceptions import InvalidSignature
+    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
 
     try:
         pub_key_bytes = base64.b64decode(keys[key_id], validate=True)
