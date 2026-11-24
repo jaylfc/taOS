@@ -1,205 +1,255 @@
-"""RED-FIRST: Test that exactly one writer handle exists for the archive directory.
+"""One writer per archive directory inside the controller (card tsk-6i7tqw).
 
-This test drives the real callers (lifespan, routes, functions) and verifies
-the single-writer constraint.  The test must fail on current origin/dev and
-pass after the fix.
+Every test here imports the real ``tinyagentos.archive_writer`` and boots the
+real application lifespan (``create_app`` + ``TestClient`` as a context
+manager).  No helper in this file re-implements the lock.
 """
 
 from __future__ import annotations
 
-import pytest
-
-from fastapi.testclient import TestClient
-from taos_test_csrf import sync_csrf_event_hooks
+import asyncio
+import os
+import shutil
+import threading
 from pathlib import Path
-import tempfile
 
+import pytest
+import yaml
+from fastapi.testclient import TestClient
+
+import taosmd.archive as taosmd_archive
+from taos_test_csrf import sync_csrf_event_hooks
+from tinyagentos import archive_writer as aw
 from tinyagentos.app import create_app
 
 
-# ---------------------------------------------------------------------------
-# Writer-lock stub — enforced by all archive opens through the helpers below.
-# When the real taosmd writer-lock change is released, this stub is replaced
-# with the library's actual implementation; taOS code calls one small helper
-# so the swap is one place.
-# ---------------------------------------------------------------------------
-
-# Tracks strict writer opens: (resolved_archive_dir_str, label, pid) -> open_count
-_strict_opens: dict[tuple[str, str, int], int] = {}
-# Tracks shared opens: pid -> count
-_shared_opens: dict[int, int] = {}
-
-
-def _reset_stub():
-    """Reset stub state between test modules."""
-    _strict_opens.clear()
-    _shared_opens.clear()
-
-
-def open_archive_writer(label: str, archive_dir: Path) -> object:
-    """Open an archive as the strict writer.
-
-    Only one writer per archive directory is allowed per process.
-    Second strict open in the same process raises RuntimeError naming the label.
-    """
-    adir = str(archive_dir.resolve())
-    pid = id(object)  # simplified process id
-    key = (adir, label, pid)
-
-    _strict_opens[key] = _strict_opens.get(key, 0) + 1
-    if _strict_opens[key] > 1:
-        raise RuntimeError(
-            f"Archive writer already held by {label!r}; "
-            f"another strict open would violate the single-writer constraint "
-            f"for {adir!r}"
-        )
-
-    # Return a real ArchiveStore so the caller can use it
-    from taosmd import Archive as _Archive
-    return _Archive(str(archive_dir), str(archive_dir / "archive-index.db"))
-
-
-def open_archive_shared(archive_dir: Path) -> object:
-    """Open a shared archive handle that multiple code may use.
-
-    No writer-lock enforcement; many readers are allowed.
-    """
-    adir = str(archive_dir.resolve())
-    pid = id(object)  # simplified process id
-    key = (adir, pid)
-    _shared_opens[key] = _shared_opens.get(key, 0) + 1
-    from taosmd import Archive as _Archive
-    return _Archive(str(archive_dir), str(archive_dir / "archive-index.db"))
-
-
-# ---------------------------------------------------------------------------
-# Test suite
-# ---------------------------------------------------------------------------
+def _real(p) -> str:
+    return os.path.realpath(str(p))
 
 
 @pytest.fixture(autouse=True)
-def _stub_reset():
-    """Reset stub state before each test."""
-    _reset_stub()
+def _no_leaked_writer():
+    """A test must leave no writer registered; a leak fails the test itself."""
     yield
+    leaked = aw.held_archive_writers()
+    assert leaked == {}, f"writer left registered after the test: {leaked}"
 
 
-@pytest.mark.asyncio
-async def test_single_writer_exclusive():
-    """Only one strict writer may open the archive directory.
+@pytest.fixture
+def release_dir(tmp_path):
+    """A data directory as a current release leaves it: config, an archive
+    with a day file old enough to compress, and its index database."""
+    d = tmp_path / "data"
+    d.mkdir()
+    (d / "config.yaml").write_text(yaml.dump({
+        "server": {"host": "127.0.0.1", "port": 6969},
+        "backends": [],
+        "agents": [],
+    }))
+    (d / ".setup_complete").touch()
+    seed = taosmd_archive.ArchiveStore(d / "archive", d / "archive-index.db")
 
-    A second strict open in the same process raises RuntimeError naming
-    ``controller.app``.
-    """
-    with tempfile.TemporaryDirectory() as tmp:
-        data_dir = Path(tmp) / "data"
-        data_dir.mkdir(parents=True, exist_ok=True)
-        archive_dir = data_dir / "archive"
-        archive_dir.mkdir(parents=True, exist_ok=True)
+    async def _seed():
+        await seed.init()
+        await seed.record("conversation", {"content": "from the old release"},
+                          summary="old")
+        await seed.close()
 
-        # Boot the real application lifespan via TestClient (context manager
-        # triggers the lifespan lifecycle, which creates app.state.archive)
-        app = create_app(data_dir=data_dir)
-        from fastapi.testclient import TestClient
+    asyncio.run(_seed())
+    old_day = d / "archive" / "2020" / "01"
+    old_day.mkdir(parents=True)
+    day_file = old_day / "01.jsonl"
+    day_file.write_text('{"timestamp": 1577836800.0, "event_type": "conversation"}\n')
+    os.utime(day_file, (1577836800, 1577836800))
+    return d
 
-        with TestClient(app) as client:
-            archive = app.state.archive
 
-            # First strict open is the writer from app startup — this succeeds.
-            writer = open_archive_writer("controller.app", archive_dir)
-            writer.close()
+@pytest.fixture
+def archive_constructions(monkeypatch):
+    """Record the real directory of every ArchiveStore built from now on."""
+    built: list[str] = []
+    real_init = taosmd_archive.ArchiveStore.__init__
 
-            # Second strict open in the SAME process must raise RuntimeError
-            # naming controller.app
+    def spy(self, archive_dir="data/archive", index_path="data/archive-index.db"):
+        built.append(_real(archive_dir))
+        real_init(self, archive_dir, index_path)
+
+    monkeypatch.setattr(taosmd_archive.ArchiveStore, "__init__", spy)
+    return built
+
+
+def _authed_client(app) -> TestClient:
+    app.state.auth.setup_user("admin", "Test Admin", "", "testpass")
+    rec = app.state.auth.find_user("admin")
+    token = app.state.auth.create_session(user_id=rec["id"], long_lived=True)
+    client = TestClient(app, cookies={"taos_session": token})
+    client.event_hooks = sync_csrf_event_hooks()
+    return client
+
+
+def test_lifespan_holds_exactly_one_writer(release_dir, archive_constructions):
+    adir = release_dir / "archive"
+    app = create_app(data_dir=release_dir)
+    with TestClient(app):
+        assert aw.held_archive_writers() == {_real(adir): "controller.app"}
+        assert aw.get_archive_writer(adir) is app.state.archive
+        assert archive_constructions.count(_real(adir)) == 1
+        # the index database stays next to the archive directory, as before
+        assert (release_dir / "archive-index.db").exists()
+        assert not (adir / "archive-index.db").exists()
+        assert Path(app.state.archive._index_path) == release_dir / "archive-index.db"
+
+
+def test_second_open_is_refused_whatever_the_label_or_spelling(
+        release_dir, archive_constructions, monkeypatch, tmp_path):
+    adir = release_dir / "archive"
+    link = tmp_path / "link-to-archive"
+    link.symlink_to(adir, target_is_directory=True)
+    app = create_app(data_dir=release_dir)
+    with TestClient(app):
+        first = app.state.archive
+        monkeypatch.chdir(release_dir)
+        spellings = [
+            ("controller.app", adir),
+            ("catalog", adir),
+            ("catalog", link),
+            ("other", Path("archive")),
+            ("other", adir / ".." / "archive"),
+        ]
+        for label, where in spellings:
             with pytest.raises(RuntimeError, match="controller.app"):
-                open_archive_writer("controller.app", archive_dir)
+                aw.open_archive_writer(label, where)
+        assert aw.get_archive_writer(link) is first
+        assert aw.held_archive_writers() == {_real(adir): "controller.app"}
+        assert archive_constructions.count(_real(adir)) == 1
 
 
-@pytest.mark.asyncio
-async def test_building_app_twice_same_process():
-    """Building and closing the app twice in one test process must work.
+def test_concurrent_opens_let_exactly_one_through(tmp_path):
+    adir = tmp_path / "archive"
+    results: list[object] = []
+    barrier = threading.Barrier(8)
 
-    The lifespan shutdown releases the writer, so subsequent boots work.
-    """
-    with tempfile.TemporaryDirectory() as tmp:
-        data_dir = Path(tmp) / "data"
-        data_dir.mkdir(parents=True, exist_ok=True)
-        archive_dir = data_dir / "archive"
-        archive_dir.mkdir(parents=True, exist_ok=True)
+    def attempt(n: int) -> None:
+        barrier.wait()
+        try:
+            results.append(aw.open_archive_writer(f"t{n}", adir))
+        except RuntimeError as exc:
+            results.append(exc)
 
-        # First boot
-        app1 = create_app(data_dir=data_dir)
-        from fastapi.testclient import TestClient
-
-        with TestClient(app1) as client1:
-            _ = app1.state.archive
-
-        # Second boot in the same process
-        app2 = create_app(data_dir=data_dir)
-        from fastapi.testclient import TestClient
-
-        with TestClient(app2) as client2:
-            _ = app2.state.archive
+    threads = [threading.Thread(target=attempt, args=(n,)) for n in range(8)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    winners = [r for r in results if not isinstance(r, RuntimeError)]
+    assert len(winners) == 1
+    assert len(results) == 8
+    asyncio.run(aw.release_archive_writer(winners[0]))
 
 
-@pytest.mark.asyncio
-async def test_catalog_uses_shared_not_writer():
-    """SessionCatalog and CatalogPipeline must use the shared archive, not
-    open a new writer.
+def test_every_in_process_user_holds_the_one_writer(release_dir, archive_constructions):
+    """Drive the routes named by the card; none may open a second archive."""
+    adir = release_dir / "archive"
+    app = create_app(data_dir=release_dir)
+    with _authed_client(app) as client:
+        writer = app.state.archive
 
-    This test exercises the real catalog routes to verify they don't create
-    a second writer handle.
-    """
-    with tempfile.TemporaryDirectory() as tmp:
-        data_dir = Path(tmp) / "data"
-        data_dir.mkdir(parents=True, exist_ok=True)
-        archive_dir = data_dir / "archive"
-        archive_dir.mkdir(parents=True, exist_ok=True)
+        r = client.get("/api/memory/catalog/stats")
+        assert r.status_code == 200, r.text
 
-        # Boot the real application lifespan
-        app = create_app(data_dir=data_dir)
-        # Auth middleware requires a configured user — set up a test admin
-        # so all routes respond normally instead of returning 401
-        # needs_onboarding.
-        app.state.auth.setup_user("admin", "Test Admin", "", "testpass")
-        _record = app.state.auth.find_user("admin")
-        _uid = _record["id"] if _record else ""
-        _token = app.state.auth.create_session(user_id=_uid, long_lived=True)
+        r = client.get("/api/memory/stats")
+        assert r.status_code == 200, r.text
+        assert r.json().get("archive"), "memory management did not reach the archive"
 
-        with TestClient(app, cookies={"taos_session": _token}) as client:
-            client.event_hooks = sync_csrf_event_hooks()
+        r = client.post("/api/archive/compress", params={"days_old": 1})
+        assert r.status_code == 200, r.text
+        assert r.json()["compressed"] == 1
+        assert (adir / "2020" / "01" / "01.jsonl.gz").exists()
 
-            # Exercise /api/memory/catalog/stats - this uses _get_catalog which
-            # should use the shared archive, not create a new writer
-            resp = client.get("/api/memory/catalog/stats")
-            assert resp.status_code == 200, f"Expected 200, got {resp.status_code}: {resp.text}"
+        before = client.get("/api/archive/stats").json()["total_events"]
+        ch = client.post("/api/chat/channels", json={
+            "name": "g", "type": "group", "description": "", "topic": "",
+            "members": ["user", "tom"], "created_by": "user"})
+        assert ch.status_code in (200, 201), ch.text
+        r = client.post("/api/chat/messages", json={
+            "channel_id": ch.json()["id"], "author_id": "user",
+            "author_type": "user", "content": "archive me",
+            "content_type": "text"})
+        assert r.status_code == 200, r.text
+        after = client.get("/api/archive/stats").json()["total_events"]
+        assert after == before + 1
 
-            # Exercise a memory-management route
-            resp = client.get("/api/memory/stats")
-            assert resp.status_code == 200, f"Expected 200, got {resp.status_code}: {resp.text}"
+        # every holder is the very same object
+        from tinyagentos.routes import memory_management
+        request = type("R", (), {"app": app})()
+        assert memory_management._backend(request)._archive is writer
+        assert app.state.channel_hub_router._archive is writer
+        assert aw.get_archive_writer(adir) is writer
+        assert archive_constructions.count(_real(adir)) == 1
+        assert aw.held_archive_writers() == {_real(adir): "controller.app"}
 
-            # POST /api/archive/compress on a fixture day
-            # First add a dummy event so compress_old_files has something to do
-            from tinyagentos.routes.archive import RecordEventRequest
-            resp = client.post(
-                "/api/archive/record",
-                json={
-                    "event_type": "user_message",
-                    "data": {"content": "test archive event"},
-                    "agent_name": "test-agent",
-                    "app_id": "test-app",
-                    "summary": "test",
-                },
-            )
-            assert resp.json()["status"] in ("recorded", "skipped")
 
-            resp = client.post("/api/archive/compress", json={"days_old": 1})
-            assert resp.json()["compressed"] >= 0, f"Expected >= 0, got {resp.json()}"
+def test_shutdown_releases_and_a_second_start_works(release_dir, archive_constructions):
+    adir = release_dir / "archive"
+    app1 = create_app(data_dir=release_dir)
+    with TestClient(app1):
+        first = app1.state.archive
+    assert aw.held_archive_writers() == {}
+    assert aw.get_archive_writer(adir) is None
+    assert first._conn is None, "writer connection left open after shutdown"
 
-            # A chat message that archives (through the real chat routes)
-            # Just verify the route is reachable
-            resp = client.post("/api/chat/message", json={
-                "content": "hello world",
-                "agent_name": "test-agent",
-            })
-            # May succeed or fail depending on other deps, just check it runs
+    app2 = create_app(data_dir=release_dir)
+    with _authed_client(app2) as client:
+        second = app2.state.archive
+        assert second is not first
+        assert aw.held_archive_writers() == {_real(adir): "controller.app"}
+        r = client.get("/api/archive/stats")
+        assert r.status_code == 200, r.text
+        assert r.json()["total_events"] >= 1
+    assert aw.held_archive_writers() == {}
+    assert archive_constructions.count(_real(adir)) == 2
+
+
+def test_second_app_over_a_live_directory_is_refused(release_dir):
+    app1 = create_app(data_dir=release_dir)
+    with TestClient(app1):
+        app2 = create_app(data_dir=release_dir)
+        with pytest.raises(RuntimeError, match="controller.app"):
+            with TestClient(app2):
+                pass
+        # the refused start must not have released the live writer
+        assert aw.held_archive_writers() == {_real(release_dir / "archive"): "controller.app"}
+        assert aw.get_archive_writer(release_dir / "archive") is app1.state.archive
+
+
+def test_failed_startup_does_not_leave_the_writer_held(release_dir, monkeypatch):
+    async def boom(self):
+        raise OSError("disk went away")
+
+    monkeypatch.setattr(taosmd_archive.ArchiveStore, "init", boom)
+    app = create_app(data_dir=release_dir)
+    with pytest.raises(OSError, match="disk went away"):
+        with TestClient(app):
+            pass
+    assert aw.held_archive_writers() == {}
+
+
+def test_create_app_without_lifespan_takes_no_lock(release_dir):
+    """The eager part of create_app only wires objects; the writer is taken by
+    the lifespan, so tests that never start the lifespan are unaffected."""
+    create_app(data_dir=release_dir)
+    create_app(data_dir=release_dir)
+    assert aw.held_archive_writers() == {}
+
+
+def test_job_worker_paths_come_from_the_data_root_not_the_cwd(tmp_path, monkeypatch):
+    """JobWorker is not constructed anywhere in tinyagentos/; it only builds
+    read-side catalog objects.  Its defaults must not depend on the cwd."""
+    from tinyagentos.scheduling.job_worker import JobWorker
+
+    monkeypatch.chdir(tmp_path)
+    root = tmp_path / "elsewhere"
+    worker = JobWorker(queue=None, data_dir=root)
+    assert worker._path({}, "archive_dir", "archive") == str(root / "archive")
+    assert worker._path({}, "catalog_db", "session-catalog.db") == str(root / "session-catalog.db")
+    assert worker._path({"archive_dir": "/x/y"}, "archive_dir", "archive") == "/x/y"

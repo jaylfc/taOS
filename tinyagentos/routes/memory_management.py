@@ -24,18 +24,17 @@ _SETTINGS_DB = "data/memory-settings.db"
 
 
 def _backend(request: Request):
-    """Return a TaOSmdBackend wired to app state stores where available."""
+    """Return a TaOSmdBackend wired to app-state stores where available."""
     from taosmd import TaOSmdBackend
 
     data_dir: Path = getattr(request.app.state, "data_dir", Path("data"))
     settings_db_path = data_dir / "memory-settings.db"
 
     kg = getattr(request.app.state, "knowledge_graph", None)
-    archive = getattr(request.app.state, "archive", None)
-
-    if archive is None:
-        from tinyagentos.archive_writer import open_archive_shared
-        archive = open_archive_shared(data_dir / "archive")
+    # Never opens an archive of its own: this is the controller's one writer
+    # for <data>/archive (None before the lifespan has started it).
+    from tinyagentos.archive_writer import get_archive_writer
+    archive = get_archive_writer(data_dir / "archive")
 
     return TaOSmdBackend(
         kg=kg,

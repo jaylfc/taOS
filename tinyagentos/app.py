@@ -606,11 +606,29 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
     from taosmd import KnowledgeGraph as TemporalKnowledgeGraph
     knowledge_graph = TemporalKnowledgeGraph(db_path=data_dir / "knowledge-graph.db")
 
-    from tinyagentos.archive_writer import open_archive_writer
-    archive = open_archive_writer("controller.app", data_dir / "archive")
+    # The archive writer is NOT built here.  Nothing outside the lifespan
+    # reads it (app.state.archive is only set once the lifespan has started),
+    # so create_app stays free of any lock and tests can build the app many
+    # times without starting it.  The lifespan takes the one writer for
+    # <data>/archive (tinyagentos/archive_writer.py) and releases it on exit.
+    from tinyagentos.archive_writer import open_archive_writer, release_archive_writer
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
+        # Release the archive writer on every exit path, including a start-up
+        # that fails after the writer was taken.  Only the object this start
+        # registered is released (app.state._archive_writer), so a start that
+        # was refused because another app holds the directory frees nothing.
+        try:
+            async with _lifespan_body(app):
+                yield
+        finally:
+            held = getattr(app.state, "_archive_writer", None)
+            if held is not None:
+                await release_archive_writer(held)
+
+    @asynccontextmanager
+    async def _lifespan_body(app: FastAPI):
         # Arm the startup guard: block non-exempt requests until init completes.
         app.state._startup_complete = False
         await agent_registry_store.init()
@@ -822,6 +840,13 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
         app.state.browsing_history = browsing_history
         await knowledge_graph.init()
         app.state.knowledge_graph = knowledge_graph
+        # The one controller-side writer for <data>/archive.  A second writer
+        # (another app in this process, or any other opener) is refused.
+        archive = open_archive_writer(
+            "controller.app", data_dir / "archive",
+            index_path=data_dir / "archive-index.db",
+        )
+        app.state._archive_writer = archive
         await archive.init()
         app.state.archive = archive
 
@@ -1661,7 +1686,8 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
         await browser_sessions.close()
         await browsing_history.close()
         await knowledge_graph.close()
-        await archive.close()
+        await release_archive_writer(archive)
+        app.state.archive = None
         try:
             from tinyagentos.routes import hardware_bluetooth as _bt_routes
             _bt_routes.cancel_discovery_timers()

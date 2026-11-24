@@ -5,7 +5,6 @@ queue based on available resources. The worker only pulls jobs whose
 resource_type matches what this device can provide.
 
 Usage:
-    from pathlib import Path
     worker = JobWorker(queue, data_dir=Path("data"), resource_types=["cpu", "npu"])
     await worker.run_once()  # Process one job
     await worker.run_loop()  # Process jobs continuously
@@ -16,6 +15,7 @@ from __future__ import annotations
 import json
 import logging
 import time
+from pathlib import Path
 
 from taosmd.session_catalog import SessionCatalog
 
@@ -38,10 +38,17 @@ class JobWorker:
         llm_url: str = "http://localhost:11434",
     ):
         self._queue = queue
-        self._data_dir = data_dir
+        self._data_dir = Path(data_dir)
         self._resource_types = resource_types  # None = accept all
         self._llm_url = llm_url
         self._running = False
+
+    def _path(self, payload: dict, key: str, default: str) -> str:
+        """A path from the job payload, else ``default`` under the data root.
+
+        Never relative to the process working directory.
+        """
+        return str(payload.get(key) or self._data_dir / default)
 
     async def run_once(self) -> dict | None:
         """Pull and execute one job. Returns result or None if no jobs."""
@@ -122,12 +129,7 @@ class JobWorker:
         model = payload.get("model", "qwen3:4b")
         tier = payload.get("tier", 2)
         llm_url = payload.get("llm_url", self._llm_url)
-        catalog_db = payload.get(
-            "catalog_db",
-            str(getattr(self, "_data_dir", None) / "session-catalog.db")
-            if getattr(self, "_data_dir", None)
-            else "data/session-catalog.db",
-        )
+        catalog_db = self._path(payload, "catalog_db", "session-catalog.db")
 
         catalog = SessionCatalog(db_path=catalog_db)
         await catalog.init()
@@ -153,28 +155,9 @@ class JobWorker:
         model = payload.get("model", "qwen3:4b")
         llm_url = payload.get("llm_url", self._llm_url)
 
-        catalog_db = payload.get(
-            "catalog_db",
-            str(getattr(self, "_data_dir", None) / "session-catalog.db")
-            if getattr(self, "_data_dir", None)
-            else "data/session-catalog.db",
-        )
-        crystals_db = payload.get(
-            "crystals_db",
-            str(getattr(self, "_data_dir", None) / "crystals.db")
-            if getattr(self, "_data_dir", None)
-            else "data/crystals.db",
-        )
-        kg_db = payload.get(
-            "kg_db",
-            str(getattr(self, "_data_dir", None) / "knowledge-graph.db")
-            if getattr(self, "_data_dir", None)
-            else "data/knowledge-graph.db",
-        )
-
-        catalog = SessionCatalog(db_path=catalog_db)
-        cs = CrystalStore(db_path=crystals_db)
-        kg = TemporalKnowledgeGraph(db_path=kg_db)
+        catalog = SessionCatalog(db_path=self._path(payload, "catalog_db", "session-catalog.db"))
+        cs = CrystalStore(db_path=self._path(payload, "crystals_db", "crystals.db"))
+        kg = TemporalKnowledgeGraph(db_path=self._path(payload, "kg_db", "knowledge-graph.db"))
 
         await catalog.init()
         await cs.init()
@@ -220,29 +203,10 @@ class JobWorker:
         from taosmd.session_catalog import SessionCatalog
 
         date = payload["date"]
-        catalog_db = payload.get(
-            "catalog_db",
-            str(getattr(self, "_data_dir", None) / "session-catalog.db")
-            if getattr(self, "_data_dir", None)
-            else "data/session-catalog.db",
-        )
-        archive_dir = payload.get(
-            "archive_dir",
-            str(getattr(self, "_data_dir", None) / "archive")
-            if getattr(self, "_data_dir", None)
-            else "data/archive",
-        )
-        sessions_dir = payload.get(
-            "sessions_dir",
-            str(getattr(self, "_data_dir", None) / "sessions")
-            if getattr(self, "_data_dir", None)
-            else "data/sessions",
-        )
-
         catalog = SessionCatalog(
-            db_path=catalog_db,
-            archive_dir=archive_dir,
-            sessions_dir=sessions_dir,
+            db_path=self._path(payload, "catalog_db", "session-catalog.db"),
+            archive_dir=self._path(payload, "archive_dir", "archive"),
+            sessions_dir=self._path(payload, "sessions_dir", "sessions"),
         )
         await catalog.init()
         try:
@@ -257,36 +221,11 @@ class JobWorker:
 
         date = payload["date"]
         pipeline = CatalogPipeline(
-            archive_dir=payload.get(
-                "archive_dir",
-                str(getattr(self, "_data_dir", None) / "archive")
-                if getattr(self, "_data_dir", None)
-                else "data/archive",
-            ),
-            sessions_dir=payload.get(
-                "sessions_dir",
-                str(getattr(self, "_data_dir", None) / "sessions")
-                if getattr(self, "_data_dir", None)
-                else "data/sessions",
-            ),
-            catalog_db=payload.get(
-                "catalog_db",
-                str(getattr(self, "_data_dir", None) / "session-catalog.db")
-                if getattr(self, "_data_dir", None)
-                else "data/session-catalog.db",
-            ),
-            crystals_db=payload.get(
-                "crystals_db",
-                str(getattr(self, "_data_dir", None) / "crystals.db")
-                if getattr(self, "_data_dir", None)
-                else "data/crystals.db",
-            ),
-            kg_db=payload.get(
-                "kg_db",
-                str(getattr(self, "_data_dir", None) / "knowledge-graph.db")
-                if getattr(self, "_data_dir", None)
-                else "data/knowledge-graph.db",
-            ),
+            archive_dir=self._path(payload, "archive_dir", "archive"),
+            sessions_dir=self._path(payload, "sessions_dir", "sessions"),
+            catalog_db=self._path(payload, "catalog_db", "session-catalog.db"),
+            crystals_db=self._path(payload, "crystals_db", "crystals.db"),
+            kg_db=self._path(payload, "kg_db", "knowledge-graph.db"),
             llm_url=payload.get("llm_url", self._llm_url),
             # No queue — inline execution to avoid recursive queuing
         )

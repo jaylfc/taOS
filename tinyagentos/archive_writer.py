@@ -1,119 +1,110 @@
-"""Single-writer lock for archive directories.
+"""One writer per archive directory inside the controller process.
 
-Enforces that only one strict writer handle may be open per archive directory.
-Other code should use the shared handle instead.
+The memory library's ``Archive`` object appends to the day's JSONL file through
+its own file handle, keeps its own per-file line counter and writes the SQLite
+index.  Two such objects on one directory interleave appends and hand out
+colliding line numbers, so the controller must hold exactly one.
 
-When the real taosmd writer-lock change is released, this stub is replaced
-with the library's actual implementation; taOS code calls one small helper
-so the swap is one place.
+The rules, all enforced here and nowhere else:
+
+* ``open_archive_writer`` is the only way the controller builds an ``Archive``.
+  The registry is keyed by the resolved real path of the directory (symlinks
+  and relative spellings resolved), never by a label.  A second open of the
+  same directory raises ``ArchiveWriterHeldError`` (a ``RuntimeError``) naming
+  the holder, whatever label the second caller passes.  The ownership check
+  and the publish of the new handle happen inside one locked step.
+* ``get_archive_writer`` is the accessor every other in-process user goes
+  through to reach the same object.  It never opens anything.
+* ``release_archive_writer`` closes the writer and frees the directory, so a
+  later start in the same process can take it again.
+* Readers that only read archive files by path (``SessionCatalog``,
+  ``CatalogPipeline``) never construct an ``Archive``; they are read-only
+  users and need no handle.
+
+This works with the memory library pinned today (0.4.0), which has no lock of
+its own.  The lock here is in-process only; when the library ships its own
+per-directory lock this module is the single place to adopt it.
 """
 
+from __future__ import annotations
+
+import os
 import threading
 from pathlib import Path
 
-# Global writer-lock state: archive_dir -> {label: set(pids)}
-_writer_locks: dict[Path, dict[str, set[int]]] = {}
-# Shared archive handles: archive_dir -> ArchiveStore
-_shared_handles: dict[Path, object] = {}
-_locks_mutex = threading.Lock()
+from taosmd import Archive
+
+_lock = threading.Lock()
+# real path of the archive directory -> (holder label, writer)
+_writers: dict[str, tuple[str, Archive]] = {}
 
 
-def open_archive_writer(label: str, archive_dir: Path) -> object:
-    """Open an archive as the strict writer.
+class ArchiveWriterHeldError(RuntimeError):
+    """The archive directory already has its one writer in this process."""
 
-    Only one writer per archive directory is allowed per process.
-    Second strict open in the same process raises RuntimeError naming the label.
 
-    Args:
-        label: Component label (e.g. ``"controller.app"``) identifying the writer.
-        archive_dir: Path to the archive directory.
+def _key(archive_dir: str | os.PathLike) -> str:
+    return os.path.realpath(os.fspath(archive_dir))
 
-    Returns:
-        An :class:`~taosmd.ArchiveStore` instance.
 
-    Raises:
-        RuntimeError: If a strict writer is already held for this archive directory
-            in the current process.
+def open_archive_writer(
+    label: str,
+    archive_dir: str | os.PathLike,
+    index_path: str | os.PathLike | None = None,
+) -> Archive:
+    """Build the one writer for ``archive_dir`` and register it.
+
+    The returned object is not yet initialised: the caller awaits
+    ``init()`` on it (the lifespan does), and must call
+    ``release_archive_writer`` when done.  ``index_path`` defaults to the
+    library's own default inside ``archive_dir``; the controller passes
+    ``<data>/archive-index.db``.
+
+    Raises ``ArchiveWriterHeldError`` naming the current holder if the
+    directory already has a writer in this process.
     """
-    adir = archive_dir.resolve()
-    pid = __import__("os").getpid()
-
-    with _locks_mutex:
-        lbl_dict = _writer_locks.setdefault(adir, {})
-        existing_pids = lbl_dict.get(label, set())
-
-        if pid in existing_pids:
-            # Same process, same label — already open; increment and return
-            # the existing handle (caller should reuse rather than re-open).
-            return _shared_handles.get(adir)
-
-        if existing_pids:
-            # Another label holds the writer in a different process or same process.
-            # For the stub's single-process guarantee, we only block second opens
-            # from the *same* label in the *same* process.
-            pass
-
-        lbl_dict[label] = lbl_dict.get(label, set()) | {pid}
-
-    # Create the real ArchiveStore
-    from taosmd import Archive as _Archive
-
-    archive = _Archive(str(adir), str(adir / "archive-index.db"))
-
-    with _locks_mutex:
-        _shared_handles[adir] = archive
-
-    return archive
+    key = _key(archive_dir)
+    with _lock:
+        held = _writers.get(key)
+        if held is not None:
+            raise ArchiveWriterHeldError(
+                f"archive directory {key} is already open for writing by "
+                f"{held[0]!r}; {label!r} must use get_archive_writer() to "
+                f"reach that writer instead of opening a second one"
+            )
+        if index_path is None:
+            index_path = Path(key) / "archive-index.db"
+        writer = Archive(archive_dir=key, index_path=index_path)
+        _writers[key] = (label, writer)
+    return writer
 
 
-def open_archive_shared(archive_dir: Path) -> object:
-    """Open a shared archive handle that multiple code may use.
+def get_archive_writer(archive_dir: str | os.PathLike) -> Archive | None:
+    """The one writer for ``archive_dir``, or ``None`` when none is open."""
+    with _lock:
+        held = _writers.get(_key(archive_dir))
+    return held[1] if held else None
 
-    No writer-lock enforcement; many readers are allowed.
 
-    Args:
-        archive_dir: Path to the archive directory.
+def held_archive_writers() -> dict[str, str]:
+    """Real directory path -> holder label, for every writer in this process."""
+    with _lock:
+        return {key: label for key, (label, _w) in _writers.items()}
 
-    Returns:
-        An :class:`~taosmd.ArchiveStore` instance.
+
+async def release_archive_writer(writer: Archive) -> bool:
+    """Close ``writer`` and free its directory.  Idempotent.
+
+    Only the registered object releases: a caller holding a stale or foreign
+    handle cannot free somebody else's directory.  Returns True when this
+    call released it.
     """
-    adir = archive_dir.resolve()
-
-    with _locks_mutex:
-        if adir in _shared_handles:
-            return _shared_handles[adir]
-
-    from taosmd import Archive as _Archive
-
-    archive = _Archive(str(adir), str(adir / "archive-index.db"))
-
-    with _locks_mutex:
-        _shared_handles[adir] = archive
-
-    return archive
-
-
-def close_archive(archive: object) -> None:
-    """Close an archive handle and release the writer lock.
-
-    Args:
-        archive: The archive handle returned by ``open_archive_writer`` or
-            ``open_archive_shared``.
-    """
-    from taosmd import Archive as _Archive
-
-    if isinstance(archive, _Archive):
-        adir = Path(archive._archive_dir).resolve()
-        pid = __import__("os").getpid()
-
-        with _locks_mutex:
-            lbl_dict = _writer_locks.get(adir, {})
-            for label, pids in lbl_dict.items():
-                pids.discard(pid)
-                if not pids:
-                    del lbl_dict[label]
-
-        with _locks_mutex:
-            _shared_handles.pop(adir, None)
-
-        archive.close()
+    with _lock:
+        for key, (_label, held) in list(_writers.items()):
+            if held is writer:
+                del _writers[key]
+                break
+        else:
+            return False
+    await writer.close()
+    return True
