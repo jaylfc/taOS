@@ -24,13 +24,22 @@ The headers are built by ``build_trace_context_headers()``.
 from __future__ import annotations
 
 import logging
+import re
 from pathlib import Path
 
 from fastapi import APIRouter, Request, HTTPException
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
+from tinyagentos.auth_context import (
+    agent_bound_name,
+    current_user,
+    is_host_caller,
+    is_legacy_owner,
+    require_agent_owner_or_admin,
+)
 from tinyagentos.otel.trace_context import build_trace_context_headers
+from tinyagentos.qmd_service import make_index_dir, qmd_honours_dbpath
 
 logger = logging.getLogger(__name__)
 
@@ -48,9 +57,97 @@ class SearchRequest(BaseModel):
     conversation_id: str | None = None
 
 
+async def _authorize_agent_memory(
+    request: Request, agent: str | None, *, allow_bound: bool = True,
+) -> str | None:
+    """Authorise access to *agent*'s memory and return the agent to use.
+
+    Runs BEFORE ``_agent_db_path`` (which creates the agent's directory), so a
+    refused request touches nothing on disk.
+
+    - Agent-bound local token: fenced to its own agent (it maps to the admin
+      user, so an owner check alone would let agent A read agent B). An omitted
+      agent defaults to the bound one. ``allow_bound=False`` (delete) refuses it
+      outright: deletion is human-only.
+    - Unbound host local token: admin-equivalent, unchanged.
+    - Signed-in session: the agent's owner or an admin, via the same helper and
+      identifier form as ``routes/agent_workspace``.
+    - Without an agent the request targets the shared user index and no
+      per-agent ownership applies.
+    """
+    if getattr(request.state, "via", None) == "local_token":
+        bound = getattr(request.state, "agent_name", None)
+        if bound:
+            if not allow_bound:
+                raise HTTPException(status_code=403, detail="Memory deletion is human-only")
+            if agent is not None and agent.strip() != bound:
+                raise HTTPException(status_code=403, detail="forbidden")
+            return bound
+        return agent
+    if not agent or is_legacy_owner(request):
+        return agent
+    # Authorise the exact component _agent_db_path will use.
+    await require_agent_owner_or_admin(request, current_user(request), agent.strip())
+    return agent
+
+
+async def _require_qmd_dbpath(request: Request) -> None:
+    """503 when qmd cannot honour ``dbPath``: it would answer from ONE shared index.
+
+    Called after authorisation and BEFORE ``_agent_db_path`` so a refusal
+    creates nothing on disk. An unreachable qmd (probe result unknown) falls
+    through to the route's normal 502 handling.
+    """
+    if await qmd_honours_dbpath(request.app.state) is False:
+        raise HTTPException(
+            status_code=503,
+            detail="memory service needs updating: qmd cannot keep agent and personal memory apart",
+        )
+
+
 def _qmd_base(request: Request) -> str:
     """URL of the shared host qmd serve process."""
     return request.app.state.qmd_client.base_url
+
+
+_USER_ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
+
+
+def _user_index_path(request: Request) -> Path:
+    """The index for a request that names no agent (the single no-agent resolver).
+
+    Keyed ONLY on the authenticated caller, never on a request parameter:
+
+    - an admin session and the unbound host token keep the install-wide
+      ``user-qmd-index/index.sqlite`` (no data migration);
+    - any other signed-in person gets ``user-qmd-index/<user_id>/index.sqlite``,
+      so one member can never see or delete another member's entries, nor the
+      admin's;
+    - no identity at all is refused (there is no anonymous index).
+
+    The root sits beside, not inside, ``agent_memory_dir``, and agent names are
+    single path components under ``agent_memory_dir``, so no agent name can
+    address a person's index and no person's index is an agent's.
+    """
+    root = request.app.state.agent_memory_dir.parent / "user-qmd-index"
+    if agent_bound_name(request):
+        # A bound agent token defaults to its own agent before reaching here.
+        raise HTTPException(status_code=403, detail="forbidden")
+    if (
+        is_host_caller(request)
+        or getattr(request.state, "is_admin", False)
+        or is_legacy_owner(request)
+    ):
+        return root / "index.sqlite"
+    uid = getattr(request.state, "user_id", None)
+    if not uid:
+        raise HTTPException(status_code=401, detail="authentication required")
+    if not isinstance(uid, str) or not _USER_ID_RE.match(uid):
+        raise HTTPException(status_code=403, detail="forbidden")
+    target = root / uid / "index.sqlite"
+    if not target.resolve().is_relative_to(root.resolve()):
+        raise HTTPException(status_code=403, detail="forbidden")
+    return target
 
 
 def _agent_db_path(request: Request, agent: str | None) -> str:
@@ -73,7 +170,7 @@ def _agent_db_path(request: Request, agent: str | None) -> str:
     """
     base: Path = request.app.state.agent_memory_dir
     if not agent:
-        target = base.parent / "user-qmd-index" / "index.sqlite"
+        target = _user_index_path(request)
     else:
         agent = agent.strip()
         if (
@@ -89,7 +186,7 @@ def _agent_db_path(request: Request, agent: str | None) -> str:
         # entry under agent_memory_dir): the resolved path must stay inside it.
         if not target.resolve().is_relative_to(base.resolve()):
             raise HTTPException(status_code=400, detail="invalid agent name")
-    target.parent.mkdir(parents=True, exist_ok=True)
+    make_index_dir(target.parent, base if agent else base.parent / "user-qmd-index")
     return str(target)
 
 
@@ -103,10 +200,12 @@ async def memory_browse(
     conversation_id: str | None = None,
 ):
     """Browse memory chunks via qmd serve GET /browse."""
+    agent = await _authorize_agent_memory(request, agent)
     http_client = request.app.state.http_client
     params: dict = {"limit": limit, "offset": offset}
     if collection:
         params["collection"] = collection
+    await _require_qmd_dbpath(request)
     params["dbPath"] = _agent_db_path(request, agent)
     headers = build_trace_context_headers(conversation_id=conversation_id)
     try:
@@ -174,6 +273,8 @@ async def memory_search(request: Request, body: SearchRequest):
     Aggregating across agents is a separate concern that belongs in a
     future ``/api/memory/all`` endpoint, gated by user permission.
     """
+    body.agent = await _authorize_agent_memory(request, body.agent)
+    await _require_qmd_dbpath(request)
     db_path = _agent_db_path(request, body.agent)
     search_fn = _qmd_vsearch if body.mode == "semantic" else _qmd_search
 
@@ -197,7 +298,9 @@ async def memory_collections(
     request: Request, agent_name: str, conversation_id: str | None = None,
 ):
     """List memory collections for an agent via qmd serve GET /collections."""
+    agent_name = await _authorize_agent_memory(request, agent_name)
     http_client = request.app.state.http_client
+    await _require_qmd_dbpath(request)
     params: dict = {"dbPath": _agent_db_path(request, agent_name)}
     headers = build_trace_context_headers(conversation_id=conversation_id)
     try:
@@ -219,7 +322,9 @@ async def memory_delete_chunk(
     Routes to the per-agent index when ``agent`` is set, otherwise to
     the default user index.
     """
+    agent = await _authorize_agent_memory(request, agent, allow_bound=False)
     http_client = request.app.state.http_client
+    await _require_qmd_dbpath(request)
     payload: dict = {"hash": content_hash, "dbPath": _agent_db_path(request, agent)}
     headers = build_trace_context_headers(conversation_id=conversation_id)
     try:

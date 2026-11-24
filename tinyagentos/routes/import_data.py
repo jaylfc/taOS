@@ -10,6 +10,9 @@ from pathlib import Path
 from fastapi import APIRouter, HTTPException, Request, UploadFile
 from fastapi.responses import JSONResponse
 
+from tinyagentos.auth_context import require_agent_access
+from tinyagentos.qmd_service import make_index_dir
+
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
@@ -115,6 +118,7 @@ async def embed_files(request: Request):
         return JSONResponse({"error": "No files specified"}, status_code=400)
     if not isinstance(agent_name, str) or not _SAFE_AGENT_NAME.match(agent_name):
         return JSONResponse({"error": "Invalid agent_name"}, status_code=400)
+    await require_agent_access(request, agent_name)
 
     data_dir = getattr(request.app.state, "data_dir", None)
     if data_dir is None:
@@ -146,7 +150,7 @@ async def embed_files(request: Request):
     agent_db = (
         Path(request.app.state.agent_memory_dir) / agent_name / "index.sqlite"
     )
-    agent_db.parent.mkdir(parents=True, exist_ok=True)
+    make_index_dir(agent_db.parent, Path(request.app.state.agent_memory_dir))
 
     embedded_files = []
     all_embedded = True

@@ -8,6 +8,7 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
 from tinyagentos.agent_db import find_agent
+from tinyagentos.auth_context import require_agent_access
 from tinyagentos.config import save_config_locked
 from tinyagentos.frameworks import FRAMEWORKS
 from tinyagentos import framework_update as _runner
@@ -59,6 +60,9 @@ class UpdateRequest(BaseModel):
 
 @router.post("/api/agents/{slug}/framework/update")
 async def post_update(request: Request, slug: str, body: UpdateRequest):
+    # Installs software inside the agent's own container: its owner or an admin.
+    # The agent's own token is refused: updating the runtime is a human decision.
+    await require_agent_access(request, slug, allow_bound=False)
     config = request.app.state.config
     agent = find_agent(config, slug)
     if not agent:

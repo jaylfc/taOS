@@ -1943,7 +1943,7 @@ if [[ -z "${TAOS_SKIP_QMD:-}" ]]; then
             # npm packages are signed via the registry's package-lock integrity
             # mechanism (sha512 in package-lock.json); pinning the version here
             # is the supply-chain control available at install time.
-            qmd_npm_version="${TAOS_QMD_NPM_VERSION:-2.6.0}"
+            qmd_npm_version="${TAOS_QMD_NPM_VERSION:-2.8.3-taos.2}"
             qmd_install_log=$(mktemp /tmp/taos-qmd-install.XXXXXX)
             mv -- "$qmd_install_log" "${qmd_install_log}.log"
             qmd_install_log="${qmd_install_log}.log"
@@ -2025,6 +2025,7 @@ if [[ -z "${TAOS_SKIP_QMD:-}" ]]; then
                     -e "s|__TAOS_USER__|${taos_user}|g" \
                     -e "s|__TAOS_GROUP__|${taos_group}|g" \
                     -e "s|__TAOS_QMD_BIN__|${taos_qmd_bin}|g" \
+                    -e "s|__TAOS_DATA_DIR__|${INSTALL_DIR}/data|g" \
                     scripts/systemd/qmd.service > /tmp/qmd.service.rendered
                 $local_sudo install -m 0644 /tmp/qmd.service.rendered /etc/systemd/system/qmd.service
                 $local_sudo rm -f /tmp/qmd.service.rendered
@@ -2187,7 +2188,14 @@ set_data_dir_ownership() {
     # Tighten the data directory and sensitive credential files on top of the
     # broad chown above — done AFTER so the restrictive perms win.
     log "tightening $INSTALL_DIR/data/ → mode 0700 and secret files → 0600"
-    $sudo_cmd chmod 0700 "$INSTALL_DIR/data"
+    # 0710 (group may traverse, nothing more) when the qmd maintenance step has let a
+    # qmd running as another user join taos's group; otherwise a re-run would cut
+    # qmd off from its index files.
+    if [[ -f /etc/systemd/system/qmd.service.d/50-taos-data.conf ]]; then
+        $sudo_cmd chmod 0710 "$INSTALL_DIR/data"
+    else
+        $sudo_cmd chmod 0700 "$INSTALL_DIR/data"
+    fi
     for f in \
         "$INSTALL_DIR/data/.auth_password" \
         "$INSTALL_DIR/data/.auth_user.json" \
@@ -2214,6 +2222,16 @@ install_linux_systemd_system() {
 
     # Create the dedicated service user and assign group memberships.
     ensure_taos_user
+
+    # Root maintenance runner: lets later updates apply signed, fixed maintenance
+    # steps (e.g. the qmd upgrade) without the owner typing a command. Installed
+    # BEFORE the tree is handed to 'taos', from the tree as the installer left it.
+    # A build without a release key refuses here; that must not fail the install.
+    if [[ -f "$INSTALL_DIR/scripts/install-maint.sh" ]]; then
+        $sudo_cmd bash "$INSTALL_DIR/scripts/install-maint.sh" \
+            --tree "$INSTALL_DIR" --data "$INSTALL_DIR/data" --user taos --no-run \
+            || warn "automatic maintenance steps are not set up (see the message above); updates will ask the owner to run them"
+    fi
 
     # Install graceful-stop script
     $sudo_cmd install -m 0755 "$INSTALL_DIR/scripts/taos-graceful-stop.sh" /usr/local/bin/taos-graceful-stop
