@@ -2,10 +2,10 @@
 
 Two layers are pinned here:
 
-1. **Recording** — a simulated first attach records rows keyed by worker id +
+1. **Recording**: a simulated first attach records rows keyed by worker id +
    ``measured_at``, and a later run *appends*: the first-join baseline is never
    overwritten or replaced.
-2. **The manual re-run trigger** — ``POST /api/workers/{id}/benchmark`` queues a
+2. **The manual re-run trigger**: ``POST /api/workers/{id}/benchmark`` queues a
    run (409 while one is already queued, ``force`` replaces it), the queue is
    visible on the read API, and the heartbeat response hands the queued run to
    the worker. Posting results clears the queue entry.

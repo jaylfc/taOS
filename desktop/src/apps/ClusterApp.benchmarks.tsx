@@ -165,7 +165,7 @@ export function WorkerBenchmarksSection({ workerName }: { workerName: string }) 
             onClick={handleReRun}
             disabled={busy}
             aria-label={`Re-run benchmarks on ${workerName}`}
-            title="Queue a benchmark run. The worker starts it on its next heartbeat — nothing re-runs automatically."
+            title="Queue a benchmark run. The worker starts it on its next heartbeat. Nothing re-runs automatically."
           >
             <Play size={13} />
             {busy ? "Queueing\u2026" : "Re-run benchmarks"}

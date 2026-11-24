@@ -48,7 +48,7 @@ Default name is the machine's hostname.
 3. **Registers** with the controller via `POST /api/cluster/workers`
 4. **Heartbeats** every 5 seconds via `POST /api/cluster/heartbeat` with CPU load
 5. **Self-updates** — installs a new version, restart, health-checks, and rolls back on failure (see below)
-6. **Picks up queued benchmark runs** — a manual "Re-run benchmarks" click is
+6. **Picks up queued benchmark runs**: a manual "Re-run benchmarks" click is
    queued on the controller and delivered in the heartbeat response, because
    the agent polls and has no inbound HTTP surface. The agent then runs
    `python -m tinyagentos.benchmark.runner` as a subprocess (one run at a time,

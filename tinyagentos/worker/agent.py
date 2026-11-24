@@ -1219,26 +1219,26 @@ class WorkerAgent:
                     content=body,
                     headers=auth_headers,
                 )
-# Capture the controller's current generation from the response
-            # only on successful responses
-            if resp.status_code == 200:
-                try:
-                    resp_json = resp.json()
-                    gen = resp_json.get("generation")
-                    if gen is not None:
-                        self._generation = gen
-                    elif self._generation is not None:
-                        logger.warning(
-                            "heartbeat response stopped echoing generation - "
-                            "split-brain layer-2 protection may be degraded"
-                        )
-                    request = resp_json.get("benchmark_request")
-                    self._last_heartbeat_request = request if isinstance(request, dict) else None
-                except Exception as exc:  # noqa: BLE001
-                    logger.warning(f"could not read generation from heartbeat response: {exc}")
-            if resp.status_code == 200:
-                self._record_heartbeat_ok()
-            return resp.status_code
+                # Capture the controller's current generation from the response
+                # only on successful responses
+                if resp.status_code == 200:
+                    try:
+                        resp_json = resp.json()
+                        gen = resp_json.get("generation")
+                        if gen is not None:
+                            self._generation = gen
+                        elif self._generation is not None:
+                            logger.warning(
+                                "heartbeat response stopped echoing generation - "
+                                "split-brain layer-2 protection may be degraded"
+                            )
+                        request = resp_json.get("benchmark_request")
+                        self._last_heartbeat_request = request if isinstance(request, dict) else None
+                    except Exception as exc:  # noqa: BLE001
+                        logger.warning(f"could not read generation from heartbeat response: {exc}")
+                if resp.status_code == 200:
+                    self._record_heartbeat_ok()
+                return resp.status_code
         except Exception as exc:  # noqa: BLE001
             # Log before swallowing: a payload-build bug (not just a network
             # blip) would otherwise drop the worker offline with zero

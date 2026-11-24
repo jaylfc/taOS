@@ -5,11 +5,11 @@ Workers call these endpoints to:
 - Post results from manual reruns (first_join=False)
 
 The UI and scheduler cost model read:
-- GET /api/workers/{id}/benchmark — per-worker history + queued run
+- GET /api/workers/{id}/benchmark: per-worker history + queued run
 - GET /api/benchmarks/capability/{cap} — cross-worker leaderboard
 
 The UI writes one thing:
-- POST /api/workers/{id}/benchmark — queue a manual run
+- POST /api/workers/{id}/benchmark: queue a manual run
 
 Queueing rather than pushing is deliberate: the worker agent is a poller
 (register + heartbeat) with no inbound HTTP surface, so the queued run is
@@ -90,7 +90,7 @@ async def post_benchmark_results(worker_id: str, report: BenchmarkReport, reques
 
     Recording is append-only: every post adds rows, so a re-run never
     overwrites the first-join baseline or an earlier run. Once results have
-    landed, any queued manual run for this worker is cleared — that is how
+    landed, any queued manual run for this worker is cleared; that is how
     the worker tells the controller its click was served.
     """
     store = _store(request)
@@ -191,8 +191,8 @@ async def trigger_worker_benchmark(
         return JSONResponse(
             {
                 "error": (
-                    f"Worker '{worker_id}' is not online (status={status}) — "
-                    "a benchmark needs the worker up"
+                    f"Worker '{worker_id}' is not online (status={status}). "
+                    "A benchmark needs the worker up"
                 )
             },
             status_code=409,
@@ -233,7 +233,7 @@ async def trigger_worker_benchmark(
 async def get_worker_benchmarks(worker_id: str, request: Request, limit: int = 100):
     """Per-worker benchmark history, newest first.
 
-    ``latest`` is the newest row per (capability, model) — what the worker
+    ``latest`` is the newest row per (capability, model), which is what the worker
     scores today; ``history`` is every recorded run; ``pending`` is the
     queued manual run, if one is waiting for the worker's next heartbeat.
     """

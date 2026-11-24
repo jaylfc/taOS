@@ -2411,7 +2411,7 @@ controller cannot push a job to it. A manual benchmark run is therefore
   append-only (a re-run adds rows; it never rewrites the first-join baseline),
   and it clears the queue entry **only when the report names it**: the runner
   echoes the entry's `requested_at` back as `request_id` (`--request-id`), and
-  the controller clears on a match — the match is part of the `DELETE`
+  the controller clears on a match: the match is part of the `DELETE`
   statement, so it cannot race a click that replaced the row in between.
   Clearing by worker id alone would swallow a click made while an earlier run
   was still working.

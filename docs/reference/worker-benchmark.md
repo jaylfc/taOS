@@ -58,7 +58,7 @@ pi4       | llm-chat   | qwen3 | tokens_per_sec  | 42.5  | tok/s | ok     | 1   
 The table is **append-only**: a re-run inserts new rows and never updates or
 deletes an earlier measurement, so the first-join baseline stays available for
 comparison forever. `first_join` marks the one automatic run; every later run
-carries `0`. Exactly one `first_join=1` row per worker can exist — a worker
+carries `0`. Exactly one `first_join=1` row per worker can exist: a worker
 that re-posts `first_join=true` has it coerced to a manual run.
 
 `GET /api/workers/<id>/benchmark` returns `latest` (newest row per capability +
@@ -74,7 +74,7 @@ worker:
   and how long ago that run measured
 - `first run` on the row that came from the automatic first-attach benchmark
 - a "Re-run benchmarks" button, which queues a run and reports it as queued
-  (the worker starts it on its next heartbeat — a few seconds later)
+  (the worker starts it on its next heartbeat, a few seconds later)
 - a count of recorded measurements and when the last run landed
 
 Rows whose `status` is not `ok` show the status (`skipped`, `timeout`, `error`)
@@ -86,7 +86,7 @@ Other tools can fetch `GET /api/workers/<id>/benchmark` to receive the raw
 rows (`latest`, `history`, `pending`). The scheduler uses the same store for
 placement decisions for capability-aware dispatch. Third parties consuming
 this should treat all fields as optional and default missing fields to null
-rather than assume a fixed shape — we add metrics as the backend catalog
+rather than assume a fixed shape, because we add metrics as the backend catalog
 expands.
 
 ## Adding new metrics
@@ -134,7 +134,7 @@ curl -X POST http://<controller>:6969/api/workers/<worker-name>/benchmark \
 
 The endpoint returns `202 {"status": "queued", ...}` immediately. The worker
 learns about the run from its next heartbeat (about five seconds later), starts
-the suite in the background, and posts the results back — echoing the queue
+the suite in the background, and posts the results back, echoing the queue
 entry's id so the controller clears exactly that run. A request without
 `{"force": true}` while a run is already queued answers `409`; pass
 `-d '{"force": true}'` to replace the queued run.
