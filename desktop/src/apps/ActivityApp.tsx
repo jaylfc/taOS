@@ -8,6 +8,7 @@ import {
 import { Card, CardContent, Button } from "@/components/ui";
 import { AiStackRecovery } from "./ActivityApp.aiStack";
 import { ModelActivityPanel } from "./ActivityApp.modelActivity";
+import { SystemHealthCard } from "./ActivityApp.systemHealth";
 import type { ClusterWorker } from "@/lib/cluster";
 import { workerStatus, workerHardwareSummary, workerShortIp, normalizeBackendName, STATUS_PILL_CLASS, STATUS_LABEL } from "@/lib/cluster";
 
@@ -328,18 +329,31 @@ export function ActivityApp({ windowId: _windowId }: { windowId: string }) {
 
   if (loading && !data) {
     return (
-      <div className="flex items-center justify-center h-full">
-        <Loader2 size={24} className="animate-spin text-shell-text-tertiary" />
+      <div className="flex flex-col h-full bg-shell-bg-deep overflow-y-auto">
+        {/* The health glance (#621) mounts in every state — it is the
+            diagnostic surface for exactly the case where the activity
+            telemetry below is not answering. */}
+        <div className="shrink-0 p-4 pb-0">
+          <SystemHealthCard />
+        </div>
+        <div className="flex flex-1 items-center justify-center">
+          <Loader2 size={24} className="animate-spin text-shell-text-tertiary" />
+        </div>
       </div>
     );
   }
 
   if (!data) {
     return (
-      <div className="flex flex-col items-center justify-center h-full gap-2 text-shell-text-tertiary">
-        <Activity size={32} />
-        <p className="text-sm">Activity data unavailable</p>
-        {error && <p className="text-xs">{error}</p>}
+      <div className="flex flex-col h-full bg-shell-bg-deep overflow-y-auto">
+        <div className="shrink-0 p-4 pb-0">
+          <SystemHealthCard />
+        </div>
+        <div className="flex flex-1 flex-col items-center justify-center gap-2 text-shell-text-tertiary">
+          <Activity size={32} />
+          <p className="text-sm">Activity data unavailable</p>
+          {error && <p className="text-xs">{error}</p>}
+        </div>
       </div>
     );
   }
@@ -386,6 +400,9 @@ const { hardware, cpu, memory, npu, gpu, gpus, thermal, zram, disk, network, pro
 
       {/* Grid */}
       <div className="flex-1 overflow-y-auto p-4 grid grid-cols-12 gap-3 auto-rows-min">
+        {/* System health glance (#621) */}
+        <SystemHealthCard />
+
         {/* CPU */}
         <Card className="col-span-12 md:col-span-6 p-4">
           <CardContent className="p-0">
