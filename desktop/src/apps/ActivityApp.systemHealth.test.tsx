@@ -200,6 +200,67 @@ describe("SystemHealthCard", () => {
     );
   });
 
+  it("times out a request that never settles and can refresh again", async () => {
+    vi.useFakeTimers();
+    try {
+      let healthCheckCalls = 0;
+      vi.spyOn(globalThis, "fetch").mockImplementation((input, init) => {
+        const url = String(input);
+        if (url === "/api/health-check") {
+          healthCheckCalls += 1;
+          // Never settles on its own; like real fetch, only an abort
+          // rejects it.
+          return new Promise<Response>((_resolve, reject) => {
+            const signal = init?.signal;
+            if (signal) {
+              if (signal.aborted) {
+                reject(new DOMException("Aborted", "AbortError"));
+                return;
+              }
+              signal.addEventListener(
+                "abort",
+                () => reject(new DOMException("Aborted", "AbortError")),
+                { once: true },
+              );
+            }
+          });
+        }
+        const bodies: Record<string, unknown> = {
+          "/api/health?detailed=true": HEALTH,
+          "/api/agents": AGENTS,
+          "/api/memory/stats": MEMORY,
+        };
+        const body = bodies[url];
+        if (body === undefined) {
+          return Promise.reject(new Error(`Unmocked fetch: ${url}`));
+        }
+        return Promise.resolve(jsonResponse(body));
+      });
+      render(<SystemHealthCard />);
+      // The load is parked on the health-check; refreshes coalesce.
+      fireEvent.focus(window);
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(1000);
+      });
+      expect(healthCheckCalls).toBe(1);
+      expect(screen.queryByText("Agents")).toBeNull();
+      // Past the fetch bound, the stalled request aborts, the rest of
+      // the round commits, and the card can refresh again.
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(90_000);
+      });
+      expect(screen.getByText("Agents")).toBeInTheDocument();
+      expect(screen.getByText(/2 running · 0 stopped/)).toBeInTheDocument();
+      fireEvent.focus(window);
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(1000);
+      });
+      expect(healthCheckCalls).toBe(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("keeps the rest of the card alive when one endpoint fails", async () => {
     mockEndpoints({
       "/api/memory/stats": () => Promise.resolve(jsonResponse({ error: "boom" }, 500)),

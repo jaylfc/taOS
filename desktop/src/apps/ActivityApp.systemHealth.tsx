@@ -69,13 +69,29 @@ const APP_LABEL: Record<string, string> = {
   providers: "Providers",
 };
 
+// /api/health-check runs its probes sequentially server-side, each
+// capped at 10 s (four fixed checks plus one per configured backend),
+// so a legitimate round can take far longer than this card's 30 s poll
+// interval. The bound below leaves room for that while guaranteeing a
+// request that never settles cannot wedge the card's refresh
+// coalescing: on timeout the endpoint's rows degrade and the next
+// refresh can start.
+const FETCH_TIMEOUT_MS = 90_000;
+
 async function fetchJsonOrNull(url: string): Promise<unknown> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
   try {
-    const res = await fetch(url, { headers: { Accept: "application/json" } });
+    const res = await fetch(url, {
+      headers: { Accept: "application/json" },
+      signal: controller.signal,
+    });
     if (!res.ok) return null;
     return await res.json();
   } catch {
     return null;
+  } finally {
+    clearTimeout(timer);
   }
 }
 
