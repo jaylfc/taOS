@@ -113,11 +113,8 @@ _ALLOWED_SCOPES = frozenset({
     # Memory access: write to an agent's own memory namespace.
     "memory_write",
     "cluster_read",
-    # Memory-service record/blob/bus/secrets/archive scopes (tsk-6dhfkd).
-    "records:write", "records:read",
-    "blobs:write", "blobs:read",
-    "bus:read", "bus:inbox",
-    "secrets:reveal", "archive:admin",
+    # Memory-service record authorship (tsk-6dhfkd); the only new name.
+    "records:write",
 })
 
 
@@ -391,17 +388,21 @@ async def _mint_internal_identity(
             created = False
         else:
             adopted = False
-            record = await store.register(
-                framework=_INTERNAL_ORIGIN,
-                display_name=slug,
-                user_id=user.user_id,
-                origin=_INTERNAL_ORIGIN,
-                handle=handle,
-                capabilities=[],
-                # Internal driver identities legitimately live under the
-                # reserved taos- prefix; this path is admin-only.
-                allow_reserved=True,
-            )
+            try:
+                record = await store.register(
+                    framework=_INTERNAL_ORIGIN,
+                    display_name=slug,
+                    user_id=user.user_id,
+                    origin=_INTERNAL_ORIGIN,
+                    handle=handle,
+                    capabilities=[],
+                    # Internal driver identities legitimately live under the
+                    # reserved taos- prefix; this path is admin-only.
+                    allow_reserved=True,
+                )
+            except ValueError as exc:
+                # A reserved handle (the controller's service namespace).
+                raise HTTPException(status_code=422, detail=str(exc))
             created = True
 
     canonical_id = record["canonical_id"]

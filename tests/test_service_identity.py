@@ -29,15 +29,10 @@ from tinyagentos.agent_registry_store import (
 from tinyagentos.agent_token_auth import check_agent_scope, check_human_identity
 from tinyagentos.routes.agent_auth_requests import VALID_SCOPES
 
-AGREED_SCOPES = {
-    "records:write",
-    "records:read",
-    "blobs:write",
-    "blobs:read",
-    "bus:read",
-    "bus:inbox",
-    "secrets:reveal",
-    "archive:admin",
+AGREED_SCOPES = {"records:write"}
+REMOVED_SCOPES = {
+    "records:read", "blobs:write", "blobs:read", "bus:send", "bus:read",
+    "bus:inbox", "secrets:reveal", "archive:admin", "a2a_read",
 }
 
 
@@ -435,7 +430,7 @@ class TestAtomicTokenWriteAndStatusLookup:
             registry=registry, data_dir=data_dir, signing_key_pem=keypair[0]
         )
         names = sorted(p.name for p in csi.controller_token_path(data_dir).parent.iterdir())
-        assert names == ["taos_controller_token"]
+        assert names == [".controller_token.lock", "taos_controller_token"]
         assert stat.S_IMODE(csi.controller_token_path(data_dir).stat().st_mode) == 0o600
 
     @pytest.mark.parametrize("status", ["suspended", "revoked"])
@@ -645,6 +640,20 @@ class TestBusSendNameIsGone:
         ]
         assert hits == []
 
+    def test_no_alias_mechanism_remains(self):
+        import pathlib
+
+        root = pathlib.Path(csi.__file__).parent
+        assert [str(p) for p in root.rglob("*.py")
+                if "SCOPE_ALIASES" in p.read_text(errors="ignore")] == []
+
+    def test_only_the_contract_scopes_are_grantable(self):
+        from tinyagentos.routes.agent_registry import _ALLOWED_SCOPES
+
+        for names in (VALID_SCOPES, _ALLOWED_SCOPES):
+            assert not (REMOVED_SCOPES & names), sorted(REMOVED_SCOPES & names)
+            assert {"records:write", "a2a_send"} <= names
+
     def test_bus_send_is_not_an_accepted_scope(self):
         from tinyagentos.routes.agent_registry import _ALLOWED_SCOPES
 
@@ -683,3 +692,154 @@ class TestGrantsFeedAndRevocation:
         # Nor does a restart.
         async with _lifespan(work) as app2:
             assert await self._feed(app2, cid) == []
+
+
+class TestControllerRecordConfusedDeputy:
+    def test_caller_supplied_on_behalf_of_never_passes_through(self):
+        hostile = {"kind": "history", "on_behalf_of": {"kind": "person", "id": "victim"}}
+        assert "on_behalf_of" not in csi.controller_record(hostile)
+        out = csi.controller_record(hostile, on_behalf_of={"kind": "agent", "id": "me"})
+        assert out["on_behalf_of"] == {"kind": "agent", "id": "me"}
+        for odd in ("victim", ["victim"], {"kind": "person", "id": "victim", "x": 1}):
+            out = csi.controller_record({"on_behalf_of": odd})
+            assert "on_behalf_of" not in out
+        assert hostile["on_behalf_of"]["id"] == "victim"  # input untouched
+
+    def test_hostile_record_with_refused_argument_still_raises(self):
+        with pytest.raises(ValueError):
+            csi.controller_record(
+                {"on_behalf_of": {"kind": "person", "id": "victim"}},
+                on_behalf_of={"kind": "service", "id": "x"},
+            )
+
+
+@pytest.mark.asyncio
+class TestInterruptedRotationAndLock:
+    async def test_boot_finishes_a_rotation_that_crashed_before_the_cutoff_moved(
+        self, tmp_path, monkeypatch
+    ):
+        registry, grants, data_dir, keypair, rec = await _ensure(tmp_path)
+        path = csi.controller_token_path(data_dir)
+        now = int(time.time())
+        old = _svc_token(rec["canonical_id"], keypair[0], iat=now - 100, exp=now - 100 + 86400)
+        path.write_text(old)
+
+        async def _crash(*_a, **_k):
+            raise RuntimeError("process died here")
+
+        monkeypatch.setattr(registry, "bump_token_min_iat", _crash)
+        new = await csi.rotate_controller_service_token(
+            registry=registry, data_dir=data_dir, signing_key_pem=keypair[0]
+        )
+        new_iat = verify_registry_token(new, keypair[1])["iat"]
+        row = await registry.get(rec["canonical_id"])
+        assert (row["token_min_iat"] or 0) < new_iat, "the crash left the old token live"
+        monkeypatch.undo()
+
+        # Next boot: the stored cutoff is older than the current token's iat.
+        await csi.ensure_controller_service_identity(
+            registry=registry, grants=grants, data_dir=data_dir,
+            signing_key_pem=keypair[0], user_id="user-1",
+        )
+        row = await registry.get(rec["canonical_id"])
+        assert row["token_min_iat"] == new_iat
+        assert verify_registry_token(old, keypair[1])["iat"] < row["token_min_iat"]
+        assert path.read_text() == new  # the current token is untouched
+        # Idempotent.
+        await csi.ensure_controller_service_identity(
+            registry=registry, grants=grants, data_dir=data_dir,
+            signing_key_pem=keypair[0], user_id="user-1",
+        )
+        assert (await registry.get(rec["canonical_id"]))["token_min_iat"] == new_iat
+
+    async def test_two_concurrent_rotations_cannot_interleave(self, tmp_path):
+        registry, _g, data_dir, keypair, rec = await _ensure(tmp_path)
+        results = await asyncio.gather(*[
+            csi.rotate_controller_service_token(
+                registry=registry, data_dir=data_dir, signing_key_pem=keypair[0]
+            )
+            for _ in range(4)
+        ])
+        assert all(results)
+        row = await registry.get(rec["canonical_id"])
+        on_disk = verify_registry_token(
+            csi.controller_token_path(data_dir).read_text(), keypair[1]
+        )
+        # The token left on disk is the last one issued and is not superseded.
+        assert on_disk["iat"] >= row["token_min_iat"]
+        assert on_disk["iat"] == row["token_min_iat"]
+        assert csi.controller_token_path(data_dir).read_text() == results[-1] or \
+            csi.controller_token_path(data_dir).read_text() in results
+
+
+@pytest.mark.asyncio
+class TestTokenLockAcrossControllers:
+    async def test_rotation_waits_for_another_holder_and_never_interleaves(
+        self, tmp_path, monkeypatch
+    ):
+        registry, _g, data_dir, keypair, rec = await _ensure(tmp_path)
+        path = csi.controller_token_path(data_dir)
+        before = path.read_text()
+        monkeypatch.setattr(csi, "LOCK_TIMEOUT_SECONDS", 0.3)
+        # Another controller (a second file description on the same lock file,
+        # as a second process would have) holds the lock mid-rotation.
+        async with csi._token_lock(data_dir):
+            blocked = await csi.rotate_controller_service_token(
+                registry=registry, data_dir=data_dir, signing_key_pem=keypair[0]
+            )
+            assert blocked is None
+            assert path.read_text() == before
+        monkeypatch.setattr(csi, "LOCK_TIMEOUT_SECONDS", 5)
+        done = await csi.rotate_controller_service_token(
+            registry=registry, data_dir=data_dir, signing_key_pem=keypair[0]
+        )
+        assert done and path.read_text() == done
+
+
+@pytest.mark.asyncio
+class TestHandleSquatting:
+    async def test_registration_paths_refuse_the_reserved_handle(self, tmp_path):
+        registry, _g, _d, _k = await _stores(tmp_path)
+        for h in ("service:controller", "@Service:Controller", "service:anything",
+                  "Service Controller"):
+            with pytest.raises(ValueError):
+                await registry.register(framework="x", display_name="x", handle=h)
+        ok = await registry.register(framework="x", display_name="ok", handle="@fine")
+        with pytest.raises(ValueError):
+            await registry.update(ok["canonical_id"], handle="service:controller")
+        with pytest.raises(ValueError):
+            await registry.adopt(
+                canonical_id="adopted-20260101-000000", framework="x",
+                display_name="adopted", handle="service:controller",
+                created_ts="2026-01-01T00:00:00+00:00",
+            )
+        await _close(registry)
+
+    async def test_squatted_handle_is_reported_in_health_not_just_logged(self, tmp_path):
+        from httpx import ASGITransport, AsyncClient
+
+        work = tmp_path / "w"
+        work.mkdir()
+        # An identity that took the handle before the controller ever started
+        # (state from a release that did not reserve it).
+        registry, grants, _d, _k = await _stores(work)
+        squatter = await registry.register(
+            framework="x", display_name="squatter", handle="service:controller",
+            allow_service_handle=True,
+        )
+        await _close(registry, grants)
+        async with _lifespan(work) as app:
+            rows = [r for r in await app.state.agent_registry.list_all()
+                    if r["origin"] == "taos-controller"]
+            assert rows == []
+            assert not csi.controller_token_path(work).exists()
+            async with AsyncClient(
+                transport=ASGITransport(app=app), base_url="http://test"
+            ) as c:
+                r = await c.get("/api/health")
+                d = await c.get("/api/health", params={"detailed": "true"})
+            assert r.json()["controller_identity"] == {
+                "status": "error", "reason": "handle_taken"}
+            assert d.json()["subsystems"]["controller_identity"] == {
+                "status": "error", "reason": "handle_taken"}
+            assert squatter["canonical_id"] not in r.text + d.text

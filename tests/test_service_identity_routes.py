@@ -266,6 +266,35 @@ class TestNobodyElseMintsOrImpersonatesService:
 
 
 @pytest.mark.asyncio
+class TestReservedHandleThroughRoutes:
+    async def test_register_route_refuses_the_service_namespace(self, svc):
+        for h in ("service:controller", "@Service:Controller", "service:other"):
+            resp = await svc.post(
+                "/api/agents/registry/register",
+                json={"framework": "hermes", "display_name": "squat", "handle": h,
+                      "origin": "external-selfjoin"},
+            )
+            assert resp.status_code == 422, (h, resp.text)
+
+    async def test_patch_and_mint_internal_refuse_it_too(self, svc):
+        ok = await svc.post(
+            "/api/agents/registry/register",
+            json={"framework": "hermes", "display_name": "fine", "handle": "@fine",
+                  "origin": "external-selfjoin"},
+        )
+        cid = ok.json()["canonical_id"]
+        patched = await svc.patch(
+            f"/api/agents/registry/{cid}", json={"handle": "service:controller"}
+        )
+        assert patched.status_code == 409, patched.text
+        minted = await svc.post(
+            "/api/agents/registry/mint-internal",
+            json={"handle": "service:x", "slug": "x", "scopes": []},
+        )
+        assert minted.status_code == 422, minted.text
+
+
+@pytest.mark.asyncio
 class TestHumanTokenUnchanged:
     async def test_human_assertion_sends_on_the_bus(self, svc):
         token = (await svc.post("/api/a2a/bus/human-assertion")).json()["assertion"]

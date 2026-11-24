@@ -54,13 +54,18 @@ logged.
 from __future__ import annotations
 
 import asyncio
+import contextlib
+import fcntl
 import logging
 import os
 import time
 from pathlib import Path
 from typing import Any, Callable, Optional
 
+import aiosqlite
+
 from tinyagentos.agent_registry_store import (
+    CONTROLLER_HANDLE,
     CONTROLLER_ORIGIN,
     mint_registry_token,
     verify_registry_token,
@@ -75,10 +80,8 @@ logger = logging.getLogger(__name__)
 # controller to send on the bus; records:read and a2a_read are reserved).
 CONTROLLER_GRANTS = ("records:write",)
 
-# Bus/registry handle for the controller.  Each install has its own registry
-# database, so a stable handle is fine within an install; the canonical_id
-# (slug + timestamp) is what is actually unique across installs.
-CONTROLLER_HANDLE = "service:controller"
+# CONTROLLER_HANDLE ("service:controller") is reserved in the registry store:
+# no registration path but this module can take it.
 
 # canonical_id slug prefix.  `taos-` is RESERVED: register() refuses it unless
 # allow_reserved=True, which the HTTP layer never populates.  This module is
@@ -119,9 +122,13 @@ def controller_record(record: dict, *, on_behalf_of: Optional[dict] = None) -> d
     envelope, never in the token.  The receiver records the token's ``sub`` as
     the actor.  Any other kind, an empty or non-string id, or extra keys raise
     ``ValueError``; ``None`` means the controller writes for nobody and the
-    field is absent.  The input is not mutated.
+    field is absent.  Any ``on_behalf_of`` already inside *record* is dropped,
+    so a caller-supplied value can never pass through.  The input is not
+    mutated.
     """
-    out = dict(record)
+    # Never trust an on_behalf_of that arrived inside the record: only the
+    # argument, validated below, may set it.
+    out = {k: v for k, v in record.items() if k != "on_behalf_of"}
     if on_behalf_of is None:
         return out
     if not isinstance(on_behalf_of, dict) or set(on_behalf_of) != {"kind", "id"}:
@@ -146,8 +153,11 @@ def _public_pem(signing_key_pem: bytes) -> bytes:
 
 def _token_state(
     data_dir: Path | str, signing_key_pem: bytes, canonical_id: str, now: float
-) -> tuple[bool, bool]:
-    """Return ``(needs_renewal, has_valid_old_token)`` for the token file.
+) -> tuple[bool, bool, Optional[int]]:
+    """Return ``(needs_renewal, has_valid_old_token, iat)`` for the token file.
+
+    ``iat`` is the current token's issue time when it is a good token, else
+    None; start-up uses it to finish a rotation that crashed half way.
 
     ``has_valid_old_token`` is true when the file holds a token this
     controller signed, so a replacement should supersede it.  A missing,
@@ -159,13 +169,13 @@ def _token_state(
     try:
         raw = path.read_text(encoding="utf-8").strip()
     except OSError:
-        return True, False
+        return True, False, None
     if not raw:
-        return True, False
+        return True, False, None
     try:
         claims = verify_registry_token(raw, _public_pem(signing_key_pem), check_exp=False)
     except ValueError:
-        return True, False
+        return True, False, None
     exp, iat = claims.get("exp"), claims.get("iat")
     if (
         claims.get("sub") != canonical_id
@@ -177,8 +187,8 @@ def _token_state(
     ):
         # Right signature, wrong shape (an earlier draft of the claims, say):
         # replace it and retire the old one.
-        return True, True
-    return (exp - now) < RENEW_BEFORE_SECONDS, True
+        return True, True, None
+    return (exp - now) < RENEW_BEFORE_SECONDS, True, iat
 
 
 def _mint(record: dict, signing_key_pem: bytes, iat: int) -> str:
@@ -272,6 +282,41 @@ async def _find_controller_row(registry: Any, install: str) -> Optional[dict]:
     return next((r for r in rows if r.get("origin") == CONTROLLER_ORIGIN), None)
 
 
+LOCK_TIMEOUT_SECONDS = 30.0
+
+
+@contextlib.asynccontextmanager
+async def _token_lock(data_dir: Path | str):
+    """Exclusive lock around minting and rotating, so two controllers on one
+    data directory (or two passes in one) cannot interleave their file write
+    and cutoff move.  flock, polled without blocking the event loop; if it
+    cannot be had in ``LOCK_TIMEOUT_SECONDS`` the pass is skipped, not hung."""
+    path = controller_token_path(data_dir).with_name(".controller_token.lock")
+    path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    fd = os.open(path, os.O_RDWR | os.O_CREAT, 0o600)
+    deadline = time.monotonic() + LOCK_TIMEOUT_SECONDS
+    try:
+        while True:
+            try:
+                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except BlockingIOError:
+                if time.monotonic() > deadline:
+                    raise TimeoutError("controller token lock busy") from None
+                await asyncio.sleep(0.05)
+        yield
+    finally:
+        os.close(fd)  # closing releases the flock
+
+
+def _set_status(status: Optional[dict], state: str, reason: str = "") -> None:
+    """Record the identity's state for the health endpoint.  Fixed vocabulary,
+    never an id, a path or any token material."""
+    if status is not None:
+        status["status"] = state
+        status["reason"] = reason
+
+
 async def ensure_controller_service_identity(
     *,
     registry: Any,
@@ -279,6 +324,7 @@ async def ensure_controller_service_identity(
     data_dir: Path | str,
     signing_key_pem: bytes,
     user_id: str,
+    status: Optional[dict] = None,
 ) -> Optional[dict]:
     """Mint (or re-assert) this install's controller service identity and keep
     its token fresh. Idempotent; safe to call on every start and on a timer.
@@ -288,7 +334,8 @@ async def ensure_controller_service_identity(
     without a controller service identity is degraded, not broken, and
     refusing to boot over it would turn a missing convenience into an outage.
     A suspended or revoked controller row is left exactly as it is: no second
-    row, no new token.
+    row, no new token.  *status* (a dict) receives a fixed-vocabulary state for
+    the health endpoint.
     """
     install = read_install_id(Path(data_dir))
     if not install:
@@ -297,14 +344,30 @@ async def ensure_controller_service_identity(
             "The controller will keep writing records under the owner's identity.",
             data_dir,
         )
+        _set_status(status, "error", "no_install_id")
         return None
 
     if not user_id:
         # Not an error: an install with no owner yet simply is not ready. The
         # next boot retries the moment an owner exists.
         logger.info("controller service identity deferred: install has no owner yet")
+        _set_status(status, "deferred", "no_owner")
         return None
 
+    try:
+        async with _token_lock(data_dir):
+            return await _ensure_locked(
+                registry, grants, data_dir, signing_key_pem, user_id, install, status
+            )
+    except TimeoutError:
+        logger.warning("controller service identity pass skipped: token lock busy")
+        _set_status(status, "error", "lock_busy")
+        return None
+
+
+async def _ensure_locked(
+    registry, grants, data_dir, signing_key_pem, user_id, install, status
+) -> Optional[dict]:
     record = await _find_controller_row(registry, install)
     if record is not None and record.get("status") != "active":
         logger.warning(
@@ -312,21 +375,42 @@ async def ensure_controller_service_identity(
             "(no new row, no new token)",
             record["canonical_id"], record.get("status"),
         )
+        _set_status(status, "error", f"identity_{record.get('status')}")
         return None
 
     created = record is None
     if record is None:
+        # Someone else holding the reserved handle would make register fail
+        # on the handle index.  Say so plainly instead of dying in a log line.
+        holder = await registry.get_by_handle(CONTROLLER_HANDLE)
+        if holder is not None:
+            logger.error(
+                "controller service identity NOT minted: its reserved handle is "
+                "already held by another identity (%s); remove or rename it",
+                holder["canonical_id"],
+            )
+            _set_status(status, "error", "handle_taken")
+            return None
         short = install[:_SLUG_INSTALL_CHARS]
-        record = await registry.register(
-            framework=CONTROLLER_ORIGIN,
-            display_name=f"{_SLUG_PREFIX}-{short}",
-            user_id=user_id,
-            origin=CONTROLLER_ORIGIN,
-            handle=CONTROLLER_HANDLE,
-            capabilities=[],
-            install_id=install,
-            allow_reserved=True,
-        )
+        try:
+            record = await registry.register(
+                framework=CONTROLLER_ORIGIN,
+                display_name=f"{_SLUG_PREFIX}-{short}",
+                user_id=user_id,
+                origin=CONTROLLER_ORIGIN,
+                handle=CONTROLLER_HANDLE,
+                capabilities=[],
+                install_id=install,
+                allow_reserved=True,
+                allow_service_handle=True,
+            )
+        except aiosqlite.IntegrityError:
+            logger.error(
+                "controller service identity NOT minted: the registry refused "
+                "its reserved handle (a concurrent registration took it)"
+            )
+            _set_status(status, "error", "handle_taken")
+            return None
         logger.info(
             "controller service identity minted: %s (install %s, owner %s)",
             record["canonical_id"], short, user_id,
@@ -340,13 +424,28 @@ async def ensure_controller_service_identity(
         for scope in CONTROLLER_GRANTS:
             await grants.add_grant(record["canonical_id"], scope)
 
-    needs, has_old = _token_state(
+    needs, has_old, iat = _token_state(
         data_dir, signing_key_pem, record["canonical_id"], time.time()
     )
     if needs:
-        await _issue_token(
+        token = await _issue_token(
             registry, record, data_dir, signing_key_pem, supersede=has_old
         )
+        if token is None:
+            _set_status(status, "error", "token_write_failed")
+            return record
+    elif iat is not None and int(record.get("token_min_iat") or 0) < iat:
+        # A rotation crashed after writing the new token and before moving the
+        # cutoff: finish it, so the old token is retired.  Idempotent.
+        try:
+            await registry.bump_token_min_iat(record["canonical_id"], iat)
+            logger.info("controller service token rotation finished after an interrupted run")
+        except Exception as exc:
+            logger.error(
+                "controller service token cutoff could not be advanced (%s)",
+                type(exc).__name__,
+            )
+    _set_status(status, "ok")
     return record
 
 
@@ -365,12 +464,17 @@ async def rotate_controller_service_token(
     install = read_install_id(Path(data_dir))
     if not install:
         return None
-    record = await _find_controller_row(registry, install)
-    if record is None or record.get("status") != "active":
+    try:
+        async with _token_lock(data_dir):
+            record = await _find_controller_row(registry, install)
+            if record is None or record.get("status") != "active":
+                return None
+            return await _issue_token(
+                registry, record, data_dir, signing_key_pem, supersede=True
+            )
+    except TimeoutError:
+        logger.warning("controller service token rotation skipped: token lock busy")
         return None
-    return await _issue_token(
-        registry, record, data_dir, signing_key_pem, supersede=True
-    )
 
 
 async def run_controller_token_renewal(
@@ -380,6 +484,7 @@ async def run_controller_token_renewal(
     data_dir: Path | str,
     signing_key_pem: bytes,
     owner_id: Callable[[], str],
+    status: Optional[dict] = None,
 ) -> None:
     """Background loop: look at the identity every ``RENEWAL_INTERVAL_SECONDS``
     and renew the token before it expires.  A failed pass is logged (error type
@@ -393,6 +498,7 @@ async def run_controller_token_renewal(
                 data_dir=data_dir,
                 signing_key_pem=signing_key_pem,
                 user_id=owner_id(),
+                status=status,
             )
         except asyncio.CancelledError:
             raise
@@ -401,3 +507,4 @@ async def run_controller_token_renewal(
                 "controller service token renewal pass failed (%s); retrying",
                 type(exc).__name__,
             )
+            _set_status(status, "error", "renewal_failed")

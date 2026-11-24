@@ -13,11 +13,14 @@
   grants feed: the identity holds one grant record, `records:write`, created with
   the identity and never re-asserted, so revoking it sticks. A suspended or
   revoked controller row is left alone rather than duplicated. The grant
-  vocabulary gains `records:write`, `records:read`, `blobs:write`, `blobs:read`,
-  `bus:read`, `bus:inbox`, `secrets:reveal` and `archive:admin`; bus sending stays
-  the existing `a2a_send` grant. `controller_record()` builds the
-  `on_behalf_of` envelope field, `{"kind": "person" | "agent", "id": ...}`, and
-  refuses anything else. Nothing in the controller writes records to the memory
+  vocabulary gains `records:write` only; bus sending stays the existing
+  `a2a_send` grant and `records:read` and `a2a_read` stay reserved. The handle
+  `service:controller` is reserved in the registry, a start-up collision is
+  reported in `/api/health`, minting and rotation run under a file lock, and a
+  rotation interrupted before the cutoff moved is finished at the next start.
+  `controller_record()` builds the
+  `on_behalf_of` envelope field, `{"kind": "person" | "agent", "id": ...}`,
+  refuses anything else and drops any `on_behalf_of` already in the record. Nothing in the controller writes records to the memory
   service yet, so no record is attributed to the controller by this change.
 
 ### Security

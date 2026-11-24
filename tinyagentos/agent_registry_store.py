@@ -598,6 +598,25 @@ def _slug_globs(slug: str) -> tuple[str, str]:
 
 _RESERVED_PREFIXES = ("user-", "human-", "admin-", "taos-")
 
+# Handles the OS keeps for itself.  The controller's service identity registers
+# "service:controller"; anyone else holding it first would stop that identity
+# from ever being minted.  Reserved: the whole "service:" namespace and any
+# spelling that slugs to the controller's handle.
+RESERVED_HANDLE_PREFIX = "service:"
+CONTROLLER_HANDLE = "service:controller"
+
+
+def is_reserved_handle(handle: str) -> bool:
+    raw = (handle or "").strip().lstrip("@").lower()
+    return raw.startswith(RESERVED_HANDLE_PREFIX) or _slugify(raw) == "service-controller"
+
+
+def _check_reserved_handle(handle: str) -> None:
+    if is_reserved_handle(handle):
+        raise ValueError(
+            f"handle {handle!r} is reserved for the OS; choose a different handle"
+        )
+
 
 def _check_reserved_prefix(slug: str, raw_name: str = "") -> None:
     """Raise ValueError if *slug* (or the raw display name) would collide with a
@@ -714,8 +733,12 @@ class AgentRegistryStore(BaseStore):
         capabilities: Optional[list[str]] = None,
         allow_reserved: bool = False,
         install_id: str = "",
+        allow_service_handle: bool = False,
     ) -> dict:
         """Mint a canonical_id, persist the record, and return it.
+
+        ``allow_service_handle`` lets the controller's own service identity
+        take its reserved handle; no HTTP layer passes it.
 
         ``reports_to`` is stored as-is with no validation here (the row does
         not exist yet, so it cannot be part of an existing cycle) - use
@@ -738,6 +761,8 @@ class AgentRegistryStore(BaseStore):
         if self._db is None:
             raise RuntimeError("AgentRegistryStore not initialised - call init() first")
 
+        if not allow_service_handle:
+            _check_reserved_handle(handle)
         async with self._write_lock:
             capabilities = capabilities or []
             now_utc = datetime.now(timezone.utc)
@@ -881,6 +906,7 @@ class AgentRegistryStore(BaseStore):
                 "adopt: revoked_at may only be set when status is 'revoked'"
             )
 
+        _check_reserved_handle(handle)
         async with self._write_lock:
             capabilities = capabilities or []
             caps_json = json.dumps(capabilities)
@@ -1456,6 +1482,8 @@ class AgentRegistryStore(BaseStore):
         """
         if self._db is None:
             raise RuntimeError("AgentRegistryStore not initialised")
+        if handle is not None:
+            _check_reserved_handle(handle)
         async with self._write_lock:
             record = await self.get(canonical_id)
             if record is None:

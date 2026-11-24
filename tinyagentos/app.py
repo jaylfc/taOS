@@ -660,14 +660,18 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
             )
 
             _owner = auth_manager.get_primary_user()
+            # Fixed-vocabulary state for /api/health (never token material).
+            app.state.controller_identity = {"status": "deferred", "reason": "not_run"}
             await ensure_controller_service_identity(
                 registry=agent_registry_store,
                 grants=agent_grants_store,
                 data_dir=data_dir,
                 signing_key_pem=agent_registry_keypair[0],
                 user_id=(_owner or {}).get("id", ""),
+                status=app.state.controller_identity,
             )
         except Exception as exc:
+            app.state.controller_identity = {"status": "error", "reason": "startup_failed"}
             # Type only: nothing about the identity or its token is logged.
             logger.error(
                 "controller service identity could not be ensured at startup (%s)",
@@ -685,6 +689,7 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
                     data_dir=data_dir,
                     signing_key_pem=agent_registry_keypair[0],
                     owner_id=lambda: (auth_manager.get_primary_user() or {}).get("id", ""),
+                    status=app.state.controller_identity,
                 ),
                 app.state._background_tasks,
             )
