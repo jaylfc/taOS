@@ -1,0 +1,8 @@
+# Example runtime environment for running the shell components against a
+# private Qt prefix. Copy, adjust the two prefixes, and source it (or point
+# TAOS_SHELL_ENV_FILE / /etc/taos/shell.env at it).
+QT_PREFIX=/path/to/qt/6.12.0/gcc_64
+LAYERSHELL_PREFIX=/path/to/layershell-prefix
+export LD_LIBRARY_PATH="$QT_PREFIX/lib:$LAYERSHELL_PREFIX/lib/x86_64-linux-gnu"
+export QT_PLUGIN_PATH="$LAYERSHELL_PREFIX/lib/x86_64-linux-gnu/plugins:$QT_PREFIX/plugins"
+export QML_IMPORT_PATH="$LAYERSHELL_PREFIX/lib/x86_64-linux-gnu/qml"

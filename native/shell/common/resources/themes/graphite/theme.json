@@ -1,0 +1,70 @@
+{
+  "id": "graphite",
+  "name": "Graphite",
+  "description": "Neutral graphite with a monochrome accent. The taOS default.",
+  "variants": [
+    "dark",
+    "light"
+  ],
+  "swatches": {
+    "dark": [
+      "#0B0B0C",
+      "#131314",
+      "#F4F4F5"
+    ],
+    "light": [
+      "#EBEBEC",
+      "#F5F5F6",
+      "#161617"
+    ]
+  },
+  "colors": {
+    "dark": {
+      "ground": "#0B0B0C",
+      "surface": "#131314",
+      "raised": "#1A1A1C",
+      "stroke": "#FFFFFF14",
+      "hairline": "#FFFFFF14",
+      "text": "#EDEDEE",
+      "textSecondary": "#A3A3A8",
+      "textTertiary": "#85858A",
+      "accent": "#F4F4F5",
+      "accentText": "#0B0B0C",
+      "warning": "#D1A257",
+      "danger": "#E0786F",
+      "ok": "#6FBF8E",
+      "series1": "#F4F4F5B3",
+      "series2": "#F4F4F559",
+      "selection": "#FFFFFF1A",
+      "focusRing": "#F4F4F5",
+      "live": "#F4F4F5",
+      "track": "#FFFFFF14",
+      "scrollbar": "#FFFFFF38"
+    },
+    "light": {
+      "ground": "#EBEBEC",
+      "surface": "#F5F5F6",
+      "raised": "#FAFAFA",
+      "stroke": "#00000017",
+      "hairline": "#00000017",
+      "text": "#161617",
+      "textSecondary": "#55555A",
+      "textTertiary": "#66666B",
+      "accent": "#161617",
+      "accentText": "#F5F5F6",
+      "warning": "#8A5E00",
+      "danger": "#B3392F",
+      "ok": "#2B7650",
+      "series1": "#161617B3",
+      "series2": "#16161759",
+      "selection": "#0000000F",
+      "focusRing": "#161617",
+      "live": "#161617",
+      "track": "#0000000F",
+      "scrollbar": "#00000038"
+    }
+  },
+  "motion": {
+    "reduce": false
+  }
+}

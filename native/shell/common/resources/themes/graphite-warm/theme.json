@@ -1,0 +1,70 @@
+{
+  "id": "graphite-warm",
+  "name": "Warm Graphite",
+  "description": "Warm-tinted graphite with an amber accent.",
+  "variants": [
+    "dark",
+    "light"
+  ],
+  "swatches": {
+    "dark": [
+      "#0D0C0B",
+      "#161514",
+      "#E8B26A"
+    ],
+    "light": [
+      "#EDEAE6",
+      "#F7F5F2",
+      "#9A5B00"
+    ]
+  },
+  "colors": {
+    "dark": {
+      "ground": "#0D0C0B",
+      "surface": "#161514",
+      "raised": "#1E1C1B",
+      "stroke": "#FFFFFF14",
+      "hairline": "#FFFFFF14",
+      "text": "#EEEBE8",
+      "textSecondary": "#ADA7A1",
+      "textTertiary": "#8E8882",
+      "accent": "#E8B26A",
+      "accentText": "#0D0C0B",
+      "warning": "#C8D05A",
+      "danger": "#E0786F",
+      "ok": "#74BC8F",
+      "series1": "#EEEBE8A6",
+      "series2": "#EEEBE84D",
+      "selection": "#E8B26A24",
+      "focusRing": "#E8B26A",
+      "live": "#74BC8F",
+      "track": "#FFFFFF14",
+      "scrollbar": "#FFFFFF38"
+    },
+    "light": {
+      "ground": "#EDEAE6",
+      "surface": "#F7F5F2",
+      "raised": "#FBF9F7",
+      "stroke": "#00000017",
+      "hairline": "#00000017",
+      "text": "#1A1816",
+      "textSecondary": "#5A554F",
+      "textTertiary": "#6B665F",
+      "accent": "#9A5B00",
+      "accentText": "#FBF9F7",
+      "warning": "#5F6700",
+      "danger": "#B3392F",
+      "ok": "#2B7650",
+      "series1": "#1A1816A6",
+      "series2": "#1A18164D",
+      "selection": "#9A5B001A",
+      "focusRing": "#9A5B00",
+      "live": "#2B7650",
+      "track": "#0000000F",
+      "scrollbar": "#00000038"
+    }
+  },
+  "motion": {
+    "reduce": false
+  }
+}
