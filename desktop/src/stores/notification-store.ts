@@ -18,6 +18,9 @@ export interface Notification {
   data?: Record<string, unknown>;
   /** When true the notification has been dismissed/archived. */
   archived?: boolean;
+  /** Alert-style delivery (#206): the toast stays until dismissed instead
+   *  of auto-expiring. Set from the backend row's `persistent` flag. */
+  persistent?: boolean;
 }
 
 interface NotificationStore {

@@ -506,7 +506,10 @@ class TestNotificationsPrefsMemberRejected:
         event_type = "app.failed"
         resp = await client.put(f"/api/notifications/prefs/{event_type}", json={"muted": True})
         assert resp.status_code == 200, resp.text
-        assert resp.json() == {"event_type": event_type, "muted": True}
+        # PUT returns the full pref since #206 (style/show_centre added).
+        body = resp.json()
+        assert body["event_type"] == event_type
+        assert body["muted"] is True
 
         # Verify it's changed
         resp = await client.get("/api/notifications/prefs")
@@ -522,7 +525,10 @@ class TestNotificationsPrefsMemberRejected:
             event_type = "app.failed"
             resp = await bare.put(f"/api/notifications/prefs/{event_type}", json={"muted": True})
             assert resp.status_code == 200, resp.text
-            assert resp.json() == {"event_type": event_type, "muted": True}
+            # PUT returns the full pref since #206 (style/show_centre added).
+            body = resp.json()
+            assert body["event_type"] == event_type
+            assert body["muted"] is True
         finally:
             await bare.aclose()
 

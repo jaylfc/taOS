@@ -279,10 +279,13 @@ function ToastItem({ notif, onExpire, fullWidth = false }: { notif: Notification
   // would recreate the timer on every render because consentPayload() returns
   // a new object reference each time.
   const isConsentToast = consent !== null || signIn !== null;
+  // Alert-style notifications (#206) stay until dismissed, like the
+  // agent-paused and consent toasts below.
+  const isPersistent = notif.persistent === true;
 
   useEffect(() => {
     // Agent-paused and consent toasts stay until the user explicitly acts.
-    if (isAgentPaused || isConsentToast) return;
+    if (isAgentPaused || isConsentToast || isPersistent) return;
     // Auto-expiry only hides the toast; it must NOT archive. Archiving is an
     // explicit user action (the X button / "Keep paused"). Otherwise every
     // toast that simply times out would silently fill the History view.
@@ -290,7 +293,7 @@ function ToastItem({ notif, onExpire, fullWidth = false }: { notif: Notification
     // re-renders on mobile do not reset this timer.
     const timer = setTimeout(() => onExpire(notif.id), TOAST_AUTO_DISMISS_MS);
     return () => clearTimeout(timer);
-  }, [notif.id, onExpire, isAgentPaused, isConsentToast]);
+  }, [notif.id, onExpire, isAgentPaused, isConsentToast, isPersistent]);
 
   return (
     <div

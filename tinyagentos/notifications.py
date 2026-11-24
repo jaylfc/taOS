@@ -12,6 +12,21 @@ from tinyagentos.base_store import BaseStore
 # desktop toast/archive renderers all consume this set.
 VALID_LEVELS = frozenset({"info", "success", "warning", "error"})
 
+# Per-source delivery styles (#206): "banner" toasts and auto-dismisses,
+# "alert" toasts and stays until dismissed (published with persistent=True),
+# "none" is stored in the Notification Centre with no live fan-out.
+DELIVERY_STYLES = ("banner", "alert", "none")
+DEFAULT_DND = {"enabled": False, "start": "22:00", "end": "07:00"}
+
+
+def _valid_hhmm(value) -> bool:
+    """True for a zero-padded 24h "HH:MM" string."""
+    if not isinstance(value, str) or len(value) != 5 or value[2] != ":":
+        return False
+    hh, mm = value[:2], value[3:]
+    return hh.isdigit() and mm.isdigit() and int(hh) <= 23 and int(mm) <= 59
+
+
 logger = logging.getLogger(__name__)
 
 
@@ -38,7 +53,15 @@ CREATE TABLE IF NOT EXISTS notifications (
 CREATE INDEX IF NOT EXISTS idx_notif_ts ON notifications(timestamp DESC);
 CREATE TABLE IF NOT EXISTS notification_prefs (
     event_type TEXT PRIMARY KEY,
-    muted INTEGER NOT NULL DEFAULT 0
+    muted INTEGER NOT NULL DEFAULT 0,
+    style TEXT NOT NULL DEFAULT 'banner',
+    show_centre INTEGER NOT NULL DEFAULT 1
+);
+CREATE TABLE IF NOT EXISTS notification_dnd (
+    id INTEGER PRIMARY KEY CHECK (id = 1),
+    enabled INTEGER NOT NULL DEFAULT 0,
+    start TEXT NOT NULL DEFAULT '22:00',
+    end TEXT NOT NULL DEFAULT '07:00'
 );
 CREATE TABLE IF NOT EXISTS notification_user_state (
     notification_id INTEGER NOT NULL,
@@ -95,6 +118,7 @@ class NotificationStore(BaseStore):
         self._push_sender = None  # async callable: (row: dict) -> None
         self._push_tasks: set = set()  # strong refs so fire-and-forget tasks aren't GC'd
         self._os_lock = asyncio.Lock()  # serialises add_os (idempotency check + insert)
+        self._transient_seq = 0  # synthetic negative ids for toast-only (unstored) rows
 
     def set_webhook_notifier(self, notifier) -> None:
         """Attach a WebhookNotifier to fire on every notification."""
@@ -162,6 +186,20 @@ class NotificationStore(BaseStore):
         if "digest" not in id_cols:
             await self._db.execute("ALTER TABLE os_notification_ids ADD COLUMN digest TEXT NOT NULL DEFAULT ''")
             await self._db.commit()
+        # `style` / `show_centre` on notification_prefs (#206): the mute slice
+        # shipped with only `muted`; existing databases gain the delivery
+        # columns via guarded ALTER, same pattern as the columns above.
+        pref_cols = {row[1] for row in await (await self._db.execute("PRAGMA table_info(notification_prefs)")).fetchall()}
+        if "style" not in pref_cols:
+            await self._db.execute(
+                "ALTER TABLE notification_prefs ADD COLUMN style TEXT NOT NULL DEFAULT 'banner'"
+            )
+            await self._db.commit()
+        if "show_centre" not in pref_cols:
+            await self._db.execute(
+                "ALTER TABLE notification_prefs ADD COLUMN show_centre INTEGER NOT NULL DEFAULT 1"
+            )
+            await self._db.commit()
         # Create the per-user index if it doesn't exist yet. Cannot live in
         # the SCHEMA because the column is added via guarded ALTER after init.
         #
@@ -210,7 +248,8 @@ class NotificationStore(BaseStore):
     ) -> int | None:
         """Create a notification row and fan out to emitters + push.
 
-        Returns the new row id, or None when the source is muted.
+        Returns the new row id, or None when the source is muted or its
+        prefs keep it out of the Notification Centre (toast-only, #206).
 
         Args:
             user_id: Scope the notification to a specific user. When None
@@ -228,20 +267,29 @@ class NotificationStore(BaseStore):
                 recorded for ``user_id`` in the SAME transaction as the row, so
                 a crash can never leave a row without its idempotency record.
         """
-        if await self._is_event_muted(source):
+        pref = await self._get_event_pref(source)
+        if pref["muted"]:
             return None
         ts = int(time.time()) if timestamp is None else int(timestamp)
         data_json = json.dumps(data) if data is not None else None
-        cursor = await self._db.execute(
-            "INSERT INTO notifications (timestamp, level, title, message, source, data, user_id) VALUES (?, ?, ?, ?, ?, ?, ?)",
-            (ts, level, title, message, source, data_json, user_id),
-        )
-        if os_client_id is not None:
-            await self._db.execute(
-                "INSERT INTO os_notification_ids (user_id, client_id, notification_id, digest) VALUES (?, ?, ?, ?)",
-                (user_id or "", os_client_id, cursor.lastrowid, os_digest),
+        # show_centre off (#206): the notification is toast-only — published
+        # live but never stored, so it never reaches the Notification Centre.
+        # OS-originated rows always store: their idempotency record must be
+        # written in the same transaction as a real row.
+        stored = pref["show_centre"] or os_client_id is not None
+        row_id = None
+        if stored:
+            cursor = await self._db.execute(
+                "INSERT INTO notifications (timestamp, level, title, message, source, data, user_id) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (ts, level, title, message, source, data_json, user_id),
             )
-        await self._db.commit()
+            row_id = cursor.lastrowid
+            if os_client_id is not None:
+                await self._db.execute(
+                    "INSERT INTO os_notification_ids (user_id, client_id, notification_id, digest) VALUES (?, ?, ?, ?)",
+                    (user_id or "", os_client_id, row_id, os_digest),
+                )
+            await self._db.commit()
         # Fire webhook notifications in the background
         if webhook and self._webhook_notifier:
             try:
@@ -249,8 +297,16 @@ class NotificationStore(BaseStore):
             except Exception as e:
                 logger.warning(f"Webhook notification error: {e}")
         # Push to EventBus broadcast for SSE delivery — best-effort, never breaks add()
+        if row_id is None:
+            # Toast-only row: a unique negative id keeps the client's srv-<id>
+            # keying collision-free against stored rows (and other transient
+            # rows); read/archive calls against it are best-effort no-ops.
+            self._transient_seq -= 1
+            publish_id = self._transient_seq
+        else:
+            publish_id = row_id
         row = {
-            "id": cursor.lastrowid,
+            "id": publish_id,
             "timestamp": ts,
             "level": level,
             "title": title,
@@ -260,11 +316,23 @@ class NotificationStore(BaseStore):
             "data": data,
             "user_id": user_id,
         }
-        await self._publish(row)
-        return cursor.lastrowid
+        if pref["style"] == "alert":
+            row["persistent"] = True
+        # Style "none" and an active Do Not Disturb window both mean: stored
+        # (above) but no live fan-out — no toast, no web-push (#206).
+        deliver = pref["style"] != "none" and not await self.dnd_active()
+        await self._publish(row, deliver=deliver)
+        return row_id
 
-    async def _publish(self, row: dict) -> None:
-        """Fan a stored row out to the SSE emitter and web-push. Best-effort."""
+    async def _publish(self, row: dict, *, deliver: bool = True) -> None:
+        """Fan a row out to the SSE emitter and web-push. Best-effort.
+
+        ``deliver=False`` skips the live fan-out entirely: the delivery
+        style "none" and an active Do Not Disturb window both mean the
+        notification lands in the Notification Centre silently (#206).
+        """
+        if not deliver:
+            return
         if self._event_emitter:
             try:
                 await self._event_emitter(row)
@@ -360,11 +428,15 @@ class NotificationStore(BaseStore):
                         (user_id, client_id, target[0], digest),
                     )
                     await self._db.commit()
-                    await self._publish({
-                        "id": target[0], "timestamp": ts, "level": level, "title": title,
-                        "message": message, "read": False, "source": source, "data": data,
-                        "user_id": user_id,
-                    })
+                    _pref = await self._get_event_pref(source)
+                    await self._publish(
+                        {
+                            "id": target[0], "timestamp": ts, "level": level, "title": title,
+                            "message": message, "read": False, "source": source, "data": data,
+                            "user_id": user_id,
+                        },
+                        deliver=_pref["style"] != "none" and not await self.dnd_active(),
+                    )
                     return target[0], False
             rid = await self.add(
                 title, message, level=level, source=source, data=data, user_id=user_id,
@@ -673,32 +745,114 @@ class NotificationStore(BaseStore):
             title, message, level=level, source=event_type, user_id=user_id, webhook=webhook
         )
 
-    async def _is_event_muted(self, event_type: str) -> bool:
+    async def _get_event_pref(self, event_type: str) -> dict:
+        """Full delivery pref for one event type, defaults applied.
+
+        Default: unmuted, "banner" style, shown in the Notification Centre.
+        Sources with no stored row — including non-event sources passed to
+        add() — get the default, so their behaviour is unchanged.
+        """
         async with self._db.execute(
-            "SELECT muted FROM notification_prefs WHERE event_type = ?", (event_type,)
+            "SELECT muted, style, show_centre FROM notification_prefs WHERE event_type = ?",
+            (event_type,),
         ) as cursor:
             row = await cursor.fetchone()
-        if row is not None:
-            return bool(row[0])
-        return False
+        if row is None:
+            return {"muted": False, "style": "banner", "show_centre": True}
+        style = row[1] if row[1] in DELIVERY_STYLES else "banner"
+        return {"muted": bool(row[0]), "style": style, "show_centre": bool(row[2])}
 
-    async def set_event_muted(self, event_type: str, muted: bool) -> None:
+    async def _is_event_muted(self, event_type: str) -> bool:
+        return (await self._get_event_pref(event_type))["muted"]
+
+    async def set_event_pref(
+        self,
+        event_type: str,
+        *,
+        muted: bool | None = None,
+        style: str | None = None,
+        show_centre: bool | None = None,
+    ) -> dict:
+        """Update one event type's delivery pref in place; returns the pref.
+
+        Fields left as None keep their stored (or default) values — a
+        muted-only write must not reset style/show_centre (#206).
+        """
+        if style is not None and style not in DELIVERY_STYLES:
+            raise ValueError(f"unknown delivery style: {style!r}")
+        pref = await self._get_event_pref(event_type)
+        if muted is not None:
+            pref["muted"] = bool(muted)
+        if style is not None:
+            pref["style"] = style
+        if show_centre is not None:
+            pref["show_centre"] = bool(show_centre)
         await self._db.execute(
-            "INSERT OR REPLACE INTO notification_prefs (event_type, muted) VALUES (?, ?)",
-            (event_type, int(muted)),
+            "INSERT OR REPLACE INTO notification_prefs (event_type, muted, style, show_centre) VALUES (?, ?, ?, ?)",
+            (event_type, int(pref["muted"]), pref["style"], int(pref["show_centre"])),
         )
         await self._db.commit()
+        return {"event_type": event_type, **pref}
+
+    async def set_event_muted(self, event_type: str, muted: bool) -> None:
+        await self.set_event_pref(event_type, muted=muted)
 
     async def get_event_prefs(self) -> list[dict]:
         async with self._db.execute(
-            "SELECT event_type, muted FROM notification_prefs"
+            "SELECT event_type, muted, style, show_centre FROM notification_prefs"
         ) as cursor:
             rows = await cursor.fetchall()
-        stored = {r[0]: bool(r[1]) for r in rows}
+        stored = {
+            r[0]: {
+                "muted": bool(r[1]),
+                "style": r[2] if r[2] in DELIVERY_STYLES else "banner",
+                "show_centre": bool(r[3]),
+            }
+            for r in rows
+        }
+        default = {"muted": False, "style": "banner", "show_centre": True}
         return [
-            {"event_type": et, "muted": stored.get(et, False)}
+            {"event_type": et, **stored.get(et, default)}
             for et in self.EVENT_TYPES
         ]
+
+    # -- Do Not Disturb (#206) -------------------------------------------
+    # One global row (id = 1). While enabled and the local wall clock is
+    # inside the window, notifications are stored but not delivered live.
+    # start == end means the whole day; start > end wraps past midnight.
+
+    async def get_dnd(self) -> dict:
+        async with self._db.execute(
+            "SELECT enabled, start, end FROM notification_dnd WHERE id = 1"
+        ) as cursor:
+            row = await cursor.fetchone()
+        if row is None:
+            return dict(DEFAULT_DND)
+        return {"enabled": bool(row[0]), "start": row[1], "end": row[2]}
+
+    async def set_dnd(self, enabled: bool, start: str, end: str) -> dict:
+        if not _valid_hhmm(start) or not _valid_hhmm(end):
+            raise ValueError("DND start/end must be zero-padded HH:MM times")
+        await self._db.execute(
+            "INSERT OR REPLACE INTO notification_dnd (id, enabled, start, end) VALUES (1, ?, ?, ?)",
+            (int(bool(enabled)), start, end),
+        )
+        await self._db.commit()
+        return {"enabled": bool(enabled), "start": start, "end": end}
+
+    async def dnd_active(self, now: str | None = None) -> bool:
+        """Whether DND is in effect at local time ``now`` ("HH:MM")."""
+        dnd = await self.get_dnd()
+        if not dnd["enabled"]:
+            return False
+        if now is None:
+            now = time.strftime("%H:%M")
+        start, end = dnd["start"], dnd["end"]
+        if start == end:
+            return True
+        if start < end:
+            return start <= now < end
+        return now >= start or now < end
 
     async def search(
         self,
