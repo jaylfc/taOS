@@ -323,12 +323,25 @@ def check(cfg: UpdateConfig | None = None, cache_dir: Path | str | None = None) 
     cfg = cfg or UpdateConfig.from_env()
     cdir = Path(cache_dir) if cache_dir is not None else None
     try:
-        primary = _try_source(cfg.feed_url, "primary", cfg)
+        installed = installed_release(status(cfg))
+        prev = _accepted_seq(cdir)
+
+        def attempt(base: str, source: str) -> dict | None:
+            r = _try_source(base, source, cfg)
+            if r is not None and r["ok"] and (
+                (prev is not None and r["seq"] < prev)
+                or (r["release"] is not None and installed is not None
+                    and r["release"] < installed)
+            ):
+                return _result(False, "seq_regressed", source)
+            return r
+
+        primary = attempt(cfg.feed_url, "primary")
         if primary is not None and primary["ok"]:
             result = primary
         else:
             primary_reason = primary["reason"] if primary else "unreachable"
-            mirror = _try_source(cfg.mirror_url, "mirror", cfg)
+            mirror = attempt(cfg.mirror_url, "mirror")
             if mirror is not None and mirror["ok"]:
                 result = mirror
                 result["primary_reason"] = primary_reason
@@ -338,12 +351,9 @@ def check(cfg: UpdateConfig | None = None, cache_dir: Path | str | None = None) 
                 result["primary_reason"] = primary_reason
                 result["mirror_reason"] = mirror["reason"] if mirror else "unreachable"
         if result["ok"]:
-            installed = installed_release(status(cfg))
-            prev = _accepted_seq(cdir)
-            regressed = prev is not None and result["seq"] < prev
-            result["seq_regressed"] = regressed
-            result["state"] = release_state(result["release"], installed, regressed)
-            if cdir is not None and not regressed and (prev is None or result["seq"] > prev):
+            result["seq_regressed"] = False
+            result["state"] = release_state(result["release"], installed)
+            if cdir is not None and (prev is None or result["seq"] > prev):
                 _save_json(cdir, ACCEPTED_NAME, {"seq": result["seq"]})
     except Exception as exc:  # never raise to the caller
         result = _result(False, f"error: {type(exc).__name__}")

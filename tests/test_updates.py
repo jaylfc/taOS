@@ -520,10 +520,10 @@ def _state_for(tmp_path, keys, feeds, installed, newest):
     return r, updates.summary(cfg, cache)
 
 
-def test_manifest_older_than_installed_not_offered(tmp_path, keys, feeds):
+def test_manifest_older_than_installed_refused(tmp_path, keys, feeds):
     r, s = _state_for(tmp_path, keys, feeds, 12, 11)
-    assert r["ok"] is True and r["state"] == "older-than-installed"
-    assert s["state"] == "older-than-installed" and s["available_release"] is None
+    assert r["ok"] is False and r["reason"] == "seq_regressed", r
+    assert s["available_release"] is None and s["state"] is None
 
 
 def test_manifest_equal_is_up_to_date(tmp_path, keys, feeds):
@@ -536,18 +536,55 @@ def test_manifest_newer_is_available(tmp_path, keys, feeds):
     assert r["state"] == "available" and s["available_release"] == 13
 
 
-def test_lower_seq_than_last_accepted_not_offered(tmp_path, keys, feeds):
+def _seq_feed(keys, feeds, seq, release):
+    m = _manifest(seq=seq, steps=(f"release-{release}",))
+    return feeds(m, _sign(keys["good_home"], m))
+
+
+def test_lower_seq_than_last_accepted_refused(tmp_path, keys, feeds):
     cache = tmp_path / "cache"
-    hi = _manifest(seq=9, steps=("release-20",))
-    f1 = feeds(hi, _sign(keys["good_home"], hi))
-    cfg = _cfg(tmp_path, keys, f1.url)
-    assert updates.check(cfg, cache_dir=cache)["state"] == "available"
-    lo = _manifest(seq=5, steps=("release-21",))
-    f2 = feeds(lo, _sign(keys["good_home"], lo))
-    cfg2 = _cfg(tmp_path, keys, f2.url)
+    assert updates.check(_cfg(tmp_path, keys, _seq_feed(keys, feeds, 9, 20).url),
+                         cache_dir=cache)["state"] == "available"
+    cfg2 = _cfg(tmp_path, keys, _seq_feed(keys, feeds, 5, 21).url)
     r = updates.check(cfg2, cache_dir=cache)
-    assert r["state"] == "older-than-installed" and r["seq_regressed"] is True
+    assert r["ok"] is False and r["reason"] == "seq_regressed", r
     assert updates.summary(cfg2, cache)["available_release"] is None
+
+
+def test_primary_regressed_mirror_current_uses_mirror(tmp_path, keys, feeds):
+    cache = tmp_path / "cache"
+    updates.check(_cfg(tmp_path, keys, _seq_feed(keys, feeds, 9, 20).url), cache_dir=cache)
+    old = _seq_feed(keys, feeds, 5, 21)
+    cur = _seq_feed(keys, feeds, 10, 22)
+    cfg = _cfg(tmp_path, keys, old.url, cur.url)
+    r = updates.check(cfg, cache_dir=cache)
+    assert r["ok"] is True and r["source"] == "mirror" and r["state"] == "available", r
+    assert r["primary_reason"] == "seq_regressed" and r["seq"] == 10
+    assert updates.summary(cfg, cache)["available_release"] == 22
+
+
+def test_both_regressed_refused_nothing_offered_seq_unchanged(tmp_path, keys, feeds):
+    cache = tmp_path / "cache"
+    updates.check(_cfg(tmp_path, keys, _seq_feed(keys, feeds, 9, 20).url), cache_dir=cache)
+    before = (cache / updates.ACCEPTED_NAME).read_text()
+    cfg = _cfg(tmp_path, keys, _seq_feed(keys, feeds, 5, 21).url,
+               _seq_feed(keys, feeds, 6, 22).url)
+    r = updates.check(cfg, cache_dir=cache)
+    assert r["ok"] is False and r["reason"] == "seq_regressed", r
+    assert r["primary_reason"] == "seq_regressed" and r["mirror_reason"] == "seq_regressed"
+    assert updates.summary(cfg, cache)["available_release"] is None
+    assert (cache / updates.ACCEPTED_NAME).read_text() == before
+
+
+def test_release_below_installed_primary_falls_to_mirror(tmp_path, keys, feeds):
+    st = tmp_path / "status.json"
+    st.write_text(json.dumps({"steps": [{"id": "release-12", "result": "applied"}]}))
+    cfg = _cfg(tmp_path, keys, _seq_feed(keys, feeds, 3, 11).url,
+               _seq_feed(keys, feeds, 4, 13).url)
+    cfg.status_file = str(st)
+    r = updates.check(cfg)
+    assert r["ok"] is True and r["source"] == "mirror" and r["release"] == 13, r
+    assert r["primary_reason"] == "seq_regressed"
 
 
 def test_summary_reports_exact_reasons(tmp_path, keys, feeds):
