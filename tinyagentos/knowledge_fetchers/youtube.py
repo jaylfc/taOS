@@ -256,6 +256,11 @@ async def fetch(
         await _run_media_step(
             "--write-auto-sub",
             "--sub-lang", "en.*",
+            # Never replace a manual caption file for the same language:
+            # yt-dlp overwrites existing subtitle files by default, which
+            # would discard the manual transcript fetched above. Automatic
+            # languages with no manual file are still downloaded.
+            "--no-overwrites",
         )
 
         # ------------------------------------------------------------------ #
@@ -280,10 +285,13 @@ async def fetch(
         # Primary transcript: English when available, else the first
         # language captured. ``content``/``transcript_segments`` keep their
         # historical meaning for existing consumers.
-        primary = next(
-            (t for t in transcripts
-             if t["language"] == "en" or t["language"].startswith("en-")),
-            transcripts[0] if transcripts else None,
+        primary = (
+            next((t for t in transcripts if t["language"] == "en"), None)
+            or next(
+                (t for t in transcripts if t["language"].startswith("en-")),
+                None,
+            )
+            or (transcripts[0] if transcripts else None)
         )
         segments: list[dict] = primary["segments"] if primary else []
         transcript = primary["content"] if primary else ""

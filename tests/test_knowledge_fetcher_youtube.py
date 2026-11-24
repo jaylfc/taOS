@@ -366,3 +366,98 @@ async def test_fetch_returns_description_and_all_language_transcripts(tmp_path):
     # metadata names every language that was captured.
     assert result["content"] == transcripts["en"]
     assert set(result["metadata"]["transcript_languages"]) == {"en", "es"}
+
+
+# ---------------------------------------------------------------------------
+# fetch() review round on #4481: auto captions must not clobber manual ones,
+# and exact "en" wins over English variants as the primary transcript
+# ---------------------------------------------------------------------------
+
+_MANUAL_EN_VTT = (
+    "WEBVTT\n\n00:00:01.000 --> 00:00:03.000\nManual English line\n\n"
+)
+_AUTO_EN_VTT = (
+    "WEBVTT\n\n00:00:01.000 --> 00:00:03.000\nAuto English line\n\n"
+)
+
+
+@pytest.mark.asyncio
+async def test_fetch_auto_captions_do_not_overwrite_manual(tmp_path):
+    """The automatic-caption invocation must not replace a manual caption
+    file for the same language: yt-dlp overwrites existing subtitle files
+    by default, which would discard the manual English transcript before
+    artifact creation. The auto step therefore runs with --no-overwrites
+    (it still downloads automatic languages that have no manual file)."""
+    json_bytes = json.dumps([_FAKE_INFO]).encode()
+    meta_proc = _make_mock_proc(stdout=json_bytes)
+    media_proc = _make_mock_proc()
+
+    seen_args: list[tuple] = []
+    call_count = 0
+
+    async def _fake_exec(*args, **kwargs):
+        nonlocal call_count
+        call_count += 1
+        seen_args.append(args)
+        if call_count == 1:
+            return meta_proc
+        en_file = tmp_path / "test123.en.vtt"
+        if "--write-sub" in args:
+            # Manual step writes the manual English captions.
+            en_file.write_text(_MANUAL_EN_VTT)
+        elif "--write-auto-sub" in args:
+            # Model yt-dlp: an existing subtitle file is replaced unless
+            # --no-overwrites was passed.
+            if "--no-overwrites" not in args or not en_file.exists():
+                en_file.write_text(_AUTO_EN_VTT)
+        return media_proc
+
+    with patch("shutil.which", return_value="/usr/bin/yt-dlp"):
+        with patch("asyncio.create_subprocess_exec", side_effect=_fake_exec):
+            result = await fetch(
+                "https://www.youtube.com/watch?v=test123", media_dir=tmp_path
+            )
+
+    auto_args = seen_args[2]
+    assert "--write-auto-sub" in auto_args
+    assert "--no-overwrites" in auto_args
+    # The manual English transcript survived the automatic step.
+    assert "Manual English line" in result["content"]
+    assert "Auto English line" not in result["content"]
+
+
+@pytest.mark.asyncio
+async def test_fetch_primary_prefers_exact_en_over_en_orig(tmp_path):
+    """With both en-orig and en caption files present, the primary
+    transcript is the exact "en" track: filename sorting puts en-orig
+    first, so selection must search for exact "en" before en-* variants."""
+    (tmp_path / "test123.en-orig.vtt").write_text(
+        "WEBVTT\n\n00:00:01.000 --> 00:00:03.000\nOriginal variant line\n\n"
+    )
+    (tmp_path / "test123.en.vtt").write_text(
+        "WEBVTT\n\n00:00:01.000 --> 00:00:03.000\nExact English line\n\n"
+    )
+
+    json_bytes = json.dumps([_FAKE_INFO]).encode()
+    meta_proc = _make_mock_proc(stdout=json_bytes)
+    media_proc = _make_mock_proc()
+
+    call_count = 0
+
+    async def _fake_exec(*args, **kwargs):
+        nonlocal call_count
+        call_count += 1
+        if call_count == 1:
+            return meta_proc
+        return media_proc
+
+    with patch("shutil.which", return_value="/usr/bin/yt-dlp"):
+        with patch("asyncio.create_subprocess_exec", side_effect=_fake_exec):
+            result = await fetch(
+                "https://www.youtube.com/watch?v=test123", media_dir=tmp_path
+            )
+
+    transcripts = {t["language"]: t["content"] for t in result["transcripts"]}
+    assert set(transcripts) == {"en", "en-orig"}
+    assert result["content"] == transcripts["en"]
+    assert "Exact English line" in result["content"]
