@@ -41,6 +41,7 @@ BACKEND_CAPABILITIES: dict[str, set[str]] = {
     "vllm": {"llm-chat"},
     "exo": {"llm-chat"},
     "mlx": {"llm-chat"},
+    "lmstudio": {"llm-chat", "embedding"},
     "openai": {"llm-chat", "embedding"},
     "anthropic": {"llm-chat"},
     "hailo-ollama": {"llm-chat"},

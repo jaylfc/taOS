@@ -176,6 +176,38 @@ class OpenAICompatAdapter(BackendAdapter):
             }
 
 
+class LMStudioAdapter(BackendAdapter):
+    """Adapter for LM Studio's OpenAI-compatible local server.
+
+    LM Studio serves an OpenAI-compatible API on :1234 with no /health
+    endpoint. We probe GET /v1/models directly: a 200 means the server
+    is up and we get the model list in one shot. Controller-configured
+    backends reach health() with the stored URL as-is, and http://host:1234/v1
+    is the form LM Studio shows users, so a trailing /v1 is stripped first.
+    """
+
+    async def health(self, client: httpx.AsyncClient, url: str) -> dict:
+        start = time.monotonic()
+        base = url.rstrip("/").removesuffix("/v1")
+        try:
+            resp = await client.get(f"{base}/v1/models", timeout=10)
+            elapsed_ms = int((time.monotonic() - start) * 1000)
+            resp.raise_for_status()
+            models = [
+                {"name": m.get("id", ""), "size_mb": 0}
+                for m in resp.json().get("data", [])
+            ]
+            return {"status": "ok", "response_ms": elapsed_ms, "models": models}
+        except Exception as exc:
+            elapsed_ms = int((time.monotonic() - start) * 1000)
+            return {
+                "status": "error",
+                "response_ms": elapsed_ms,
+                "models": [],
+                "error": _describe_health_error(exc, base),
+            }
+
+
 class CloudAPIAdapter(BackendAdapter):
     """Adapter for hosted cloud AI APIs (OpenAI, Anthropic, OpenRouter, Kilo).
 
@@ -245,6 +277,7 @@ _ADAPTERS: dict[str, BackendAdapter] = {
     "deepseek": CloudAPIAdapter(),
     "nous": CloudAPIAdapter(),
     "openai-compatible": CloudAPIAdapter(),
+    "lmstudio": LMStudioAdapter(),
     "sd-cpp": StableDiffusionCppAdapter(),
     "iopaint": IOPaintAdapter(),
     # flux-fill is served behind an A1111-compatible image server in practice;
