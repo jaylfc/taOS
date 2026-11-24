@@ -1,0 +1,5 @@
+singleton Tone 1.0 Tone.qml
+AgentIcon 1.0 AgentIcon.qml
+DeviceTag 1.0 DeviceTag.qml
+AgentRow 1.0 AgentRow.qml
+DetailPane 1.0 DetailPane.qml
