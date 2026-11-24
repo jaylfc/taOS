@@ -383,3 +383,36 @@ async def test_same_id_with_different_content_is_409(world):
         # a true replay (even with a later posted_at) is still a duplicate
         again = await c.post(URL, json=_body(id="z1", summary="one", posted_at=int(time.time()) - 5))
         assert again.status_code == 200 and again.json() == {"id": first["id"], "duplicate": True}
+
+
+@pytest.mark.asyncio
+async def test_database_from_the_earlier_head_gains_the_digest_column(tmp_path):
+    # An earlier head created os_notification_ids without `digest`; CREATE TABLE IF NOT EXISTS would
+    # leave it that way, and the first POST would fail with "no such column".
+    db = tmp_path / "notifications.db"
+    con = sqlite3.connect(db)
+    con.execute(
+        "CREATE TABLE notifications (id INTEGER PRIMARY KEY AUTOINCREMENT, timestamp INTEGER NOT NULL,"
+        " level TEXT NOT NULL, title TEXT NOT NULL, message TEXT NOT NULL, read INTEGER NOT NULL DEFAULT 0,"
+        " source TEXT, archived INTEGER NOT NULL DEFAULT 0, data TEXT, user_id TEXT)")
+    con.execute(
+        "CREATE TABLE os_notification_ids (user_id TEXT NOT NULL, client_id TEXT NOT NULL,"
+        " notification_id INTEGER NOT NULL, PRIMARY KEY (user_id, client_id))")
+    con.execute("INSERT INTO notifications (timestamp, level, title, message, source, user_id)"
+                " VALUES (1, 'info', 'old', 'row', 'os:x', 'u1')")
+    con.execute("INSERT INTO os_notification_ids (user_id, client_id, notification_id) VALUES ('u1', 'old', 1)")
+    con.commit(); con.close()
+    store = NotificationStore(db)
+    await store.init()
+    try:
+        rid, created = await store.add_os(user_id="u1", client_id="a", title="t", message="m",
+                                          level="info", source="os:x", data={}, digest="d1")
+        assert created and rid is not None
+        # a retry of the same id with the same content is still a duplicate; different content is refused
+        assert (await store.add_os(user_id="u1", client_id="a", title="t", message="m",
+                                   level="info", source="os:x", data={}, digest="d1")) == (rid, False)
+        # the pre-upgrade record keeps working (its digest is the empty default)
+        assert (await store.add_os(user_id="u1", client_id="old", title="old", message="row",
+                                   level="info", source="os:x", data={}))[1] is False
+    finally:
+        await store.close()
