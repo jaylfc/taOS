@@ -178,7 +178,7 @@ def _usage(data: dict) -> Usage:
     return Usage(input_tokens=0, output_tokens=0, source=UNKNOWN)
 
 
-async def _embed_one(route: Route, body: dict, requested: str, principal: str, state: Any) -> dict:
+async def _embed_one(route: Route, body: dict, requested: str, principal: str, state: Any) -> tuple[dict, str | None]:
     api_key = await _forward.resolve_api_key(state, route.api_key_ref)
     headers = {"content-type": "application/json"}
     if api_key:
@@ -230,7 +230,7 @@ async def _embed_one(route: Route, body: dict, requested: str, principal: str, s
     if cost and cost.usd and cost.usd > 0:
         _forward._record_spend(state, principal, cost.usd)
     _forward._notify_lifecycle(state, route.backend_name)
-    return data
+    return data, None
 
 
 async def create_embedding(routes: list[Route], body: dict, requested: str, principal: str,
@@ -238,5 +238,6 @@ async def create_embedding(routes: list[Route], body: dict, requested: str, prin
     """One embeddings call with the chat path's retry / failover."""
     if not routes:
         raise GatewayError(404, f"model {requested!r} not found", code="model_not_found")
-    return await _forward._call_with_retry(
+    result, _ = await _forward._call_with_retry(
         routes, lambda route: _embed_one(route, body, requested, principal, state))
+    return result
