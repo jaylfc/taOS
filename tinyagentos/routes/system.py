@@ -4,6 +4,7 @@ import asyncio
 import json
 import logging
 import os
+import re
 import sys
 from dataclasses import asdict
 from datetime import datetime, timezone
@@ -39,12 +40,69 @@ def _require_admin_or_loopback(request: Request) -> None:
     require_admin(request)
 
 
+# The graceful-stop script (scripts/taos-graceful-stop.sh) calls
+# prepare-shutdown on every controller stop, including the restart that follows
+# an in-app update. A machine that still has the old unit and the old script
+# drains agents on that restart, and the unprivileged controller cannot always
+# repair those files. So the controller decides, server side: while it is
+# restarting for an update (apply_update, set_update_channel and the restart
+# route mark it), prepare-shutdown skips the drain UNLESS systemd has a real
+# shutdown job queued. The mark lives in this process only; _do_restart clears
+# it when the restart did not happen, and a new process starts without it.
+_SHUTDOWN_JOB_RE = re.compile(r"\b(shutdown|reboot|halt|poweroff|kexec)\.target\b")
+
+
+def mark_restarting_for_update(app_state) -> None:
+    app_state._restarting_for_update = True
+
+
+def clear_restarting_for_update(app_state) -> None:
+    app_state._restarting_for_update = False
+
+
+async def _shutdown_job_queued() -> bool | None:
+    """Is a shutdown/reboot/halt/poweroff/kexec job queued in systemd right now?
+
+    Asked fresh on every call (the answer changes with the machine, so it is
+    never cached). True or False when systemd answered; None when it could not
+    be asked, which the caller must treat as unknown, never as "no".
+    """
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            "systemctl", "list-jobs", "--no-pager", "--no-legend",
+            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL,
+        )
+    except OSError as exc:
+        logger.warning("prepare-shutdown: cannot run systemctl list-jobs: %s", exc)
+        return None
+    try:
+        out, _ = await asyncio.wait_for(proc.communicate(), timeout=10.0)
+    except asyncio.TimeoutError:
+        proc.kill()
+        await proc.wait()
+        logger.warning("prepare-shutdown: systemctl list-jobs timed out")
+        return None
+    if proc.returncode != 0:
+        logger.warning("prepare-shutdown: systemctl list-jobs exited %s", proc.returncode)
+        return None
+    return bool(_SHUTDOWN_JOB_RE.search(out.decode(errors="replace")))
+
+
 @router.post("/api/system/prepare-shutdown", dependencies=[Depends(_require_admin_or_loopback)])
 async def prepare_shutdown(request: Request):
     """Gracefully prepare all agents for shutdown. Used by systemd stop hook."""
     orchestrator = getattr(request.app.state, "orchestrator", None)
     if orchestrator is None:
         return JSONResponse({"error": "orchestrator not available"}, status_code=503)
+    if getattr(request.app.state, "_restarting_for_update", False):
+        # A restart for an update drains nothing; only a real shutdown job
+        # (or an answer we could not get) keeps the drain.
+        if await _shutdown_job_queued() is False:
+            return {
+                "status": "ready",
+                "report": {},
+                "drain_skipped": "controller restarting for an update; no shutdown job queued",
+            }
     report = await orchestrator.prepare("all", "system-shutdown")
     return {"status": "ready", "report": report}
 
@@ -53,10 +111,10 @@ async def prepare_shutdown(request: Request):
 async def prepare_restart(request: Request):
     """Restart just the controller process. Admin or host local token only.
 
-    Agents and LiteLLM run independently and stay up across a controller
-    restart, so there's nothing to drain — the restart is a ~5s uvicorn
-    bounce. Framework-side retry/backoff (tracked separately) covers the
-    brief window where controller-bound calls fail.
+    Agents run independently and stay up across a controller restart, so
+    there's nothing to drain -- the restart is a ~5s uvicorn bounce.
+    Framework-side retry/backoff (tracked separately) covers the brief window
+    where controller-bound calls fail.
     """
     # Record target SHA so the boot-time check can confirm the update took.
     auto_updater = getattr(request.app.state, "auto_updater", None)
@@ -78,11 +136,22 @@ async def prepare_restart(request: Request):
             "agents": {},
         }
 
+    mark_restarting_for_update(request.app.state)
     asyncio.create_task(_do_restart(request.app.state))
     return {"status": "restarting"}
 
 
 async def _do_restart(app_state) -> None:
+    try:
+        await _restart_controller(app_state)
+    finally:
+        # Every way the restart works ends this process (os._exit or execv),
+        # so getting here means it did not happen: the controller keeps
+        # running and must drain on its next real stop.
+        clear_restarting_for_update(app_state)
+
+
+async def _restart_controller(app_state) -> None:
     await asyncio.sleep(2)
 
     notif = getattr(app_state, "notifications", None)

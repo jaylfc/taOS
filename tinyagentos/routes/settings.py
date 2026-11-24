@@ -5,11 +5,13 @@ import io
 import ipaddress
 import logging
 import os
+import re
 import shutil
 import tarfile
 import tempfile
 import time
 from collections import OrderedDict
+from dataclasses import dataclass, field
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -1177,6 +1179,201 @@ async def _update_local_taosmd(request: Request) -> dict:
     }
 
 
+# --- graceful-stop refresh on update ------------------------------------
+#
+# Installs made before the no-drain fix carry `ExecStop=<stop script>` in their
+# tinyagentos.service, so every controller restart (an update, the Restart
+# button) drained the agents. The update refreshes two things, and nothing
+# else:
+#
+#   1. the installed stop script, to the shipped one (it gates the drain on a
+#      real shutdown job); the file it replaces is kept next to it as `.bak`;
+#   2. a systemd DROP-IN beside the unit (`tinyagentos.service.d/`) that clears
+#      ExecStop. A drop-in is the idiomatic override: the person's own unit
+#      file is never opened for writing, so anything they added to it survives,
+#      and removing the drop-in undoes the change.
+#
+# Then `systemctl daemon-reload`. Never a stop, start or restart.
+
+_SYSTEM_UNIT = Path("/etc/systemd/system/tinyagentos.service")
+_SYSTEM_STOP_SCRIPT = Path("/usr/local/bin/taos-graceful-stop")
+_DROPIN_NAME = "10-taos-no-drain-on-restart.conf"
+_EXEC_STOP_RE = re.compile(r"(?m)^[ \t]*ExecStop=(.*)$")
+_STOP_SCRIPT_NAME = "taos-graceful-stop"
+
+
+def _user_unit() -> Path:
+    return Path.home() / ".config" / "systemd" / "user" / "tinyagentos.service"
+
+
+def _user_stop_script() -> Path:
+    return Path.home() / ".local" / "bin" / _STOP_SCRIPT_NAME
+
+
+@dataclass
+class StopRefresh:
+    """What the update did to the stop artifacts, for the update result."""
+
+    scope: str | None = None  # "system", "user", or None when no unit is installed
+    changed: list[str] = field(default_factory=list)
+    problems: list[str] = field(default_factory=list)
+
+    def as_dict(self) -> dict:
+        return {"scope": self.scope, "changed": list(self.changed), "problems": list(self.problems)}
+
+    def note(self) -> str:
+        if not self.problems:
+            return ""
+        return " Graceful-stop refresh: " + " | ".join(self.problems) + "."
+
+
+def _installed_scope(project_dir: Path) -> tuple[str, Path, Path] | None:
+    """(scope, unit path, stop script path) of the install that runs THIS
+    checkout, or None. A unit that points at another checkout is not ours to
+    touch."""
+    candidates = (
+        ("system", _SYSTEM_UNIT, _SYSTEM_STOP_SCRIPT),
+        ("user", _user_unit(), _user_stop_script()),
+    )
+    wanted = {str(project_dir), str(project_dir.resolve())}
+    for scope, unit, script in candidates:
+        try:
+            text = unit.read_text()
+        except FileNotFoundError:
+            continue
+        except OSError:
+            # Present but unreadable: still ours to report on.
+            return scope, unit, script
+        if any(w in text for w in wanted):
+            return scope, unit, script
+    return None
+
+
+def _dropin_text(unit_text: str) -> str | None:
+    """The drop-in that clears the stop script's ExecStop, or None if the unit
+    has no such line (a fresh install, or already fixed).
+
+    Any OTHER ExecStop the person added is put back after the reset, because
+    an empty ``ExecStop=`` clears every one of them."""
+    mine, others = [], []
+    for m in _EXEC_STOP_RE.finditer(unit_text):
+        command = m.group(1).strip()
+        (mine if _STOP_SCRIPT_NAME in command else others).append(command)
+    if not mine:
+        return None
+    lines = ["[Service]", "ExecStop="] + [f"ExecStop={c}" for c in others]
+    return (
+        "# Written by the taOS updater: a controller restart must not drain the agents.\n"
+        "# Delete this file to restore the old behaviour.\n" + "\n".join(lines) + "\n"
+    )
+
+
+async def _systemctl(*args: str) -> tuple[int | None, str]:
+    """Run systemctl; (returncode, stderr text). The test seam for systemctl."""
+    proc = await asyncio.create_subprocess_exec(
+        "systemctl", *args,
+        stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.PIPE,
+    )
+    try:
+        _, err = await asyncio.wait_for(proc.communicate(), timeout=20.0)
+    except asyncio.TimeoutError:
+        proc.kill()
+        await proc.wait()
+        return None, "timed out"
+    return proc.returncode, err.decode(errors="replace").strip()
+
+
+async def _refresh_graceful_stop_artifacts(project_dir: Path) -> StopRefresh:
+    """Refresh the installed stop script and drop-in; idempotent.
+
+    A failure (a read-only /etc, a missing script, systemctl refusing) is
+    returned in ``problems`` so the update result can tell the person; it is
+    never swallowed. Raises nothing for I/O trouble.
+    """
+    project_dir = Path(project_dir)
+    result = StopRefresh()
+    found = _installed_scope(project_dir)
+    if found is None:
+        return result  # no unit of ours installed: a fresh install ships the fix
+    scope, unit, script_dest = found
+    result.scope = scope
+
+    # 1. the stop script
+    shipped_path = project_dir / "scripts" / "taos-graceful-stop.sh"
+    try:
+        shipped = shipped_path.read_bytes()
+    except OSError as exc:
+        result.problems.append(f"cannot read the shipped stop script {shipped_path}: {exc}")
+        shipped = None
+    if shipped is not None:
+        try:
+            current = script_dest.read_bytes()
+        except FileNotFoundError:
+            current = None
+        except OSError as exc:
+            result.problems.append(f"cannot read the installed stop script {script_dest}: {exc}")
+            current = shipped  # unknown: leave it alone
+        if current != shipped:
+            try:
+                script_dest.parent.mkdir(parents=True, exist_ok=True)
+                if current is not None:
+                    backup = script_dest.with_name(script_dest.name + ".bak")
+                    backup.write_bytes(current)
+                script_dest.write_bytes(shipped)
+                os.chmod(script_dest, 0o755)
+                result.changed.append(str(script_dest))
+            except OSError as exc:
+                result.problems.append(f"cannot write the stop script {script_dest}: {exc}")
+
+    # 2. the drop-in
+    try:
+        unit_text = unit.read_text()
+    except OSError as exc:
+        result.problems.append(f"cannot read the unit {unit}: {exc}")
+        unit_text = ""
+    dropin = _dropin_text(unit_text)
+    if dropin is not None:
+        dropin_path = unit.parent / (unit.name + ".d") / _DROPIN_NAME
+        try:
+            existing = dropin_path.read_text()
+        except FileNotFoundError:
+            existing = None
+        except OSError as exc:
+            result.problems.append(f"cannot read {dropin_path}: {exc}")
+            existing = dropin
+        if existing != dropin:
+            try:
+                dropin_path.parent.mkdir(parents=True, exist_ok=True)
+                dropin_path.write_text(dropin)
+                result.changed.append(str(dropin_path))
+            except OSError as exc:
+                result.problems.append(f"cannot write {dropin_path}: {exc}")
+
+    # 3. systemd re-reads its files; only when something changed
+    if result.changed:
+        args = (["--user"] if scope == "user" else []) + ["daemon-reload"]
+        try:
+            code, err = await _systemctl(*args)
+        except OSError as exc:
+            code, err = None, str(exc)
+        if code != 0:
+            result.problems.append(
+                f"systemctl {' '.join(args)} failed ({code if code is not None else err})"
+                + (f": {err}" if code is not None and err else "")
+            )
+    return result
+
+
+async def _refresh_stop_artifacts_for_update(project_dir: Path) -> StopRefresh:
+    """The update routes' entry: a bug in the refresh must be REPORTED in the
+    update result and must not stop the restart that follows a merge."""
+    try:
+        return await _refresh_graceful_stop_artifacts(project_dir)
+    except Exception as exc:  # noqa: BLE001 - reported, not hidden: see the result's problems
+        logger.exception("graceful-stop refresh crashed")
+        return StopRefresh(problems=[f"the refresh itself failed: {type(exc).__name__}: {exc}"])
+
+
 @router.post("/api/settings/update")
 async def apply_update(request: Request):
     """Pull latest TinyAgentOS code from GitHub."""
@@ -1389,6 +1586,19 @@ async def apply_update(request: Request):
                 status_code=500,
             )
 
+    # Refresh the installed stop script and the no-drain drop-in so existing
+    # installs stop draining agents on every restart. A problem is reported in
+    # the result below, never hidden. This only writes files and reloads
+    # systemd; it never stops or restarts anything.
+    stop_refresh = await _refresh_stop_artifacts_for_update(project_dir)
+
+    # The stop script calls prepare_shutdown on every controller stop,
+    # including the restart below. Mark it an update restart so the drain is
+    # skipped unless a real shutdown job is queued. _do_restart clears the
+    # mark again if the restart does not happen.
+    from tinyagentos.routes.system import mark_restarting_for_update
+    mark_restarting_for_update(request.app.state)
+
     # Always restart after a successful update.
     import asyncio as _asyncio
 
@@ -1399,6 +1609,7 @@ async def apply_update(request: Request):
         "output": output.strip(),
         "stashed_local_changes": stashed_local,
         "taosmd": taosmd_report,
+        "graceful_stop_refresh": stop_refresh.as_dict(),
         "message": (
             (
                 "Update applied. Local source changes were stashed (recover with `git stash pop`). "
@@ -1411,6 +1622,7 @@ async def apply_update(request: Request):
                 else ""
             )
             + (f"{launchd_warning} " if launchd_warning else "")
+            + (stop_refresh.note().lstrip() + " " if stop_refresh.problems else "")
             + "Restarting now…"
         ),
     }
@@ -1520,6 +1732,16 @@ async def set_update_channel(request: Request, body: UpdateChannel):
             status_code=500,
         )
 
+    # Same refresh and drain mark as /api/settings/update; a problem is
+    # reported in the result, never hidden.
+    stop_refresh = await _refresh_stop_artifacts_for_update(project_dir)
+    switch_message = result.message + stop_refresh.note()
+    if launchd_warning:
+        switch_message += f" {launchd_warning}"
+
+    from tinyagentos.routes.system import mark_restarting_for_update
+    mark_restarting_for_update(request.app.state)
+
     import asyncio as _asyncio
 
     from tinyagentos.routes.system import _do_restart
@@ -1533,7 +1755,8 @@ async def set_update_channel(request: Request, body: UpdateChannel):
         "branch": branch,
         "snapshot": str(snapshot_path) if snapshot_path else None,
         "recovery_tag": result.recovery_tag,
-        "message": result.message + (f" {launchd_warning}" if launchd_warning else ""),
+        "graceful_stop_refresh": stop_refresh.as_dict(),
+        "message": switch_message,
     }
 
 
