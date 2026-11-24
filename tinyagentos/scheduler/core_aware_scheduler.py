@@ -205,7 +205,7 @@ class CoreAwareModelScheduler:
         # Keys whose idle unload is in flight (evict_idle is awaiting
         # the unload hook). begin_use() must not admit a request to a
         # record in this set; see evict_idle().
-        self._evicting: set[tuple[str, str]] = set()
+        self._evicting: dict[tuple[str, str], LoadedModel] = {}
         # Event bus: list of (event_name, dict) tuples appended in order.
         # Tests read this to verify that the right events fired.
         self.events: list[tuple[str, dict]] = []
@@ -270,13 +270,21 @@ class CoreAwareModelScheduler:
         key = self._resident_key(model_id, backend_name)
         model = self._residents.get(key)
         if model is not None and key in self._evicting:
-            # An idle unload of this record is in flight: admitting
-            # here would let the sweep deregister the record under
-            # this request (and end_use would then decrement whatever
-            # replaced it). Fall through and build a fresh record;
-            # register_loaded() replaces the registry entry, and the
-            # sweep's identity-checked removal keeps the replacement.
-            model = None
+            # An idle unload is in flight for this key. If the
+            # registry still holds the record being unloaded,
+            # admitting here would let the sweep deregister the
+            # record under this request (and end_use would then
+            # decrement whatever replaced it), so fall through and
+            # build a fresh record; register_loaded() replaces the
+            # registry entry, and the sweep's identity-checked
+            # removal keeps the replacement. If the registry already
+            # holds a replacement (built by an earlier admission
+            # during this same pending unload), reuse it: building
+            # another fresh record would strand the two requests on
+            # separate records, and the first end_use() would drop
+            # the registered one to zero mid-request.
+            if model is self._evicting[key]:
+                model = None
         if model is None:
             shape = self._shape_lookup(backend_type or backend_name)
             if shape.has_cores():
@@ -377,9 +385,14 @@ class CoreAwareModelScheduler:
 
         While a resident's unload is pending (the hook is awaited),
         the record is marked in ``self._evicting``: begin_use() will
-        not admit new requests to it, and the post-unload removal
+        not admit new requests to it (admissions during the window
+        share one replacement record), and the post-unload removal
         deletes the registry entry only if it still holds this exact
         record, so a replacement registered during the await survives.
+        A snapshot record that is no longer the registered record
+        when the sweep reaches it is skipped outright: the hook
+        unloads by model id, so calling it for a stale record could
+        unload a replacement that is already serving a request.
         """
         if now is None:
             now = self._clock()
@@ -404,15 +417,28 @@ class CoreAwareModelScheduler:
             if self._idle_unload_fn is not None:
                 if key in self._evicting:
                     continue
+                if self._residents.get(key) is not model:
+                    # The snapshot record is no longer the registered
+                    # record for its key (removed, and possibly
+                    # replaced, while an earlier record's unload was
+                    # awaited). The hook unloads by model id on the
+                    # backend, so calling it for this stale record
+                    # could unload the replacement while it serves a
+                    # request. No await separates this check from the
+                    # mark below, so it stays valid; the post-unload
+                    # identity check still covers a replacement that
+                    # appears during the hook itself.
+                    continue
                 # Mark the record as evicting BEFORE the await: while
                 # the unload is pending, begin_use() must not admit a
                 # request to this record (it builds a fresh one
-                # instead), and removal below touches only this exact
-                # record -- a replacement registered during the await
-                # stays. The finally releases the mark on every exit,
-                # so a refused or failed unload never wedges the
-                # resident against later requests or sweeps.
-                self._evicting.add(key)
+                # instead, and later admissions in the window share
+                # that replacement), and removal below touches only
+                # this exact record -- a replacement registered during
+                # the await stays. The finally releases the mark on
+                # every exit, so a refused or failed unload never
+                # wedges the resident against later requests or sweeps.
+                self._evicting[key] = model
                 try:
                     try:
                         ok = self._idle_unload_fn(model)
@@ -431,7 +457,7 @@ class CoreAwareModelScheduler:
                         )
                         continue
                 finally:
-                    self._evicting.discard(key)
+                    self._evicting.pop(key, None)
                 if self._residents.get(key) is not model:
                     logger.info(
                         "scheduler: idle-unloaded %r on %r, but its registry "

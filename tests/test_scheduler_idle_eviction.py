@@ -456,3 +456,65 @@ async def test_failed_unload_releases_pending_state():
     unload.result = True
     assert await sched.evict_idle() == [m]
     assert sched.get_resident("qwen3-embedding-0.6b", "rkllama") is None
+
+
+@pytest.mark.asyncio
+async def test_overlapping_begin_use_during_refused_unload_shares_replacement():
+    # CodeRabbit round 2 on PR #4496: while an idle unload is pending,
+    # a second begin_use() for the same key must reuse the replacement
+    # record the first one built, not overwrite it with another fresh
+    # record -- otherwise the two requests sit on separate records, and
+    # when the refused unload clears the mark, the first end_use()
+    # drops the registered record to zero while the second request
+    # still runs, making the model idle-evictable mid-request.
+    unload = _BlockingUnload(result=False)  # refused unload
+    sched, _clock = _scheduler(unload=unload)
+    m = _resident("qwen3-embedding-0.6b", "rkllama", idle_for=3600.0)
+    sched.register_loaded(m)
+    sweep = asyncio.create_task(sched.evict_idle())
+    await asyncio.wait_for(unload.entered.wait(), timeout=5)
+    first = sched.begin_use("qwen3-embedding-0.6b", "rkllama", "rkllama")
+    second = sched.begin_use("qwen3-embedding-0.6b", "rkllama", "rkllama")
+    assert first is not m and second is not m
+    assert second is first  # one shared replacement record
+    registered = sched.get_resident("qwen3-embedding-0.6b", "rkllama")
+    assert registered is first
+    assert registered.in_use_count == 2  # both requests counted
+    unload.release.set()
+    assert await asyncio.wait_for(sweep, timeout=5) == []
+    sched.end_use("qwen3-embedding-0.6b", "rkllama")
+    assert registered.in_use_count == 1  # second request still running
+    sched.end_use("qwen3-embedding-0.6b", "rkllama")
+    assert registered.in_use_count == 0
+
+
+@pytest.mark.asyncio
+async def test_sweep_skips_snapshot_record_replaced_before_its_turn():
+    # CodeRabbit round 2 on PR #4496: the sweep iterates a snapshot.
+    # If a resident is removed (pressure eviction) and a replacement
+    # registered under the same key while an earlier record's unload
+    # is awaited, the sweep must not call the unload hook for the
+    # stale snapshot record -- the hook unloads by model id on the
+    # backend, so it would unload the replacement while the
+    # replacement serves a request.
+    unload = _BlockingUnload(result=True)
+    sched, _clock = _scheduler(unload=unload)
+    blocker = _resident("blocker-embed-model", "rkllama", idle_for=3600.0)
+    stale = _resident("qwen3-embedding-0.6b", "rkllama", idle_for=3600.0)
+    sched.register_loaded(blocker)
+    sched.register_loaded(stale)
+    sweep = asyncio.create_task(sched.evict_idle())
+    await asyncio.wait_for(unload.entered.wait(), timeout=5)
+    # While the sweep is parked in blocker's unload: pressure-evict
+    # the stale record, then a fresh request registers a replacement
+    # under the same key and starts serving on it.
+    sched.mark_unloaded("qwen3-embedding-0.6b", "rkllama")
+    replacement = sched.begin_use("qwen3-embedding-0.6b", "rkllama", "rkllama")
+    assert replacement is not stale
+    unload.release.set()
+    evicted = await asyncio.wait_for(sweep, timeout=5)
+    assert unload.calls == [blocker]  # hook never called for the stale record
+    assert evicted == [blocker]
+    assert sched.get_resident("qwen3-embedding-0.6b", "rkllama") is replacement
+    assert replacement.in_use_count == 1
+    sched.end_use("qwen3-embedding-0.6b", "rkllama")
