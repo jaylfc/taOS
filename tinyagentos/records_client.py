@@ -32,6 +32,8 @@ import os
 import secrets
 import time
 from dataclasses import dataclass, field
+from datetime import datetime
+from email.utils import parsedate_to_datetime
 from pathlib import Path
 from typing import Any, Callable, Optional
 
@@ -40,6 +42,15 @@ import ulid
 from httpx import AsyncClient
 
 logger = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# Exceptions
+# ---------------------------------------------------------------------------
+
+class BufferFullError(Exception):
+    """Raised when the records buffer exceeds its configured threshold."""
+    pass
 
 
 # ---------------------------------------------------------------------------
@@ -57,6 +68,10 @@ class RecordsClientConfig:
     max_retries: int = 5
     # Callback to get the controller service token
     token_getter: Optional[Callable[[], Optional[str]]] = None
+    # Callback to refresh the controller service token on 401/403
+    token_refresher: Optional[Callable[[], Optional[str]]] = None
+    # Callback to re-queue dead-letter records when blob upload becomes available
+    dead_letter_requeuer: Optional[Callable[[str], bool]] = None
 
 
 # ---------------------------------------------------------------------------
@@ -165,6 +180,8 @@ class RecordsClient:
         await self._check_buffer_space()
 
         # Generate record_id (ULID from secure random, monotonic per process)
+        # ulid.new() uses a monotonic counter for the randomness component when
+        # timestamps are equal, ensuring monotonicity per process.
         record_id = str(ulid.new())
 
         # Build envelope
@@ -360,15 +377,24 @@ class RecordsClient:
 
     async def _handle_401_403(self, records: list[dict], status_code: int) -> None:
         """Handle 401/403 - keep row, refresh credential, retry, alarm."""
+        # Attempt to refresh the credential
+        refreshed = False
+        if self.config.token_refresher:
+            try:
+                new_token = self.config.token_refresher()
+                if new_token:
+                    refreshed = True
+                    logger.info("Credential refreshed on %d response", status_code)
+            except Exception as e:
+                logger.error("Failed to refresh credential: %s", e)
+
         for record in records:
-            await self._db.execute(
-                """UPDATE records
-                   SET status = ?, retry_count = retry_count + 1, last_error = ?
-                   WHERE record_id = ?""",
-                (f"error_{status_code}", f"{status_code} Unauthorized", record["record_id"]),
-            )
+            await self._increment_retry(record["record_id"], f"error_{status_code}", f"{status_code} Unauthorized")
         await self._db.commit()
-        logger.warning("Records auth error (%d): %s", status_code, [r["record_id"] for r in records])
+        logger.warning(
+            "Records auth error (%d): %s (refreshed=%s)",
+            status_code, [r["record_id"] for r in records], refreshed
+        )
 
     async def _handle_dead_letter(self, records: list[dict], reason: str) -> None:
         """Move records to dead-letter table."""
@@ -386,24 +412,85 @@ class RecordsClient:
         await self._db.commit()
         logger.warning("Records moved to dead-letter (%s): %s", reason, [r["record_id"] for r in records])
 
+    async def requeue_dead_letter(self, record_id: str) -> bool:
+        """Re-queue a dead-letter record back to the pending queue.
+
+        Used when blob upload becomes available for 413 records.
+        Returns True if the record was found and re-queued.
+        """
+        # Check if record exists in dead_letter
+        cursor = await self._db.execute(
+            "SELECT record_id, body_sha256, envelope, reason, created_at FROM dead_letter WHERE record_id = ?",
+            (record_id,)
+        )
+        row = await cursor.fetchone()
+        if not row:
+            return False
+
+        # Only allow re-queue for 413 (blob upload now available)
+        if row[3] != "413":
+            logger.warning("Cannot requeue dead-letter record %s: reason=%s", record_id, row[3])
+            return False
+
+        # Move back to records with pending status
+        record_id, body_sha256, envelope, reason, created_at = row
+        await self._db.execute(
+            """INSERT INTO records (record_id, body_sha256, envelope, status, created_at, retry_count)
+               VALUES (?, ?, ?, 'pending', ?, 0)""",
+            (record_id, body_sha256, envelope, created_at),
+        )
+        await self._db.execute("DELETE FROM dead_letter WHERE record_id = ?", (record_id,))
+        await self._db.commit()
+        logger.info("Re-queued dead-letter record %s (was 413)", record_id)
+        return True
+
     async def _handle_retry_after(self, records: list[dict], status_code: int, retry_after: Optional[str]) -> None:
-        """Handle 429/503/507 - keep row, honour Retry-After."""
+        """Handle 429/503/507 - keep row, honour Retry-After.
+
+        Retry-After can be either:
+        - Seconds (integer): number of seconds to wait
+        - HTTP-date: a date/time after which to retry (RFC 7231)
+        """
         delay = 1
         if retry_after:
+            # Try parsing as seconds first
             try:
                 delay = int(retry_after)
             except ValueError:
-                pass
+                # Try parsing as HTTP-date
+                try:
+                    retry_date = parsedate_to_datetime(retry_after)
+                    delay = max(1, int((retry_date.timestamp() - time.time())))
+                except Exception:
+                    pass  # Fall back to default delay
         delay = max(1, min(delay, 300))  # Clamp 1-300 seconds
 
         next_retry = time.time() + delay
         for record in records:
-            await self._db.execute(
-                """UPDATE records
-                   SET status = ?, next_retry_at = ?, retry_count = retry_count + 1, last_error = ?
-                   WHERE record_id = ?""",
-                (f"retry_{status_code}", next_retry, f"{status_code} {status_code}", record["record_id"]),
+            # Check current retry count
+            cursor = await self._db.execute(
+                "SELECT retry_count FROM records WHERE record_id = ?", (record["record_id"],)
             )
+            row = await cursor.fetchone()
+            retry_count = (row[0] if row else 0) + 1
+
+            if retry_count > self.config.max_retries:
+                # Max retries exceeded - move to dead-letter
+                await self._db.execute(
+                    """INSERT INTO dead_letter (record_id, body_sha256, envelope, reason, created_at, moved_at)
+                       SELECT record_id, body_sha256, envelope, 'max_retries', created_at, ?
+                       FROM records WHERE record_id = ?""",
+                    (time.time(), record["record_id"]),
+                )
+                await self._db.execute("DELETE FROM records WHERE record_id = ?", (record["record_id"],))
+                logger.error("Record %s exceeded max retries, moved to dead-letter", record["record_id"])
+            else:
+                await self._db.execute(
+                    """UPDATE records
+                       SET status = ?, retry_count = ?, next_retry_at = ?, last_error = ?
+                       WHERE record_id = ?""",
+                    (f"retry_{status_code}", retry_count, next_retry, f"{status_code}", record["record_id"]),
+                )
         await self._db.commit()
         logger.info("Records retry scheduled (%d, retry-after=%ds): %s",
                     status_code, delay, [r["record_id"] for r in records])
