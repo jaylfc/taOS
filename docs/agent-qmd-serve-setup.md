@@ -196,7 +196,7 @@ that fingerprint and has signed that release's maintenance manifest, and it chec
 before it installs anything.
 
 The step leaves any `QMD_BIND` you set in `/etc/default/qmd` alone; to keep qmd
-reachable from other machines set `QMD_BIND` in `/etc/default/qmd` (or, once the runner is
+reachable from other machines set `QMD_BIND` in `/etc/default/qmd` (a `QMD_BIND` set only in a systemd drop-in is not read by the step; or, once the runner is
 installed, create the empty file `/etc/taos/maint/qmd-keep-open` as root) before the step runs. Without the runner (macOS, containers, a
 user-level service) the machine owner runs once:
 
