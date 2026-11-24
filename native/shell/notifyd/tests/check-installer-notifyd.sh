@@ -25,6 +25,8 @@ done
 printf '#!/bin/sh\necho "Loading config"\nexit 0\n' >"$tmp/sway"; chmod 755 "$tmp/sway"
 printf 'set $mod Mod4\nbindsym $mod+space floating toggle\n' >"$tmp/root/etc/taos/sway/config"
 
+# the validation start needs a render node; this machine may have none, and the stub compositor ignores it
+export TAOS_VALIDATE_RENDER_NODE=/dev/null
 install() { sh "$native/install-desktop.sh" --root "$tmp/root" --sway "$tmp/sway" --shell-build "$tmp/shell" \
     --apps-build "$tmp/apps" "$@" >"$tmp/out" 2>&1 || { cat "$tmp/out"; bad "install-desktop.sh $* failed"; }; }
 line() { grep -E '^TAOS_SHELL_COMPONENTS=' "$tmp/root/etc/taos/shell.env" | tail -n 1; }
@@ -40,6 +42,12 @@ install --without-notifyd
 has && bad "--without-notifyd left it in: $(line)" || ok "--without-notifyd removes it"
 install
 has && bad "a plain install re-added it after --without-notifyd: $(line)" || ok "a plain install after --without-notifyd keeps it out"
+
+# a render node that is not a device is refused with a clear message, nothing installed
+if TAOS_VALIDATE_RENDER_NODE=/nonexistent/renderD0 sh "$native/install-desktop.sh" --root "$tmp/root" --sway "$tmp/sway" --shell-build "$tmp/shell" \
+        --apps-build "$tmp/apps" >"$tmp/out" 2>&1; then bad "a missing render node was accepted"
+elif grep -q 'no GPU render node' "$tmp/out"; then ok "a missing render node stops the install with a message"
+else cat "$tmp/out"; bad "a missing render node gave no clear message"; fi
 
 [ "$fails" -eq 0 ] || { echo "$fails failure(s)"; exit 1; }
 echo "all installer notifyd checks passed"
