@@ -89,6 +89,21 @@ bool runModeDaemon(const QString &socketPath, const std::function<bool()> &stop,
         DesktopModes modes;
         Modes::read(Modes::path(), &modes);
         if (!w) return;
+        if (w->floating && w->appId.startsWith(QLatin1String("my.taos."))) {
+            if (modes.modeFor(w->workspace) == QLatin1String("tiling")) {   // the rule floats them everywhere; this workspace tiles
+                tx.runCommand(Plans::sel(w->id) + QStringLiteral("floating disable"), nullptr);
+                return;
+            }
+            // A taOS app that sway floated at map time (the for_window rule in 46-taos-window.conf) keeps the size it
+            // asked for; only a window that does not fit the free area (bar and dock excluded) is cut to it.
+            const QRect placed = placeNewWindow(t, *w, modes, w->rect.size());
+            if (placed.isValid() && placed != w->rect) {
+                tx.runCommand(Plans::sel(w->id) + QStringLiteral("resize set %1 %2").arg(placed.width()).arg(placed.height()), nullptr);
+                tx.runCommand(Plans::sel(w->id) + QStringLiteral("move absolute position %1 %2").arg(placed.x()).arg(placed.y()), nullptr);
+                c.settleGeometry(w->id, placed);
+            }
+            return;
+        }
         const QRect want = newWindowGeometry(t, *w, modes);
         if (!want.isValid()) return;
         for (const QString &cmd : newWindowCommands(t, *w, modes))

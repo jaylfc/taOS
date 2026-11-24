@@ -52,6 +52,9 @@ struct Walk {
         // containers are not supported: see inTabs.)
         if (!w.deco.isEmpty() && w.deco.height() > 0)
             w.deco = QRect(w.rect.x(), w.rect.y() - w.deco.height(), w.rect.width(), w.deco.height());
+        const QJsonObject props = n.value(QLatin1String("window_properties")).toObject();
+        w.transient = !props.value(QLatin1String("transient_for")).isNull() && props.contains(QLatin1String("transient_for"));
+        w.windowType = props.value(QLatin1String("window_type")).toString();
         w.parked = scratch;
         for (const QJsonValue &m : n.value(QLatin1String("marks")).toArray())
             if (m.toString().startsWith(QLatin1String("taos_min_")))
@@ -78,6 +81,11 @@ struct Walk {
     }
 };
 }  // namespace
+
+bool mapsShowSelfDrawingToolkit(const QByteArray &maps)
+{
+    return maps.contains("/libadwaita-1.so") || maps.contains("/libgtk-4.so");
+}
 
 bool parseFrameTree(const QByteArray &json, FrameTree *out, QString *error)
 {
@@ -139,6 +147,15 @@ QString StripLayout::labelFor(const QString &button, const QString &t)
     return t.isEmpty() ? what + QStringLiteral(" window") : what + QLatin1Char(' ') + t;
 }
 
+QString StripLayout::tipFor(const QString &button, bool usable)
+{
+    if (!usable)
+        return QString();
+    if (button == QLatin1String("close")) return QStringLiteral("Close  \u2022  Super+Q");
+    if (button == QLatin1String("minimise")) return QStringLiteral("Minimise  \u2022  Super+M");
+    return QStringLiteral("Full size or restore  \u2022  Super+Ctrl+Up");
+}
+
 // ----------------------------------------------------------------------------------------------- planning
 
 QVector<Strip> planStrips(const FrameTree &tree, const FrameConfig &cfg, const PlanInput &in)
@@ -147,9 +164,19 @@ QVector<Strip> planStrips(const FrameTree &tree, const FrameConfig &cfg, const P
     const auto &ws = tree.windows;
     for (int i = 0; i < ws.size(); ++i) {
         const FrameWindow &w = ws.at(i);
+        if (w.selfDrawn)
+            continue;                 // GTK 4 / libadwaita: the toolkit draws its own header bar
+        if (w.border == QLatin1String("csd"))
+            continue;                 // it set its own decoration mode (or sway answered client side): it draws its own
         if (!cfg.shouldFrame(w.appId))
             continue;
         Strip s;
+        // Dialogs, popups' parents and utility windows take close only; a fixed size window takes no full size.
+        const FrameConfig::Kind kind = cfg.kindOf(w.appId);
+        const bool x11Dialog = w.transient || w.windowType == QLatin1String("dialog") || w.windowType == QLatin1String("utility")
+                               || w.windowType == QLatin1String("splash") || w.windowType == QLatin1String("toolbar");
+        s.canMinimise = !(x11Dialog || kind == FrameConfig::Kind::Dialog);
+        s.canFull = s.canMinimise && kind != FrameConfig::Kind::FixedSize;
         s.id = w.id;
         s.title = w.title;
         s.appId = w.appId;
@@ -187,14 +214,16 @@ QVector<Strip> planStrips(const FrameTree &tree, const FrameConfig &cfg, const P
     return strips;
 }
 
-QStringList borderCommands(const FrameTree &tree, const FrameConfig &cfg, QSet<int> *framed)
+QStringList borderCommands(const FrameTree &tree, const FrameConfig &cfg, QSet<int> *framed, const QSet<int> *ready)
 {
     QStringList cmds;
     QSet<int> now;
     for (const FrameWindow &w : tree.windows) {
-        if (w.border == QLatin1String("csd")) {
+        if (w.border == QLatin1String("csd") || w.selfDrawn) {
             continue;                 // the window draws its own frame: a second header on top would be wrong
         }
+        if (ready && !ready->contains(w.id) && !framed->contains(w.id))
+            continue;                 // too new to judge: see `ready`
         if (cfg.shouldFrame(w.appId)) {
             now.insert(w.id);
             if (w.border != QLatin1String("normal"))

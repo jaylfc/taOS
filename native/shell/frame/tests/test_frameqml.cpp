@@ -78,6 +78,76 @@ private slots:
         QCOMPARE(ctx.size(), 1);
         QCOMPARE(act.size(), 0);
     }
+    // A report: the buttons did not render until hovered. At rest every button shows its glyph, strongly in
+    // a focused window and dimmer (still visible) in an unfocused one; a button the window cannot use is an empty disc.
+    static int glyphContrast(const QImage &img, const QRect &hit)
+    {
+        const QColor fill = img.pixelColor(hit.x() + 6, hit.y() + 12);        // inside the 14 px disc, left of the glyph
+        int best = 0;
+        for (int y = hit.y() + 8; y <= hit.y() + 16; ++y)
+            for (int x = hit.x() + 8; x <= hit.x() + 16; ++x)
+                best = qMax(best, qAbs(img.pixelColor(x, y).lightness() - fill.lightness()));
+        return best;
+    }
+    void glyphsAreVisibleAtRest()
+    {
+        QQuickView v(m_engine, nullptr);
+        v.setColor(m_theme->surface());       // the bar the strip sits on
+        v.setResizeMode(QQuickView::SizeRootObjectToView);
+        v.setInitialProperties({{QStringLiteral("buttons"), model(false, QStringLiteral("Doc"))}, {QStringLiteral("active"), true}});
+        v.setSource(QUrl::fromLocalFile(QStringLiteral(TAOS_FRAME_QML_DIR "/Strip.qml")));
+        QVERIFY(v.status() == QQuickView::Ready);
+        v.resize(80, 24);
+        v.show();
+        QVERIFY(QTest::qWaitForWindowExposed(&v));
+        QTest::mouseMove(&v, QPoint(26, 12));                                   // in the gap between two buttons                                  // the pointer is nowhere near
+        QTest::qWait(150);
+        const QImage focused = v.grabWindow();
+        v.rootObject()->setProperty("active", false);
+        QTest::qWait(250);
+        const QImage unfocused = v.grabWindow();
+        for (const StripLayout::Button &b : StripLayout::buttons(false)) {
+            const int f = glyphContrast(focused, b.rect), u = glyphContrast(unfocused, b.rect);
+            QVERIFY2(f >= 40, qPrintable(QStringLiteral("%1: glyph contrast at rest %2 (focused)").arg(b.name).arg(f)));
+            QVERIFY2(u >= 12, qPrintable(QStringLiteral("%1: glyph contrast at rest %2 (unfocused)").arg(b.name).arg(u)));
+            QVERIFY2(u < f, "an unfocused window's buttons are dimmer");
+        }
+        QVariantList m = model(false, QStringLiteral("Doc"));
+        QVariantMap full = m.at(2).toMap();
+        full.insert(QStringLiteral("enabled"), false);
+        m[2] = full;
+        v.rootObject()->setProperty("buttons", m);
+        v.rootObject()->setProperty("active", true);
+        QTest::qWait(250);
+        const QImage dis = v.grabWindow();
+        QVERIFY2(glyphContrast(dis, StripLayout::buttons(false).at(2).rect) < 6, "a button the window cannot use is an empty disc");
+        QVERIFY(glyphContrast(dis, StripLayout::buttons(false).at(0).rect) >= 40);
+    }
+    void hoverAndPressedLiftTheDisc()
+    {
+        QQuickView v(m_engine, nullptr);
+        v.setColor(m_theme->surface());       // the bar the strip sits on
+        v.setResizeMode(QQuickView::SizeRootObjectToView);
+        v.setInitialProperties({{QStringLiteral("buttons"), model(false, QStringLiteral("Doc"))}});
+        v.setSource(QUrl::fromLocalFile(QStringLiteral(TAOS_FRAME_QML_DIR "/Strip.qml")));
+        QVERIFY(v.status() == QQuickView::Ready);
+        v.resize(80, 24);
+        v.show();
+        QVERIFY(QTest::qWaitForWindowExposed(&v));
+        const QRect mini = StripLayout::buttons(false).at(1).rect;
+        QTest::mouseMove(&v, QPoint(26, 12));                                   // in the gap between two buttons
+        QTest::qWait(150);
+        const QColor rest = v.grabWindow().pixelColor(mini.x() + 6, mini.y() + 12);
+        QTest::mouseMove(&v, mini.center());
+        QTest::qWait(250);
+        const QColor over = v.grabWindow().pixelColor(mini.x() + 6, mini.y() + 12);
+        QVERIFY2(qAbs(over.lightness() - rest.lightness()) >= 8, "the hovered disc is lifted");
+        const QRect close = StripLayout::buttons(false).at(0).rect;
+        QTest::mouseMove(&v, close.center());
+        QTest::qWait(250);
+        const QColor danger = v.grabWindow().pixelColor(close.x() + 6, close.y() + 12);
+        QVERIFY2(danger.red() > danger.blue() + 20, "the hovered close disc turns to the danger colour");
+    }
     void buttonsAreNamedForTheWindow()
     {
         QQuickView v(m_engine, nullptr);

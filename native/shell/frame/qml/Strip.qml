@@ -12,8 +12,11 @@ Item {
     property var bridge: null             // C++: press(button), menu()
     signal activated(string button)
     signal contextMenu()
+    // The tooltip lives in its own surface (this one is 80 x 24): tell C++ which button is under the pointer.
+    signal tipWanted(string button, string text, real centerX)
     onActivated: (button) => { if (bridge) bridge.press(button) }
     onContextMenu: { if (bridge) bridge.menu() }
+    onTipWanted: (button, text, cx) => { if (bridge) bridge.tip(button, text, cx) }
 
     HoverHandler { id: groupHover }
     MouseArea {
@@ -34,7 +37,9 @@ Item {
             danger: modelData.name === "close"
             groupHovered: groupHover.hovered
             windowActive: root.active
+            usable: modelData.enabled !== false
             onActivated: root.activated(modelData.name)
+            onHoverChanged: (over) => root.tipWanted(over ? modelData.name : "", modelData.tip, modelData.x + modelData.w / 2)
         }
     }
 }

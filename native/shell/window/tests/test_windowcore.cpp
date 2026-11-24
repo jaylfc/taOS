@@ -182,7 +182,7 @@ private slots:
         QVERIFY(tiled.commands.contains(QStringLiteral("[con_id=5] mark --add \"taos_ftiled\"")));
         QVERIFY(tiled.commands.contains(QStringLiteral("[con_id=5] floating enable")));
         QVERIFY(tiled.commands.contains(QStringLiteral("[con_id=5] resize set 1280 720")));
-        QVERIFY(tiled.commands.contains(QStringLiteral("[con_id=5] move position 0 0")));
+        QVERIFY(tiled.commands.contains(QStringLiteral("[con_id=5] move absolute position 0 0")));
         const Plan fl = Plans::full(*t.find(6), t);
         QVERIFY(fl.commands.contains(QStringLiteral("[con_id=6] mark --add \"taos_fgeo_200_150_400_300\"")));
         QVERIFY(!fl.commands.contains(QStringLiteral("[con_id=6] floating enable")));
@@ -193,7 +193,7 @@ private slots:
         f.marks << QStringLiteral("taos_full") << QStringLiteral("taos_fgeo_200_150_400_300");
         const Plan back = Plans::full(f, t);
         QVERIFY(back.commands.contains(QStringLiteral("[con_id=6] resize set 400 300")));
-        QVERIFY(back.commands.contains(QStringLiteral("[con_id=6] move position 200 150")));
+        QVERIFY(back.commands.contains(QStringLiteral("[con_id=6] move absolute position 200 150")));
         QVERIFY(back.commands.contains(QStringLiteral("[con_id=6] unmark \"taos_full\"")));
         Window g = *t.find(5);
         g.fullSize = true; g.fullWasTiled = true; g.floating = true;
@@ -357,7 +357,7 @@ private slots:
         const QStringList toDesktop = modeSwitchCommands(t, QStringLiteral("1"), QStringLiteral("desktop"));
         QVERIFY(toDesktop.contains(QStringLiteral("[con_id=5] floating enable")));
         QVERIFY(toDesktop.contains(QStringLiteral("[con_id=5] resize set 1280 720")));
-        QVERIFY(toDesktop.contains(QStringLiteral("[con_id=5] move position 0 0")));
+        QVERIFY(toDesktop.contains(QStringLiteral("[con_id=5] move absolute position 0 0")));
         QVERIFY(!toDesktop.join(QLatin1Char('\n')).contains(QLatin1String("con_id=6")));   // already floating
         const QStringList toTiling = modeSwitchCommands(t, QStringLiteral("1"), QStringLiteral("tiling"));
         QCOMPARE(toTiling, QStringList{QStringLiteral("[con_id=6] floating disable")});
@@ -371,6 +371,7 @@ private slots:
         Window w = *t.find(5);
         const QStringList first = newWindowCommands(t, w, modes);
         QCOMPARE(first.size(), 3);
+        QVERIFY(first[2].contains(QStringLiteral("move absolute position")));   // `move position` is relative to the workspace
         QVERIFY(first[1].startsWith(QStringLiteral("[con_id=5] resize set 768 504")));
         modes.workspaces.insert(QStringLiteral("1"), QStringLiteral("tiling"));
         QVERIFY(newWindowCommands(t, w, modes).isEmpty());
@@ -379,6 +380,15 @@ private slots:
         none.windows[1].minimised = true;
         const QStringList centred = newWindowCommands(none, w, DesktopModes());
         QVERIFY(centred[2] != newWindowCommands(t, w, DesktopModes())[2]);   // the floating one moves the cascade
+        // An application that asked for a size keeps it (clamped to the free area): a 1500 x 950 request on a
+        // 1280 x 720 workspace is cut to the area less a margin; a 600 x 400 one is kept as it is.
+        Window fl = w;
+        fl.floating = true;
+        const QRect big = placeNewWindow(t, fl, DesktopModes(), QSize(1500, 950));
+        QCOMPARE(big.size(), QSize(1248, 688));
+        QVERIFY(QRect(0, 0, 1280, 720).contains(big));
+        QCOMPARE(placeNewWindow(t, fl, DesktopModes(), QSize(600, 400)).size(), QSize(600, 400));
+        QCOMPARE(placeNewWindow(t, fl, DesktopModes(), QSize()).size(), QSize(768, 504));   // no request: the default
     }
 
     void modeEventJson() {

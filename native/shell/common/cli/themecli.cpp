@@ -115,16 +115,17 @@ int runThemeCli(const QStringList &argsIn, QTextStream &out, QTextStream &err) {
                 c[ThemeTokens::Surface].greenF() * 0.9 + c[ThemeTokens::Text].greenF() * 0.1,
                 c[ThemeTokens::Surface].blueF() * 0.9 + c[ThemeTokens::Text].blueF() * 0.1);
             auto hex = [](const QColor &q) { return q.name(QColor::HexRgb).mid(1); };   // RRGGBB, opaque
-            out << "# Written by taos-theme export foot. foot cannot place its buttons: they are always at the right.\n"
-                   "[csd]\npreferred=client\nsize=32\nbutton-width=32\nborder-width=1\n"
+            // preferred=server: foot asks the compositor for its title bar, and taos-frame draws the taOS window
+            // buttons (close, minimise, full size, on the theme's side) on it, as for every other window. foot's own
+            // header only ever offered a close button and could not be placed on the left. The [csd] colours below
+            // are what foot would paint if a compositor refused server side decoration (then foot draws its own).
+            out << "# Written by taos-theme export foot. foot asks the compositor for the title bar (taos-frame draws the window buttons on it).\n"
+                   "[csd]\npreferred=server\nsize=32\nbutton-width=32\nborder-width=1\n"
                 << "color=ff" << hex(c[ThemeTokens::Surface]) << "\n"
                 << "border-color=ff" << hex(border) << "\n"
-                // button-color is the SYMBOL colour and the per-button colours are the backgrounds foot
-                // paints on hover. The symbol must contrast with the title bar at rest (it used to be the
-                // surface colour, so the buttons were invisible until hovered).
-                << "button-color=ff" << hex(c[ThemeTokens::Text]) << "\n"
-                << "button-minimize-color=ff" << hex(border) << "\n"
-                << "button-maximize-color=ff" << hex(border) << "\n"
+                << "button-color=ff" << hex(c[ThemeTokens::Surface]) << "\n"
+                << "button-minimize-color=ff" << hex(c[ThemeTokens::TextSecondary]) << "\n"
+                << "button-maximize-color=ff" << hex(c[ThemeTokens::TextSecondary]) << "\n"
                 << "button-close-color=ff" << hex(c[ThemeTokens::Danger]) << "\n";
             return 0;
         }

@@ -1,0 +1,305 @@
+{
+ "id": 1,
+ "type": "root",
+ "name": "root",
+ "nodes": [
+  {
+   "id": 50,
+   "type": "output",
+   "name": "HEADLESS-1",
+   "rect": {
+    "x": 0,
+    "y": 0,
+    "width": 1280,
+    "height": 720
+   },
+   "nodes": [
+    {
+     "id": 716,
+     "type": "workspace",
+     "name": "1",
+     "output": "HEADLESS-1",
+     "rect": {
+      "x": 0,
+      "y": 0,
+      "width": 0,
+      "height": 0
+     },
+     "nodes": [],
+     "floating_nodes": [
+      {
+       "id": 67,
+       "type": "floating_con",
+       "name": "Slides",
+       "app_id": "foot",
+       "pid": 2067,
+       "shell": "xdg_shell",
+       "focused": false,
+       "visible": true,
+       "border": "normal",
+       "rect": {
+        "x": 980,
+        "y": 332,
+        "width": 280,
+        "height": 168
+       },
+       "deco_rect": {
+        "x": 980,
+        "y": 300,
+        "width": 280,
+        "height": 32
+       },
+       "fullscreen_mode": 1,
+       "marks": [],
+       "scratchpad_state": "none",
+       "nodes": [],
+       "floating_nodes": [],
+       "floating": "user_on"
+      },
+      {
+       "id": 60,
+       "type": "floating_con",
+       "name": "Terminal",
+       "app_id": "foot",
+       "pid": 2060,
+       "shell": "xdg_shell",
+       "focused": true,
+       "visible": true,
+       "border": "normal",
+       "rect": {
+        "x": 20,
+        "y": 72,
+        "width": 300,
+        "height": 168
+       },
+       "deco_rect": {
+        "x": 20,
+        "y": 40,
+        "width": 300,
+        "height": 32
+       },
+       "fullscreen_mode": 0,
+       "marks": [],
+       "scratchpad_state": "none",
+       "nodes": [],
+       "floating_nodes": [],
+       "floating": "user_on"
+      },
+      {
+       "id": 61,
+       "type": "floating_con",
+       "name": "Terminal two",
+       "app_id": "foot",
+       "pid": 2061,
+       "shell": "xdg_shell",
+       "focused": false,
+       "visible": true,
+       "border": "normal",
+       "rect": {
+        "x": 340,
+        "y": 72,
+        "width": 300,
+        "height": 168
+       },
+       "deco_rect": {
+        "x": 340,
+        "y": 40,
+        "width": 300,
+        "height": 32
+       },
+       "fullscreen_mode": 0,
+       "marks": [],
+       "scratchpad_state": "none",
+       "nodes": [],
+       "floating_nodes": [],
+       "floating": "user_on"
+      },
+      {
+       "id": 62,
+       "type": "floating_con",
+       "name": "Files",
+       "app_id": "org.mozilla.firefox",
+       "pid": 2062,
+       "shell": "xdg_shell",
+       "focused": false,
+       "visible": true,
+       "border": "pixel",
+       "rect": {
+        "x": 660,
+        "y": 41,
+        "width": 300,
+        "height": 199
+       },
+       "deco_rect": {
+        "x": 0,
+        "y": 0,
+        "width": 0,
+        "height": 0
+       },
+       "fullscreen_mode": 0,
+       "marks": [],
+       "scratchpad_state": "none",
+       "nodes": [],
+       "floating_nodes": [],
+       "floating": "user_on"
+      },
+      {
+       "id": 63,
+       "type": "floating_con",
+       "name": "Own bar",
+       "app_id": "foot",
+       "pid": 2063,
+       "shell": "xdg_shell",
+       "focused": false,
+       "visible": true,
+       "border": "csd",
+       "rect": {
+        "x": 980,
+        "y": 41,
+        "width": 280,
+        "height": 199
+       },
+       "deco_rect": {
+        "x": 0,
+        "y": 0,
+        "width": 0,
+        "height": 0
+       },
+       "fullscreen_mode": 0,
+       "marks": [],
+       "scratchpad_state": "none",
+       "nodes": [],
+       "floating_nodes": [],
+       "floating": "user_on"
+      },
+      {
+       "id": 64,
+       "type": "floating_con",
+       "name": "Save as",
+       "app_id": "",
+       "pid": 2064,
+       "shell": "xdg_shell",
+       "focused": false,
+       "visible": true,
+       "border": "normal",
+       "rect": {
+        "x": 20,
+        "y": 332,
+        "width": 300,
+        "height": 168
+       },
+       "deco_rect": {
+        "x": 20,
+        "y": 300,
+        "width": 300,
+        "height": 32
+       },
+       "fullscreen_mode": 0,
+       "marks": [],
+       "scratchpad_state": "none",
+       "nodes": [],
+       "floating_nodes": [],
+       "floating": "user_on",
+       "window_properties": {
+        "class": "Gimp",
+        "instance": "gimp",
+        "title": "Save as",
+        "transient_for": 77,
+        "window_type": "dialog"
+       }
+      },
+      {
+       "id": 65,
+       "type": "floating_con",
+       "name": "Calculator",
+       "app_id": "calculator",
+       "pid": 2065,
+       "shell": "xdg_shell",
+       "focused": false,
+       "visible": true,
+       "border": "normal",
+       "rect": {
+        "x": 340,
+        "y": 332,
+        "width": 300,
+        "height": 168
+       },
+       "deco_rect": {
+        "x": 340,
+        "y": 300,
+        "width": 300,
+        "height": 32
+       },
+       "fullscreen_mode": 0,
+       "marks": [],
+       "scratchpad_state": "none",
+       "nodes": [],
+       "floating_nodes": [],
+       "floating": "user_on"
+      },
+      {
+       "id": 66,
+       "type": "floating_con",
+       "name": "Settings",
+       "app_id": "my.taos.settings",
+       "pid": 2066,
+       "shell": "xdg_shell",
+       "focused": false,
+       "visible": true,
+       "border": "pixel",
+       "rect": {
+        "x": 660,
+        "y": 301,
+        "width": 300,
+        "height": 199
+       },
+       "deco_rect": {
+        "x": 0,
+        "y": 0,
+        "width": 0,
+        "height": 0
+       },
+       "fullscreen_mode": 0,
+       "marks": [],
+       "scratchpad_state": "none",
+       "nodes": [],
+       "floating_nodes": [],
+       "floating": "user_on"
+      },
+      {
+       "id": 68,
+       "type": "floating_con",
+       "name": "Adwaita app",
+       "app_id": "org.gnome.Adw",
+       "pid": 2060,
+       "shell": "xdg_shell",
+       "focused": true,
+       "visible": true,
+       "border": "normal",
+       "rect": {
+        "x": 20,
+        "y": 540,
+        "width": 300,
+        "height": 168
+       },
+       "deco_rect": {
+        "x": 20,
+        "y": 508,
+        "width": 300,
+        "height": 32
+       },
+       "fullscreen_mode": 0,
+       "marks": [],
+       "scratchpad_state": "none",
+       "nodes": [],
+       "floating_nodes": [],
+       "floating": "user_on"
+      }
+     ]
+    }
+   ],
+   "floating_nodes": []
+  }
+ ],
+ "floating_nodes": []
+}
