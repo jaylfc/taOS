@@ -155,6 +155,13 @@ class NotificationStore(BaseStore):
                 "ALTER TABLE notifications ADD COLUMN user_id TEXT"
             )
             await self._db.commit()
+        # `digest` on os_notification_ids: an earlier version of the table had no such column, and
+        # CREATE TABLE IF NOT EXISTS leaves an existing table as it was. Guarded ALTER, like the above;
+        # rows from before the column keep the empty default.
+        id_cols = {row[1] for row in await (await self._db.execute("PRAGMA table_info(os_notification_ids)")).fetchall()}
+        if "digest" not in id_cols:
+            await self._db.execute("ALTER TABLE os_notification_ids ADD COLUMN digest TEXT NOT NULL DEFAULT ''")
+            await self._db.commit()
         # Create the per-user index if it doesn't exist yet. Cannot live in
         # the SCHEMA because the column is added via guarded ALTER after init.
         #

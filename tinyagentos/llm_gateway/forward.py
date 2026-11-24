@@ -276,6 +276,51 @@ def _notify_lifecycle(state: Any, backend_name: str) -> None:
         logger.warning("llm_gateway: lifecycle notify failed", exc_info=True)
 
 
+class _SchedulerInUse:
+    """The one owner of a request's scheduler in-use count.
+
+    ``with`` it around the WHOLE attempt (key resolution, upstream call,
+    stream, tracing). ``__exit__`` runs on every way out: return, a raise,
+    cancellation or a client disconnect (BaseException), and
+    GeneratorExit when a generator holding the ``with`` is closed early. It
+    ends the use only if ``begin_use`` succeeded, so a failed begin can never
+    decrement another request's count, and it is independent of the spend and
+    trace recording, so an error there cannot skip it.
+
+    The key is ``route.model_name`` and ``route.backend_name`` (the same
+    spelling the request.start/finish feed uses), never the alias the caller
+    typed, so two aliases of one model share one resident record.
+    Best-effort: scheduler errors are logged and never fail the request.
+    """
+
+    def __init__(self, state: Any, route: Route):
+        self._scheduler = getattr(state, "model_scheduler", None)
+        self._model_name = getattr(route, "model_name", "")
+        self._backend_name = getattr(route, "backend_name", "")
+        self._backend_type = getattr(route, "backend_type", "") or ""
+        self._begun = False
+
+    def __enter__(self):
+        if self._scheduler is not None and self._model_name and self._backend_name:
+            try:
+                self._scheduler.begin_use(
+                    self._model_name, self._backend_name, self._backend_type,
+                )
+                self._begun = True
+            except Exception:  # noqa: BLE001 - scheduler must never break a request
+                logger.warning("llm_gateway: scheduler begin_use failed", exc_info=True)
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        if self._begun:
+            self._begun = False
+            try:
+                self._scheduler.end_use(self._model_name, self._backend_name)
+            except Exception:  # noqa: BLE001
+                logger.warning("llm_gateway: scheduler end_use failed", exc_info=True)
+        return False  # Don't suppress exceptions
+
+
 def _record_spend(state: Any, principal: str, cost_usd: float) -> None:
     if cost_usd is None or cost_usd <= 0:
         return
@@ -514,46 +559,63 @@ async def _chat_completion_one(
     if api_key:
         headers["authorization"] = f"Bearer {api_key}"
     what = f"the backend for model {route.model_name!r}"
-    started = _record_request_start(state, route, principal)
-    try:
-        async with httpx.AsyncClient(timeout=TIMEOUT, follow_redirects=False) as client:
-            resp = await client.post(url, json=payload, headers=headers)
-    except httpx.TimeoutException:
-        _record_request_finish(state, route, principal, started, reason="timeout")
-        raise upstream_error(f"{what} timed out") from None
-    except httpx.HTTPError:
-        _record_request_finish(state, route, principal, started, reason="unreachable")
-        raise upstream_error(f"{what} could not be reached") from None
 
-    err = _status_error(resp, route, api_key)
-    if err is not None:
-        _record_request_finish(state, route, principal, started, reason=f"http_{resp.status_code}")
-        raise err
-    try:
-        data = resp.json()
-    except ValueError:
-        data = None
-    if not isinstance(data, dict):
-        _record_request_finish(state, route, principal, started, reason="bad_response")
-        raise upstream_error(f"{what} returned a response that is not a JSON object")
-    _mirror_choices(data, "message")
+    with _SchedulerInUse(state, route):
+        started = _record_request_start(state, route, principal)
+        finished = False
 
-    request_text = json.dumps(body)
-    response_text = json.dumps(data)
-    usage = from_openai(data)
-    if not usage.known:
-        cost = Cost(None, False, "usage not reported by the backend")
-        await _record_trace(state, principal, route.upstream_model, usage, cost, route.backend_name, request_text, response_text, 0, "success", estimated=True)
-        estimate = _conservative_budget_estimate(route.backend_name, route.upstream_model, request_text, response_text)
-        if estimate > 0:
-            _record_spend(state, principal, estimate)
-    else:
-        cost = cost_of(route.backend_type or route.backend_name, route.upstream_model, usage)
-        await _record_trace(state, principal, route.upstream_model, usage, cost, route.backend_name, request_text, response_text, 0, "success", estimated=False)
-        if cost and cost.usd and cost.usd > 0:
-            _record_spend(state, principal, cost.usd)
-    _record_request_finish(state, route, principal, started, usage=usage)
-    _notify_lifecycle(state, route.backend_name)
+        def _finish(**kw) -> None:
+            """request.finish exactly once, on every exit path."""
+            nonlocal finished
+            if finished:
+                return
+            finished = True
+            _record_request_finish(state, route, principal, started, **kw)
+
+        try:
+            try:
+                async with httpx.AsyncClient(timeout=TIMEOUT, follow_redirects=False) as client:
+                    resp = await client.post(url, json=payload, headers=headers)
+            except httpx.TimeoutException:
+                _finish(reason="timeout")
+                raise upstream_error(f"{what} timed out") from None
+            except httpx.HTTPError:
+                _finish(reason="unreachable")
+                raise upstream_error(f"{what} could not be reached") from None
+
+            err = _status_error(resp, route, api_key)
+            if err is not None:
+                _finish(reason=f"http_{resp.status_code}")
+                raise err
+            try:
+                data = resp.json()
+            except ValueError:
+                data = None
+            if not isinstance(data, dict):
+                _finish(reason="bad_response")
+                raise upstream_error(f"{what} returned a response that is not a JSON object")
+            _mirror_choices(data, "message")
+
+            request_text = json.dumps(body)
+            response_text = json.dumps(data)
+            usage = from_openai(data)
+            if not usage.known:
+                cost = Cost(None, False, "usage not reported by the backend")
+                await _record_trace(state, principal, route.upstream_model, usage, cost, route.backend_name, request_text, response_text, 0, "success", estimated=True)
+                estimate = _conservative_budget_estimate(route.backend_name, route.upstream_model, request_text, response_text)
+                if estimate > 0:
+                    _record_spend(state, principal, estimate)
+            else:
+                cost = cost_of(route.backend_type or route.backend_name, route.upstream_model, usage)
+                await _record_trace(state, principal, route.upstream_model, usage, cost, route.backend_name, request_text, response_text, 0, "success", estimated=False)
+                if cost and cost.usd and cost.usd > 0:
+                    _record_spend(state, principal, cost.usd)
+            _finish(usage=usage)
+            _notify_lifecycle(state, route.backend_name)
+        finally:
+            # Cancellation, a client disconnect or an error in tracing must
+            # not leave a request.start without its request.finish.
+            _finish(reason="aborted")
     return data
 
 
@@ -700,14 +762,19 @@ def _event_stream_for_route(
             _finish(usage=usage)
             _notify_lifecycle(state, route.backend_name)
 
-        try:
-            async for chunk in _pump():
-                yield chunk
-        finally:
-            # Covers GeneratorExit (client disconnect), cancellation, a raise
-            # from resolve_api_key, or a mid-stream upstream error: the feed
-            # never keeps a request.start without a matching request.finish.
-            _finish(reason="aborted")
+        # The in-use count is held by this ``with`` and nothing else: it is
+        # released on every exit of the generator (return, raise, cancel,
+        # GeneratorExit) and only if it was taken. It lives inside the
+        # generator, so a generator closed before its first step never took it.
+        with _SchedulerInUse(state, route):
+            try:
+                async for chunk in _pump():
+                    yield chunk
+            finally:
+                # Covers GeneratorExit (client disconnect), cancellation, a raise
+                # from resolve_api_key, or a mid-stream upstream error: the feed
+                # never keeps a request.start without a matching request.finish.
+                _finish(reason="aborted")
 
     return _gen()
 
@@ -958,6 +1025,12 @@ async def chat_completion(routes: list[Route], body: dict, principal: str, state
     )
 
 
+async def _close_gen(gen: AsyncGenerator) -> None:
+    """Background task: close an async generator (``aclose`` is not itself a
+    coroutine function, so Starlette would run it in a thread, unawaited)."""
+    await gen.aclose()
+
+
 async def chat_completion_stream(
     routes: list[Route],
     body: dict,
@@ -970,6 +1043,7 @@ async def chat_completion_stream(
     chunk is yielded the stream is not retried, to avoid duplicating output.
     """
     from fastapi.responses import StreamingResponse
+    from starlette.background import BackgroundTask
 
     gen = _stream_with_retry(
         routes,
@@ -985,8 +1059,19 @@ async def chat_completion_stream(
         return exc.response()
 
     async def _full():
-        yield first
-        async for chunk in gen:
-            yield chunk
+        try:
+            yield first
+            async for chunk in gen:
+                yield chunk
+        finally:
+            # A client that goes away closes THIS generator: close the retry
+            # loop with it, so the attempt's in-use count and spend settle now
+            # and not whenever gc finalises ``gen``.
+            await gen.aclose()
 
-    return StreamingResponse(_full(), media_type="text/event-stream", headers={"cache-control": "no-cache"})
+    # ``background`` also closes ``gen`` when the response is dropped before
+    # ``_full`` ever starts (a started generator is closed by its finally).
+    return StreamingResponse(
+        _full(), media_type="text/event-stream", headers={"cache-control": "no-cache"},
+        background=BackgroundTask(_close_gen, gen),
+    )
