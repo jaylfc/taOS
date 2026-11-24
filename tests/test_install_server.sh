@@ -362,4 +362,13 @@ grep -q 'install-rknpu.sh.*--runtime-only' "$SCRIPT"
 echo "test: install-rknpu.sh supports --runtime-only (pin librknnrt, skip rkllama)"
 grep -q -- '--runtime-only' scripts/install-rknpu.sh
 
+echo "test: rk-llama.cpp installer establishes the librknnrt pin itself"
+grep -q 'install-rknpu.sh.*--runtime-only' scripts/install-rk-llama-cpp.sh
+
+echo "test: TAOS_NO_RKNPU manual-setup hint includes the runtime pin"
+grep -q 'install-rknpu.sh --yes --runtime-only && sudo bash scripts/install-rk-llama-cpp.sh' "$SCRIPT"
+
+echo "test: deferred-install retry hint passes --yes to the runtime pin"
+grep -q 'rknpu_script --yes --runtime-only' "$SCRIPT"
+
 echo "all tests passed"

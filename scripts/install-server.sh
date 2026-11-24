@@ -691,7 +691,7 @@ detect_and_advise_accelerators() {
             # systemd unit lands. Opt-out via TAOS_NO_RKNPU=1.
             if [[ "${TAOS_NO_RKNPU:-}" == "1" || "${TAOS_NO_RKNPU:-}" == "true" ]]; then
                 warn "TAOS_NO_RKNPU=1 — skipping rk-llama.cpp install; controller will run CPU-only on this NPU box"
-                warn "  to set up later: sudo bash scripts/install-rk-llama-cpp.sh"
+                warn "  to set up later: sudo bash scripts/install-rknpu.sh --yes --runtime-only && sudo bash scripts/install-rk-llama-cpp.sh"
             else
                 # Defer the actual install to after the repo clone — the
                 # scripts we need live at $INSTALL_DIR/scripts/ and that
@@ -793,7 +793,7 @@ install_rknpu_if_pending() {
     log "chaining into $rknpu_script --runtime-only (librknnrt pin for rk-llama.cpp)"
     if ! sudo -E bash "$rknpu_script" --yes --runtime-only; then
         warn "install-rknpu.sh --runtime-only failed — skipping rk-llama.cpp install (it needs the pinned librknnrt)"
-        warn "  to retry: sudo bash $rknpu_script --runtime-only && sudo bash $rkllamacpp_script"
+        warn "  to retry: sudo bash $rknpu_script --yes --runtime-only && sudo bash $rkllamacpp_script"
         return 0
     fi
     if [[ ! -f "$rkllamacpp_script" || ! -r "$rkllamacpp_script" ]]; then

@@ -289,7 +289,10 @@ async def install_npu_backend(request: Request):
     rkllama is deliberately NOT installed here: since #328 (PR-B) it is
     a lazy backend — the Store's manifest resolver chains its install
     (confirm-then-chain) when the user picks an .rkllm model, and only
-    then. Deliberately scoped to just this one permissively-licensed
+    then. The librknnrt 2.3.0 runtime pin rk-llama.cpp needs is
+    established inside scripts/install-rk-llama-cpp.sh itself (it chains
+    the sibling install-rknpu.sh --runtime-only before installing), so
+    this endpoint inherits the pin without a separate privileged step. Deliberately scoped to just this one permissively-licensed
     (MIT) LLM-runtime server — this is the user's one explicit tap of
     consent for exactly that install, nothing more. No models are pulled
     here (those go through the existing per-model Store flow with their
