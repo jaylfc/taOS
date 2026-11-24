@@ -55,6 +55,11 @@ function baseResponses(activity = makeActivity()) {
     "/api/scheduler/tasks?limit=8": { ok: true, body: { tasks: [] } },
     "/api/cluster/workers": { ok: true, body: [] },
     "/api/activity/models?limit=200": { ok: true, body: { events: [], count: 0, event_types: [] } },
+    // System health glance card (#621) mount fetches
+    "/api/health?detailed=true": { ok: true, body: { status: "ok", subsystems: {} } },
+    "/api/health-check": { ok: true, body: { checks: [] } },
+    "/api/agents": { ok: true, body: [] },
+    "/api/memory/stats": { ok: true, body: {} },
   };
 }
 
@@ -143,7 +148,7 @@ describe("ActivityApp backend recovery", () => {
     await act(async () => { await Promise.resolve(); });
     
     const callsAfterMount = fetchTracker.getCalls();
-    expect(callsAfterMount.length).toBe(6); // 4 data + 1 cluster + 1 model activity
+    expect(callsAfterMount.length).toBe(10); // 4 data + 1 cluster + 1 model activity + 4 system health (#621)
     expect(callsAfterMount.filter(c => c === "/api/activity")).toHaveLength(1);
     expect(callsAfterMount.filter(c => c === "/api/health")).toHaveLength(0);
 

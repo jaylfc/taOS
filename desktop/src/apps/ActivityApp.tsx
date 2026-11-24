@@ -8,6 +8,7 @@ import {
 import { Card, CardContent, Button } from "@/components/ui";
 import { AiStackRecovery } from "./ActivityApp.aiStack";
 import { ModelActivityPanel } from "./ActivityApp.modelActivity";
+import { SystemHealthCard } from "./ActivityApp.systemHealth";
 import type { ClusterWorker } from "@/lib/cluster";
 import { workerStatus, workerHardwareSummary, workerShortIp, normalizeBackendName, STATUS_PILL_CLASS, STATUS_LABEL } from "@/lib/cluster";
 
@@ -386,6 +387,9 @@ const { hardware, cpu, memory, npu, gpu, gpus, thermal, zram, disk, network, pro
 
       {/* Grid */}
       <div className="flex-1 overflow-y-auto p-4 grid grid-cols-12 gap-3 auto-rows-min">
+        {/* System health glance (#621) */}
+        <SystemHealthCard />
+
         {/* CPU */}
         <Card className="col-span-12 md:col-span-6 p-4">
           <CardContent className="p-0">
