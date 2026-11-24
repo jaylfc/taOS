@@ -1561,13 +1561,66 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
 
         # Core-aware model scheduler (tsk-mo6f5o): manages resident model
         # records with NPU-core-aware scheduling and in-use accounting.
-        # Constructed with the activity feed for lifecycle events; NO evict_fn
-        # (eviction and unloading belong to the second card).
+        # Constructed with the activity feed for lifecycle events. Pressure
+        # eviction stays registry-only (no evict_fn); TTL idle eviction
+        # (#62) is wired with a real unload hook below.
+        from typing import Optional as _Optional
+
+        from tinyagentos.backend_unload import unload_model as _unload_model
         from tinyagentos.scheduler.core_aware_scheduler import CoreAwareModelScheduler
+        from tinyagentos.scheduler.loaded_model import LoadedModel as _LoadedModel
+        from tinyagentos.scheduler.loaded_model import (
+            parse_ttl_seconds as _parse_ttl_seconds,
+        )
         from tinyagentos.scheduler.resource_shape import get_default_shape
+
+        # Idle TTL eviction (#62): the sweep unloads residents idle past
+        # their per-class TTL through backend_unload, honouring the
+        # catalog ttl_seconds override (manifest lifecycle.ttl_seconds).
+        # The closures resolve the resident's backend name against the
+        # live config on every call, so backends added after startup
+        # are covered.
+        def _backend_config_for(name: str) -> _Optional[dict]:
+            for b in config.backends:
+                if b.get("name") == name:
+                    return b
+            return None
+
+        async def _idle_unload(model: _LoadedModel) -> bool:
+            backend = _backend_config_for(model.backend)
+            if backend is None:
+                return False
+            async with httpx.AsyncClient() as client:
+                return await _unload_model(
+                    client,
+                    backend_type=backend.get("type", ""),
+                    base_url=backend.get("url", ""),
+                    model=model.model_id,
+                )
+
+        def _ttl_resolver(model: _LoadedModel) -> _Optional[float]:
+            backend = _backend_config_for(model.backend)
+            if backend is None:
+                return None
+            # Shared guarded parser: a manifest value like "30s" or
+            # "nan" must fall back to the class TTL, never raise into
+            # (or silently corrupt) the idle sweep.
+            return _parse_ttl_seconds(backend.get("ttl_seconds"))
+
+        def _backend_type_lookup(name: str) -> str:
+            backend = _backend_config_for(name)
+            return (backend or {}).get("type", "")
+
         app.state.model_scheduler = CoreAwareModelScheduler(
             shape_lookup=get_default_shape,
             activity_feed=app.state.model_activity,
+            idle_unload_fn=_idle_unload,
+            ttl_resolver=_ttl_resolver,
+            backend_type_lookup=_backend_type_lookup,
+        )
+        _create_supervised_task(
+            app.state.model_scheduler.idle_eviction_loop(),
+            app.state._background_tasks,
         )
 
         # Wire NotificationStore → EventBus so SSE clients get instant push.
@@ -1650,13 +1703,35 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
         _create_supervised_task(run_qmd_service_check(app.state), app.state._background_tasks)
 
         app.state._startup_complete = True
+        # Repair the installed graceful-stop script and drop-in on start-up:
+        # a machine that updated onto this code before the in-app refresh
+        # existed is repaired before its next update. It only writes files and
+        # reloads systemd, never restarts anything. A problem is logged and
+        # raised as a notification, not hidden.
+        from tinyagentos.routes.settings import _refresh_stop_artifacts_for_update
+
+        _stop_refresh = await _refresh_stop_artifacts_for_update(PROJECT_DIR)
+        app.state.graceful_stop_refresh = _stop_refresh.as_dict()
+        if _stop_refresh.problems:
+            logger.warning(
+                "startup graceful-stop refresh: %s", " | ".join(_stop_refresh.problems)
+            )
+            _notifs = getattr(app.state, "notifications", None)
+            if _notifs is not None:
+                await _notifs.add(
+                    title="Could not refresh the graceful-stop files",
+                    message=" | ".join(_stop_refresh.problems),
+                    level="warning",
+                    source="system.lifecycle",
+                )
         logger.info("startup complete — accepting requests")
 
         yield
-        # NOTE: controller restart/shutdown does NOT touch agent containers —
-        # agents and LiteLLM keep running independently, so there's nothing to
-        # gracefully drain here. Only true system halt (system-shutdown) and
-        # explicit agent pause/stop go through the orchestrator.
+        # NOTE: controller restart/shutdown does NOT touch agent containers --
+        # agents keep running independently across a controller restart, so
+        # there's nothing to gracefully drain here. Only true system halt
+        # (system-shutdown) and explicit agent pause/stop go through the
+        # orchestrator.
 
         # Cancel supervised background tasks (fire-and-forget loops etc.) plus
         # the local-heartbeat loop under ONE bounded budget. An unbounded gather

@@ -4,6 +4,20 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 
+@pytest.fixture(autouse=True)
+def _isolate_graceful_stop_install(tmp_path, monkeypatch):
+    """The update path refreshes the installed graceful-stop script and
+    systemd drop-in: point it at an empty temp tree so a test never reads or
+    writes the machine's real /etc, /usr/local/bin or home."""
+    import tinyagentos.routes.settings as settings_mod
+
+    root = tmp_path / "isolated-install"
+    monkeypatch.setattr(settings_mod, "_SYSTEM_UNIT", root / "etc" / "systemd" / "system" / "tinyagentos.service")
+    monkeypatch.setattr(settings_mod, "_SYSTEM_STOP_SCRIPT", root / "usr" / "local" / "bin" / "taos-graceful-stop")
+    monkeypatch.setattr(settings_mod, "_user_unit", lambda: root / "home" / ".config" / "systemd" / "user" / "tinyagentos.service")
+    monkeypatch.setattr(settings_mod, "_user_stop_script", lambda: root / "home" / ".local" / "bin" / "taos-graceful-stop")
+
+
 class TestUpdateAlwaysRestarts:
     """Contract: /api/settings/update ALWAYS triggers a restart on success.
 

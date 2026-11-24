@@ -616,6 +616,11 @@ def auto_register_from_manifest(
         entry["stop_cmd"] = lifecycle["stop_cmd"]
     if lifecycle.get("startup_timeout_seconds") is not None:
         entry["startup_timeout_seconds"] = lifecycle["startup_timeout_seconds"]
+    # ttl_seconds (#62): per-backend override of the scheduler's
+    # per-class idle TTLs for individual model unloads. Distinct from
+    # keep_alive_minutes above, which stops the whole service.
+    if lifecycle.get("ttl_seconds") is not None:
+        entry["ttl_seconds"] = lifecycle["ttl_seconds"]
 
     config.backends.append(entry)
     return True
