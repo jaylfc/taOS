@@ -1497,6 +1497,17 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
         from tinyagentos.model_activity import ModelActivityFeed
         app.state.model_activity = ModelActivityFeed()
 
+        # Core-aware model scheduler (tsk-mo6f5o): manages resident model
+        # records with NPU-core-aware scheduling and in-use accounting.
+        # Constructed with the activity feed for lifecycle events; NO evict_fn
+        # (eviction and unloading belong to the second card).
+        from tinyagentos.scheduler.core_aware_scheduler import CoreAwareModelScheduler
+        from tinyagentos.scheduler.resource_shape import get_default_shape
+        app.state.model_scheduler = CoreAwareModelScheduler(
+            shape_lookup=get_default_shape,
+            activity_feed=app.state.model_activity,
+        )
+
         # Wire NotificationStore → EventBus so SSE clients get instant push.
         # The emitter is best-effort: failures are logged and never break add().
         async def _notify_emitter(row: dict) -> None:

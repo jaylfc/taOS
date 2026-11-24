@@ -12,12 +12,15 @@ it (composition, not subclass) and is the entry point for model-load
 decisions. Task dispatch continues through the existing Scheduler.
 
 Phase 1.5 integration point
-----------------------------
-TODO (#172): Wire load_with_core_awareness() into the sequential
-loading path once Phase 1.5 sequential-loading work lands. The call
-site belongs in the backend dispatch path where a model needs to be
-loaded before inference can begin -- that wiring is tracked as a
-separate task and intentionally absent here to keep this diff scoped.
+---------------------------
+TODO (#62, tsk-mo6f5o): load_with_core_awareness() is now wired into the
+gateway forward path (tinyagentos/llm_gateway/forward.py:
+_chat_completion_one, _event_stream_for_route) and the Anthropic
+adapters (tinyagentos/llm_gateway/anthropic.py:
+chat_completion_anthropic, chat_completion_stream_anthropic).
+The scheduler instance is constructed in tinyagentos/app.py:1501 as
+app.state.model_scheduler with the Model Activity feed. begin_use() and
+end_use() track in-use counts for residency and idle-model eviction.
 
 Design notes
 ------------
@@ -198,6 +201,58 @@ class CoreAwareModelScheduler:
         """
         self._residents[model.model_id] = model
         self._emit("model_loaded", {"model_id": model.model_id, "tp_mode": model.tp_mode})
+
+    def begin_use(self, model_id: str, backend_name: str) -> LoadedModel:
+        """Mark a model as in-use for the duration of a request.
+
+        If the model is not yet registered, create a record and register it.
+        For backends with discrete NPU cores (rkllama), the model is already
+        loaded by the time the request reaches the gateway; register it with
+        the cores the backend shape reports, without contention resolution.
+        For backends without discrete cores, use the no-core fast path.
+        Increments the in_use_count and touches last_used_at.
+        Returns the resident model record.
+        """
+        model = self._residents.get(model_id)
+        if model is None:
+            shape = self._shape_lookup(backend_name)
+            if shape.has_cores():
+                # NPU backend: model is already loaded on the backend.
+                # Register with the cores the shape reports (all available
+                # cores as a conservative default), without contention
+                # resolution. The actual tp_mode is managed by the backend.
+                model = self._build_npu_model(
+                    model_id=model_id,
+                    backend_name=backend_name,
+                    cores=list(shape.cores or []),
+                    memory_mb=0,
+                    priority=PriorityClass.INTERACTIVE,
+                    pinned=False,
+                )
+            else:
+                # Fast path for backends without discrete cores.
+                model = self._make_no_core_model(
+                    model_id=model_id,
+                    backend_name=backend_name,
+                    memory_mb=0,
+                    priority=PriorityClass.INTERACTIVE,
+                    pinned=False,
+                )
+            self.register_loaded(model)
+        model.in_use_count += 1
+        model.touch()
+        return model
+
+    def end_use(self, model_id: str) -> None:
+        """Decrement the in-use count for a model after a request completes.
+
+        Called in a finally block so the count is always balanced even on
+        error, timeout, or client abort. Touches last_used_at.
+        """
+        model = self._residents.get(model_id)
+        if model is not None:
+            model.in_use_count = max(0, model.in_use_count - 1)
+            model.touch()
 
     def mark_unloaded(self, model_id: str) -> Optional[LoadedModel]:
         """Remove a model from the resident registry and return it."""
@@ -406,6 +461,7 @@ class CoreAwareModelScheduler:
         # Separate into evictable and non-evictable.
         # A victim is evictable if:
         #   - it is not always_resident / pinned
+        #   - it is not currently in-use (in_use_count == 0)
         #   - its priority rank >= incoming rank (equal or lower priority)
         #     OR incoming is pinned/always_resident (can evict anything)
         evictable: list[LoadedModel] = []
@@ -414,8 +470,11 @@ class CoreAwareModelScheduler:
             if m.effective_priority_rank() < 0:
                 # always_resident -- never evictable
                 non_evictable.append(m)
+            elif m.in_use_count > 0:
+                # currently in-use -- never evictable
+                non_evictable.append(m)
             elif incoming_is_pinned:
-                # incoming is pinned: can evict any non-pinned resident
+                # incoming is pinned: can evict any non-pinned, non-in-use resident
                 evictable.append(m)
             elif m.effective_priority_rank() >= incoming_rank:
                 # victim has equal or lower priority -- evictable
@@ -486,8 +545,14 @@ class CoreAwareModelScheduler:
         """Shrink a resident to a smaller core mask.
 
         Updates the registry and invokes reload_fn if one was provided.
-        Emits a 'model_shrunk' event.
+        Emits a 'model_shrunk' event. Skips if model is currently in-use.
         """
+        if model.in_use_count > 0:
+            logger.info(
+                "scheduler: skip shrink-reload for %r (in_use_count=%d)",
+                model.model_id, model.in_use_count,
+            )
+            return
         old_tp = model.tp_mode
         new_tp = _cores_to_tp_mode(new_cores)
         logger.info(
@@ -511,8 +576,14 @@ class CoreAwareModelScheduler:
         """Evict a resident model from the registry.
 
         Removes the model record, invokes evict_fn if one was provided,
-        and emits a 'model_evicted' event.
+        and emits a 'model_evicted' event. Skips if model is currently in-use.
         """
+        if model.in_use_count > 0:
+            logger.info(
+                "scheduler: skip eviction for %r (in_use_count=%d)",
+                model.model_id, model.in_use_count,
+            )
+            return
         logger.info(
             "scheduler: evicting %r (priority=%s)", model.model_id, model.priority
         )

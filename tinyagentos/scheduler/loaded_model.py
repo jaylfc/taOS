@@ -95,6 +95,7 @@ class LoadedModel:
     last_used_at: float = field(default_factory=time.time)
     priority: str = PriorityClass.INTERACTIVE
     pinned: bool = False
+    in_use_count: int = 0
 
     # -----------------------------------------------------------------------
     # Helpers
