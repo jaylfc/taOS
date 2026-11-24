@@ -39,6 +39,16 @@ QJsonObject server(const QString &id, const QString &type, const QJsonObject &ex
     return o;
 }
 
+QJsonObject artIndex()
+{
+    return QJsonDocument::fromJson(R"({
+      "icons": {"gitea": "gitea", "youtube": "webapp-youtube"},
+      "iconExt": {"gitea": "png", "webapp-youtube": "svg", "qwen": "png"},
+      "families": [{"prefix": "qwen", "icon": "qwen"}],
+      "covers": ["gitea", "stable-diffusion"],
+      "coverAlias": {"sd-webui": "stable-diffusion"}})").object();
+}
+
 void writeFile(const QString &p, const QByteArray &d)
 {
     QDir().mkpath(QFileInfo(p).absolutePath());
@@ -237,9 +247,11 @@ private Q_SLOTS:
     {
         start(true);
         loaded();
-        // the installed list and the model variants come from their own requests: wait for what is asserted
+        // the installed list, the models, the model variants and the hardware profile come from their own
+        // requests that answer after the catalogue: wait for everything that is asserted
         QVERIFY(waitFor([this] {
-            return m_e->app(u"uptime-kuma"_s)[u"runtimePort"_s].toInt() == 3001
+            return m_e->app(u"uptime-kuma"_s)[u"runtimePort"_s].toInt() == 3001 && m_e->profileId() == u"cpu-only"_s
+                && ids(m_e->list(u"models"_s)).size() == 3
                 && m_e->app(u"qwen3-8b"_s)[u"modelVariants"_s].toList().size() == 2;
         }));
         QVERIFY(m_e->isAdmin());
@@ -639,6 +651,113 @@ private Q_SLOTS:
         QVERIFY(row.contains(u"sizeText"_s));
         QCOMPARE(row[u"lastUsedText"_s].toString(), u"Never opened"_s);
         QCOMPARE(row[u"host"_s].toString(), u"github.com"_s);
+    }
+
+    // ---- the saved catalogue, artwork and the Discover page ------------------------------------------------
+    void icons_resolve_bundled_then_family_then_controller_then_nothing()
+    {
+        Catalog c;
+        c.setArt(artIndex(), u"file:///assets"_s);
+        QCOMPARE(c.iconUrl(u"gitea"_s, u"https://example.org/x.png"_s), u"file:///assets/icons/gitea.png"_s);   // bundled wins
+        QCOMPARE(c.iconUrl(u"youtube"_s), u"file:///assets/icons/webapp-youtube.svg"_s);                        // svg by index
+        QCOMPARE(c.iconUrl(u"qwen3-8b"_s), u"file:///assets/icons/qwen.png"_s);                                  // family prefix
+        QCOMPARE(c.iconUrl(u"mystery"_s, u"https://example.org/x.png"_s), u"https://example.org/x.png"_s);      // controller icon
+        QCOMPARE(c.iconUrl(u"mystery"_s, u"mdi:robot"_s), QString());                                           // not an address
+        QCOMPARE(c.iconUrl(u"mystery"_s), QString());                                                           // styled tile
+        // an icon listed for an id but missing from the index is not used
+        QCOMPARE(Catalog().iconUrl(u"gitea"_s), QString());
+        QCOMPARE(c.coverUrl(u"gitea"_s), u"file:///assets/covers/gitea.jpg"_s);
+        QCOMPARE(c.coverUrl(u"sd-webui"_s), u"file:///assets/covers/stable-diffusion.jpg"_s);                  // alias
+        QCOMPARE(c.coverUrl(u"nothing"_s), QString());
+    }
+
+    void snapshot_shows_only_until_the_controller_answers_and_fills_gaps()
+    {
+        Catalog c;
+        c.setArt(artIndex(), u"file:///assets"_s);
+        c.setBuiltinWebapps(builtinWebapps());
+        c.setSnapshot(QJsonArray{server(u"gitea"_s, u"service"_s, {{u"stars"_s, 45000}, {u"tagline"_s, u"Git, hosted by you"_s}}),
+                                 server(u"qwen3-8b"_s, u"model"_s)});
+        QVERIFY(c.usingSnapshot());
+        QCOMPARE(c.entry(u"gitea"_s)[u"source"_s].toString(), u"snapshot"_s);
+        QCOMPARE(c.entry(u"gitea"_s)[u"starsText"_s].toString(), u"45.0k"_s);
+        QCOMPARE(c.entry(u"gitea"_s)[u"iconUrl"_s].toString(), u"file:///assets/icons/gitea.png"_s);
+        QCOMPARE(c.entry(u"gitea"_s)[u"coverUrl"_s].toString(), u"file:///assets/covers/gitea.jpg"_s);
+        QVERIFY(ids(c.section(u"models"_s)).contains(u"qwen3-8b"_s));
+        // the controller's catalogue replaces it; stars and tagline it lacks come from the saved entry
+        c.setServer(QJsonArray{server(u"gitea"_s, u"service"_s)});
+        QVERIFY(!c.usingSnapshot());
+        QCOMPARE(c.entry(u"gitea"_s)[u"source"_s].toString(), u"controller"_s);
+        QCOMPARE(c.entry(u"gitea"_s)[u"stars"_s].toInt(), 45000);
+        QCOMPARE(c.entry(u"gitea"_s)[u"tagline"_s].toString(), u"Git, hosted by you"_s);
+        QVERIFY(!c.has(u"qwen3-8b"_s));
+        QCOMPARE(starsText(950), u"950"_s);
+        QCOMPARE(starsText(0), QString());
+        QCOMPARE(starsText(379000), u"379.0k"_s);
+    }
+
+    void discover_page_has_a_hero_and_shelves_and_leaves_empty_ones_out()
+    {
+        Catalog c;
+        c.setArt(artIndex(), u"file:///assets"_s);
+        c.setCurated(QJsonDocument::fromJson(R"({"featured": "gitea", "shelves": {"popular": ["gitea", "searxng", "n8n"],
+                                                  "subscriptions": ["searxng", "n8n", "gitea"]}})").object());
+        c.setBuiltinWebapps(builtinWebapps());
+        c.setServer(QJsonArray{server(u"gitea"_s, u"service"_s), server(u"searxng"_s, u"service"_s), server(u"n8n"_s, u"service"_s)});
+        const QVariantMap page = c.discoverPage();
+        QCOMPARE(page[u"hero"_s].toMap()[u"id"_s].toString(), u"gitea"_s);
+        QStringList shelfIds;
+        for (const QVariant &v : page[u"shelves"_s].toList())
+            shelfIds << v.toMap()[u"id"_s].toString();
+        QVERIFY(shelfIds.contains(u"popular"_s));
+        QVERIFY(shelfIds.contains(u"subscriptions"_s));
+        QVERIFY(shelfIds.contains(u"webapps"_s));
+        QVERIFY(!shelfIds.contains(u"models"_s));          // nothing to show: no shelf
+        QVERIFY(!shelfIds.contains(u"agents"_s));
+        for (const QVariant &v : page[u"shelves"_s].toList())
+            if (v.toMap()[u"id"_s].toString() == u"popular"_s)
+                QVERIFY(!ids(v.toMap()[u"items"_s].toList()).contains(u"gitea"_s));   // the hero is not shown twice
+        // no cover anywhere: no hero rather than a blank one
+        Catalog d;
+        d.setServer(QJsonArray{server(u"gitea"_s, u"service"_s)});
+        QVERIFY(d.discoverPage()[u"hero"_s].toMap().isEmpty());
+    }
+
+    void agents_and_mcp_are_lenses_over_the_kinds()
+    {
+        Catalog c;
+        c.setServer(QJsonArray{server(u"openclaw"_s, u"agent-framework"_s), server(u"mcp-memory"_s, u"mcp"_s), server(u"gitea"_s, u"service"_s)});
+        QCOMPARE(ids(c.section(u"agents"_s)), (QStringList{u"openclaw"_s}));
+        QCOMPARE(ids(c.section(u"mcp"_s)), (QStringList{u"mcp-memory"_s}));
+        QCOMPARE(c.count(u"agents"_s), 1);
+        QCOMPARE(c.chips(u"agents"_s).first().toMap()[u"count"_s].toInt(), 1);
+    }
+
+    void the_saved_catalogue_loads_from_a_folder_and_the_sidebar_hides_empty_sections()
+    {
+        QTemporaryDir dir;
+        writeFile(dir.filePath(u"catalog/art-index.json"_s), QJsonDocument(artIndex()).toJson());
+        writeFile(dir.filePath(u"catalog/snapshot.json"_s),
+                  QJsonDocument(QJsonObject{{u"entries"_s, QJsonArray{server(u"gitea"_s, u"service"_s)}}}).toJson());
+        qputenv("TAOS_STORE_CATALOG_DIR", dir.filePath(u"catalog"_s).toUtf8());
+        StoreEngine e;      // not running: it never asks the controller
+        e.setWebappOptions(webOpts());
+        e.setThemePaths(themePaths());
+        e.setBuiltinWebapps(builtinWebapps());
+        e.loadBundledCatalog();
+        qunsetenv("TAOS_STORE_CATALOG_DIR");
+        QVERIFY(e.usingSnapshot());
+        QVERIFY(e.statusText().contains(u"saved with this app"_s));
+        QVERIFY(e.catalog().entry(u"gitea"_s)[u"iconUrl"_s].toString().startsWith(u"file:"_s));
+        QStringList sec;
+        for (const QVariant &v : e.sections())
+            sec << v.toMap()[u"id"_s].toString();
+        QVERIFY(sec.contains(u"apps"_s));
+        QVERIFY(sec.contains(u"discover"_s));
+        QVERIFY(sec.contains(u"installed"_s));
+        QVERIFY(!sec.contains(u"models"_s));      // the engine has none: not shown empty
+        QVERIFY(!sec.contains(u"agents"_s));
+        QVERIFY(!sec.contains(u"mcp"_s));
     }
 
     void relative_days_and_sizes_read_as_words()

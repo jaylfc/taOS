@@ -81,6 +81,15 @@ QString fitText(const QString &fit)
     return {};
 }
 
+QString starsText(int stars)
+{
+    if (stars <= 0)
+        return {};
+    if (stars < 1000)
+        return QString::number(stars);
+    return u"%1k"_s.arg(stars / 1000.0, 0, 'f', 1);
+}
+
 namespace {
 
 QString letterOf(const QString &name)
@@ -215,6 +224,72 @@ void Catalog::setBuiltinWebapps(const QJsonArray &apps)
     rebuild();
 }
 
+void Catalog::setSnapshot(const QJsonArray &entries)
+{
+    m_snapArr = entries;
+    m_snapById.clear();
+    for (const QJsonValue &v : entries)
+        m_snapById.insert(v.toObject().value(u"id"_s).toString(), v.toObject());
+    rebuild();
+}
+
+void Catalog::setArt(const QJsonObject &index, const QString &base)
+{
+    m_assetBase = base;
+    m_iconOf.clear();
+    m_iconExt.clear();
+    m_families.clear();
+    m_covers.clear();
+    m_coverAlias.clear();
+    const QJsonObject icons = index.value(u"icons"_s).toObject();
+    for (auto it = icons.begin(); it != icons.end(); ++it)
+        m_iconOf.insert(it.key(), it.value().toString());
+    const QJsonObject ext = index.value(u"iconExt"_s).toObject();
+    for (auto it = ext.begin(); it != ext.end(); ++it)
+        m_iconExt.insert(it.key(), it.value().toString());
+    for (const QJsonValue &v : index.value(u"families"_s).toArray())
+        m_families.append({v.toObject().value(u"prefix"_s).toString(), v.toObject().value(u"icon"_s).toString()});
+    for (const QJsonValue &v : index.value(u"covers"_s).toArray())
+        m_covers.insert(v.toString());
+    const QJsonObject al = index.value(u"coverAlias"_s).toObject();
+    for (auto it = al.begin(); it != al.end(); ++it)
+        m_coverAlias.insert(it.key(), it.value().toString());
+    rebuild();
+}
+
+void Catalog::setCurated(const QJsonObject &curated)
+{
+    m_curated = curated;
+}
+
+QString Catalog::iconUrl(const QString &id, const QString &serverIcon) const
+{
+    auto url = [&](const QString &stem) {
+        const QString ext = m_iconExt.value(stem);
+        return ext.isEmpty() ? QString() : u"%1/icons/%2.%3"_s.arg(m_assetBase, stem, ext);
+    };
+    QString u = url(m_iconOf.value(id));
+    if (!u.isEmpty())
+        return u;
+    for (const auto &f : m_families) {
+        if (!f.first.isEmpty() && id.startsWith(f.first)) {
+            u = url(f.second);
+            if (!u.isEmpty())
+                return u;
+        }
+    }
+    if (serverIcon.startsWith(u"http://"_s) || serverIcon.startsWith(u"https://"_s) || serverIcon.startsWith(u"file:"_s)
+        || serverIcon.startsWith(u"qrc:"_s))
+        return serverIcon;
+    return {};
+}
+
+QString Catalog::coverUrl(const QString &id) const
+{
+    const QString name = m_coverAlias.value(id, id);
+    return m_covers.contains(name) ? u"%1/covers/%2.jpg"_s.arg(m_assetBase, name) : QString();
+}
+
 void Catalog::setProfile(const QString &profileId)
 {
     m_profile = profileId;
@@ -284,11 +359,33 @@ void Catalog::rebuild()
             e[u"source"_s] = u"controller"_s;
         add(e);
     }
+    if (usingSnapshot()) {
+        for (const QJsonValue &v : std::as_const(m_snapArr)) {
+            QVariantMap e = normalizeServerEntry(v.toObject());
+            e[u"source"_s] = u"snapshot"_s;
+            add(e);
+        }
+    }
     for (const QJsonValue &v : std::as_const(m_webArr))
         add(normalizeWebappEntry(v.toObject()));
     for (QVariantMap &e : m_entries) {
         const QString id = e.value(u"id"_s).toString();
         const QString kind = e.value(u"kind"_s).toString();
+        // what a live entry lacks comes from the saved one; art is looked up for every entry
+        if (m_snapById.contains(id) && e.value(u"source"_s).toString() == u"controller"_s) {
+            const QJsonObject s = m_snapById.value(id);
+            if (e.value(u"stars"_s).toInt() == 0)
+                e[u"stars"_s] = s.value(u"stars"_s).toInt();
+            if (e.value(u"tagline"_s).toString().isEmpty())
+                e[u"tagline"_s] = s.value(u"tagline"_s).toString();
+        }
+        e[u"iconUrl"_s] = iconUrl(id, e.value(u"icon"_s).toString());
+        e[u"coverUrl"_s] = coverUrl(id);
+        e[u"starsText"_s] = starsText(e.value(u"stars"_s).toInt());
+        QString cat = e.value(u"category"_s).toString();
+        if (cat.isEmpty())
+            cat = kind == u"agent"_s ? u"agent-framework"_s : e.value(u"type"_s).toString();
+        e[u"categoryLabel"_s] = cat.replace(u'-', u' ');
         if (kind == u"webapp"_s) {
             const int n = m_instances.value(id);
             e[u"instances"_s] = n;
@@ -365,6 +462,16 @@ static QString chipKey(const QVariantMap &e)
     return c;
 }
 
+// "agents" and "mcp" are lenses over the kinds; every other section is the entry's own.
+static bool inSection(const QVariantMap &e, const QString &sec)
+{
+    if (sec == u"agents"_s)
+        return e.value(u"kind"_s).toString() == u"agent"_s;
+    if (sec == u"mcp"_s)
+        return e.value(u"kind"_s).toString() == u"mcp"_s;
+    return e.value(u"section"_s).toString() == sec;
+}
+
 QVariantList Catalog::section(const QString &sec, const QString &query, const QString &chip) const
 {
     const QStringList words = query.toLower().simplified().split(u' ', Qt::SkipEmptyParts);
@@ -373,14 +480,13 @@ QVariantList Catalog::section(const QString &sec, const QString &query, const QS
     int order = 0;
     for (const QVariantMap &e : m_entries) {
         ++order;
-        const QString s = e.value(u"section"_s).toString();
         if (sec == u"installed"_s) {
             if (!e.value(u"installed"_s).toBool())
                 continue;
         } else if (sec == u"updates"_s) {
             if (!e.value(u"updateAvailable"_s).toBool())
                 continue;
-        } else if (s != sec) {
+        } else if (!inSection(e, sec)) {
             continue;
         }
         if (!chip.isEmpty() && chip != u"all"_s && chipKey(e) != chip)
@@ -427,7 +533,7 @@ QVariantList Catalog::chips(const QString &sec) const
     QHash<QString, int> counts;
     int total = 0;
     for (const QVariantMap &e : m_entries) {
-        if (e.value(u"section"_s).toString() != sec)
+        if (!inSection(e, sec))
             continue;
         ++total;
         const QString k = chipKey(e);
@@ -482,6 +588,72 @@ QVariantList Catalog::discover() const
     group(u"models"_s, QObject::tr("Models that run well here"), models, 6);
     group(u"plugins"_s, QObject::tr("Plugins and tools"), section(u"plugins"_s), 6);
     return groups;
+}
+
+QVariantMap Catalog::discoverPage() const
+{
+    auto byIds = [&](const QJsonArray &ids) {
+        QVariantList out;
+        for (const QJsonValue &v : ids)
+            if (m_index.contains(v.toString()))
+                out << m_entries.at(m_index.value(v.toString()));
+        return out;
+    };
+    auto byStars = [](QVariantList l) {
+        std::stable_sort(l.begin(), l.end(), [](const QVariant &a, const QVariant &b) {
+            return a.toMap().value(u"stars"_s).toInt() > b.toMap().value(u"stars"_s).toInt();
+        });
+        return l;
+    };
+    const QJsonObject picks = m_curated.value(u"shelves"_s).toObject();
+    QVariantMap page;
+    QVariantMap hero = entry(m_curated.value(u"featured"_s).toString());
+    if (hero.isEmpty() || hero.value(u"coverUrl"_s).toString().isEmpty()) {
+        hero = {};
+        for (const QVariantMap &e : m_entries)
+            if (e.value(u"kind"_s).toString() != u"webapp"_s && !e.value(u"coverUrl"_s).toString().isEmpty()) {
+                hero = e;
+                break;
+            }
+    }
+    page[u"hero"_s] = hero;
+    const QString heroId = hero.value(u"id"_s).toString();
+    QVariantList shelves;
+    auto shelf = [&](const QString &id, const QString &title, const QString &style, const QString &sec, QVariantList items, int max, int minCount = 1) {
+        QVariantList kept;
+        for (const QVariant &v : std::as_const(items))
+            if (v.toMap().value(u"id"_s).toString() != heroId || id != u"popular"_s)
+                kept << v;
+        if (kept.size() < minCount)
+            return;      // a shelf of one or two looks like a mistake
+        shelves << QVariantMap{{u"id"_s, id}, {u"title"_s, title}, {u"style"_s, style}, {u"section"_s, sec},
+                               {u"items"_s, QVariant(kept.mid(0, max))}, {u"total"_s, kept.size()}};
+    };
+    QVariantList popular = byIds(picks.value(u"popular"_s).toArray());
+    if (popular.size() < 3) {
+        popular.clear();
+        for (const QVariantMap &e : m_entries) {
+            const QString k = e.value(u"kind"_s).toString();
+            if ((k == u"app"_s || k == u"agent"_s) && !e.value(u"coverUrl"_s).toString().isEmpty())
+                popular << e;
+        }
+        popular = byStars(popular);
+    }
+    shelf(u"popular"_s, QObject::tr("Popular this week"), u"cards"_s, u"apps"_s, popular, 6);
+    QVariantList subs = byIds(picks.value(u"subscriptions"_s).toArray());
+    shelf(u"subscriptions"_s, QObject::tr("Replace your subscriptions"), u"compact"_s, u"apps"_s, subs, 8, 3);
+    QVariantList web = section(u"webapps"_s);
+    std::stable_partition(web.begin(), web.end(), [](const QVariant &v) { return v.toMap().value(u"id"_s).toString() == u"youtube"_s; });
+    shelf(u"webapps"_s, QObject::tr("Web apps"), u"compact"_s, u"webapps"_s, web, 6);
+    shelf(u"agents"_s, QObject::tr("Build agents with"), u"cards"_s, u"agents"_s, byStars(section(u"agents"_s)), 6);
+    QVariantList models;
+    for (const QVariant &v : section(u"models"_s))
+        if (v.toMap().value(u"fit"_s).toString() == u"green"_s)
+            models << v;
+    shelf(u"models"_s, QObject::tr("Models that run well here"), u"compact"_s, u"models"_s, models, 6);
+    shelf(u"plugins"_s, QObject::tr("Plugins and tools"), u"compact"_s, u"plugins"_s, section(u"plugins"_s), 6);
+    page[u"shelves"_s] = shelves;
+    return page;
 }
 
 } // namespace Taos::Store

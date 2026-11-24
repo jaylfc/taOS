@@ -7,11 +7,12 @@ import Taos.Apps 1.0
 // Installed: everything you have, of every kind (apps, models, plugins, web apps, themes), grouped by kind.
 Item {
     id: page
+    StableModel { id: rowsStable; source: page.rows }
     property var engine
     property string query: ""
     signal openDetail(string id)
     signal gotoSection(string section)
-    readonly property var all: engine.revision >= 0 ? engine.installedRows() : []
+    readonly property var all: visible && engine.revision >= 0 ? engine.installedRows() : []
     readonly property var rows: {
         const q = query.toLowerCase()
         const r = all.filter(x => q === "" || (x.name + " " + x.kindLabel + " " + x.subtitle).toLowerCase().indexOf(q) >= 0)
@@ -30,21 +31,21 @@ Item {
         anchors.fill: parent
         spacing: 0
         ColumnLayout {
-            Layout.fillWidth: true; Layout.margins: 20; Layout.bottomMargin: 10; spacing: 2
-            TaosText { text: qsTr("Installed"); font.pixelSize: Look.heading; font.weight: Font.DemiBold
+            Layout.fillWidth: true; Layout.margins: 24; Layout.bottomMargin: 10; spacing: 2
+            TaosText { text: qsTr("Installed"); font.pixelSize: Look.pageTitle; font.weight: Font.Bold
                        Accessible.ignored: false; Accessible.role: Accessible.Heading; Accessible.name: text }
             TaosText { text: qsTr("%1 items").arg(page.rows.filter(x => !x.isHeader).length); color: Look.textSecondary; font.pixelSize: Look.small
                        font.features: { "tnum": 1 } }
         }
         Rectangle {
             Layout.fillWidth: true; Layout.fillHeight: true
-            Layout.leftMargin: 20; Layout.rightMargin: 20; Layout.bottomMargin: 20
-            radius: 10; color: Look.surface; clip: true
+            Layout.leftMargin: 24; Layout.rightMargin: 24; Layout.bottomMargin: 20
+            radius: Look.radiusCard; color: Look.surface; clip: true
             ListView {
                 id: list
                 objectName: "list-installed"
                 anchors.fill: parent
-                model: page.rows
+                model: rowsStable.value
                 clip: true
                 boundsBehavior: Flickable.StopAtBounds
                 keyNavigationEnabled: true
@@ -87,7 +88,7 @@ Item {
                     }
                     contentItem: RowLayout {
                         spacing: 12
-                        AppIcon { Layout.leftMargin: 12; size: 34; letter: row.modelData.letter ? row.modelData.letter : "?"; iconUrl: row.modelData.iconUrl ? row.modelData.iconUrl : "" }
+                        AppTile { Layout.leftMargin: 12; size: 34; letter: row.modelData.letter ? row.modelData.letter : "?"; iconUrl: row.modelData.iconUrl ? row.modelData.iconUrl : ""; name: row.modelData.name ? row.modelData.name : "" }
                         ColumnLayout {
                             Layout.fillWidth: true; spacing: 1
                             TaosText { text: row.modelData.name ? row.modelData.name : ""; font.weight: Font.DemiBold; elide: Text.ElideRight; Layout.fillWidth: true }

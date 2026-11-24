@@ -41,6 +41,7 @@ QtObject {
     readonly property color cardUnread: TaosStyle.raised
     readonly property color field: Qt.rgba(text.r, text.g, text.b, 0.06)
     readonly property color accentText: TaosStyle.accentText
+    readonly property color scrim: TaosStyle.scrim
 
     function tone(name) {
         switch (name) {
@@ -52,15 +53,31 @@ QtObject {
         }
     }
     function tint(c, a) { return Qt.rgba(c.r, c.g, c.b, a) }
+    // A veil of the window ground, for text that sits on artwork: it follows the theme, so a light theme gets a light veil.
+    function veil(a) { return Qt.rgba(ground.r, ground.g, ground.b, a) }
+    function hashOf(s) { let h = 7; const t = String(s); for (let i = 0; i < t.length; i++) h = (h * 31 + t.charCodeAt(i)) & 0x7fffffff; return h }
+    // The fill of a stand-in tile or cover for a name: the text colour at a low strength, one of six, so the
+    // fallbacks differ a little from each other and never leave the theme's neutral range.
+    function tileFill(name) { return tint(text, 0.07 + (hashOf(name) % 6) * 0.02) }
 
     // type scale (px)
     readonly property int caption: 11
     readonly property int small: 12
     readonly property int body: 13
+    readonly property int bodyMedium: 14
     readonly property int bodyLarge: 15
     readonly property int title: 15
     readonly property int heading: 20
+    readonly property int pageTitle: 24      // a page's title
+    readonly property int cardTitle: 16      // the name on a card
+    readonly property int display: 34        // the name on a hero
 
+    readonly property int space1: 4          // the 4 px grid: 8 is the unit
+    readonly property int space2: 8
+    readonly property int space3: 12
+    readonly property int space4: 16
+    readonly property int space5: 24
+    readonly property int space6: 32
     readonly property int gap: 8
     readonly property int pad: 16
     readonly property int radiusCard: 14
@@ -71,4 +88,5 @@ QtObject {
     readonly property int fast: reduceMotion ? 0 : 120
     readonly property int base: reduceMotion ? 0 : 200
     readonly property int slow: reduceMotion ? 0 : 320
+    readonly property int ease: Easing.OutCubic
 }

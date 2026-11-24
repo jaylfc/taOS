@@ -8,9 +8,10 @@ import Taos.Apps 1.0
 // and every taOS window recolours at once. Store themes to download come later.
 Item {
     id: page
+    StableModel { id: rowsStable; source: page.rows }
     property var engine
     property string query: ""
-    readonly property var all: engine.revision >= 0 ? engine.themes.themes : []
+    readonly property var all: visible && engine.revision >= 0 ? engine.themes.themes : []
     readonly property var rows: {
         const q = query.toLowerCase()
         return all.filter(t => q === "" || (t.name + " " + t.description).toLowerCase().indexOf(q) >= 0)
@@ -23,8 +24,8 @@ Item {
             width: parent.width
             spacing: 0
             ColumnLayout {
-                Layout.fillWidth: true; Layout.margins: 20; Layout.bottomMargin: 10; spacing: 2
-                TaosText { text: qsTr("Themes"); font.pixelSize: Look.heading; font.weight: Font.DemiBold
+                Layout.fillWidth: true; Layout.margins: 24; Layout.bottomMargin: 10; spacing: 2
+                TaosText { text: qsTr("Themes"); font.pixelSize: Look.pageTitle; font.weight: Font.Bold
                            Accessible.ignored: false; Accessible.role: Accessible.Heading; Accessible.name: text }
                 TaosText {
                     Layout.fillWidth: true; wrapMode: Text.Wrap; color: Look.textSecondary; font.pixelSize: Look.small
@@ -32,15 +33,15 @@ Item {
                 }
             }
             Rectangle {
-                Layout.fillWidth: true; Layout.leftMargin: 20; Layout.rightMargin: 20; Layout.bottomMargin: 24
+                Layout.fillWidth: true; Layout.leftMargin: 24; Layout.rightMargin: 24; Layout.bottomMargin: 24
                 implicitHeight: Math.max(60, col.implicitHeight)
-                radius: 10; color: Look.surface; clip: true
+                radius: Look.radiusCard; color: Look.surface; clip: true
                 ColumnLayout {
                     id: col
                     width: parent.width
                     spacing: 0
                     Repeater {
-                        model: page.rows
+                        model: rowsStable.value
                         delegate: C.ItemDelegate {
                             id: row
                             required property var modelData

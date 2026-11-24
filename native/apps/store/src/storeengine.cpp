@@ -2,6 +2,7 @@
 #include "storeengine.h"
 
 #include <QDesktopServices>
+#include <QDir>
 #include <QFile>
 #include <QJsonArray>
 #include <QJsonDocument>
@@ -133,14 +134,59 @@ void StoreEngine::loadBuiltinWebapps()
 
 QVariantList StoreEngine::sections() const
 {
-    const struct { const char16_t *id; const char *title; const char16_t *group; } s[] = {
-        {u"discover", QT_TR_NOOP("Discover"), u""}, {u"apps", QT_TR_NOOP("Apps"), u""}, {u"webapps", QT_TR_NOOP("Web apps"), u""},
-        {u"models", QT_TR_NOOP("Models"), u""}, {u"themes", QT_TR_NOOP("Themes"), u""}, {u"plugins", QT_TR_NOOP("Plugins"), u""},
-        {u"installed", QT_TR_NOOP("Installed"), u"library"}, {u"updates", QT_TR_NOOP("Updates"), u"library"}};
+    // `glyph` names a Glyph of Taos.Apps. A catalogue section with nothing in it is left out; Discover, Themes and
+    // the Library group always show (their pages say how to fill them).
+    const struct { const char16_t *id; const char *title; const char16_t *group; const char16_t *glyph; bool always; } s[] = {
+        {u"discover", QT_TR_NOOP("Discover"), u"", u"compass", true}, {u"apps", QT_TR_NOOP("Apps"), u"", u"grid", false},
+        {u"webapps", QT_TR_NOOP("Web apps"), u"", u"globe", false}, {u"agents", QT_TR_NOOP("Agents"), u"", u"bot", false},
+        {u"models", QT_TR_NOOP("Models"), u"", u"cpu", false}, {u"mcp", QT_TR_NOOP("MCP Servers"), u"", u"plug", false},
+        {u"plugins", QT_TR_NOOP("Plugins"), u"", u"puzzle", false}, {u"themes", QT_TR_NOOP("Themes"), u"", u"palette", true},
+        {u"installed", QT_TR_NOOP("Installed"), u"library", u"download", true}, {u"updates", QT_TR_NOOP("Updates"), u"library", u"refresh", true}};
     QVariantList out;
-    for (const auto &e : s)
-        out << QVariantMap{{u"id"_s, QString::fromUtf16(e.id)}, {u"title"_s, tr(e.title)}, {u"group"_s, QString::fromUtf16(e.group)}};
+    for (const auto &e : s) {
+        const QString id = QString::fromUtf16(e.id);
+        if (!e.always && m_cat.count(id) == 0)
+            continue;
+        out << QVariantMap{{u"id"_s, id}, {u"title"_s, tr(e.title)}, {u"group"_s, QString::fromUtf16(e.group)},
+                           {u"glyph"_s, QString::fromUtf16(e.glyph)}};
+    }
     return out;
+}
+
+QString StoreEngine::statusText() const
+{
+    if (!m_cat.usingSnapshot())
+        return {};
+    if (m_loading > 0 && m_errorKind.isEmpty())
+        return {};     // the controller is being asked: no line for a moment that passes
+    if (m_errorKind == u"unauthenticated"_s)
+        return tr("Showing the catalogue saved with this app. Sign in to taOS to see live versions and install.");
+    if (m_errorKind == u"forbidden"_s)
+        return tr("Showing the catalogue saved with this app. This account cannot see the controller's catalogue.");
+    if (m_errorKind == u"network"_s)
+        return tr("Showing the catalogue saved with this app. The controller cannot be reached.");
+    if (m_errorKind.isEmpty())
+        return tr("Showing the catalogue saved with this app.");
+    return tr("Showing the catalogue saved with this app. %1").arg(m_errorText);
+}
+
+void StoreEngine::loadBundledCatalog()
+{
+    if (m_haveBundled)
+        return;
+    m_haveBundled = true;
+    const QString dir = qEnvironmentVariable("TAOS_STORE_CATALOG_DIR");
+    auto read = [&](const QString &name) {
+        QFile f(dir.isEmpty() ? u":/my.taos.store/catalog/"_s + name : QDir(dir).filePath(name));
+        return f.open(QIODevice::ReadOnly) ? QJsonDocument::fromJson(f.readAll()).object() : QJsonObject();
+    };
+    const QString base = dir.isEmpty() ? QStringLiteral("qrc:/my.taos.store/assets")
+                                       : QUrl::fromLocalFile(QDir::cleanPath(QDir(dir).filePath(u"../assets"_s))).toString();
+    m_cat.setArt(read(u"art-index.json"_s), base);
+    m_cat.setCurated(read(u"curated.json"_s));
+    m_cat.setSnapshot(read(u"snapshot.json"_s).value(u"entries"_s).toArray());
+    bump();
+    Q_EMIT stateChanged();
 }
 
 Taos::Client *StoreEngine::client() const
@@ -179,6 +225,7 @@ void StoreEngine::setRunning(bool on)
     m_web->setActive(on);
     if (on) {
         loadBuiltinWebapps();
+        loadBundledCatalog();
         refresh();
     } else {
         m_poll.stop();

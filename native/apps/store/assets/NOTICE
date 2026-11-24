@@ -1,0 +1,21 @@
+Artwork shipped with the native Store
+
+assets/icons/webapp-*.svg
+  Glyphs from Simple Icons 13.21.0 (https://simpleicons.org), released under CC0 1.0 (public domain dedication).
+  Each glyph is drawn white on a rounded square in the brand colour. CC0 does not waive the owners' trademark or
+  brand-guideline rights: the marks identify the sites they open and imply no endorsement.
+  Source files: icons/youtube.svg, youtubemusic.svg, whatsapp.svg, telegram.svg, discord.svg, x.svg, github.svg,
+  googlemaps.svg of the simple-icons npm package.
+
+assets/icons/*.png (other)
+  App icons from the dashboard-icons collection (https://github.com/homarr-labs/dashboard-icons, Apache License 2.0),
+  scaled to 128 px. The product names and logos belong to their owners and are used only to identify the apps.
+  hermes-agent.png comes from this repository's static/store-icons/brands.
+
+assets/covers/*.jpg
+  Banner art of the web Store (desktop/public/store-covers in this repository), converted from webp to jpeg.
+  These are the projects' own promotional pictures or screenshots, shown to identify the apps. The hermes cover is
+  not shipped: it is a screenshot of a personal desktop.
+
+All of it is refreshed with tools/make_snapshot.py; the generated catalog/snapshot.json and catalog/art-index.json
+are committed so a build needs neither the network nor the tool.

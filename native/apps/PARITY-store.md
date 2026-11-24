@@ -161,6 +161,45 @@ install:
 The native Store already reads `type: webapp` entries (with `url`, `categories`) and lets them replace the built-in
 entry of the same id. The web Store can ignore the type until it learns it.
 
+## Visual redesign against the web Store (design bar)
+
+The first cut was a flat list. The Store now follows the web Store's layout and type scale, in the native toolkit,
+with every colour, radius, space and motion value taken from `Look` (so it follows a live theme switch, the three
+Graphite themes in dark and light, and reduced motion). New shared pieces live in `native/apps/common` (module
+`Taos.Apps`): `AppTile`, `CoverArt`, `CornerCaps`, `PillButton`, `SidebarItem`, `Skeleton`, `SectionHeader`, `ShelfCard`,
+`CompactRow`, `Hero`, `DetailHeader`; new `Look` tokens: `pageTitle` 24, `cardTitle` 16, `display` 34, `bodyMedium` 14,
+`space1..6`, `scrim`, `ease`, `veil(a)`, `tileFill(name)`.
+
+| Web Store | Native now | Status |
+|---|---|---|
+| Sidebar: search with icon, sections with icons, Library group, device card | same; a section the engine cannot fill is hidden (`StoreEngine::sections`, which notifies) | matches |
+| Sections Discover, Apps, Agents, Models, MCP Servers, Plugins, Installed, Updates | present; Agents and MCP Servers are lenses over the kinds (Apps still lists agents) | matches, with the overlap |
+| Services, Dev Tools, Community | no engine data (the catalogue has one `service` kind and no community feed) | not done |
+| Web apps, Themes sections | native additions, shown as shelves on Discover too | native only |
+| Featured hero, editor's choice | `Hero` with cover art; the pick is `catalog/curated.json` `featured` | matches |
+| "Popular this week" as banner cards | `ShelfCard` row, columns by width | matches |
+| "Replace your subscriptions" two-column rows | `CompactRow` grid; also used for web apps, models, plugins | matches |
+| Real icons and covers | bundled: 15 covers (webp converted to jpeg), 47 icons (dashboard-icons, Apache-2.0), 8 web app glyphs (Simple Icons, CC0). See `assets/NOTICE` | partly: only apps the web Store has art for; the rest get the styled letter tile |
+| Icon source order | bundled for the id, bundled for the id prefix (family), the controller's own `icon` when it is an address, else a tile tinted by a hash of the name inside the theme's neutral range (`Look.tileFill`) | matches (the web also tries a CDN; native never fetches icons) |
+| Stars | `stars` of the controller, else of the saved snapshot | partly: snapshot numbers are as of the snapshot |
+| Offline / signed out | the saved catalogue (`catalog/snapshot.json`, from `app-catalog/` by `tools/make_snapshot.py`) and one quiet status line with Try again | native addition |
+| Skeletons, empty and error states | Discover and list pages show skeletons shaped like the page; empty states say how to fill them; errors are one plain line | matches |
+| Detail page | art header, icon, facts, marks, Get/Open/Remove, "What it needs", web app copies | partly: no screenshots carousel (the catalogue has no screenshot field) |
+| Keyboard | Tab through everything, arrows between cards and rows, Enter opens a card, Return on a button acts | partly: arrows move between cards and rows by index; Get inside a card is a Tab stop; never run on a real keyboard here |
+| Reduce motion | `Look.reduceMotion` zeroes every duration, skeletons stop pulsing | matches |
+
+Why the window said "Sign in to taOS to see the full catalogue" (read from the code, not observed on a real desktop):
+`GET /api/store/catalog` sits behind the session middleware. `Taos::runQmlApp` installs a
+`DesktopSessionTokenSource`, which offers the cookie session saved in `$XDG_RUNTIME_DIR/taos/session` by whichever native
+app signed in. With no such file (nobody signed in during that login session), or one the controller refused, the session
+stays signed out, the call gets 401, and the engine reports `unauthenticated`. The Store has no sign-in surface of its own.
+A second candidate: `Session::verify` notes that a bearer-only credential gets 401 from `/auth/me` until the controller
+accepts Bearer there. Either way the page now shows the saved catalogue and one quiet status line.
+
+Window size: `Main.qml` asks for 1500x950, but a real desktop showed 1190x390 although it already asked for 1120x740, so
+something outside the QML (the compositor's float placement) decided the size. Not found in this repo and not
+testable here: unverified on a real display.
+
 ## What a human must check on a real display
 
 1. Install `chromium` (Debian trixie: `apt install chromium`; the engine also finds `chromium-browser`,

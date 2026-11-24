@@ -32,6 +32,15 @@ into the tree.
 * Icons: the nine SVG files under `apps/icons/` and `apps/settings/icons/` were drawn for taOS from
   plain shapes (rectangles, paths, strokes) and are AGPL-3.0-or-later like the rest of the tree. They
   are not derived from any third-party icon set.
+* Store artwork (`apps/store/assets/`, details in `apps/store/assets/NOTICE`):
+  * `icons/webapp-*.svg` (8 files): glyphs from Simple Icons 13.21.0, CC0 1.0, drawn white on a rounded square in the
+    brand colour. CC0 does not waive trademark or brand-guideline rights; the marks only identify the sites they open.
+  * `icons/*.png` (47 files, 128 px): app and project icons from the dashboard-icons collection
+    (https://github.com/homarr-labs/dashboard-icons, Apache-2.0), plus `hermes-agent.png` from this repository.
+    The names and logos belong to their owners and are used only to identify the apps in the Store.
+  * `covers/*.jpg` (15 files): the banner art of the web Store (`desktop/public/store-covers` in this repository),
+    which are the projects' own promotional pictures or screenshots, converted from webp. They identify the apps and
+    are not covered by this tree's licence; each stays under its owner's terms.
 * Fonts: none are bundled. The UI asks for `Inter`, `Noto Sans` or `DejaVu Sans` from the system.
 * Sounds: none.
 * Wallpapers and images: none are in this tree. The greeter and session read wallpapers from

@@ -16,3 +16,14 @@ ConsentCard 1.0 ConsentCard.qml
 SignInCard 1.0 SignInCard.qml
 EmptyState 1.0 EmptyState.qml
 SignInForm 1.0 SignInForm.qml
+AppTile 1.0 AppTile.qml
+CornerCaps 1.0 CornerCaps.qml
+CoverArt 1.0 CoverArt.qml
+PillButton 1.0 PillButton.qml
+SidebarItem 1.0 SidebarItem.qml
+Skeleton 1.0 Skeleton.qml
+SectionHeader 1.0 SectionHeader.qml
+ShelfCard 1.0 ShelfCard.qml
+CompactRow 1.0 CompactRow.qml
+Hero 1.0 Hero.qml
+DetailHeader 1.0 DetailHeader.qml
