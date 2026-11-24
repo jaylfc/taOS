@@ -1162,9 +1162,54 @@ class TestFullFlow:
         self, model_settings_store, mock_route_openai, agent_caller, mock_state
     ):
         """Unsupported settings are dropped and noted in x-taos-settings-dropped."""
-        # This test verifies the response header is set
-        # Implementation will add the header in the router
-        pass  # Will be implemented when the router integration is done
+        # Set top_k which OpenAI doesn't support
+        await model_settings_store.set_model_default("gpt-4o", "top_k", 40)
+        
+        body = {
+            "model": "gpt-4o",
+            "messages": [{"role": "user", "content": "Hello"}],
+            "stream": False,
+        }
+        
+        # Mock the upstream HTTP call at the client level
+        from unittest.mock import AsyncMock, patch, MagicMock
+        import httpx
+        
+        # Create a mock response
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = {
+            "id": "chatcmpl-test",
+            "object": "chat.completion",
+            "created": 1234567890,
+            "model": "gpt-4o",
+            "choices": [{"index": 0, "message": {"role": "assistant", "content": "Hi"}, "finish_reason": "stop"}],
+            "usage": {"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15}
+        }
+        
+        # Create a mock client that returns the mock response
+        mock_client = AsyncMock()
+        mock_client.post.return_value = mock_response
+        mock_client.__aenter__.return_value = mock_client
+        mock_client.__aexit__.return_value = None
+        
+        with patch("httpx.AsyncClient", return_value=mock_client):
+            result, dropped_header = await chat_completion(
+                routes=[mock_route_openai],
+                body=body,
+                principal=agent_caller.caller_id,
+                state=mock_state,
+            )
+            
+            # Verify the header is set
+            assert dropped_header is not None
+            assert "top_k" in dropped_header
+            assert "unsupported" in dropped_header
+            
+            # Verify top_k was NOT sent to upstream
+            call_args = mock_client.post.call_args
+            sent_body = call_args.kwargs["json"]
+            assert "top_k" not in sent_body
 
     @pytest.mark.asyncio
     async def test_agent_write_refused(

@@ -40,8 +40,6 @@ from tinyagentos.llm_gateway.resolve import Route
 from tinyagentos.llm_usage.pricing import Cost, cost_of, find_price, price_usage
 from tinyagentos.llm_usage.usage import UNKNOWN, OpenAIStreamUsage, Usage, ensure_stream_usage, from_openai
 from tinyagentos.model_activity import MODEL_ROUTE, REQUEST_FINISH, REQUEST_START
-from tinyagentos.model_settings import resolve_settings, apply_settings
-from tinyagentos.model_settings.turn_registry import get_turn_registry
 
 logger = logging.getLogger(__name__)
 
@@ -505,6 +503,8 @@ async def _apply_model_settings(
     
     Returns (modified_body, dropped_header_value).
     """
+    from tinyagentos.model_settings import resolve_settings, apply_settings
+    
     model_settings_store = getattr(state, "model_settings_store", None)
     if model_settings_store is None:
         return body, None
@@ -532,6 +532,7 @@ async def _get_chat_id_for_request(state: Any, principal: str, request: Any | No
     1. x-taos-chat-id header (if caller is member of that channel)
     2. Turn registry (if exactly one active turn for this agent)
     """
+    from tinyagentos.model_settings.turn_registry import get_turn_registry
     # Try header first
     if request is not None:
         headers = getattr(request, "headers", None)

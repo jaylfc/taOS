@@ -1495,6 +1495,10 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
         app.state.system_events = _system_events
         app.state.event_bus = EventBus()
 
+        # Wire model settings store to event bus for audit events
+        if hasattr(app.state, "model_settings_store"):
+            app.state.model_settings_store.set_event_bus(app.state.event_bus)
+
         # Model Activity feed (#208): bounded in-process ring buffer that the
         # scheduler and LLM gateway record into; the Activity app reads it via
         # GET /api/activity/models and the SSE stream. No init()/close(): it is

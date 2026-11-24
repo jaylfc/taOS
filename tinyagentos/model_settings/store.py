@@ -101,6 +101,33 @@ class ModelSettingsStore(BaseStore):
         # Cache for capability lookups
         self._capability_cache: dict[tuple[str, str], dict] = {}
         self._cache_loaded = False
+        # Optional event bus for audit event emission
+        self._event_bus = None
+    
+    def set_event_bus(self, event_bus) -> None:
+        """Set the event bus for audit event emission."""
+        self._event_bus = event_bus
+
+    async def _emit_audit_event(self, kind: str, payload: dict) -> None:
+        """Emit an audit event to the event bus if available."""
+        if self._event_bus is None:
+            return
+        try:
+            from tinyagentos.events import SystemEvent
+            event = SystemEvent(
+                kind=kind,
+                source="model_settings",
+                targets=["broadcast"],
+                payload=payload,
+                level="info",
+            )
+            await self._event_bus.broadcast(event)
+        except Exception:
+            # Never let event emission failures break the write
+            import logging
+            logging.getLogger(__name__).warning(
+                "model_settings: failed to emit audit event", exc_info=True
+            )
     
     async def _post_init(self) -> None:
         """Initialize default capabilities after schema creation."""
@@ -317,7 +344,18 @@ class ModelSettingsStore(BaseStore):
         )
         
         await self._db.commit()
-    
+        
+        # Emit audit event to event bus
+        await self._emit_audit_event("model_settings.set", {
+            "actor": actor,
+            "level": level,
+            "key": key,
+            "setting": setting,
+            "value": value,
+            "mode": mode,
+            "via": via,
+        })
+
     async def _get_raw_setting(
         self, level: str, key: str, setting: str, mode: str | None = None
     ) -> Any | None:
@@ -385,6 +423,17 @@ class ModelSettingsStore(BaseStore):
         )
         
         await self._db.commit()
+        
+        # Emit audit event to event bus
+        await self._emit_audit_event("model_settings.delete", {
+            "actor": actor,
+            "level": level,
+            "key": key,
+            "setting": setting,
+            "old_value": old_value,
+            "mode": mode,
+            "via": via,
+        })
         return True
     
     # -----------------------------------------------------------------------
@@ -399,6 +448,12 @@ class ModelSettingsStore(BaseStore):
             (agent_id, user_id),
         )
         await self._db.commit()
+        
+        # Emit audit event to event bus
+        await self._emit_audit_event("model_settings.agent_owner.set", {
+            "agent_id": agent_id,
+            "user_id": user_id,
+        })
     
     async def get_agent_owner(self, agent_id: str) -> str | None:
         """Get the owner of an agent."""
@@ -421,6 +476,12 @@ class ModelSettingsStore(BaseStore):
             (channel_id, member_id),
         )
         await self._db.commit()
+        
+        # Emit audit event to event bus
+        await self._emit_audit_event("model_settings.chat_member.add", {
+            "channel_id": channel_id,
+            "member_id": member_id,
+        })
     
     async def remove_chat_member(self, channel_id: str, member_id: str) -> None:
         """Remove a member from a channel."""
@@ -429,6 +490,12 @@ class ModelSettingsStore(BaseStore):
             (channel_id, member_id),
         )
         await self._db.commit()
+        
+        # Emit audit event to event bus
+        await self._emit_audit_event("model_settings.chat_member.remove", {
+            "channel_id": channel_id,
+            "member_id": member_id,
+        })
     
     async def is_chat_member(self, channel_id: str, member_id: str) -> bool:
         """Check if a member belongs to a channel."""
@@ -517,6 +584,17 @@ class ModelSettingsStore(BaseStore):
         )
         await self._db.commit()
         await self._load_capability_cache()
+        
+        # Emit audit event to event bus
+        await self._emit_audit_event("model_settings.capability.set", {
+            "actor": "admin",  # Only admins can call this
+            "provider": provider,
+            "model": model,
+            "setting": setting,
+            "min_value": min_value,
+            "max_value": max_value,
+            "allowed_values": allowed_values,
+        })
     
     # -----------------------------------------------------------------------
     # Model defaults (admin-editable)
@@ -530,7 +608,15 @@ class ModelSettingsStore(BaseStore):
             (model, setting, json.dumps(value)),
         )
         await self._db.commit()
-    
+        
+        # Emit audit event to event bus
+        await self._emit_audit_event("model_settings.default.set", {
+            "actor": "admin",  # Only admins can call this
+            "model": model,
+            "setting": setting,
+            "value": value,
+        })
+
     async def get_model_default(self, model: str, setting: str) -> Any | None:
         """Get a model default value."""
         async with self._db.execute(
