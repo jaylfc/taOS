@@ -1,0 +1,206 @@
+# CI for the native branch (Qt 6.12 QML + C++ shell and apps, Rust client).
+# Runs on pull requests to `native` and pushes to `native`, only when native/ or
+# this file changes. Needs no secrets. Steps that cannot run on a hosted runner
+# are listed under "Documented skips" in native/ci/README.md.
+name: native
+
+on:
+  pull_request:
+    branches: [native]
+    paths: ['native/**', '.github/workflows/native.yml']
+  push:
+    branches: [native]
+    paths: ['native/**', '.github/workflows/native.yml']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: native-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  QT_ROOT: ${{ github.workspace }}/../qt
+  QT_PREFIX: ${{ github.workspace }}/../qt/6.12.1/gcc_64
+  LSQT_PREFIX: ${{ github.workspace }}/../layershell
+  QT_QPA_PLATFORM: offscreen
+  QT_QUICK_BACKEND: software
+  CARGO_TERM_COLOR: always
+  CCACHE_DIR: ${{ github.workspace }}/../ccache
+  CCACHE_MAXSIZE: 1G
+
+jobs:
+  # Qt (aqtinstall, 6.12.1) and LayerShellQt (built from pinned source) are
+  # built once and cached; every other job restores them.
+  toolchain:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
+      - name: Cache Qt and LayerShellQt
+        id: cache
+        uses: actions/cache@0400d5f644dc74513175e3cd8d07132dd4860809  # v4.2.4
+        with:
+          path: |
+            ${{ env.QT_ROOT }}
+            ${{ env.LSQT_PREFIX }}
+          key: native-toolchain-${{ hashFiles('native/ci/install-qt.sh', 'native/ci/build-layershell.sh') }}
+      - name: Build dependencies
+        if: steps.cache.outputs.cache-hit != 'true'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends build-essential cmake ninja-build pkg-config git python3-venv \
+            libwayland-dev wayland-protocols libxkbcommon-dev libgl1-mesa-dev libegl1-mesa-dev libvulkan-dev \
+            libdbus-1-dev libfontconfig1-dev libfreetype-dev
+      - name: Install Qt
+        if: steps.cache.outputs.cache-hit != 'true'
+        run: native/ci/install-qt.sh "$QT_ROOT"
+      - name: Build LayerShellQt
+        if: steps.cache.outputs.cache-hit != 'true'
+        run: native/ci/build-layershell.sh "$QT_PREFIX" "$LSQT_PREFIX"
+
+  lint:
+    needs: toolchain
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
+      - uses: actions/cache/restore@0400d5f644dc74513175e3cd8d07132dd4860809  # v4.2.4
+        with:
+          path: |
+            ${{ env.QT_ROOT }}
+            ${{ env.LSQT_PREFIX }}
+          key: native-toolchain-${{ hashFiles('native/ci/install-qt.sh', 'native/ci/build-layershell.sh') }}
+          fail-on-cache-miss: true
+      - name: Runtime libraries for qmllint
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libegl1 libgl1 libxkbcommon0 libfontconfig1 libdbus-1-3
+      - name: Tokens only (no new hard-coded colours)
+        run: python3 native/ci/check_tokens.py
+      - name: qmllint
+        run: |
+          QMLLINT="$QT_PREFIX/bin/qmllint" native/ci/qmllint.sh "$RUNNER_TEMP/qmllint.log"
+      - name: Upload qmllint log
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7
+        with:
+          name: qmllint-log
+          path: ${{ runner.temp }}/qmllint.log
+          if-no-files-found: ignore
+
+  rust:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
+      - uses: actions/cache@0400d5f644dc74513175e3cd8d07132dd4860809  # v4.2.4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            native/target
+          key: native-rust-${{ hashFiles('native/Cargo.lock') }}
+          restore-keys: native-rust-
+      - name: Rust stable
+        run: rustup toolchain install stable --profile minimal && rustup default stable
+      - name: cargo test (workspace)
+        working-directory: native
+        run: cargo test --locked --workspace
+
+  shell:
+    needs: toolchain
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
+      - uses: actions/cache/restore@0400d5f644dc74513175e3cd8d07132dd4860809  # v4.2.4
+        with:
+          path: |
+            ${{ env.QT_ROOT }}
+            ${{ env.LSQT_PREFIX }}
+          key: native-toolchain-${{ hashFiles('native/ci/install-qt.sh', 'native/ci/build-layershell.sh') }}
+          fail-on-cache-miss: true
+      - uses: actions/cache@0400d5f644dc74513175e3cd8d07132dd4860809  # v4.2.4
+        with:
+          path: ${{ env.CCACHE_DIR }}
+          key: native-ccache-shell-${{ github.sha }}
+          restore-keys: native-ccache-shell-
+      - name: Packages
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends build-essential cmake ninja-build pkg-config ccache \
+            libwayland-dev wayland-protocols libxkbcommon-dev libgl1-mesa-dev libegl1-mesa-dev libvulkan-dev \
+            libdbus-1-dev libfontconfig1-dev libfreetype-dev libpulse-dev libgl1 libegl1 libxkbcommon0 libfontconfig1
+      - name: Build shell
+        run: |
+          echo 'struct wl_fixes;' > "$RUNNER_TEMP/shim.h"
+          cmake -S native/shell -B build-shell -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+            -DCMAKE_PREFIX_PATH="$QT_PREFIX;$LSQT_PREFIX" -DCMAKE_CXX_FLAGS="-include $RUNNER_TEMP/shim.h" \
+            -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
+          cmake --build build-shell --parallel 4
+      - name: Test shell (ctest, offscreen)
+        run: |
+          export XDG_RUNTIME_DIR="$(mktemp -d)"; chmod 700 "$XDG_RUNTIME_DIR"
+          ctest --test-dir build-shell --output-on-failure -j2
+
+  apps:
+    needs: toolchain
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
+      - uses: actions/cache/restore@0400d5f644dc74513175e3cd8d07132dd4860809  # v4.2.4
+        with:
+          path: |
+            ${{ env.QT_ROOT }}
+            ${{ env.LSQT_PREFIX }}
+          key: native-toolchain-${{ hashFiles('native/ci/install-qt.sh', 'native/ci/build-layershell.sh') }}
+          fail-on-cache-miss: true
+      - uses: actions/cache@0400d5f644dc74513175e3cd8d07132dd4860809  # v4.2.4
+        with:
+          path: |
+            ${{ env.CCACHE_DIR }}
+            ~/.cargo/registry
+            ~/.cargo/git
+            cargo-target
+          key: native-ccache-apps-${{ hashFiles('native/Cargo.lock') }}-${{ github.sha }}
+          restore-keys: native-ccache-apps-
+      - name: Packages
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends build-essential cmake ninja-build pkg-config ccache curl \
+            libwayland-dev wayland-protocols libxkbcommon-dev libgl1-mesa-dev libegl1-mesa-dev libvulkan-dev \
+            libdbus-1-dev libfontconfig1-dev libfreetype-dev libpulse-dev libgl1 libegl1 libxkbcommon0 libfontconfig1
+      - name: Rust stable
+        run: rustup toolchain install stable --profile minimal && rustup default stable
+      - name: Configure and build (qt foundation, apps, activity, settings)
+        env:
+          CMAKE_CXX_COMPILER_LAUNCHER: ccache
+        run: |
+          common=(-G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_PREFIX_PATH="$QT_PREFIX" \
+                  -DTAOS_CARGO_TARGET_DIR="$GITHUB_WORKSPACE/cargo-target")
+          cmake -S native/qt -B build-qt "${common[@]}"
+          cmake -S native/apps -B build-apps "${common[@]}"
+          cmake -S native/apps/activity -B build-activity "${common[@]}"
+          cmake -S native/apps/settings -B build-settings "${common[@]}"
+          cmake --build build-qt --parallel 4
+          cmake --build build-apps --parallel 4
+          cmake --build build-activity --parallel 4
+          cmake --build build-settings --parallel 4
+      - name: Test (ctest, offscreen)
+        run: |
+          export XDG_RUNTIME_DIR="$(mktemp -d)"; chmod 700 "$XDG_RUNTIME_DIR"
+          for b in build-qt build-apps build-activity build-settings; do
+            echo "== $b"
+            ctest --test-dir "$b" --output-on-failure -j1
+          done
+      - name: Screenshots of every app (offscreen, fake controllers)
+        if: always()
+        run: native/ci/shots.sh build-apps build-activity build-settings "$RUNNER_TEMP/shots"
+      - name: Upload screenshots
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7
+        with:
+          name: native-screenshots
+          path: ${{ runner.temp }}/shots
+          if-no-files-found: warn
