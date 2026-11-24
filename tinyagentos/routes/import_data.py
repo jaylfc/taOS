@@ -7,10 +7,11 @@ import shutil
 import stat
 from pathlib import Path
 
-from tinyagentos.auth_context import require_agent_access
-from tinyagentos.qmd_service import make_index_dir
 from fastapi import APIRouter, HTTPException, Request, UploadFile
 from fastapi.responses import JSONResponse
+
+from tinyagentos.auth_context import require_agent_access
+from tinyagentos.qmd_service import make_index_dir
 
 logger = logging.getLogger(__name__)
 

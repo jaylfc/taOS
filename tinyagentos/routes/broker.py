@@ -13,16 +13,16 @@ from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
-from tinyagentos.broker.clients.keenable import (
-    keenable_fetch,
-    keenable_search,
-    public_fallback_enabled,
-)
 from tinyagentos.auth_context import (
     agent_bound_name,
     can_access_agent,
     is_human_admin,
     require_agent_access,
+)
+from tinyagentos.broker.clients.keenable import (
+    keenable_fetch,
+    keenable_search,
+    public_fallback_enabled,
 )
 from tinyagentos.broker.providers import PROVIDERS
 
