@@ -1,0 +1,3 @@
+### Fixed
+
+- An in-app update or a channel switch no longer makes the controller drain agents on its own restart. The update refreshes the installed stop script (the old one is kept as `.bak`) and adds a systemd drop-in next to the unit that clears `ExecStop`, so a unit you customised is never rewritten; it then runs `systemctl daemon-reload` and never stops or restarts anything. If a file cannot be written the update result says so. The same refresh runs at start-up. Separately, while the controller is restarting for an update, `prepare-shutdown` skips the drain unless systemd has a shutdown, reboot, halt, poweroff or kexec job queued, or cannot be asked. The update that first delivers this code still drains once, because the running controller does not have it yet.

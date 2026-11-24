@@ -7,7 +7,6 @@ Wants=network-online.target
 Type=simple
 WorkingDirectory=%h/tinyagentos
 ExecStart=%h/tinyagentos/.venv/bin/python -m tinyagentos
-ExecStop=/usr/local/bin/taos-graceful-stop
 Restart=on-failure
 RestartSec=5
 TimeoutStopSec=45

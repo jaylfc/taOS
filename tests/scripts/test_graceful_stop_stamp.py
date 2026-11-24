@@ -88,6 +88,15 @@ class FakeHost:
         curl = bindir / "curl"
         curl.write_text(CURL_STUB)
         curl.chmod(0o755)
+        # systemd queues a shutdown.target/reboot.target/halt.target job while a
+        # real reboot is in progress; the drain only runs then. Stub systemctl to
+        # report a queued shutdown job so these tests exercise the drain path
+        # (they model the drain, which now only happens during a real shutdown).
+        systemctl = bindir / "systemctl"
+        systemctl.write_text(
+            '#!/bin/sh\necho "1 reboot.target start"\nexit 0\n'
+        )
+        systemctl.chmod(0o755)
         self._bindir = bindir
 
     def run(self, **overrides) -> subprocess.CompletedProcess:

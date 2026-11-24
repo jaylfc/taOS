@@ -4,6 +4,7 @@ import asyncio
 import json
 import logging
 import os
+import re
 import sys
 from dataclasses import asdict
 from datetime import datetime, timezone
@@ -39,12 +40,69 @@ def _require_admin_or_loopback(request: Request) -> None:
     require_admin(request)
 
 
+# The graceful-stop script (scripts/taos-graceful-stop.sh) calls
+# prepare-shutdown on every controller stop, including the restart that follows
+# an in-app update. A machine that still has the old unit and the old script
+# drains agents on that restart, and the unprivileged controller cannot always
+# repair those files. So the controller decides, server side: while it is
+# restarting for an update (apply_update, set_update_channel and the restart
+# route mark it), prepare-shutdown skips the drain UNLESS systemd has a real
+# shutdown job queued. The mark lives in this process only; _do_restart clears
+# it when the restart did not happen, and a new process starts without it.
+_SHUTDOWN_JOB_RE = re.compile(r"\b(shutdown|reboot|halt|poweroff|kexec)\.target\b")
+
+
+def mark_restarting_for_update(app_state) -> None:
+    app_state._restarting_for_update = True
+
+
+def clear_restarting_for_update(app_state) -> None:
+    app_state._restarting_for_update = False
+
+
+async def _shutdown_job_queued() -> bool | None:
+    """Is a shutdown/reboot/halt/poweroff/kexec job queued in systemd right now?
+
+    Asked fresh on every call (the answer changes with the machine, so it is
+    never cached). True or False when systemd answered; None when it could not
+    be asked, which the caller must treat as unknown, never as "no".
+    """
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            "systemctl", "list-jobs", "--no-pager", "--no-legend",
+            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL,
+        )
+    except OSError as exc:
+        logger.warning("prepare-shutdown: cannot run systemctl list-jobs: %s", exc)
+        return None
+    try:
+        out, _ = await asyncio.wait_for(proc.communicate(), timeout=10.0)
+    except asyncio.TimeoutError:
+        proc.kill()
+        await proc.wait()
+        logger.warning("prepare-shutdown: systemctl list-jobs timed out")
+        return None
+    if proc.returncode != 0:
+        logger.warning("prepare-shutdown: systemctl list-jobs exited %s", proc.returncode)
+        return None
+    return bool(_SHUTDOWN_JOB_RE.search(out.decode(errors="replace")))
+
+
 @router.post("/api/system/prepare-shutdown", dependencies=[Depends(_require_admin_or_loopback)])
 async def prepare_shutdown(request: Request):
     """Gracefully prepare all agents for shutdown. Used by systemd stop hook."""
     orchestrator = getattr(request.app.state, "orchestrator", None)
     if orchestrator is None:
         return JSONResponse({"error": "orchestrator not available"}, status_code=503)
+    if getattr(request.app.state, "_restarting_for_update", False):
+        # A restart for an update drains nothing; only a real shutdown job
+        # (or an answer we could not get) keeps the drain.
+        if await _shutdown_job_queued() is False:
+            return {
+                "status": "ready",
+                "report": {},
+                "drain_skipped": "controller restarting for an update; no shutdown job queued",
+            }
     report = await orchestrator.prepare("all", "system-shutdown")
     return {"status": "ready", "report": report}
 
@@ -53,10 +111,10 @@ async def prepare_shutdown(request: Request):
 async def prepare_restart(request: Request):
     """Restart just the controller process. Admin or host local token only.
 
-    Agents and LiteLLM run independently and stay up across a controller
-    restart, so there's nothing to drain — the restart is a ~5s uvicorn
-    bounce. Framework-side retry/backoff (tracked separately) covers the
-    brief window where controller-bound calls fail.
+    Agents run independently and stay up across a controller restart, so
+    there's nothing to drain -- the restart is a ~5s uvicorn bounce.
+    Framework-side retry/backoff (tracked separately) covers the brief window
+    where controller-bound calls fail.
     """
     # Record target SHA so the boot-time check can confirm the update took.
     auto_updater = getattr(request.app.state, "auto_updater", None)
@@ -78,119 +136,126 @@ async def prepare_restart(request: Request):
             "agents": {},
         }
 
+    mark_restarting_for_update(request.app.state)
     asyncio.create_task(_do_restart(request.app.state))
     return {"status": "restarting"}
 
 
 async def _do_restart(app_state) -> None:
-    await asyncio.sleep(2)
+    try:
+        await asyncio.sleep(2)
 
-    notif = getattr(app_state, "notifications", None)
+        notif = getattr(app_state, "notifications", None)
 
-    async def _emit_fail(msg: str) -> None:
-        if notif:
-            await notif.add(
-                title="Couldn't auto-restart — please restart manually",
-                message=msg,
-                level="error",
-                source="system.lifecycle",
-            )
-
-    # 1. systemd
-    if os.environ.get("INVOCATION_ID") or os.path.exists("/run/systemd/system"):
-        for svc in ("taos.service", "tinyagentos.service"):
-            for scope_args in (["systemctl", "--user", "is-active", svc], ["systemctl", "is-active", svc]):
-                try:
-                    proc = await asyncio.create_subprocess_exec(
-                        *scope_args,
-                        stdout=asyncio.subprocess.DEVNULL,
-                        stderr=asyncio.subprocess.DEVNULL,
-                    )
-                    await proc.wait()
-                    if proc.returncode == 0:
-                        restart_args = (
-                            ["systemctl", "--user", "restart", svc]
-                            if "--user" in scope_args
-                            else ["systemctl", "restart", svc]
-                        )
-                        restart_proc = await asyncio.create_subprocess_exec(
-                            *restart_args,
-                            stdout=asyncio.subprocess.DEVNULL,
-                            stderr=asyncio.subprocess.DEVNULL,
-                        )
-                        await restart_proc.wait()
-                        if restart_proc.returncode == 0:
-                            # systemctl restart succeeded — it will kill and
-                            # relaunch us; exit cleanly so the new invocation
-                            # starts fresh under the same systemd unit.
-                            os._exit(0)
-                        # systemctl restart failed (e.g. interactive auth required).
-                        # Fall through to os._exit so systemd's Restart=always
-                        # picks us back up with the updated code on disk.
-                        os._exit(1)
-                except Exception:
-                    pass
-
-    # 2. Docker — exit non-zero so the container restart policy relaunches
-    # us on the new code (#203). `always`/`unless-stopped` restart on any
-    # exit, but `on-failure` only fires on a non-zero code; exiting 0 there
-    # would leave the updated container stopped.
-    if os.path.exists("/.dockerenv"):
-        os._exit(1)
-
-    # 2b. Darwin launchd helper bootstrap
-    if sys.platform == "darwin":
-        from tinyagentos.launchd_migration import (
-            HELPER_PLIST_PATH,
-            clear_pending_launchd_reload,
-            read_pending_launchd_reload,
-        )
-        if read_pending_launchd_reload():
-            proc = None
-            try:
-                proc = await asyncio.create_subprocess_exec(
-                    "launchctl",
-                    "bootstrap",
-                    f"gui/{os.getuid()}",
-                    str(HELPER_PLIST_PATH),
-                    stdout=asyncio.subprocess.PIPE,
-                    stderr=asyncio.subprocess.PIPE,
-                )
-                # launchctl can hang (a stuck launchd job, a wedged
-                # launchd.lock). Without a timeout the execv fallback below is
-                # never reached and the restart silently stalls.
-                await asyncio.wait_for(
-                    proc.communicate(), timeout=LAUNCHCTL_BOOTSTRAP_TIMEOUT
-                )
-                if proc.returncode == 0:
-                    clear_pending_launchd_reload()
-                    os._exit(0)
-            except asyncio.TimeoutError:
-                logger.warning(
-                    "launchd helper bootstrap timed out after %ss, killing pid",
-                    LAUNCHCTL_BOOTSTRAP_TIMEOUT,
-                )
-                if proc is not None:
-                    try:
-                        proc.kill()
-                        await proc.wait()
-                    except Exception:
-                        pass
-            except Exception:
-                pass
+        async def _emit_fail(msg: str) -> None:
             if notif:
                 await notif.add(
-                    title="Launchd reload helper failed",
-                    message="New launch settings will apply after the next login.",
-                    level="warning",
+                    title="Couldn't auto-restart — please restart manually",
+                    message=msg,
+                    level="error",
                     source="system.lifecycle",
                 )
 
-    # 3. execv (no service manager — replace ourselves in-place)
-    try:
-        os.execv(sys.executable, [sys.executable] + sys.argv)
-    except Exception as exc:
-        await _emit_fail(str(exc))
+        # 1. systemd
+        if os.environ.get("INVOCATION_ID") or os.path.exists("/run/systemd/system"):
+            for svc in ("taos.service", "tinyagentos.service"):
+                for scope_args in (["systemctl", "--user", "is-active", svc], ["systemctl", "is-active", svc]):
+                    try:
+                        proc = await asyncio.create_subprocess_exec(
+                            *scope_args,
+                            stdout=asyncio.subprocess.DEVNULL,
+                            stderr=asyncio.subprocess.DEVNULL,
+                        )
+                        await proc.wait()
+                        if proc.returncode == 0:
+                            restart_args = (
+                                ["systemctl", "--user", "restart", svc]
+                                if "--user" in scope_args
+                                else ["systemctl", "restart", svc]
+                            )
+                            restart_proc = await asyncio.create_subprocess_exec(
+                                *restart_args,
+                                stdout=asyncio.subprocess.DEVNULL,
+                                stderr=asyncio.subprocess.DEVNULL,
+                            )
+                            await restart_proc.wait()
+                            if restart_proc.returncode == 0:
+                                # systemctl restart succeeded — it will kill and
+                                # relaunch us; exit cleanly so the new invocation
+                                # starts fresh under the same systemd unit.
+                                os._exit(0)
+                            # systemctl restart failed (e.g. interactive auth required).
+                            # Fall through to os._exit so systemd's Restart=always
+                            # picks us back up with the updated code on disk.
+                            os._exit(1)
+                    except Exception:
+                        pass
+
+        # 2. Docker — exit non-zero so the container restart policy relaunches
+        # us on the new code (#203). `always`/`unless-stopped` restart on any
+        # exit, but `on-failure` only fires on a non-zero code; exiting 0 there
+        # would leave the updated container stopped.
+        if os.path.exists("/.dockerenv"):
+            os._exit(1)
+
+        # 2b. Darwin launchd helper bootstrap
+        if sys.platform == "darwin":
+            from tinyagentos.launchd_migration import (
+                HELPER_PLIST_PATH,
+                clear_pending_launchd_reload,
+                read_pending_launchd_reload,
+            )
+            if read_pending_launchd_reload():
+                proc = None
+                try:
+                    proc = await asyncio.create_subprocess_exec(
+                        "launchctl",
+                        "bootstrap",
+                        f"gui/{os.getuid()}",
+                        str(HELPER_PLIST_PATH),
+                        stdout=asyncio.subprocess.PIPE,
+                        stderr=asyncio.subprocess.PIPE,
+                    )
+                    # launchctl can hang (a stuck launchd job, a wedged
+                    # launchd.lock). Without a timeout the execv fallback below is
+                    # never reached and the restart silently stalls.
+                    await asyncio.wait_for(
+                        proc.communicate(), timeout=LAUNCHCTL_BOOTSTRAP_TIMEOUT
+                    )
+                    if proc.returncode == 0:
+                        clear_pending_launchd_reload()
+                        os._exit(0)
+                except asyncio.TimeoutError:
+                    logger.warning(
+                        "launchd helper bootstrap timed out after %ss, killing pid",
+                        LAUNCHCTL_BOOTSTRAP_TIMEOUT,
+                    )
+                    if proc is not None:
+                        try:
+                            proc.kill()
+                            await proc.wait()
+                        except Exception:
+                            pass
+                except Exception:
+                    pass
+                if notif:
+                    await notif.add(
+                        title="Launchd reload helper failed",
+                        message="New launch settings will apply after the next login.",
+                        level="warning",
+                        source="system.lifecycle",
+                    )
+
+        # 3. execv (no service manager — replace ourselves in-place)
+        try:
+            os.execv(sys.executable, [sys.executable] + sys.argv)
+        except Exception as exc:
+            await _emit_fail(str(exc))
+    finally:
+        # Every way the restart works ends this process (os._exit or execv),
+        # so getting here means it did not happen: the controller keeps
+        # running and must drain on its next real stop.
+        clear_restarting_for_update(app_state)
 
 
 # Core AI backends taOS manages as systemd services that have NO store manifest

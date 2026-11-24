@@ -1647,13 +1647,35 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
         _create_supervised_task(_agent_ctl_reconcile(app.state), app.state._background_tasks)
 
         app.state._startup_complete = True
+        # Repair the installed graceful-stop script and drop-in on start-up:
+        # a machine that updated onto this code before the in-app refresh
+        # existed is repaired before its next update. It only writes files and
+        # reloads systemd, never restarts anything. A problem is logged and
+        # raised as a notification, not hidden.
+        from tinyagentos.routes.settings import _refresh_stop_artifacts_for_update
+
+        _stop_refresh = await _refresh_stop_artifacts_for_update(PROJECT_DIR)
+        app.state.graceful_stop_refresh = _stop_refresh.as_dict()
+        if _stop_refresh.problems:
+            logger.warning(
+                "startup graceful-stop refresh: %s", " | ".join(_stop_refresh.problems)
+            )
+            _notifs = getattr(app.state, "notifications", None)
+            if _notifs is not None:
+                await _notifs.add(
+                    title="Could not refresh the graceful-stop files",
+                    message=" | ".join(_stop_refresh.problems),
+                    level="warning",
+                    source="system.lifecycle",
+                )
         logger.info("startup complete — accepting requests")
 
         yield
-        # NOTE: controller restart/shutdown does NOT touch agent containers —
-        # agents and LiteLLM keep running independently, so there's nothing to
-        # gracefully drain here. Only true system halt (system-shutdown) and
-        # explicit agent pause/stop go through the orchestrator.
+        # NOTE: controller restart/shutdown does NOT touch agent containers --
+        # agents keep running independently across a controller restart, so
+        # there's nothing to gracefully drain here. Only true system halt
+        # (system-shutdown) and explicit agent pause/stop go through the
+        # orchestrator.
 
         # Cancel supervised background tasks (fire-and-forget loops etc.) plus
         # the local-heartbeat loop under ONE bounded budget. An unbounded gather
