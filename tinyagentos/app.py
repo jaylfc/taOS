@@ -1569,6 +1569,9 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
         from tinyagentos.backend_unload import unload_model as _unload_model
         from tinyagentos.scheduler.core_aware_scheduler import CoreAwareModelScheduler
         from tinyagentos.scheduler.loaded_model import LoadedModel as _LoadedModel
+        from tinyagentos.scheduler.loaded_model import (
+            parse_ttl_seconds as _parse_ttl_seconds,
+        )
         from tinyagentos.scheduler.resource_shape import get_default_shape
 
         # Idle TTL eviction (#62): the sweep unloads residents idle past
@@ -1599,8 +1602,10 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
             backend = _backend_config_for(model.backend)
             if backend is None:
                 return None
-            raw = backend.get("ttl_seconds")
-            return float(raw) if raw is not None else None
+            # Shared guarded parser: a manifest value like "30s" or
+            # "nan" must fall back to the class TTL, never raise into
+            # (or silently corrupt) the idle sweep.
+            return _parse_ttl_seconds(backend.get("ttl_seconds"))
 
         def _backend_type_lookup(name: str) -> str:
             backend = _backend_config_for(name)

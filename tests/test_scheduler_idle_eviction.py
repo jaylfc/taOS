@@ -29,7 +29,7 @@ from pathlib import Path
 import pytest
 
 from tinyagentos.config import AppConfig, auto_register_from_manifest
-from tinyagentos.scheduler.backend_catalog import BackendCatalog
+from tinyagentos.scheduler.backend_catalog import BackendCatalog, _ttl_seconds_from
 from tinyagentos.scheduler.core_aware_scheduler import CoreAwareModelScheduler
 from tinyagentos.scheduler.loaded_model import (
     DEFAULT_MODEL_TTLS,
@@ -37,6 +37,7 @@ from tinyagentos.scheduler.loaded_model import (
     ModelClass,
     PriorityClass,
     classify_model,
+    parse_ttl_seconds,
 )
 from tinyagentos.scheduler.resource_shape import make_cpu_shape
 
@@ -304,3 +305,154 @@ lifecycle:
     config = AppConfig()
     assert auto_register_from_manifest(manifest, config) is True
     assert config.backends[0]["ttl_seconds"] == 120
+
+
+# ---------------------------------------------------------------------------
+# TTL override parsing (PR #4496 review): one shared guarded parser.
+# Invalid or non-finite overrides fall back to the class TTL and must
+# never abort the sweep.
+# ---------------------------------------------------------------------------
+
+def test_parse_ttl_seconds_accepts_valid_and_rejects_garbage():
+    assert parse_ttl_seconds(45) == 45.0
+    assert parse_ttl_seconds("45") == 45.0
+    assert parse_ttl_seconds(0) == 0.0
+    assert parse_ttl_seconds(None) is None
+    assert parse_ttl_seconds("30s") is None
+    assert parse_ttl_seconds("nan") is None
+    assert parse_ttl_seconds(float("nan")) is None
+    assert parse_ttl_seconds(float("inf")) is None
+    assert parse_ttl_seconds(-5) is None
+    assert parse_ttl_seconds(object()) is None
+
+
+def test_catalog_ttl_seconds_from_rejects_non_finite():
+    """float("nan") parses, so the catalog's old try/except let NaN
+    through as a live override; the shared parser rejects it."""
+    assert _ttl_seconds_from({"name": "x", "ttl_seconds": "nan"}) is None
+    assert _ttl_seconds_from({"name": "x", "ttl_seconds": float("inf")}) is None
+    assert _ttl_seconds_from({"name": "x", "ttl_seconds": "30s"}) is None
+    assert _ttl_seconds_from({"name": "x", "ttl_seconds": 42}) == 42.0
+    assert _ttl_seconds_from({"name": "x"}) is None
+
+
+@pytest.mark.asyncio
+async def test_invalid_ttl_override_falls_back_and_sweep_continues():
+    """A resolver handing back a raw manifest value ("30s") must not
+    abort the sweep: that resident falls back to its class TTL and
+    residents after it are still considered."""
+    unload = _FakeUnload()
+
+    def resolver(model: LoadedModel):
+        if model.backend == "rkllama":
+            return "30s"  # raw manifest value, unparseable
+        return None
+
+    sched, _clock = _scheduler(unload=unload, ttl_resolver=resolver)
+    bad = _resident("qwen3-embedding-0.6b", "rkllama", idle_for=3600.0)
+    later = _resident("qwen3-reranker-0.6b", "ollama", idle_for=3600.0)
+    sched.register_loaded(bad)
+    sched.register_loaded(later)
+    evicted = await sched.evict_idle()
+    assert evicted == [bad, later]
+    assert unload.calls == [bad, later]
+
+
+@pytest.mark.asyncio
+async def test_nan_ttl_override_does_not_evict_fresh_resident():
+    """With a NaN TTL, idle_for < ttl is False even at idle_for == 0,
+    so a just-used resident was evicted immediately. The parser
+    rejects NaN; the class TTL applies instead."""
+    unload = _FakeUnload()
+
+    def resolver(model: LoadedModel):
+        return float("nan")
+
+    sched, clock = _scheduler(unload=unload, ttl_resolver=resolver)
+    fresh = _resident("llama-3.1-8b", "ollama", idle_for=0.0)  # class TTL 1800s
+    sched.register_loaded(fresh)
+    assert await sched.evict_idle() == []
+    assert unload.calls == []
+    clock["now"] = T0 + 1801  # past the class TTL: now it goes
+    assert await sched.evict_idle() == [fresh]
+
+
+# ---------------------------------------------------------------------------
+# Pending-eviction race (PR #4496 review): evict_idle awaits the unload
+# hook; begin_use must not admit to the record being unloaded, removal
+# must hit only the exact record, and a failed unload releases the
+# pending state.
+# ---------------------------------------------------------------------------
+
+class _BlockingUnload:
+    """Unload hook that parks inside the call until released."""
+
+    def __init__(self, result: bool = True):
+        self.result = result
+        self.calls: list[LoadedModel] = []
+        self.entered = asyncio.Event()
+        self.release = asyncio.Event()
+
+    async def __call__(self, model: LoadedModel) -> bool:
+        self.calls.append(model)
+        self.entered.set()
+        await self.release.wait()
+        return self.result
+
+
+@pytest.mark.asyncio
+async def test_begin_use_during_pending_unload_gets_fresh_record():
+    unload = _BlockingUnload(result=True)
+    sched, _clock = _scheduler(unload=unload)
+    m = _resident("qwen3-embedding-0.6b", "rkllama", idle_for=3600.0)
+    sched.register_loaded(m)
+    sweep = asyncio.create_task(sched.evict_idle())
+    await asyncio.wait_for(unload.entered.wait(), timeout=5)
+    admitted = sched.begin_use("qwen3-embedding-0.6b", "rkllama", "rkllama")
+    assert admitted is not m  # never the record whose unload is pending
+    assert m.in_use_count == 0
+    assert admitted.in_use_count == 1
+    unload.release.set()
+    await asyncio.wait_for(sweep, timeout=5)
+    # The successful unload removed only the old record; the record
+    # admitted during the await stays registered and balances.
+    assert sched.get_resident("qwen3-embedding-0.6b", "rkllama") is admitted
+    sched.end_use("qwen3-embedding-0.6b", "rkllama")
+    assert admitted.in_use_count == 0
+
+
+@pytest.mark.asyncio
+async def test_replacement_registered_during_unload_survives():
+    unload = _BlockingUnload(result=True)
+    sched, _clock = _scheduler(unload=unload)
+    m = _resident("qwen3-embedding-0.6b", "rkllama", idle_for=3600.0)
+    sched.register_loaded(m)
+    sweep = asyncio.create_task(sched.evict_idle())
+    await asyncio.wait_for(unload.entered.wait(), timeout=5)
+    replacement = _resident("qwen3-embedding-0.6b", "rkllama", idle_for=0.0)
+    sched.register_loaded(replacement)
+    unload.release.set()
+    await asyncio.wait_for(sweep, timeout=5)
+    assert sched.get_resident("qwen3-embedding-0.6b", "rkllama") is replacement
+
+
+@pytest.mark.asyncio
+async def test_failed_unload_releases_pending_state():
+    unload = _BlockingUnload(result=False)
+    sched, _clock = _scheduler(unload=unload)
+    m = _resident("qwen3-embedding-0.6b", "rkllama", idle_for=3600.0)
+    sched.register_loaded(m)
+    sweep = asyncio.create_task(sched.evict_idle())
+    await asyncio.wait_for(unload.entered.wait(), timeout=5)
+    unload.release.set()
+    assert await asyncio.wait_for(sweep, timeout=5) == []
+    assert sched.get_resident("qwen3-embedding-0.6b", "rkllama") is m
+    # Pending state released: the same record admits requests again.
+    admitted = sched.begin_use("qwen3-embedding-0.6b", "rkllama", "rkllama")
+    assert admitted is m
+    sched.end_use("qwen3-embedding-0.6b", "rkllama")
+    # And a later sweep can retry the eviction.
+    m.last_used_at = T0 - 3600.0
+    unload.result = True
+    assert await sched.evict_idle() == [m]
+    assert sched.get_resident("qwen3-embedding-0.6b", "rkllama") is None

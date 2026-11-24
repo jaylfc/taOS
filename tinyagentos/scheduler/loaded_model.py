@@ -10,6 +10,7 @@ residents for shrink-reload or eviction when a new load creates pressure.
 """
 from __future__ import annotations
 
+import math
 import re
 import time
 from dataclasses import dataclass, field
@@ -163,6 +164,29 @@ def classify_model(model_id: str, backend_type: str = "") -> str:
     if size is not None and size <= 4.0:
         return ModelClass.CHAT_SMALL
     return ModelClass.CHAT_LARGE
+
+
+def parse_ttl_seconds(raw: Any) -> Optional[float]:
+    """Normalize a raw TTL override value to finite seconds, or None.
+
+    The one parser every TTL consumer shares (backend catalog, the
+    app's resolver, the scheduler): accepts ints/floats and numeric
+    strings; returns None for None, non-numeric values, non-finite
+    values (NaN, inf) and negatives -- callers then fall back to the
+    per-class TTL. Zero is valid: evict as soon as the resident is
+    idle. NaN in particular must never reach the sweep: every
+    comparison against it is False, which reads as "idle past TTL"
+    even for a resident used this instant.
+    """
+    if raw is None:
+        return None
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(value) or value < 0:
+        return None
+    return value
 
 
 # ---------------------------------------------------------------------------

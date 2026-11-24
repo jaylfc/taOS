@@ -55,6 +55,7 @@ from tinyagentos.scheduler.loaded_model import (
     LoadedModel,
     PriorityClass,
     classify_model,
+    parse_ttl_seconds,
     priority_rank,
 )
 from tinyagentos.scheduler.resource_shape import (
@@ -201,6 +202,10 @@ class CoreAwareModelScheduler:
         self._clock = clock
         # Registry: model_id -> LoadedModel
         self._residents: dict[tuple[str, str], LoadedModel] = {}
+        # Keys whose idle unload is in flight (evict_idle is awaiting
+        # the unload hook). begin_use() must not admit a request to a
+        # record in this set; see evict_idle().
+        self._evicting: set[tuple[str, str]] = set()
         # Event bus: list of (event_name, dict) tuples appended in order.
         # Tests read this to verify that the right events fired.
         self.events: list[tuple[str, dict]] = []
@@ -264,6 +269,14 @@ class CoreAwareModelScheduler:
         """
         key = self._resident_key(model_id, backend_name)
         model = self._residents.get(key)
+        if model is not None and key in self._evicting:
+            # An idle unload of this record is in flight: admitting
+            # here would let the sweep deregister the record under
+            # this request (and end_use would then decrement whatever
+            # replaced it). Fall through and build a fresh record;
+            # register_loaded() replaces the registry entry, and the
+            # sweep's identity-checked removal keeps the replacement.
+            model = None
         if model is None:
             shape = self._shape_lookup(backend_type or backend_name)
             if shape.has_cores():
@@ -342,9 +355,9 @@ class CoreAwareModelScheduler:
         never idle-evicted.
         """
         if self._ttl_resolver is not None:
-            override = self._ttl_resolver(model)
+            override = parse_ttl_seconds(self._ttl_resolver(model))
             if override is not None:
-                return float(override)
+                return override
         model_class = model.model_class or classify_model(
             model.model_id, self._backend_type_for(model.backend)
         )
@@ -361,6 +374,12 @@ class CoreAwareModelScheduler:
         refused or failed unload keeps the record so the next sweep
         can retry. Without a hook the sweep is registry-only,
         mirroring pressure eviction with evict_fn=None.
+
+        While a resident's unload is pending (the hook is awaited),
+        the record is marked in ``self._evicting``: begin_use() will
+        not admit new requests to it, and the post-unload removal
+        deletes the registry entry only if it still holds this exact
+        record, so a replacement registered during the await survives.
         """
         if now is None:
             now = self._clock()
@@ -368,31 +387,61 @@ class CoreAwareModelScheduler:
         for model in list(self._residents.values()):
             if model.is_always_resident() or model.in_use_count > 0:
                 continue
-            ttl = self.ttl_for(model)
+            try:
+                ttl = self.ttl_for(model)
+            except Exception:  # noqa: BLE001 - one bad override must not stop the sweep
+                logger.warning(
+                    "scheduler: TTL resolution failed for %r; skipping it this sweep",
+                    model.model_id, exc_info=True,
+                )
+                continue
             if ttl is None:
                 continue
             idle_for = now - model.last_used_at
             if idle_for < ttl:
                 continue
-            if self._idle_unload_fn is not None:
-                try:
-                    ok = self._idle_unload_fn(model)
-                    if asyncio.iscoroutine(ok):
-                        ok = await ok
-                except Exception:  # noqa: BLE001 - one bad unload must not stop the sweep
-                    logger.warning(
-                        "scheduler: idle unload hook failed for %r; keeping resident",
-                        model.model_id, exc_info=True,
-                    )
-                    continue
-                if not ok:
-                    logger.info(
-                        "scheduler: idle unload of %r refused; keeping resident",
-                        model.model_id,
-                    )
-                    continue
             key = self._resident_key(model.model_id, model.backend)
-            self._residents.pop(key, None)
+            if self._idle_unload_fn is not None:
+                if key in self._evicting:
+                    continue
+                # Mark the record as evicting BEFORE the await: while
+                # the unload is pending, begin_use() must not admit a
+                # request to this record (it builds a fresh one
+                # instead), and removal below touches only this exact
+                # record -- a replacement registered during the await
+                # stays. The finally releases the mark on every exit,
+                # so a refused or failed unload never wedges the
+                # resident against later requests or sweeps.
+                self._evicting.add(key)
+                try:
+                    try:
+                        ok = self._idle_unload_fn(model)
+                        if asyncio.iscoroutine(ok):
+                            ok = await ok
+                    except Exception:  # noqa: BLE001 - one bad unload must not stop the sweep
+                        logger.warning(
+                            "scheduler: idle unload hook failed for %r; keeping resident",
+                            model.model_id, exc_info=True,
+                        )
+                        continue
+                    if not ok:
+                        logger.info(
+                            "scheduler: idle unload of %r refused; keeping resident",
+                            model.model_id,
+                        )
+                        continue
+                finally:
+                    self._evicting.discard(key)
+                if self._residents.get(key) is not model:
+                    logger.info(
+                        "scheduler: idle-unloaded %r on %r, but its registry "
+                        "record was replaced during the unload; keeping the replacement",
+                        model.model_id, model.backend,
+                    )
+                    continue
+                del self._residents[key]
+            else:
+                self._residents.pop(key, None)
             self._emit("model_evicted", {
                 "model_id": model.model_id,
                 "backend": model.backend,

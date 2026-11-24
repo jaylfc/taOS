@@ -21,6 +21,7 @@ import time
 from dataclasses import dataclass, field
 from typing import Awaitable, Callable, Optional
 
+from tinyagentos.scheduler.loaded_model import parse_ttl_seconds
 from tinyagentos.scheduler.resource_shape import BackendResourceShape, get_default_shape
 
 logger = logging.getLogger(__name__)
@@ -68,14 +69,13 @@ def _ttl_seconds_from(backend: dict) -> Optional[float]:
     raw = backend.get("ttl_seconds")
     if raw is None:
         return None
-    try:
-        return float(raw)
-    except (TypeError, ValueError):
+    parsed = parse_ttl_seconds(raw)
+    if parsed is None:
         logger.warning(
-            "backend %r: ignoring non-numeric ttl_seconds %r",
+            "backend %r: ignoring invalid ttl_seconds %r",
             backend.get("name"), raw,
         )
-        return None
+    return parsed
 
 
 @dataclass
