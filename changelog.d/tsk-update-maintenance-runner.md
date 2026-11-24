@@ -3,3 +3,4 @@
 - Installs that predate the runner show one notification and a Settings entry with a single command to run once; after that the memory service upgrade, and later steps like it, happen on their own. If a step fails the update still completes, taOS tells you why, and memory calls keep being refused until it is fixed.
 - The memory service can now open its index files when it runs as a different account than taOS: the maintenance step lets it join taOS's group for the data directory only, and the directories taOS creates for memory indexes are group-writable.
 - The one-time setup command is pinned to the release you are running and to the release key's fingerprint, not to a moving branch; the installer checks the key and the signed manifest before it installs anything.
+- The maintenance trigger no longer stops after a quick series of requests (systemd start limit removed from the two units).

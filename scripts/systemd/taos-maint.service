@@ -1,5 +1,6 @@
 [Unit]
 Description=taOS signed maintenance steps (root, fixed, verified)
+StartLimitIntervalSec=0
 Documentation=file:///usr/local/sbin/taos-maint
 After=local-fs.target
 

@@ -1,5 +1,8 @@
 [Unit]
 Description=Run taOS maintenance steps when the controller asks
+# Several requests in a row must never switch the trigger off: runs are serialised by the
+# runner's lock and refuse unsigned work, so a burst is harmless.
+StartLimitIntervalSec=0
 
 [Path]
 # The controller (unprivileged) can only drop a *.req file here. The file's name
