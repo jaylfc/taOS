@@ -414,6 +414,12 @@ TOKEN_STORAGE_GUIDANCE = (
 )
 
 
+# Registry origin of the controller's own service identity.  A row with this
+# origin is a service row: only a token of kind "service" speaks for it, and
+# no agent-facing path accepts a token naming it (see agent_token_auth).
+CONTROLLER_ORIGIN = "taos-controller"
+
+
 def mint_registry_token(
     canonical_id: str,
     private_key_pem: bytes,
@@ -423,6 +429,8 @@ def mint_registry_token(
     project_id: Optional[str] = None,
     principal_type: str = "agent",
     iat: Optional[int] = None,
+    scope: Optional[str] = None,
+    exp: Optional[int] = None,
 ) -> str:
     """Return a signed compact EdDSA JWT: <header>.<payload>.<signature> (base64url).
 
@@ -442,6 +450,12 @@ def mint_registry_token(
       framework     - agent framework at registration time (agent tokens only)
       project_id    - project binding, present only when non-empty; absent means
                       the token is global (not bound to any project)
+      scope         - space-separated scope names, present only when *scope* is
+                      given (service tokens; agent and human tokens never carry
+                      it, their authority comes from grants)
+      exp           - unix expiry, present only when *exp* is given (service
+                      tokens); ``verify_registry_token`` rejects a token past it.
+                      Agent and human tokens carry no exp.
 
     ``iat`` overrides the issuance timestamp (Unix seconds).  Rotation passes
     the identity's new ``token_min_iat`` cutoff here so the replacement token is
@@ -470,6 +484,10 @@ def mint_registry_token(
         claims["framework"] = framework
     if project_id:
         claims["project_id"] = project_id
+    if scope:
+        claims["scope"] = scope
+    if exp is not None:
+        claims["exp"] = int(exp)
     payload = _b64url_encode(
         json.dumps(claims, separators=(",", ":")).encode()
     )
@@ -478,11 +496,15 @@ def mint_registry_token(
     return f"{header}.{payload}.{signature}"
 
 
-def verify_registry_token(token: str, public_key_pem: bytes) -> dict:
+def verify_registry_token(
+    token: str, public_key_pem: bytes, *, check_exp: bool = True
+) -> dict:
     """Verify *token* against *public_key_pem*.
 
     Returns the decoded payload dict on success.
-    Raises ``ValueError`` on invalid format or bad signature.
+    Raises ``ValueError`` on invalid format, bad signature, or (when the token
+    carries an ``exp`` claim and *check_exp* is true) an expired token.  Tokens
+    without ``exp`` -- every agent and human token -- are unaffected.
     """
     from cryptography.hazmat.primitives.serialization import load_pem_public_key
     from cryptography.exceptions import InvalidSignature
@@ -506,6 +528,10 @@ def verify_registry_token(token: str, public_key_pem: bytes) -> dict:
         raise ValueError(
             f"payload must be a JSON object, got {type(payload).__name__}"
         )
+    exp = payload.get("exp")
+    if check_exp and exp is not None:
+        if isinstance(exp, bool) or not isinstance(exp, (int, float)) or exp <= time.time():
+            raise ValueError("token expired")
     return payload
 
 

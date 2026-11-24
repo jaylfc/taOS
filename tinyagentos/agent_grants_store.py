@@ -38,6 +38,10 @@ def _row_to_dict(row: aiosqlite.Row) -> dict:
     return {k: row[k] for k in row.keys()}
 
 
+# Agreed scope names that are spellings of an existing grant.
+SCOPE_ALIASES = {"bus:send": "a2a_send"}
+
+
 class AgentGrantsStore(BaseStore):
     """Persistent store for per-agent scope grants."""
 
@@ -156,6 +160,10 @@ class AgentGrantsStore(BaseStore):
         if self._db is None:
             raise RuntimeError("AgentGrantsStore not initialised — call init() first")
 
+        # bus:send is the agreed name for the existing a2a_send grant.  Every
+        # grant writer (approval, mint, invites) lands here, and every bus
+        # check reads a2a_send, so one spelling is stored.
+        scope = SCOPE_ALIASES.get(scope, scope)
         now = datetime.now(timezone.utc).isoformat()
         # Serialize the delete+insert+select so two concurrent same-key writes
         # cannot interleave (which would either drop each other's row before the

@@ -8,7 +8,7 @@ from the owner's and could not be audited or revoked separately.  This module
 mints a service principal for the controller at first boot, following the same
 pattern as ``ensure_native_agent_identity`` in native_agent_identity.py.
 
-FOUR PROPERTIES, each of which is a requirement rather than a nicety:
+FIVE PROPERTIES, each of which is a requirement rather than a nicety:
 
 1. PER-INSTALL.  The identity is anchored to ``<data_dir>/.install_id`` -- the
    same id the version ping uses.  Two installs are two identities, so "this
@@ -27,30 +27,41 @@ FOUR PROPERTIES, each of which is a requirement rather than a nicety:
 
 4. CONSERVATIVE.  One scope, ``records:write``: enough for the controller to
    name itself as the writer of history records, and nothing else.  Anything
-   more goes through the normal scope-request flow.
+   more goes through the normal scope-request flow.  The token carries the
+   scope as a space-separated ``scope`` claim and an ``exp`` claim.
+
+5. RENEWED BY THE CONTROLLER.  The token lives ``TOKEN_TTL_SECONDS``.  Start-up
+   and a background loop renew it once it is missing, malformed, not the
+   expected shape, or within ``RENEW_BEFORE_SECONDS`` of ``exp``.  A renewal
+   writes the new file atomically BEFORE the old token is superseded, so a
+   failed renewal leaves the old token in place and working until it expires.
+   Nothing here blocks start-up.
 
 WHAT THIS DOES NOT DO.  It does not grant the controller any agent or human
 privilege: a service-principal token is not accepted anywhere an agent or
-human token is required (see ``_verify_agent_scope`` in agent_token_auth.py).
-It is identity for record authorship, not a backdoor into agent-required
-endpoints.
+human token is required (see agent_token_auth.py and auth_middleware.py), and
+no route mints or rotates it for anyone else.  It is identity for record
+authorship, not a backdoor into agent-required endpoints.  The token is never
+logged.
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
+import time
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 
-from tinyagentos.agent_registry_store import mint_registry_token
+from tinyagentos.agent_registry_store import (
+    CONTROLLER_ORIGIN,
+    mint_registry_token,
+    verify_registry_token,
+)
+from tinyagentos.atomic_io import atomic_write_bytes
 from tinyagentos.auto_update import install_id as read_install_id
 
 logger = logging.getLogger(__name__)
-
-# The origin marks the row as minted by the OS itself for the controller.
-# register() lands any origin other than "external-selfjoin" as active, which
-# is what we want: there is no consent round-trip to run against the owner.
-CONTROLLER_ORIGIN = "taos-controller"
 
 # The one scope the controller needs: name itself as the writer of history
 # records.  Deliberately nothing else.
@@ -63,9 +74,7 @@ CONTROLLER_HANDLE = "service:controller"
 
 # canonical_id slug prefix.  `taos-` is RESERVED: register() refuses it unless
 # allow_reserved=True, which the HTTP layer never populates.  This module is
-# in-process, so it can pass it -- a service named by the OS is under the OS's
-# own prefix.  `controller` is not itself reserved, so allow_reserved is not
-# needed; the prefix is kept for clarity and future-proofing.
+# in-process, so it can pass it.
 _SLUG_PREFIX = "taos-controller"
 
 # How much of the install id goes into the canonical_id.  The full id is on
@@ -77,61 +86,158 @@ _SLUG_INSTALL_CHARS = 8
 TOKEN_DIR = ".secrets"
 TOKEN_FILENAME = "taos_controller_token"
 
+# Lifetime and renewal.  A token lives 30 days and is renewed once fewer than
+# 10 remain; the loop looks every hour, so a controller that is up renews with
+# days to spare and one that was down renews on its next start.
+TOKEN_TTL_SECONDS = 30 * 24 * 3600
+RENEW_BEFORE_SECONDS = 10 * 24 * 3600
+RENEWAL_INTERVAL_SECONDS = 3600.0
+
 
 def controller_token_path(data_dir: Path | str) -> Path:
     """Path of this install's controller service token file."""
     return Path(data_dir) / TOKEN_DIR / TOKEN_FILENAME
 
 
-def _has_token(data_dir: Path | str) -> bool:
-    """True only if a NON-EMPTY token file exists."""
-    path = controller_token_path(data_dir)
-    try:
-        return path.stat().st_size > 0
-    except OSError:
-        return False
+def controller_record(record: dict, *, on_behalf_of: str = "") -> dict:
+    """Return a copy of a record the controller is about to write, naming the
+    person it is written for.
+
+    The writer of the record is the controller (its service token); when the
+    write is made for a person, that person travels in ``on_behalf_of`` so the
+    record names both.  No person means no field.  The input is not mutated.
+    """
+    out = dict(record)
+    if on_behalf_of:
+        out["on_behalf_of"] = on_behalf_of
+    return out
 
 
-def _write_token(data_dir: Path | str, token: str) -> tuple[Optional[Path], bool]:
-    """Write *token* 0600, creating it only if absent.
+def _public_pem(signing_key_pem: bytes) -> bytes:
+    from cryptography.hazmat.primitives import serialization
 
-    Returns ``(path, created_by_this_call)``.  An existing non-empty file is
-    left alone -- the controller may already be running with that token, and
-    rewriting it under a live process strands it on a credential nobody
-    recognises.  An empty file (leftover of a crash or failed write) is
-    replaced so one transient error cannot pin the controller to an empty
-    credential forever.
+    key = serialization.load_pem_private_key(signing_key_pem, password=None)
+    return key.public_key().public_bytes(
+        serialization.Encoding.PEM, serialization.PublicFormat.SubjectPublicKeyInfo
+    )
+
+
+def _token_state(
+    data_dir: Path | str, signing_key_pem: bytes, canonical_id: str, now: float
+) -> tuple[bool, bool]:
+    """Return ``(needs_renewal, has_valid_old_token)`` for the token file.
+
+    ``has_valid_old_token`` is true when the file holds a token this
+    controller signed, so a replacement should supersede it.  A missing,
+    empty, truncated, unsigned or foreign file needs renewal but has nothing
+    to supersede.  A token that is right but expired also counts as a valid
+    old one: it is superseded so it cannot come back.
     """
     path = controller_token_path(data_dir)
-    path.parent.mkdir(parents=True, exist_ok=True)
     try:
-        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-    except FileExistsError:
-        if _has_token(data_dir):
-            return path, False
-        try:
-            os.unlink(path)
-            fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-        except FileExistsError:
-            # Lost a genuine race in the gap; the winner's token stands.
-            return path, False
-        except OSError as exc:
-            logger.error("could not replace the empty controller token file at %s: %s", path, exc)
-            return None, False
-    except OSError as exc:
-        logger.error("controller token could not be written to %s: %s", path, exc)
-        return None, False
+        raw = path.read_text(encoding="utf-8").strip()
+    except OSError:
+        return True, False
+    if not raw:
+        return True, False
     try:
-        with os.fdopen(fd, "w", encoding="utf-8") as fh:
-            fh.write(token)
+        claims = verify_registry_token(raw, _public_pem(signing_key_pem), check_exp=False)
+    except ValueError:
+        return True, False
+    exp = claims.get("exp")
+    if (
+        claims.get("sub") != canonical_id
+        or claims.get("principal_type") != "service"
+        or claims.get("scope") != " ".join(CONTROLLER_SCOPES)
+        or isinstance(exp, bool)
+        or not isinstance(exp, (int, float))
+    ):
+        # Right signature, wrong shape (a token from before exp and scope
+        # existed, say): replace it and retire the old one.
+        return True, True
+    return (exp - now) < RENEW_BEFORE_SECONDS, True
+
+
+def _mint(record: dict, signing_key_pem: bytes, iat: int) -> str:
+    return mint_registry_token(
+        record["canonical_id"],
+        signing_key_pem,
+        principal_type="service",
+        iat=iat,
+        scope=" ".join(CONTROLLER_SCOPES),
+        exp=iat + TOKEN_TTL_SECONDS,
+    )
+
+
+def _store_token(data_dir: Path | str, token: str) -> bool:
+    """Durably replace the token file (temp file in the same directory, fsync,
+    rename, mode 0600).  A crash leaves the old file or the new one, never a
+    prefix.  Returns False, and logs without the token, when it cannot."""
+    path = controller_token_path(data_dir)
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+        atomic_write_bytes(path, token.encode("utf-8"), mode=0o600)
     except OSError as exc:
-        logger.error("controller token write failed at %s: %s", path, exc)
-        try:
-            os.unlink(path)
-        except OSError:
-            logger.error("could not remove the empty controller token file at %s", path)
-        return None, False
-    return path, True
+        logger.error(
+            "controller service token could not be written to %s (%s)",
+            path, type(exc).__name__,
+        )
+        return False
+    return True
+
+
+async def _issue_token(
+    registry: Any,
+    record: dict,
+    data_dir: Path | str,
+    signing_key_pem: bytes,
+    *,
+    supersede: bool,
+) -> Optional[str]:
+    """Mint a token, write it, and only then retire the old ones.
+
+    Order matters: the new file is on disk before the cutoff moves, so a write
+    that fails leaves the old token in the file AND still honoured.  When
+    *supersede* is false there is no earlier token to retire.
+    """
+    cid = record["canonical_id"]
+    now = int(time.time())
+    target = now
+    if supersede:
+        target = max(now + 1, int(record.get("token_min_iat") or 0) + 1)
+    token = _mint(record, signing_key_pem, target)
+    if not _store_token(data_dir, token):
+        return None
+    if not supersede:
+        logger.info("controller service token written for %s", cid)
+        return token
+    try:
+        updated = await registry.bump_token_min_iat(cid, target)
+        cutoff = int((updated or record).get("token_min_iat") or 0)
+        if updated is not None and cutoff != target:
+            # A concurrent rotation moved the cutoff past ours; re-mint at the
+            # cutoff that landed so the credential on disk clears it.
+            token = _mint(record, signing_key_pem, cutoff)
+            if not _store_token(data_dir, token):
+                return None
+    except Exception as exc:
+        # The new token is already in place and valid.  The old one could not
+        # be retired and stays honoured until it expires.
+        logger.error(
+            "controller service token renewed but the old one could not be "
+            "superseded (%s); it stays valid until it expires",
+            type(exc).__name__,
+        )
+    logger.info("controller service token renewed for %s", cid)
+    return token
+
+
+async def _find_controller_row(registry: Any, install: str) -> Optional[dict]:
+    """The controller's row for this install, in ANY status.  A suspended or
+    revoked row is still THE controller row: looking only at active rows made
+    start-up register a second one."""
+    rows = await registry.list_for_install(install)
+    return next((r for r in rows if r.get("origin") == CONTROLLER_ORIGIN), None)
 
 
 async def ensure_controller_service_identity(
@@ -142,15 +248,15 @@ async def ensure_controller_service_identity(
     signing_key_pem: bytes,
     user_id: str,
 ) -> Optional[dict]:
-    """Mint (or re-assert) this install's controller service identity. Idempotent.
+    """Mint (or re-assert) this install's controller service identity and keep
+    its token fresh. Idempotent; safe to call on every start and on a timer.
 
-    Returns the registry record, or ``None`` when the identity could not be
-    minted -- in which case the caller carries on: an install without a
-    controller service identity is degraded, not broken, and refusing to boot
-    over it would turn a missing convenience into an outage.
-
-    Safe to call on every startup.  Lookup is by install_id.  The service
-    principal holds exactly one scope, ``records:write``, and nothing else.
+    Returns the registry record, or ``None`` when there is nothing to do or it
+    could not be done -- in which case the caller carries on: an install
+    without a controller service identity is degraded, not broken, and
+    refusing to boot over it would turn a missing convenience into an outage.
+    A suspended or revoked controller row is left exactly as it is: no second
+    row, no new token.
     """
     install = read_install_id(Path(data_dir))
     if not install:
@@ -167,10 +273,14 @@ async def ensure_controller_service_identity(
         logger.info("controller service identity deferred: install has no owner yet")
         return None
 
-    existing = await registry.list_for_install(install, status="active")
-    record = next(
-        (r for r in existing if r.get("origin") == CONTROLLER_ORIGIN), None
-    )
+    record = await _find_controller_row(registry, install)
+    if record is not None and record.get("status") != "active":
+        logger.warning(
+            "controller service identity %s is %s; leaving it alone "
+            "(no new row, no new token)",
+            record["canonical_id"], record.get("status"),
+        )
+        return None
 
     if record is None:
         short = install[:_SLUG_INSTALL_CHARS]
@@ -190,27 +300,17 @@ async def ensure_controller_service_identity(
         )
 
     # add_grant is idempotent, so this re-asserts the baseline on every boot.
-    # That is deliberate: a scope removed by hand comes back, because records:write
-    # is what the controller needs to function at all. Anything a user ADDED is
-    # untouched -- this only ever adds.  Default tier, matching the internal
-    # mint path; 'once' is the only tier this store writes today.
+    # Anything a user ADDED is untouched -- this only ever adds.
     for scope in CONTROLLER_SCOPES:
         await grants.add_grant(record["canonical_id"], scope)
 
-    if not _has_token(data_dir):
-        token = mint_registry_token(
-            record["canonical_id"],
-            signing_key_pem,
-            user_id=record.get("user_id", ""),
-            framework=record.get("framework", CONTROLLER_ORIGIN),
-            principal_type="service",
+    needs, has_old = _token_state(
+        data_dir, signing_key_pem, record["canonical_id"], time.time()
+    )
+    if needs:
+        await _issue_token(
+            registry, record, data_dir, signing_key_pem, supersede=has_old
         )
-        written, created = _write_token(data_dir, token)
-        if created:
-            logger.info("controller service token written to %s", written)
-        elif written is not None:
-            logger.info("controller service token already present at %s", written)
-
     return record
 
 
@@ -220,71 +320,48 @@ async def rotate_controller_service_token(
     data_dir: Path | str,
     signing_key_pem: bytes,
 ) -> Optional[str]:
-    """Rotate the controller's service token by bumping token_min_iat and minting a new one.
+    """Replace the controller's token now, whatever its age.
 
-    Returns the new token, or None if the controller service identity does not
-    exist.
-
-    The cutoff is ``max(now + 1, current_cutoff + 1)`` and the replacement is
-    minted AT that cutoff, so every rotation supersedes every token issued
-    before it even within the same second.
+    Returns the new token, or None when the identity does not exist, is not
+    active, or the new token could not be written (the old token is then
+    untouched and still works).  Only the controller calls this; no route does.
     """
-    import time
-
     install = read_install_id(Path(data_dir))
     if not install:
         return None
-
-    existing = await registry.list_for_install(install, status="active")
-    record = next(
-        (r for r in existing if r.get("origin") == CONTROLLER_ORIGIN), None
+    record = await _find_controller_row(registry, install)
+    if record is None or record.get("status") != "active":
+        return None
+    return await _issue_token(
+        registry, record, data_dir, signing_key_pem, supersede=True
     )
-    if record is None:
-        return None
 
-    before_iat = record.get("token_min_iat") or 0
-    target = max(int(time.time()) + 1, before_iat + 1)
 
-    def _mint(at: int) -> str:
-        return mint_registry_token(
-            record["canonical_id"],
-            signing_key_pem,
-            user_id=record.get("user_id", ""),
-            framework=record.get("framework", CONTROLLER_ORIGIN),
-            principal_type="service",
-            iat=at,
-        )
-
-    token = _mint(target)
-
-    updated = await registry.bump_token_min_iat(record["canonical_id"], target)
-    cutoff = int((updated or record).get("token_min_iat") or 0)
-    if updated is not None and cutoff != target:
-        # A concurrent rotation advanced the cutoff past our target; re-mint at
-        # the cutoff that actually landed so the credential we write clears it.
-        token = _mint(cutoff)
-
-    # Write the new token, replacing the old one.
-    path = controller_token_path(data_dir)
-    try:
+async def run_controller_token_renewal(
+    *,
+    registry: Any,
+    grants: Any,
+    data_dir: Path | str,
+    signing_key_pem: bytes,
+    owner_id: Callable[[], str],
+) -> None:
+    """Background loop: look at the identity every ``RENEWAL_INTERVAL_SECONDS``
+    and renew the token before it expires.  A failed pass is logged (error type
+    only) and retried next tick; the old token keeps working meanwhile."""
+    while True:
+        await asyncio.sleep(RENEWAL_INTERVAL_SECONDS)
         try:
-            os.unlink(path)
-        except FileNotFoundError:
-            pass
-        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-    except OSError as exc:
-        logger.error("controller token could not be written to %s: %s", path, exc)
-        return None
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as fh:
-            fh.write(token)
-    except OSError as exc:
-        logger.error("controller token write failed at %s: %s", path, exc)
-        try:
-            os.unlink(path)
-        except OSError:
-            pass
-        return None
-
-    logger.info("controller service token rotated at %s", path)
-    return token
+            await ensure_controller_service_identity(
+                registry=registry,
+                grants=grants,
+                data_dir=data_dir,
+                signing_key_pem=signing_key_pem,
+                user_id=owner_id(),
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            logger.warning(
+                "controller service token renewal pass failed (%s); retrying",
+                type(exc).__name__,
+            )

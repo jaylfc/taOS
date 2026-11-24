@@ -693,11 +693,15 @@ Minted by `ensure_controller_service_identity()` in `tinyagentos/controller_serv
 
 **Anchored to `<data_dir>/.install_id`**, the same id the version ping uses, via `install_id()` in `tinyagentos/auto_update.py`.
 
-**The token is never in an environment variable.** It is written to the taOS secrets area under the data directory (`<data_dir>/.secrets/taos_controller_token`, mode 0600) and renewed by the controller.
+**The token is never in an environment variable and never logged.** It is a registry token of kind `service` with a space-separated `scope` claim (`records:write`) and an `exp` claim, written atomically (temp file, fsync, rename) to the taOS secrets area under the data directory (`<data_dir>/.secrets/taos_controller_token`, mode 0600). A standalone install with no memory service has nothing to present it to and may keep using the server token.
 
-**A service-principal token is not accepted where an agent or human token is required.** `_verify_agent_scope` in `tinyagentos/agent_token_auth.py` returns `None` for any `principal_type` other than `agent` or `human`, so the controller identity cannot be used as an agent backdoor.
+**Renewed by the controller.** The token lives 30 days. Start-up and an hourly background loop renew it once it is missing, malformed, not the expected shape, or within 10 days of `exp`. The new file is written before the old token is superseded, so a failed renewal keeps the old token working until it expires; nothing here blocks start-up. A suspended or revoked controller row is left as it is: no second row, no new token.
 
-The controller's single scope, `records:write`, is part of the grant vocabulary alongside `records:read`, `blobs:write`, `blobs:read`, `bus:send` (maps to the existing `a2a_send` grant), `bus:read`, `bus:inbox`, `secrets:reveal` and `archive:admin`.
+**A service-principal token is not accepted where an agent or human token is required.** Every reader of the token kind decides explicitly (`tinyagentos/agent_token_auth.py`, `tinyagentos/auth_middleware.py`): agent scope checks, identity proof and the sign-in/scope-request proof refuse it with 401, project-grant enumeration refuses it with 403, and the middleware's exempt-GET promotion, native-agent and deployed-agent branches ignore it. An agent-kind token that names the controller's row is refused too. No route mints or rotates the controller's token: `rotate-tokens` and `mint-internal` refuse that row.
+
+**Agreed scope names.** `records:write` (the controller's only scope), `records:read`, `blobs:write`, `blobs:read`, `bus:send`, `bus:read`, `bus:inbox`, `secrets:reveal` and `archive:admin` are in the grant vocabulary. `bus:send` is the agreed name for the existing `a2a_send` grant and is stored as `a2a_send`.
+
+**On behalf of a person.** A record the controller writes for a person carries that person in `on_behalf_of`; `controller_record()` in `controller_service_identity.py` is the one helper that adds it. The controller has no record-write path yet, so nothing calls it today.
 
 ## Response caching (`Cache-Control: no-store` on `/api/` and `/agent/`)
 

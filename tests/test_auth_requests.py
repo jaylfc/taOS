@@ -526,6 +526,39 @@ class TestAuthRequestRoutes:
         # Token not returned by approve endpoint — only by the status poll.
         assert "token" not in data
 
+    async def test_approved_bus_send_scope_authorizes_the_bus_send_route(self, consent_client):
+        """tsk-x44f46: the agreed scope name bus:send is the a2a_send grant, so
+        an approved bus:send request must be able to send on the real route."""
+        from unittest.mock import patch
+        from test_a2a_bus_agent_auth import _BUS_PATCH, _mock_bus_post
+
+        app = consent_client._transport.app
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as bare:
+            create = await bare.post(
+                "/api/agents/auth-requests",
+                json={**_CREATE_BODY, "requested_scopes": ["bus:send"]},
+            )
+            request_id = create.json()["request_id"]
+        resp = await consent_client.post(
+            f"/api/agents/auth-requests/{request_id}/approve",
+            json={"granted_scopes": ["bus:send"]},
+        )
+        assert resp.status_code == 200, resp.text
+        canonical_id = resp.json()["canonical_id"]
+        stored = {g["scope"] for g in await app.state.agent_grants.list_grants(canonical_id)}
+        assert stored == {"a2a_send"}
+        async with AsyncClient(transport=transport, base_url="http://test") as bare:
+            token = (await bare.get(f"/api/agents/auth-requests/{request_id}")).json()["token"]
+            ctx, _c = _mock_bus_post({"id": 1, "from": canonical_id, "thread": "general"})
+            with patch(_BUS_PATCH, return_value=ctx):
+                sent = await bare.post(
+                    "/api/a2a/bus/send",
+                    json={"thread": "general", "body": "hi"},
+                    headers={"Authorization": f"Bearer {token}"},
+                )
+        assert sent.status_code == 200, sent.text
+
     async def test_get_status_accepted_returns_token(self, consent_client):
         """After accept, status poll returns canonical_id and token."""
         transport = ASGITransport(app=consent_client._transport.app)

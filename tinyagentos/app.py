@@ -667,8 +667,32 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
                 signing_key_pem=agent_registry_keypair[0],
                 user_id=(_owner or {}).get("id", ""),
             )
-        except Exception:
-            logger.exception("controller service identity could not be ensured at startup")
+        except Exception as exc:
+            # Type only: nothing about the identity or its token is logged.
+            logger.error(
+                "controller service identity could not be ensured at startup (%s)",
+                type(exc).__name__,
+            )
+        # Renew the token before it expires while the controller stays up.
+        # Supervised, so start-up never waits on it and shutdown cancels it.
+        try:
+            from tinyagentos import controller_service_identity as _csi
+
+            _create_supervised_task(
+                _csi.run_controller_token_renewal(
+                    registry=agent_registry_store,
+                    grants=agent_grants_store,
+                    data_dir=data_dir,
+                    signing_key_pem=agent_registry_keypair[0],
+                    owner_id=lambda: (auth_manager.get_primary_user() or {}).get("id", ""),
+                ),
+                app.state._background_tasks,
+            )
+        except Exception as exc:
+            logger.error(
+                "controller service token renewal loop not started (%s)",
+                type(exc).__name__,
+            )
         await user_shares_store.init()
         app.state.user_shares = user_shares_store
         await sharing_grants_store.init()

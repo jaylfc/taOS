@@ -1122,11 +1122,23 @@ class AuthMiddleware(BaseHTTPMiddleware):
                             canonical_id = payload.get("sub", "")
                             if (
                                 canonical_id
-                                and payload.get("principal_type") != "human"
+                                # Only an agent-kind token is promoted. A
+                                # human token never was; a service token
+                                # (the controller's, for the memory service)
+                                # is refused here too, so it sees exactly the
+                                # anonymous view.
+                                and payload.get("principal_type")
+                                not in ("human", "service")
                             ):
                                 registry = _get_store(request)
                                 record = await registry.get(canonical_id)
-                                if record is not None and record.get("status") == "active":
+                                if (
+                                    record is not None
+                                    and record.get("status") == "active"
+                                    # An agent-kind token naming the
+                                    # controller's service row is no agent.
+                                    and record.get("origin") != "taos-controller"
+                                ):
                                     _enforce_rotation_cutoff(record, payload)
                                     # The promotion requires a qualifying
                                     # grant: agents:read (the same scope the
@@ -1270,7 +1282,9 @@ class AuthMiddleware(BaseHTTPMiddleware):
                         _private_pem, public_pem = _get_keypair(request)
                         payload = verify_registry_token(presented, public_pem)
                         canonical_id = payload.get("sub", "")
-                        if canonical_id:
+                        # A service token is never a deployed agent, whatever
+                        # row it names.
+                        if canonical_id and payload.get("principal_type") != "service":
                             registry = _get_store(request)
                             record = await registry.get(canonical_id)
                             if record and record.get("status") == "active":
@@ -1328,7 +1342,9 @@ class AuthMiddleware(BaseHTTPMiddleware):
                             _private_pem, public_pem = _get_keypair(request)
                             payload = verify_registry_token(presented, public_pem)
                             canonical_id = payload.get("sub", "")
-                            if canonical_id:
+                            # A service token is never the native agent or a
+                            # deployed agent, whatever row it names.
+                            if canonical_id and payload.get("principal_type") != "service":
                                 registry = _get_store(request)
                                 record = await registry.get(canonical_id)
                                 if record and record.get("status") == "active":
