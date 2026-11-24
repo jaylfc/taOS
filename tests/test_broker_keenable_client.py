@@ -135,7 +135,7 @@ class TestKeenableClient:
             async def get_preference(self, user_id, namespace):
                 return {}
 
-        assert await public_fallback_enabled(MockSettings()) is False
+        assert await public_fallback_enabled(MockSettings(), "user123") is False
 
     async def test_public_fallback_enabled_false_when_not_dict(self):
         """public_fallback_enabled returns False when preference is not a dict."""
@@ -145,7 +145,7 @@ class TestKeenableClient:
             async def get_preference(self, user_id, namespace):
                 return "not a dict"
 
-        assert await public_fallback_enabled(MockSettings()) is False
+        assert await public_fallback_enabled(MockSettings(), "user123") is False
 
     async def test_public_fallback_enabled_false_when_key_missing(self):
         """public_fallback_enabled returns False when key is missing from dict."""
@@ -155,7 +155,7 @@ class TestKeenableClient:
             async def get_preference(self, user_id, namespace):
                 return {"other_key": True}
 
-        assert await public_fallback_enabled(MockSettings()) is False
+        assert await public_fallback_enabled(MockSettings(), "user123") is False
 
     async def test_public_fallback_enabled_true_when_set(self):
         """public_fallback_enabled returns True when keenable_public_fallback is True."""
@@ -165,7 +165,7 @@ class TestKeenableClient:
             async def get_preference(self, user_id, namespace):
                 return {"keenable_public_fallback": True}
 
-        assert await public_fallback_enabled(MockSettings()) is True
+        assert await public_fallback_enabled(MockSettings(), "user123") is True
 
     async def test_public_fallback_enabled_false_for_string_false(self):
         """public_fallback_enabled returns False when value is string 'false'."""
@@ -175,7 +175,7 @@ class TestKeenableClient:
             async def get_preference(self, user_id, namespace):
                 return {"keenable_public_fallback": "false"}
 
-        assert await public_fallback_enabled(MockSettings()) is False
+        assert await public_fallback_enabled(MockSettings(), "user123") is False
 
     async def test_public_fallback_enabled_false_for_numeric_one(self):
         """public_fallback_enabled returns False when value is 1 (non-boolean truthy)."""
@@ -185,7 +185,7 @@ class TestKeenableClient:
             async def get_preference(self, user_id, namespace):
                 return {"keenable_public_fallback": 1}
 
-        assert await public_fallback_enabled(MockSettings()) is False
+        assert await public_fallback_enabled(MockSettings(), "user123") is False
 
     async def test_public_fallback_enabled_true_only_for_boolean_true(self):
         """public_fallback_enabled returns True only for boolean True, not truthy values."""
@@ -195,4 +195,4 @@ class TestKeenableClient:
             async def get_preference(self, user_id, namespace):
                 return {"keenable_public_fallback": True}
 
-        assert await public_fallback_enabled(MockSettings()) is True
+        assert await public_fallback_enabled(MockSettings(), "user123") is True

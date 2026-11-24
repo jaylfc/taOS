@@ -73,11 +73,33 @@ def _setup_pref_row(data_dir: Path):
         return None
     con = sqlite3.connect(db)
     try:
-        return con.execute(
+        # Check both the legacy global scope and any user-specific scopes
+        row = con.execute(
             "SELECT value FROM desktop_settings WHERE user_id = 'user' AND key = 'pref:setup'"
+        ).fetchone()
+        if row:
+            return row
+        # Also check for any user-scoped setup prefs (post-migration)
+        return con.execute(
+            "SELECT value FROM desktop_settings WHERE key = 'pref:setup' AND user_id != 'user' LIMIT 1"
         ).fetchone()
     except sqlite3.OperationalError:
         return None
+    finally:
+        con.close()
+
+
+def _delete_setup_prefs(data_dir: Path):
+    """Delete setup prefs from both legacy global scope and all user scopes."""
+    db = data_dir / "desktop.db"
+    if not db.exists():
+        return
+    con = sqlite3.connect(db)
+    try:
+        con.execute("DELETE FROM desktop_settings WHERE key = 'pref:setup'")
+        con.commit()
+    except sqlite3.OperationalError:
+        pass
     finally:
         con.close()
 
@@ -147,12 +169,7 @@ def reset_cli(argv) -> int:
     for t in targets:
         t.unlink()
     if pref is not None:
-        con = sqlite3.connect(data_dir / "desktop.db")
-        try:
-            con.execute("DELETE FROM desktop_settings WHERE user_id = 'user' AND key = 'pref:setup'")
-            con.commit()
-        finally:
-            con.close()
+        _delete_setup_prefs(data_dir)
     if backup_dir is not None:
         print(f"Backup written to {backup_dir}")
     print("Onboarding reset. Start the controller and reload the page.")
