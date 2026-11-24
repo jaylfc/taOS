@@ -296,3 +296,60 @@ async def test_download_video_no_filepath_printed_returns_none(tmp_path):
             )
 
     assert result is None
+
+
+# ---------------------------------------------------------------------------
+# fetch() P2 (#2059): description + transcripts in all available languages
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_fetch_returns_description_and_all_language_transcripts(tmp_path):
+    """fetch() returns the description (previously dropped) and one
+    transcript per caption language, requesting all languages from yt-dlp.
+    The legacy ``content`` key stays the primary (English) transcript."""
+    (tmp_path / "test123.en.vtt").write_text(
+        "WEBVTT\n\n00:00:01.000 --> 00:00:03.000\nHello in English\n\n"
+    )
+    (tmp_path / "test123.es.vtt").write_text(
+        "WEBVTT\n\n00:00:01.000 --> 00:00:03.000\nHola en español\n\n"
+    )
+
+    json_bytes = json.dumps([_FAKE_INFO]).encode()
+    meta_proc = _make_mock_proc(stdout=json_bytes)
+    media_proc = _make_mock_proc()
+
+    seen_args: list[tuple] = []
+    call_count = 0
+
+    async def _fake_exec(*args, **kwargs):
+        nonlocal call_count
+        call_count += 1
+        seen_args.append(args)
+        if call_count == 1:
+            return meta_proc
+        return media_proc
+
+    with patch("shutil.which", return_value="/usr/bin/yt-dlp"):
+        with patch("asyncio.create_subprocess_exec", side_effect=_fake_exec):
+            result = await fetch(
+                "https://www.youtube.com/watch?v=test123", media_dir=tmp_path
+            )
+
+    # All subtitle languages are requested, not just English.
+    media_args = seen_args[1]
+    assert "--sub-lang" in media_args
+    assert media_args[list(media_args).index("--sub-lang") + 1] == "all"
+
+    # The description from the metadata JSON is no longer dropped.
+    assert result["description"] == "A test description"
+
+    transcripts = {t["language"]: t["content"] for t in result["transcripts"]}
+    assert set(transcripts) == {"en", "es"}
+    assert "Hello in English" in transcripts["en"]
+    assert "Hola en español" in transcripts["es"]
+
+    # Back-compat: content is the primary (English) transcript, and the
+    # metadata names every language that was captured.
+    assert result["content"] == transcripts["en"]
+    assert set(result["metadata"]["transcript_languages"]) == {"en", "es"}

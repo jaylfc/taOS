@@ -898,6 +898,27 @@ class ImageProcessor(Processor):
         return artifacts
 
 
+def _classify_youtube_failure(exc: BaseException) -> tuple[str, str]:
+    """Classify a yt-dlp fetch failure into a card-visible state + label.
+
+    The states are the failure states issue #2059 names for the item card
+    data (unavailable video, geo-block, private video), plus timeout and
+    a generic fetch failure for everything else.
+    """
+    if isinstance(exc, asyncio.TimeoutError):
+        return "timeout", "fetch timed out"
+    message = str(exc).lower()
+    if "in your country" in message or "geo" in message:
+        return "geo_blocked", "geo-blocked"
+    if "private" in message:
+        return "private", "private"
+    if "unavailable" in message:
+        return "unavailable", "unavailable"
+    if "timed out" in message or "timeout" in message:
+        return "timeout", "fetch timed out"
+    return "fetch_failed", "could not be fetched"
+
+
 class YouTubeProcessor(Processor):
     """YouTube URL processor — cheap tier: metadata, thumbnail, transcript, chapters.
 
@@ -920,9 +941,12 @@ class YouTubeProcessor(Processor):
         if not source_url:
             return artifacts
 
-        # Only catch ImportError (missing yt-dlp).  Let fetch errors
-        # propagate so run_pipeline marks the item as "error" — a failed
-        # yt-dlp invocation must not silently look successful.
+        # Fetch failures are recorded as an explicit failure state on the
+        # item card (#2059 deliverable 3) rather than propagating into
+        # run_pipeline's generic "Pipeline failed" message: the card shows
+        # WHY (unavailable / geo-blocked / private / timed out), and the
+        # item still ends in "error" via _record_rejection, so a failed
+        # yt-dlp invocation never silently looks successful.
         from tinyagentos.knowledge_fetchers.youtube import (
             fetch,
             format_timestamp,
@@ -931,10 +955,22 @@ class YouTubeProcessor(Processor):
         media_dir = self.storage_dir / "youtube"
         # On timeout wait_for cancels fetch(), whose own finally kills only
         # the subprocesses this fetch started.
-        result = await asyncio.wait_for(
-            fetch(source_url, media_dir=media_dir),
-            timeout=self._YTDLP_TIMEOUT,
-        )
+        try:
+            result = await asyncio.wait_for(
+                fetch(source_url, media_dir=media_dir),
+                timeout=self._YTDLP_TIMEOUT,
+            )
+        except Exception as exc:
+            state, label = _classify_youtube_failure(exc)
+            text = str(exc).strip()
+            detail = text.splitlines()[-1][:300] if text else type(exc).__name__
+            failed_meta = json.loads(item.get("meta_json", "{}"))
+            failed_meta["youtube_fetch_state"] = state
+            await self._record_rejection(
+                {**item, "meta_json": json.dumps(failed_meta)},
+                f"YouTube video {label}: {detail}",
+            )
+            return []
 
         title = result.get("title", "")
         if title and not item.get("title"):
@@ -971,18 +1007,51 @@ class YouTubeProcessor(Processor):
                 "meta": {"source": "youtube"},
             })
 
-        # Artifact: transcript
-        content = result.get("content", "")
-        if content:
+        # Artifact: description — a text artifact in its own right, so the
+        # collections handoff indexes it (library_collections lists
+        # "description" among its text kinds). fetch() used to drop the
+        # description entirely (#2059).
+        description = result.get("description", "") or meta.get("description", "")
+        if description:
+            desc_dir = self.storage_dir / "descriptions"
+            desc_dir.mkdir(parents=True, exist_ok=True)
+            desc_path = desc_dir / f"{item_id}_description.txt"
+            desc_path.write_text(description, encoding="utf-8")
+            desc_meta = {"char_count": len(description), "source": "youtube"}
+            await self.store.add_artifact(
+                item_id, kind="description", path=str(desc_path), meta=desc_meta,
+            )
+            artifacts.append({
+                "kind": "description", "path": str(desc_path), "meta": desc_meta,
+            })
+
+        # Artifacts: one transcript per caption language (#2059 — the spec
+        # asks for subtitles/transcript in all available languages).
+        # fetch() returns them under "transcripts"; older fetch results
+        # only carry the single "content" string, treated as English.
+        transcripts = result.get("transcripts") or []
+        if not transcripts and result.get("content"):
+            transcripts = [{"language": "en", "content": result["content"]}]
+
+        languages: list[str] = []
+        preview_text = ""
+        for idx, entry in enumerate(transcripts):
+            text = entry.get("content", "")
+            if not text:
+                continue
+            language = entry.get("language", "unknown")
+            languages.append(language)
+            if not preview_text:
+                preview_text = text
             transcript_dir = self.storage_dir / "transcripts"
             transcript_dir.mkdir(parents=True, exist_ok=True)
-            transcript_path = transcript_dir / f"{item_id}_transcript.txt"
-            transcript_path.write_text(content, encoding="utf-8")
-
-            transcript_meta = {
-                "char_count": len(content),
-                "language": "en",
-            }
+            if idx == 0:
+                fname = f"{item_id}_transcript.txt"
+            else:
+                fname = f"{item_id}_transcript_{language}.txt"
+            transcript_path = transcript_dir / fname
+            transcript_path.write_text(text, encoding="utf-8")
+            transcript_meta = {"char_count": len(text), "language": language}
             await self.store.add_artifact(
                 item_id, kind="transcript", path=str(transcript_path),
                 meta=transcript_meta,
@@ -992,10 +1061,23 @@ class YouTubeProcessor(Processor):
                 "meta": transcript_meta,
             })
 
-            # Store preview for item card
-            preview = content[:200]
-            stored_meta["preview"] = preview
-            await self.store.update_item(item_id, meta_json=stored_meta)
+        # Transcript state belongs on the item card data (#2059
+        # deliverable 3): a video without captions must say so, not
+        # silently land with metadata only.
+        if languages:
+            stored_meta["transcript_status"] = "available"
+            stored_meta["transcript_languages"] = languages
+        else:
+            stored_meta["transcript_status"] = "unavailable"
+            stored_meta["transcript_note"] = (
+                "No subtitles or captions were available for this video."
+            )
+
+        # Store preview for item card (transcript first, then description)
+        preview_source = preview_text or description
+        if preview_source:
+            stored_meta["preview"] = preview_source[:200]
+        await self.store.update_item(item_id, meta_json=stored_meta)
 
         # Artifact: chapters (if available)
         chapters = meta.get("chapters", [])
@@ -1038,6 +1120,21 @@ class WebProcessor(Processor):
     _MAX_WEB_REDIRECTS = 5
     _MAX_WEB_BYTES = 10 * 1024 * 1024  # 10 MB
     _TOTAL_TIMEOUT = 60  # wall-clock deadline
+
+    async def _record_text_state(self, item: dict) -> None:
+        """Record "fetched, but no readable text" on the item card data.
+
+        Without this, a page whose extraction comes back empty looks like
+        a successful ingest that simply has nothing to index (#2059 — no
+        silent empty results).
+        """
+        stored_meta = json.loads(item.get("meta_json", "{}"))
+        stored_meta["text_status"] = "no_text_extracted"
+        stored_meta["text_note"] = (
+            "The page was fetched, but no readable text could be "
+            "extracted from it."
+        )
+        await self.store.update_item(item["id"], meta_json=stored_meta)
 
     async def process(self, item: dict) -> list[dict]:
         item_id = item["id"]
@@ -1105,6 +1202,7 @@ class WebProcessor(Processor):
         html = body.decode(encoding, errors="replace")
 
         if not html:
+            await self._record_text_state(item)
             return artifacts
 
         # Extract readable text
@@ -1157,6 +1255,8 @@ class WebProcessor(Processor):
             stored_meta = json.loads(item.get("meta_json", "{}"))
             stored_meta["preview"] = preview
             await self.store.update_item(item_id, meta_json=stored_meta)
+        else:
+            await self._record_text_state(item)
 
         return artifacts
 

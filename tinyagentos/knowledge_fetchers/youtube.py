@@ -138,6 +138,19 @@ def format_timestamp(seconds: float) -> str:
 # Main fetch function
 # ---------------------------------------------------------------------------
 
+def _vtt_language(vtt_path: Path, video_id: str) -> str:
+    """Caption language from a yt-dlp subtitle filename.
+
+    yt-dlp writes ``<id>.<lang>.vtt`` (e.g. ``abc123.en.vtt``,
+    ``abc123.en-orig.vtt``); a bare ``<id>.vtt`` has no language marker.
+    """
+    stem = vtt_path.stem
+    prefix = f"{video_id}."
+    if stem.startswith(prefix):
+        return stem[len(prefix):] or "unknown"
+    return "unknown"
+
+
 async def fetch(
     url: str,
     media_dir: str | Path = "data/knowledge-media/youtube",
@@ -207,7 +220,7 @@ async def fetch(
             "--convert-thumbnails", "png",
             "--write-auto-sub",
             "--write-sub",
-            "--sub-lang", "en",
+            "--sub-lang", "all",
             "--sub-format", "vtt",
             "--skip-download",
             "-o", str(media_dir / "%(id)s"),
@@ -222,19 +235,34 @@ async def fetch(
             logger.warning("yt-dlp media download failed for %s", url)
 
         # ------------------------------------------------------------------ #
-        # Step 4: parse VTT
+        # Step 4: parse VTT — one transcript per caption language
         # ------------------------------------------------------------------ #
-        segments: list[dict] = []
-        vtt_candidates = sorted(media_dir.glob(f"{video_id}*.vtt"))
-        if vtt_candidates:
-            vtt_file = vtt_candidates[0]
+        transcripts: list[dict] = []
+        for vtt_file in sorted(media_dir.glob(f"{video_id}*.vtt")):
             try:
                 vtt_text = vtt_file.read_text(encoding="utf-8", errors="replace")
-                segments = parse_vtt(vtt_text)
+                file_segments = parse_vtt(vtt_text)
             except Exception as exc:
-                logger.warning("Failed to parse VTT for %s: %s", video_id, exc)
+                logger.warning("Failed to parse VTT %s: %s", vtt_file, exc)
+                continue
+            if not file_segments:
+                continue
+            transcripts.append({
+                "language": _vtt_language(vtt_file, video_id),
+                "segments": file_segments,
+                "content": "\n".join(seg["text"] for seg in file_segments),
+            })
 
-        transcript = "\n".join(seg["text"] for seg in segments)
+        # Primary transcript: English when available, else the first
+        # language captured. ``content``/``transcript_segments`` keep their
+        # historical meaning for existing consumers.
+        primary = next(
+            (t for t in transcripts
+             if t["language"] == "en" or t["language"].startswith("en-")),
+            transcripts[0] if transcripts else None,
+        )
+        segments: list[dict] = primary["segments"] if primary else []
+        transcript = primary["content"] if primary else ""
 
         thumbnail_path = None
         for candidate in sorted(media_dir.glob(f"{video_id}.*")):
@@ -246,6 +274,8 @@ async def fetch(
             "title": title,
             "author": channel,
             "content": transcript,
+            "description": description,
+            "transcripts": transcripts,
             "thumbnail": str(thumbnail_path) if thumbnail_path else None,
             "metadata": {
                 "video_id": video_id,
@@ -256,6 +286,7 @@ async def fetch(
                 "upload_date": upload_date,
                 "chapters": chapters,
                 "transcript_segments": segments,
+                "transcript_languages": [t["language"] for t in transcripts],
             },
         }
     finally:
