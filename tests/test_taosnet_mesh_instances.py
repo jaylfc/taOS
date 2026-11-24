@@ -750,3 +750,42 @@ def test_nothing_installs_systemd_units_by_glob():
             if p.suffix != ".png" and glob.search(p.read_text())} == {}
     # and the control: the pattern does catch a glob install
     assert glob.search("cp $INSTALL_DIR/systemd/*.service /etc/systemd/system/")
+
+
+def test_install_template_takes_an_existing_root_owned_state_root(tmp_path, monkeypatch):
+    """Measured in the bed's phone image: /var/lib/taos/mesh already existed, made
+    by root, so every allocate as the service account failed with EACCES."""
+    monkeypatch.setattr(os, "geteuid", lambda: 0)
+    state = tmp_path / "state"
+    state.mkdir(mode=0o755)
+    os.chmod(state, 0o755)
+    (state / "slots.json").write_text('{"version": 1, "slots": {}}\n')
+    (state / ".slots.lock").write_text("")
+    person = state / "alice"
+    person.mkdir()
+    chowns = []
+    units = tmp_path / "units"
+    units.mkdir()
+    mi.install_template(unit_dir=units, runner=lambda c, **kw: None, python="/p",
+                        state=str(state), user_exists=lambda n: True,
+                        chown=lambda p, u, g: chowns.append(str(p)))
+    assert str(state) in chowns
+    assert str(state / "slots.json") in chowns and str(state / ".slots.lock") in chowns
+    assert str(person) not in chowns          # a person's own directory keeps its owner
+    assert (state.stat().st_mode & 0o777) == 0o700
+
+
+def test_install_template_refuses_a_symlinked_state_root(tmp_path, monkeypatch):
+    monkeypatch.setattr(os, "geteuid", lambda: 0)
+    real = tmp_path / "elsewhere"
+    real.mkdir()
+    link = tmp_path / "state"
+    link.symlink_to(real)
+    chowns = []
+    units = tmp_path / "units"
+    units.mkdir()
+    with pytest.raises(RuntimeError):
+        mi.install_template(unit_dir=units, runner=lambda c, **kw: None, python="/p",
+                            state=str(link), user_exists=lambda n: True,
+                            chown=lambda p, u, g: chowns.append(str(p)))
+    assert chowns == []

@@ -611,10 +611,27 @@ def install_template(*, unit_dir: Path = Path("/etc/systemd/system"),
     else:
         done.append(f"system user {SERVICE_USER} already exists")
     sroot = state_root(state)
+    if sroot.is_symlink():
+        raise RuntimeError(f"{sroot} is a symlink; refusing to take ownership through it")
     if not sroot.exists():
         _mkdirs(sroot, 0o700)
         chown(sroot, SERVICE_USER, SERVICE_GROUP)
         done.append(f"created {sroot} owned by {SERVICE_USER}, mode 0700")
+    else:
+        # A state root made earlier by root (a package, an image build, a
+        # first allocate run as root) leaves the service account unable to
+        # take the lock or write the slot table, so every later allocate fails.
+        # Take ownership of the root and of the allocator's own files only;
+        # person directories keep their owner (they may belong to the person).
+        os.chmod(sroot, 0o700)
+        chown(sroot, SERVICE_USER, SERVICE_GROUP)
+        for name in (_SLOTS_FILE, _LOCK_FILE):
+            f = sroot / name
+            if f.is_symlink():
+                raise RuntimeError(f"{f} is a symlink; refusing to take ownership through it")
+            if f.exists():
+                chown(f, SERVICE_USER, SERVICE_GROUP)
+        done.append(f"{sroot} and its slot table now owned by {SERVICE_USER}, mode 0700")
     target = unit_dir / UNIT_NAME
     target.write_text(text)
     os.chmod(target, 0o644)
