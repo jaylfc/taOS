@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
 #include "windowmodel.h"
 
 QHash<int, QByteArray> WindowModel::roleNames() const {

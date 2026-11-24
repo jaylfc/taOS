@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
 #pragma once
 // ModelActivityFeed: the model-activity timeline. History is seeded from
 // GET /api/activity/models, then live frames from the SSE stream

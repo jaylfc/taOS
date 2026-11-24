@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
 // Renders the window title bar offscreen in its states: render_titlebar <out-dir> [width]
 // Writes titlebar-<left|right>-<dark|light>-<normal|group-hover|close-hover|focus|inactive>.png
 // (the side and the variant come from TAOS_APPEARANCE / TAOS_THEME_VARIANT, as in an app).

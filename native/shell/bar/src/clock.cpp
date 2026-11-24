@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
 #include "clock.h"
 
 Clock::Clock(QObject *parent) : QObject(parent) {

@@ -1,4 +1,5 @@
 #!/bin/sh
+# SPDX-License-Identifier: AGPL-3.0-or-later
 # End to end check of taos-greeter in demo mode under a HEADLESS sway (never the
 # physical seat, never the real greetd).
 #

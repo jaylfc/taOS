@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
 // taos-window: the window engine on the command line. See ../README.md.
 #include <QCoreApplication>
 #include <QJsonArray>

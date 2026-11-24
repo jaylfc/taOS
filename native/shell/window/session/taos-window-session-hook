@@ -1,4 +1,5 @@
 #!/bin/sh
+# SPDX-License-Identifier: AGPL-3.0-or-later
 # Session hook for apps that draw their own window buttons (GTK, foot): keeps them on the same side as the taOS
 # title bar and in the theme's colours.
 #   taos-window-session-hook apply   once

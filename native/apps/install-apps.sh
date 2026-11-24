@@ -1,4 +1,5 @@
 #!/bin/sh
+# SPDX-License-Identifier: AGPL-3.0-or-later
 # Install the native taOS apps (Dashboard, Notifications, Decisions, Settings, Agents, Messages, Store) so they launch from the dock.
 #
 #   install-apps.sh <prefix> [--app-dir DIR] [--runtime-app-dir DIR] [--bin-dir DIR]... [--no-icon-cache]

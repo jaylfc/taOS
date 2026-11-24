@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
 // Pure tests: which windows are framed, where each strip goes (from fixture sway trees), when it hides, the border
 // commands, the button hit regions and the title bar tuner.
 #include <QDir>

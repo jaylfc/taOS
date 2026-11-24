@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
 #pragma once
 // The face of the web apps engine for the Store and Settings: the instances as rows, and every action run off the
 // GUI thread (an icon fetch or a profile copy can take seconds). Follows the data folder, so an instance added

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
 // Renders every first-cut page offscreen, in graphite dark and light, against fake engines and temp folders.
 //   settings_shots <outdir>
 #include <QDir>

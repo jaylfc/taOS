@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
 //! C ABI over `taos-client`.
 //!
 //! The header is `include/taos_client.h` (kept in step by hand, and checked by

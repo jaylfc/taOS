@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 # taos-window: the window engine (minimise, restore, full size, close, focus, list, subscribe) and the
 # shared core library. The core is also built into the foundation (taosqt) for the title bar.
 add_subdirectory(core)

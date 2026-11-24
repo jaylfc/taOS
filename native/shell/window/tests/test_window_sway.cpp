@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
 // Integration: the real taos-window against a real (headless) sway, with real Wayland client windows.
 // Needs a sway binary: $TAOS_TEST_SWAY, else `sway` on PATH ($TAOS_TEST_SWAY_LIBS adds library directories for
 // an unpacked one). Without sway the test is skipped with a message (exit status 77).

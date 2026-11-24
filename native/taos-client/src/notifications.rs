@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
 //! Notifications, plus the consent actions shown on notification rows.
 //!
 //! Source: `tinyagentos/routes/notifications.py`,

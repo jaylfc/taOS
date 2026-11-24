@@ -1,4 +1,5 @@
 #!/bin/sh
+# SPDX-License-Identifier: AGPL-3.0-or-later
 # Reproduces the crash of stock swayfx 0.6.1 (scratchpad_minimize enabled by a reload while windows are mapped, then the
 # windows are destroyed) against a given sway binary. Exit 0: the compositor survived (patched); 1: it died (stock).
 #   verify-minimize-patch.sh <sway-binary> <taos-window-dummy>

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
 //! Small deserialisation helpers shared by the typed domain modules.
 //!
 //! The controller declares very few response models, so every response type in

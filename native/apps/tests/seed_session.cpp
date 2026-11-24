@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
 // Test helper: sign in with a password and write the shared desktop session file
 // ($XDG_RUNTIME_DIR/taos/session) the way a first sign-in does, so the real app
 // executables start signed in (screenshots, manual runs).

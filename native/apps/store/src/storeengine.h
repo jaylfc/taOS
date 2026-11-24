@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
 #pragma once
 // The engine of the native Store: the catalogue (controller entries merged with the built-in web apps), the
 // install state machine, models, themes and installed items, and the web apps engine. A plain QObject with no UI.

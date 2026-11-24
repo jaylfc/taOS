@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
 //! The Agents app: the agent list with live container state, one agent,
 //! the lifecycle actions and the built-in taOS agent's configuration.
 //!

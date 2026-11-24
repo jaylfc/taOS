@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
 // The menu's window actions reach the real engine's command line: taos-window minimise|restore|full|close <id>.
 #include <QFile>
 #include <QTemporaryDir>

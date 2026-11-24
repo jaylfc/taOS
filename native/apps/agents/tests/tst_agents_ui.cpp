@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
 // The Agents window loaded in a QML engine against the fake controller: the
 // list, selection, the detail, the stop confirmation and the exact request, a
 // refusal next to the controls, the empty state and the forbidden state.

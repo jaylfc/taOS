@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
 #pragma once
 // The two list models of the Messages app: the channel list (section headers and
 // channel rows in one flat list, so a ListView can collapse sections) and the

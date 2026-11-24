@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 # Native taOS first-party apps built on the Qt foundation (native/qt).
 # This is a top-level project: it pulls the foundation in as a subdirectory and
 # leaves native/qt untouched.

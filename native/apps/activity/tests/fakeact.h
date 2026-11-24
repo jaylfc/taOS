@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
 #pragma once
 // Runs tests/fake_activity.py (the foundation's fake controller plus the
 // Activity routes) and talks to its control endpoints.

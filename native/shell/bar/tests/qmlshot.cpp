@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
 // Dev tool, not a test: renders one of the bar's QML surfaces with FAKE data (a
 // scripted NetworkManager and BlueZ on a private bus, a scripted sound server)
 // and saves a PNG. Used to check the QML loads and to make labelled

@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 add_library(taosqt SHARED
   error.cpp client.cpp eventstream.cpp session.cpp desktopsession.cpp api.cpp jsonmodel.cpp livequery.cpp app.cpp)
 target_include_directories(taosqt PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/..)

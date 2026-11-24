@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 # taos-frame: window buttons (close, minimise, full size) for windows that cannot draw their own header, first the
 # web app windows. sway draws the title bar (it reserves the space and moves the window); this draws the three buttons
 # over its corner as small layer-shell surfaces and acts through taos_window_core.

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
 // Runs both apps against a REAL controller. Skipped unless TAOS_REAL_URL is set:
 //   TAOS_REAL_URL=http://127.0.0.1:6978 TAOS_REAL_USER=u TAOS_REAL_PASSWORD=p tst_apps_real
 // Use a scratch controller: it creates notifications, requests and decisions and

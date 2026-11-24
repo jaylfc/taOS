@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: AGPL-3.0-or-later
 # Build the native apps and run their tests (offscreen). Needs the same
 # toolchain as native/qt/check.sh.
 #   QT_PREFIX=/path/to/qt/gcc_64 BUILD_DIR=/path JOBS=1 native/apps/check.sh

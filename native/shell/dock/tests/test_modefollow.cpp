@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
 // The dock follows the desktop/tiling mode: desktop.json (written by the window engine) plus the
 // focused workspace decide whether the dock auto-hides; dock.json's hideInTiling can opt out.
 #include <QFile>

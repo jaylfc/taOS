@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: AGPL-3.0-or-later
 # Offscreen renders of Settings > Apps with the real taos-settings executable: web apps made by the real
 # `taos-webapp` CLI (a fake browser, a temporary home), container apps from the fake controller, and taOS's own apps
 # from the repository's launcher entries. Nothing of anyone's own data is touched.

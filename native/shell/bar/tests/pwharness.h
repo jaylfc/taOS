@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
 #pragma once
 // Test support: a private PipeWire + WirePlumber + pipewire-pulse in a throw-away
 // runtime directory, started and stopped by the test. Needs the three daemons

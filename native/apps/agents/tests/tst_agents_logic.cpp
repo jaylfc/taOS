@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
 // The Agents engine against the fake controller: list order, grouping and
 // filters, live state, the device of every agent, lifecycle in-progress and
 // failure states (403, 409, 500, a stop that did not stop).

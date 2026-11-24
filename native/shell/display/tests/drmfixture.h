@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
 #pragma once
 // A fake /sys/class/drm: `card1-<connector>/modes` and `edid`.
 #include <QByteArray>

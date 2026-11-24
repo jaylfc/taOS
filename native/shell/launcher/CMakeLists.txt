@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 # taos-launcher: the keyboard summoned search panel, and taos-search, the same engine on the command line.
 # The engine (providers, ranking, calculator, desktop entries, frecency, IPC) is a static library with no
 # GUI in it, so the unit tests and the CLI link the very code the daemon runs.

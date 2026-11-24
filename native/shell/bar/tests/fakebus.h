@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
 #pragma once
 // Test support: a private session bus and a tiny scriptable D-Bus object tree
 // that stands in for NetworkManager and BlueZ.

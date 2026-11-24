@@ -1,4 +1,5 @@
 #!/bin/sh
+# SPDX-License-Identifier: AGPL-3.0-or-later
 # taos-shell-session: the one entry point the desktop session execs.
 #
 #   taos-shell-session start        launch every shell component under a supervisor

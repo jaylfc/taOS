@@ -1,4 +1,5 @@
 #!/bin/sh
+# SPDX-License-Identifier: AGPL-3.0-or-later
 # greetd greeter command: taos-greeter inside the cage kiosk compositor, run by
 # greetd as the greeter user (for example _greetd). Install as
 # /usr/lib/taos/desktop-session/greeter-native and point greetd's

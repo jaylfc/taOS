@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
 // Dev tool: renders a framed window (sway-style title bar plus the strip) offscreen.
 //   frameshot out.png [--right] [--light] [--theme id] [--hover close|minimise|full] [--inactive] [--title text]
 #include <QGuiApplication>

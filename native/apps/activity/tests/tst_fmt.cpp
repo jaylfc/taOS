@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
 // The pure rules: formatting, labels, GPU normalising, loaded-model merge.
 #include <QtTest>
 

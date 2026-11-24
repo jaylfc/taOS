@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
 // ActivityEngine, ModelActivityFeed and the restart action against the fake
 // controller (the foundation's, plus fake_activity.py for the Activity routes).
 #include <QSignalSpy>

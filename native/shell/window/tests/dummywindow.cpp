@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
 // A tiny Wayland window for the integration test: taos-window-dummy <app_id> <title> [width height [minimise-after-ms]]
 // With the last argument the window asks to be minimised (xdg_toplevel.set_minimized, as a foreign app's own button does).
 #include <QGuiApplication>

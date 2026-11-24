@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
 // Messages: the pure logic, the two models, the engine against the fake controller
 // (REST and the real /ws/chat through the Rust client) and the QML app loaded in an
 // offscreen engine.

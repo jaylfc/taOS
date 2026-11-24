@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
 // taos-display: native resolution, best refresh and the saved scale for every
 // output. Run `taos-display apply` at session start (sway exec_always); the bar
 // does the same on monitor hotplug and owns the "Keep this setting?" dialog.

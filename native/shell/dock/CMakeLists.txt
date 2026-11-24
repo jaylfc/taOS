@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 # taos-dock: the application dock. The logic (desktop entries, model, layout, settings, engines) is a
 # static library so the tests link the very code the binary runs.
 find_package(Qt6 REQUIRED COMPONENTS Quick Qml)

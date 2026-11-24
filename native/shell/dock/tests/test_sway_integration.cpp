@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
 // Integration: the fallback engine against a real headless sway with two real windows (foot).
 // Skipped cleanly when there is no sway or foot binary.
 #include <QDir>

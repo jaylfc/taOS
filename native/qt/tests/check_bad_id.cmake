@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 # Configure a throwaway project that calls taos_add_native_app with a bad id.
 set(dir ${CMAKE_CURRENT_LIST_DIR}/bad-id-probe)
 file(MAKE_DIRECTORY ${dir})

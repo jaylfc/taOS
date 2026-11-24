@@ -1,4 +1,5 @@
 #!/bin/sh
+# SPDX-License-Identifier: AGPL-3.0-or-later
 # Loads the base config's keys plus every taos sway snippet together in sway (`sway -C`, validate only) and fails on
 # any config error or any overwritten (duplicate) binding. Usage: check-sway-config.sh <snippet-root> [base.conf]
 # Environment: TAOS_TEST_SWAY (default: sway on PATH), TAOS_TEST_SWAY_LIBS, TAOS_BASE_SWAY_CONFIG.

@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 remove_definitions(-DQT_NO_CAST_FROM_ASCII -DQT_NO_CAST_TO_ASCII)
 set(SHELL_TESTS ${TAOS_SHELL_DIR})
 function(taos_settings_test name)

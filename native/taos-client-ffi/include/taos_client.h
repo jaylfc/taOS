@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
 /*
  * taos_client.h: C ABI over the Rust taos-client crate.
  *

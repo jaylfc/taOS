@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 # taos-greeter: the login screen. The logic classes live in a static library so
 # the unit tests link the very same code the binary uses.
 find_package(Qt6 6.8 REQUIRED COMPONENTS DBus Quick Qml)

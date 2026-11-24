@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
 // signin_tool <url> <user> <password> <runtime-dir>
 // Signs in once and writes the desktop session snapshot the apps share
 // (<runtime-dir>/taos/session), so the real app can be started against a

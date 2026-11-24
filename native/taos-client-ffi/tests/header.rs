@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
 //! The hand-written C header must declare every exported symbol and carry the
 //! same constants as the Rust side.
 

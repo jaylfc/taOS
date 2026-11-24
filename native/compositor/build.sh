@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: AGPL-3.0-or-later
 # Reproducible build of the taOS desktop compositor (swayfx on wlroots 0.20)
 # for Debian 13 trixie amd64.
 #

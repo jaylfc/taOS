@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 set(FAKE_PY ${CMAKE_CURRENT_SOURCE_DIR}/../../testing/fake_controller.py)
 find_program(PYTHON3 python3 REQUIRED)
 

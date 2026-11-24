@@ -1,4 +1,5 @@
 #!/bin/sh
+# SPDX-License-Identifier: AGPL-3.0-or-later
 # End to end check of taos-bar under a HEADLESS sway (never the physical seat).
 #
 # Needs: sway, swaymsg, grim, python3, and the Qt runtime for taos-bar in the

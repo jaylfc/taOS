@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
 #pragma once
 // Test helper: runs native/testing/fake_controller.py and talks to its
 // control endpoints with plain blocking sockets.

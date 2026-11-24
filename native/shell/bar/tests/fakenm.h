@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
 #pragma once
 // A scriptable NetworkManager for tests and demos (subset of the real interfaces).
 #include <QDBusObjectPath>

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
 // taos-webapp: the web apps engine on the command line. Everything the Store and Settings do, an agent can do here.
 #include <QCoreApplication>
 #include <QFileInfo>

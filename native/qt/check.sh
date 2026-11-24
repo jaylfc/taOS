@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: AGPL-3.0-or-later
 # Build the Qt layer and run its tests. Run from anywhere.
 #   native/qt/check.sh [extra cmake args]
 # Needs: cmake, ninja, Qt 6.8+ dev files (Core Gui Network Test), cargo, python3.

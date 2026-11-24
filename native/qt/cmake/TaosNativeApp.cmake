@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 # taos_add_native_app(
 #   APP_ID my.taos.notifications        # my.taos.<web registry id>: Wayland app_id, StartupWMClass, icon name
 #   DISPLAY_NAME "Notifications"

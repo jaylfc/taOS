@@ -1,4 +1,5 @@
 #!/bin/sh
+# SPDX-License-Identifier: AGPL-3.0-or-later
 # Configure and build the taOS shell components against a given Qt prefix and
 # LayerShellQt prefix. No machine specific paths live in this repository.
 #

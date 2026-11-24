@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: AGPL-3.0-or-later
 # Offscreen screenshots of the real app executables (effects such as blur do not
 # render offscreen; the rest does). Usage:
 #   shots.sh <build dir> <controller url> <user> <password> <out dir> [fake]

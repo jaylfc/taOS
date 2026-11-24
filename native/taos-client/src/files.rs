@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
 //! Files: locations, listing, download, upload, folders, delete and restore.
 //!
 //! Sources: `tinyagentos/routes/{user_workspace,agent_workspace,project_files,

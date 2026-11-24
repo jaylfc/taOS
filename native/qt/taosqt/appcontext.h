@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
 #pragma once
 // Needs Qt Qml (TAOSQT_WITH_QML).
 #include <QJSValue>

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
 #pragma once
 // Settings > Apps: every app on this device in one list. Native apps (their launcher entries), container apps (the
 // controller's installed list, read only here) and web app instances (the web apps engine: open, rename, clone,

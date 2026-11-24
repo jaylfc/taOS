@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
 #pragma once
 // The Messages engine: everything the UI shows and does, with no UI in it. It holds
 // no state the controller would not also hold, apart from drafts and the optimistic

@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: AGPL-3.0-or-later
 # Offscreen renders of the real taos-store executable against the fake controller, with real web app instances made
 # by the real `taos-webapp` CLI (a fake browser, a temporary home: nothing of anyone's own data is touched).
 #   shots.sh <apps build dir> <out dir> [theme ...]      (default themes: graphite)

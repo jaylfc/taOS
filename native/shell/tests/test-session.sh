@@ -1,4 +1,5 @@
 #!/bin/sh
+# SPDX-License-Identifier: AGPL-3.0-or-later
 # Tests for taos-shell-session using a stub component. Usage: test-session.sh <path to taos-shell-session>
 set -u
 SESSION=${1:?path to taos-shell-session}

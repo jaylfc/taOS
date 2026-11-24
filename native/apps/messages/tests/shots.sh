@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: AGPL-3.0-or-later
 # Offscreen renders of the real taos-messages executable against the fake chat
 # controller (no real controller, no real session file: a private XDG_RUNTIME_DIR).
 #   shots.sh <build dir> <out dir>

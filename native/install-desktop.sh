@@ -1,4 +1,5 @@
 #!/bin/sh
+# SPDX-License-Identifier: AGPL-3.0-or-later
 # install-desktop.sh: install the native taOS desktop (shell pieces, apps, themes, sway snippets) from build
 # directories. Run by root. Idempotent. Staged: everything is checked in a temporary copy first and nothing on
 # the system is touched until the checks pass. It never restarts or reloads anything; restart the session

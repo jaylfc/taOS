@@ -1,4 +1,5 @@
 #!/bin/sh
+# SPDX-License-Identifier: AGPL-3.0-or-later
 # A stand-in for Chromium in tests. Records its command line and environment, then behaves like a browser that owns
 # its profile: it creates the SingletonLock symlink (host-pid) and stays "open" until the file $FAKE_BROWSER_STOP
 # appears (or 20 s pass). With --version it prints a version.

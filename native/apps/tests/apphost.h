@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
 #pragma once
 // Test harness: the fake controller (extended, fake_apps_controller.py) or a real
 // one (TAOS_REAL_URL), a signed-in Session, and a QML app loaded in an engine.

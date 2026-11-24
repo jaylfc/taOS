@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
 #include "pulsebackend.h"
 
 #include <pulse/pulseaudio.h>

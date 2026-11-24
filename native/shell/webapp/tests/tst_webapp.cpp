@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
 // The web apps engine: add, list, launch line, clone, rename, remove, clear data, refuse while running, URL
 // validation, path safety, atomic index, and the CLI. A fake browser stands in for Chromium; no network, and
 // HOME and XDG_DATA_HOME are never touched (every test uses a temporary root).

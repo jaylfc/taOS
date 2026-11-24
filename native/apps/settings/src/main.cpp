@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
 // taos-settings: the system control panel. Its own main() (not the generated one) because it needs the theme
 // engine as an object, deep links, and a single-instance socket under $XDG_RUNTIME_DIR/taos/.
 #include <QGuiApplication>

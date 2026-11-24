@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
 // Dev tool: renders the dock (and its menu or settings popover) offscreen with fixture windows.
 //   dockshot out.png [--scene dock|menu|settings] [--position bottom|left|right] [--attached] [--size small|medium|large]
 //            [--light] [--theme id] [--magnify] [--size-px WxH]

@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 # taos_window_core: the window engine without any GUI. The sway IPC client, the window model (the tree as
 # windows, with minimised state read from sway marks), the plans for minimise / restore / full size / close /
 # focus, and the event follower. Shared by taos-window, the dock, the overview and the title bar in taosqt.

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
 // Runs against a REAL controller; skipped unless TAOS_REAL_URL is set.
 //   TAOS_REAL_URL=http://127.0.0.1:6979 TAOS_REAL_ADMIN=user TAOS_REAL_ADMIN_PASSWORD=pw
 //   TAOS_REAL_USER=nonadmin TAOS_REAL_PASSWORD=pw [TAOS_REAL_LOCAL_TOKEN=<token>] tst_activity_real

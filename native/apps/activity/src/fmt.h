@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
 #pragma once
 // Pure formatting and normalising helpers of the Activity app. They port the
 // web app's rules (ActivityApp.tsx, lib/model-activity-api.ts, lib/cluster.ts)

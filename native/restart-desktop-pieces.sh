@@ -1,4 +1,5 @@
 #!/bin/sh
+# SPDX-License-Identifier: AGPL-3.0-or-later
 # restart-desktop-pieces.sh: pick up what install-desktop.sh installed, for the logged-in user, in the running
 # session. Run it from a terminal inside the desktop session (it needs the session's SWAYSOCK).
 #

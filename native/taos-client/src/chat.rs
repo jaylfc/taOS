@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
 //! Chat: channels, messages and the live socket `WS /ws/chat`.
 //!
 //! Source: `tinyagentos/routes/chat.py` (REST routes and the socket),

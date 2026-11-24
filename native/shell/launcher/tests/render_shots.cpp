@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
 // Offscreen renders of the launcher for review: taos-launcher-shots <out-dir> [theme] [variant]
 // Not a test: it needs no compositor, only the offscreen Qt platform.
 #include <QDir>

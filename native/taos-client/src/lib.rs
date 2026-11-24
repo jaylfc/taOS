@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
 //! `taos-client`: the shared, GUI-toolkit-independent Rust client for the taOS
 //! controller API.
 //!

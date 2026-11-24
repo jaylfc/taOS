@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
 #pragma once
 // taos_webapp_core: the web apps engine. A web app INSTANCE is a site opened in its own browser window with its
 // own private profile (own storage, own sign-in). This library has no UI; the `taos-webapp` CLI, the Store and

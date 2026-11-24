@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 find_package(Qt6 6.8 REQUIRED COMPONENTS Qml Quick QuickControls2 Gui)
 
 set(MESSAGES_QML Main.qml ChannelList.qml Conversation.qml MessageRow.qml Composer.qml Switcher.qml MIcon.qml MEmpty.qml)

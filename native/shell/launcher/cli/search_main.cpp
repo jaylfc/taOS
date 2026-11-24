@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
 // taos-search: the launcher's search engine without the launcher. For a TUI over SSH, scripts and agents.
 //   taos-search [--json] [--timeout MS] [--limit N] "query"
 #include <QCoreApplication>

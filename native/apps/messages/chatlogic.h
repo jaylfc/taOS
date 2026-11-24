@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
 #pragma once
 // Pure logic of the Messages app: ports of the web app's small pure modules
 // (MessagesApp.agentSections.ts, MessagesApp.stallWatch.ts, index.tsx helpers) and

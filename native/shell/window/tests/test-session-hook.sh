@@ -1,4 +1,5 @@
 #!/bin/sh
+# SPDX-License-Identifier: AGPL-3.0-or-later
 # taos-window-session-hook: GTK button-layout through gsettings and the foot csd file, on both sides.
 # Usage: test-session-hook.sh <hook> <taos-theme>
 hook=$1; theme=$2

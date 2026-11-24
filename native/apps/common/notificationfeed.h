@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
 #pragma once
 // The notification store of the native apps: the engine behind the Notifications
 // app, and what the bar's bell reads later (it is a plain QObject over the

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
 //! Sign-in, sign-out and the current user.
 //!
 //! Routes (all in `tinyagentos/routes/auth.py`, router prefix `/auth`):

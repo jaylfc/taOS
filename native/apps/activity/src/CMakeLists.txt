@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 add_library(activity_core STATIC engine.cpp feed.cpp fmt.cpp types.cpp)
 target_link_libraries(activity_core PUBLIC taosqt Qt6::Core Qt6::Qml)
 target_include_directories(activity_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
 #pragma once
 // A complete Settings context on temporary folders and fake engines: nothing here touches the real
 // ~/.config/taos, the compositor, the sound server or the system bus.

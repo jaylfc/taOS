@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
 // The Store's engine against the fake controller (fixtures in the shapes of the real routes) and a fake browser:
 // catalogue normalisation and merge, search, sections, the install state machine (403, the Docker and licence
 // consents, progress, removal), models, themes, web apps end to end through the web apps engine, and the

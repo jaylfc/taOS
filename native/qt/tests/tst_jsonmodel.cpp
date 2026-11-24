@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
 #include <QAbstractItemModelTester>
 #include <QSignalSpy>
 #include <QtTest>

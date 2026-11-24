@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 # Code shared by the shell components: the theme system (tokens, validation, catalog,
 # appearance.json, live reload), the glass numbers and the taos-theme tool.
 add_library(taos_common STATIC

@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: AGPL-3.0-or-later
 # CI-friendly checks for the native workspace. Run from anywhere.
 #
 #   native/check.sh

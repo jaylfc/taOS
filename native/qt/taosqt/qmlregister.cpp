@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
 // Compiled only when Qt Qml is available (TAOSQT_WITH_QML).
 #include <QtQml/qqml.h>
 

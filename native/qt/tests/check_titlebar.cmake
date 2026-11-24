@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 # Renders the title bar with the buttons on each side and checks the pictures are there and the two sides differ.
 file(MAKE_DIRECTORY ${OUT})
 set(ENV{QT_QPA_PLATFORM} offscreen)

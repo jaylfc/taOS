@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
 //! Live updates: a reconnecting Server-Sent Events client, typed wrappers for
 //! the controller's streams, and [`PollWhileVisible`].
 //!

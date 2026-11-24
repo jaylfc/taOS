@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
 //! The named operations behind `taos_call`.
 //!
 //! Each op takes a JSON object of arguments and returns a JSON value that is

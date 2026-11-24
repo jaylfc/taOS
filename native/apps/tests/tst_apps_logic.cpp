@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
 // Unit tests of the pieces that decide nothing on the controller's behalf but must
 // match the web app exactly: the routing table, the store's ordering and cap and
 // filters, and the JS helpers of the consent component.

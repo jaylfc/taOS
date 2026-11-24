@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 # taos_store_core: the Store's engine (catalogue, install state machine, web apps and themes services, the apps
 # overview of Settings). An OBJECT library, so its QML registration is not dropped. Used by the Store app, its tests
 # and Settings (a standalone settings build adds this directory too). Needs taosqt and taos_common in scope.

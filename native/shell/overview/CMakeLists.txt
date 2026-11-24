@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 # taos-overview: the Alt+Tab switcher and the workspace overview.
 # The logic that needs neither Wayland nor a GUI (sway IPC framing, tree parsing, MRU, filter,
 # packing, the control socket) lives in a static library so the unit tests link the very code the

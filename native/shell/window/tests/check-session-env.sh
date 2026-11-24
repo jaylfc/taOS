@@ -1,4 +1,5 @@
 #!/bin/sh
+# SPDX-License-Identifier: AGPL-3.0-or-later
 # The snippet set must contain the session environment line (D-Bus activation environment), and the installer must ship it.
 # Usage: check-session-env.sh <native dir>
 n=$1

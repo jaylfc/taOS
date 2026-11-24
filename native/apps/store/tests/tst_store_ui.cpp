@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
 // The Store window loaded in a QML engine against the fake controller and a fake browser: the sections, the Web apps
 // page end to end (add from the catalogue, expand, clone, remove with a second click), the Add website dialog and its
 // address check, the Docker consent card, and the refusal a member gets, in words.

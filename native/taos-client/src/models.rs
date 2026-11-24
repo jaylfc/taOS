@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
 //! Models: the catalog, downloaded files, cluster workers, cloud providers,
 //! downloads with progress, and deleting.
 //!

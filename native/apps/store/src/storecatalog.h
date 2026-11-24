@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
 #pragma once
 // The Store's catalogue logic, with no network and no UI: normalising the controller's catalogue entries
 // (`GET /api/store/catalog`, tinyagentos/routes/store.py:224) and the built-in web app list, merging them,

@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: AGPL-3.0-or-later
 # Offscreen renders of the real taos-agents executable against the fake controller.
 #   shots.sh <build dir> <out dir> [theme ...]      (default themes: graphite)
 # Each theme is rendered dark and light. Uses a private XDG_RUNTIME_DIR; the

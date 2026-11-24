@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 file(READ ${DESKTOP} all)
 function(expect line)
   string(FIND "${all}" "\n${line}\n" idx)

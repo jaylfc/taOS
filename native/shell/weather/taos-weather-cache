@@ -1,4 +1,5 @@
 #!/bin/sh
+# SPDX-License-Identifier: AGPL-3.0-or-later
 # taos-weather-cache: fetch the current weather once and write it where the
 # login screen can read it, so the login screen itself never uses the network.
 #

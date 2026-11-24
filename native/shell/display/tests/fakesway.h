@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
 #pragma once
 // A scripted compositor for the display tests: serves get_outputs and get_tree
 // from fixture JSON, applies `output NAME mode|scale ...` to its own state, and

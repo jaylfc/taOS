@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
 //! Session state: the cookie jar and the exportable [`Session`].
 //!
 //! Nothing here ever prints a cookie value. `Debug` for both [`Session`] and

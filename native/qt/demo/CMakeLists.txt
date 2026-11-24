@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 # taos-native-demo: signs in and lists notifications live. A pure QML app: the
 # entry point is generated. Needs Qt Quick.
 find_package(Qt6 6.8 REQUIRED COMPONENTS Qml Quick QuickControls2)

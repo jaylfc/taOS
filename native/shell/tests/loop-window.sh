@@ -1,4 +1,5 @@
 #!/bin/sh
+# SPDX-License-Identifier: AGPL-3.0-or-later
 # Test client content for e2e-overview.sh: a big title and a counter redrawn in place, so a live
 # thumbnail visibly changes. usage: loop-window.sh <title>
 T=$1; i=0

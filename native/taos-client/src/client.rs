@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
 //! The transport: a cheap-to-clone [`Client`] over `reqwest` with a private
 //! cookie jar, CSRF handling and uniform error mapping.
 

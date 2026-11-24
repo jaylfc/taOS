@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
 //! Drives the C ABI exactly as the Qt wrapper does, against the Python fake
 //! controller (native/testing/fake_controller.py).
 #![allow(unsafe_code)]

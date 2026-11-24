@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
 //! Shared helpers for the integration tests: a fake controller on wiremock.
 #![allow(dead_code)]
 

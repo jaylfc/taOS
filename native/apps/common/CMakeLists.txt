@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 # Shared pieces of the native apps: the notification store (C++, an OBJECT
 # library linked straight into each app so its QML registration is not dropped)
 # and the shared QML module `Taos.Apps` (consent card, glass panels, motion).

@@ -1,4 +1,5 @@
 #!/bin/sh
+# SPDX-License-Identifier: AGPL-3.0-or-later
 # End to end check of taos-overview under a HEADLESS sway (never the physical seat).
 #
 # Starts its own compositor in a private XDG_RUNTIME_DIR, opens five foot windows over two

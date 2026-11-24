@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 # taos-display: native resolution, best refresh and per person scale. The logic
 # lives in a static library so the bar's Display singleton and the tests link
 # the very same code the tool uses.

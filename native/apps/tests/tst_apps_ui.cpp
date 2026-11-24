@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
 // The two apps loaded in a QML engine against the extended fake controller:
 // list, read, archive, filters, live updates, consent approve and deny with the
 // exact paths and bodies, sign-in code, decisions answer, note, history.

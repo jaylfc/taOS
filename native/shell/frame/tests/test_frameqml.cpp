@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
 // The strip's QML: what a click on each button emits, the right click, the accessible names, and that the button
 // side follows the setting. Rendered offscreen; clicks are real mouse events on the window.
 #include <QAccessible>

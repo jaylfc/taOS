@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
 // Integration: taos-frame against a real headless sway with real foreign windows (foot, app_id chrome-...). Proves what
 // can be proven without the real compositor and a layer-shell client: the daemon frames the window (sway reserves a
 // 32 px title bar), reports the strip where sway's title bar corner is, follows moves, hides on fullscreen, workspace

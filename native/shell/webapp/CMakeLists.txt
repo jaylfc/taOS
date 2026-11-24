@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 # The web apps engine: taos_webapp_core (Qt Core, Gui for QImage, Network) and the CLI taos-webapp.
 # Standalone:   cmake -S native/shell/webapp -B build -G Ninja -DCMAKE_PREFIX_PATH=<qt>
 # From the apps project (the Store links the core): add_subdirectory(.../shell/webapp webapp).

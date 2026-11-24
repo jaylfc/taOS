@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
 //! The Activity (dashboard) app's data: system activity, loaded models,
 //! scheduler, cluster workers, model activity and the AI-stack restart.
 //!

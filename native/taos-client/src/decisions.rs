@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
 //! The Decisions inbox: questions agents ask the user, plus the pending access
 //! and scope requests shown beside them.
 //!

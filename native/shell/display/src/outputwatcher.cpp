@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
 #include "outputwatcher.h"
 
 OutputWatcher::OutputWatcher(QString program, int debounceMs, QObject *parent) : QObject(parent), m_program(std::move(program)) {

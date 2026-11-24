@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
 // activity-shots: offscreen screenshots of the Activity app's main views, from
 // the QML sources, with the same context the generated main() builds.
 //   activity-shots <controller url> <user> <password> <qml dir> <out dir> <scene>...

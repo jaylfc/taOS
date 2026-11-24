@@ -1,4 +1,5 @@
 #!/bin/sh
+# SPDX-License-Identifier: AGPL-3.0-or-later
 # Copy the part of a Qt installation that taos-greeter needs into one directory
 # that an unprivileged system user can read (for example /opt/taos/qt).
 #

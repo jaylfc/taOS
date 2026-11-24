@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
 #pragma once
 // The engine of the native Agents app: the agent list (a LiveQuery over
 // `agents.list`), its filtered and grouped view, per-agent action state and the

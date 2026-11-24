@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
 // Logic of the window engine against fixture trees (real sway get_tree output) and a fake transport.
 #include <QFile>
 #include <QTemporaryDir>

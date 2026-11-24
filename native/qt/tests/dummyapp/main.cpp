@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
 // A stand-in app that is built through taos_add_native_app, so the CMake
 // function and the .desktop template are exercised by the test suite.
 #include <QGuiApplication>

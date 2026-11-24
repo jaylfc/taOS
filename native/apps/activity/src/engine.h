@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
 #pragma once
 // ActivityEngine: the service behind the Activity app. It polls the controller
 // (nothing else), keeps the last good answer of each call, derives the merged

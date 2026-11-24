@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
 //! The single error type of this crate.
 //!
 //! The controller reports errors in two shapes: FastAPI's `{"detail": ...}`

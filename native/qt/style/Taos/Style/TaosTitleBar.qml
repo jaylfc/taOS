@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
 import QtQuick
 import QtQuick.Controls.Basic as B
 import Taos 1.0

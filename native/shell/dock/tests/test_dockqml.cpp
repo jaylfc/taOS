@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
 // The real QML: loads Dock.qml with a controller and checks keyboard navigation, tooltips'
 // accessible names, and the shell-socket commands (Super+D) end to end.
 #include <QGuiApplication>
