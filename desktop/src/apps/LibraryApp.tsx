@@ -49,8 +49,24 @@ import type {
   AgentSubscription,
   ListItemsParams,
 } from "@/lib/knowledge";
-import { listLibraryJobs, retryLibraryJob } from "@/lib/library";
-import type { LibraryJob } from "@/lib/library";
+import {
+  listLibraryJobs,
+  retryLibraryJob,
+  getLibrarySettings,
+  updateLibrarySettings,
+  listLibrarySourceRules,
+  createLibrarySourceRule,
+  deleteLibrarySourceRule,
+  getLibraryUsage,
+  LIBRARY_QUALITIES,
+  DEFAULT_LIBRARY_SETTINGS,
+} from "@/lib/library";
+import type {
+  LibraryJob,
+  LibrarySettings,
+  LibrarySourceRule,
+  LibraryUsage,
+} from "@/lib/library";
 import { withCsrf } from "@/lib/csrf";
 import { useFocusTrap } from "@/hooks/use-focus-trap";
 import { useDragSource } from "@/shell/dnd/use-drag-source";
@@ -132,8 +148,6 @@ interface StorageViewData {
   items: ItemStorageRow[];
 }
 
-const STORAGE_CAP_BYTES = 50 * 1024 * 1024 * 1024;
-
 /* ------------------------------------------------------------------ */
 /*  Queue (ingest pipeline jobs)                                      */
 /* ------------------------------------------------------------------ */
@@ -159,50 +173,13 @@ function jobStateColor(state: string): string {
 }
 
 /* ------------------------------------------------------------------ */
-/*  Library Settings (mock contract until #2060)                       */
+/*  Library Settings (#2060: real API, no mock)                        */
 /* ------------------------------------------------------------------ */
 
-const LIBRARY_SETTINGS_KEY = "taos-library-settings";
-
-interface LibrarySettings {
-  preferred_quality: string;
-  storage_cap_bytes: number;
-  source_rules: Array<{ source: string; action: string; quality: string }>;
-}
-
-const QUALITY_OPTIONS = ["low", "medium", "high", "best"] as const;
-const ACTION_OPTIONS = ["download", "skip", "ask"] as const;
-
-const DEFAULT_LIBRARY_SETTINGS: LibrarySettings = {
-  preferred_quality: "high",
-  storage_cap_bytes: STORAGE_CAP_BYTES,
-  source_rules: [],
-};
-
-function loadLibrarySettings(): LibrarySettings {
-  try {
-    const raw = localStorage.getItem(LIBRARY_SETTINGS_KEY);
-    if (raw) {
-      const parsed = JSON.parse(raw) as Partial<LibrarySettings>;
-      return {
-        preferred_quality: parsed.preferred_quality ?? DEFAULT_LIBRARY_SETTINGS.preferred_quality,
-        storage_cap_bytes: parsed.storage_cap_bytes ?? DEFAULT_LIBRARY_SETTINGS.storage_cap_bytes,
-        source_rules: Array.isArray(parsed.source_rules) ? parsed.source_rules : DEFAULT_LIBRARY_SETTINGS.source_rules,
-      };
-    }
-  } catch {
-    /* ignore */
-  }
-  return { ...DEFAULT_LIBRARY_SETTINGS };
-}
-
-function saveLibrarySettings(settings: LibrarySettings): void {
-  try {
-    localStorage.setItem(LIBRARY_SETTINGS_KEY, JSON.stringify(settings));
-  } catch {
-    /* ignore */
-  }
-}
+/* Settings are persisted server-side via /api/library/settings (#2060);
+   source rules via /api/library/rules. Qualities use the backend
+   vocabulary (360/480/720/1080/best) — the mock's low/medium/high scale
+   is gone. */
 
 /* ------------------------------------------------------------------ */
 /*  Helpers                                                            */
@@ -215,39 +192,6 @@ const fmtBytes = (b: number): string => {
   return `${(b / (1024 * 1024 * 1024)).toFixed(2)} GB`;
 };
 
-const mockItemBytes = (id: string): number => {
-  let hash = 0;
-  for (let i = 0; i < id.length; i++) {
-    hash = ((hash << 5) - hash) + id.charCodeAt(i);
-    hash |= 0;
-  }
-  return (Math.abs(hash) % 4000 + 100) * 1024 * 1024;
-};
-
-const deriveMockStorageData = (items: KnowledgeItem[], capBytes: number): StorageViewData => {
-  const itemRows: ItemStorageRow[] = items.map((item) => ({
-    id: item.id,
-    title: item.title || "Untitled",
-    source_type: item.source_type,
-    bytes: mockItemBytes(item.id),
-  }));
-  const totalBytes = itemRows.reduce((sum, row) => sum + row.bytes, 0);
-  const sourceMap = new Map<string, { bytes: number; count: number }>();
-  for (const row of itemRows) {
-    const existing = sourceMap.get(row.source_type) || { bytes: 0, count: 0 };
-    sourceMap.set(row.source_type, { bytes: existing.bytes + row.bytes, count: existing.count + 1 });
-  }
-  const sources: SourceStorage[] = Array.from(sourceMap.entries())
-    .map(([source_type, data]) => ({ source_type, bytes: data.bytes, item_count: data.count }))
-    .sort((a, b) => b.bytes - a.bytes);
-  return {
-    total_bytes: totalBytes,
-    cap_bytes: capBytes,
-    paused_at_cap: totalBytes >= capBytes,
-    sources,
-    items: itemRows.sort((a, b) => b.bytes - a.bytes),
-  };
-};
 
 /* ------------------------------------------------------------------ */
 /*  Helpers                                                            */
@@ -322,9 +266,49 @@ export function LibraryApp({ windowId: _windowId }: { windowId: string }) {
   const queuePollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const jobsLoadedRef = useRef(false);
 
-  /* ---------- settings ---------- */
-  const [settings, setSettings] = useState<LibrarySettings>(() => loadLibrarySettings());
-  const [newSourceRule, setNewSourceRule] = useState({ source: "", action: "download" as const, quality: "high" as const });
+  /* ---------- settings (#2060: server-persisted) ---------- */
+  const [settings, setSettings] = useState<LibrarySettings>({ ...DEFAULT_LIBRARY_SETTINGS });
+  const [settingsError, setSettingsError] = useState<string | null>(null);
+  const [capDraft, setCapDraft] = useState<string>(String(DEFAULT_LIBRARY_SETTINGS.storage_cap_bytes));
+  const [sourceRules, setSourceRules] = useState<LibrarySourceRule[]>([]);
+  const [newSourceRule, setNewSourceRule] = useState<{
+    source_pattern: string;
+    quality: string;
+    auto_download: boolean;
+  }>({ source_pattern: "", quality: "720", auto_download: false });
+  const [ruleError, setRuleError] = useState<string | null>(null);
+  const [usage, setUsage] = useState<LibraryUsage | null>(null);
+
+  /* Load persisted settings + source rules once on mount. */
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      const [loadedSettings, loadedRules] = await Promise.all([
+        getLibrarySettings(),
+        listLibrarySourceRules(),
+      ]);
+      if (cancelled) return;
+      setSettings(loadedSettings);
+      setCapDraft(String(loadedSettings.storage_cap_bytes));
+      setSourceRules(loadedRules.rules);
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  /* Load storage accounting whenever the storage view is opened. */
+  useEffect(() => {
+    if (activeView !== "storage") return;
+    let cancelled = false;
+    (async () => {
+      const data = await getLibraryUsage();
+      if (!cancelled) setUsage(data);
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [activeView]);
 
   /* ---------- detail state ---------- */
   const [snapshots, setSnapshots] = useState<Snapshot[]>([]);
@@ -794,28 +778,78 @@ export function LibraryApp({ windowId: _windowId }: { windowId: string }) {
 
   /* ---------- settings handlers ---------- */
 
-  const handleAddSourceRule = useCallback(() => {
-    if (!newSourceRule.source) return;
-    setSettings((prev) => {
-      const next = {
-        ...prev,
-        source_rules: [...prev.source_rules, { ...newSourceRule }],
-      };
-      saveLibrarySettings(next);
-      return next;
-    });
-    setNewSourceRule({ source: "", action: "download", quality: "high" });
-  }, [newSourceRule]);
+  const handleQualityChange = useCallback(
+    async (quality: string) => {
+      const saved = await updateLibrarySettings({ preferred_quality: quality });
+      if (saved) {
+        setSettings(saved);
+        setSettingsError(null);
+      } else {
+        setSettingsError("Could not save the preferred quality.");
+      }
+    },
+    [],
+  );
 
-  const handleDeleteSourceRule = useCallback((index: number) => {
-    setSettings((prev) => {
-      const next = {
-        ...prev,
-        source_rules: prev.source_rules.filter((_, i) => i !== index),
-      };
-      saveLibrarySettings(next);
-      return next;
+  const handleCapChange = useCallback(
+    async (raw: string) => {
+      setCapDraft(raw);
+      const parsed = Number(raw);
+      if (raw.trim() === "" || !Number.isInteger(parsed) || parsed < 0) {
+        setSettingsError(
+          "Storage cap must be a whole number of bytes, 0 or more (0 = no cap).",
+        );
+        return;
+      }
+      const saved = await updateLibrarySettings({ storage_cap_bytes: parsed });
+      if (saved) {
+        setSettings(saved);
+        setSettingsError(null);
+      } else {
+        setSettingsError("Could not save the storage cap.");
+      }
+    },
+    [],
+  );
+
+  const handleAddSourceRule = useCallback(async () => {
+    const pattern = newSourceRule.source_pattern.trim();
+    if (!pattern) return;
+    /* Duplicate guard (#2276 finding deferred to #2060): the backend
+       also rejects duplicates with 409, but catching it here keeps the
+       table from ever showing the same pattern twice. */
+    if (
+      sourceRules.some(
+        (r) => r.source_pattern.toLowerCase() === pattern.toLowerCase(),
+      )
+    ) {
+      setRuleError(`A rule for ${pattern} already exists.`);
+      return;
+    }
+    const result = await createLibrarySourceRule({
+      source_pattern: pattern,
+      quality: newSourceRule.quality,
+      auto_download: newSourceRule.auto_download,
     });
+    if (!result.ok) {
+      setRuleError(
+        result.status === 409
+          ? `A rule for ${pattern} already exists.`
+          : "Could not save the rule.",
+      );
+      return;
+    }
+    setRuleError(null);
+    const refreshed = await listLibrarySourceRules();
+    setSourceRules(refreshed.rules);
+    setNewSourceRule({ source_pattern: "", quality: "720", auto_download: false });
+  }, [newSourceRule, sourceRules]);
+
+  const handleDeleteSourceRule = useCallback(async (ruleId: string) => {
+    const ok = await deleteLibrarySourceRule(ruleId);
+    if (ok) {
+      setSourceRules((prev) => prev.filter((r) => r.id !== ruleId));
+    }
   }, []);
 
   /* ---------------------------------------------------------------- */
@@ -1425,30 +1459,53 @@ export function LibraryApp({ windowId: _windowId }: { windowId: string }) {
   /*  Storage Accounting View                                          */
   /* ---------------------------------------------------------------- */
 
-  const storageViewUI = items.length === 0 ? (
+  const storageViewUI = usage == null ? (
     <main className="flex-1 flex flex-col overflow-hidden">
       <div className="flex flex-col gap-2 px-4 py-3 border-b border-white/5 shrink-0">
         <span className="text-xs font-medium">Storage Accounting</span>
-        <span className="text-[11px] text-shell-text-tertiary">(mock)</span>
+      </div>
+      <div className="flex-1 flex items-center justify-center text-shell-text-tertiary text-sm">
+        Storage accounting unavailable
+      </div>
+    </main>
+  ) : usage.total_count === 0 ? (
+    <main className="flex-1 flex flex-col overflow-hidden">
+      <div className="flex flex-col gap-2 px-4 py-3 border-b border-white/5 shrink-0">
+        <span className="text-xs font-medium">Storage Accounting</span>
       </div>
       <div className="flex-1 flex items-center justify-center text-shell-text-tertiary text-sm">
         No items to account for
       </div>
     </main>
   ) : (() => {
-    const data = deriveMockStorageData(items, settings.storage_cap_bytes);
-    const totalPct = Math.min(100, (data.total_bytes / data.cap_bytes) * 100);
+    const data: StorageViewData = {
+      total_bytes: usage.total_bytes,
+      cap_bytes: usage.cap_bytes,
+      paused_at_cap: usage.paused_at_cap,
+      sources: usage.sources,
+      items: usage.items.map((it) => ({
+        id: it.id,
+        title: it.title || "Untitled",
+        source_type: it.source_type,
+        bytes: it.bytes,
+      })),
+    };
+    const totalPct =
+      data.cap_bytes > 0
+        ? Math.min(100, (data.total_bytes / data.cap_bytes) * 100)
+        : 0;
     return (
       <main className="flex-1 flex flex-col overflow-hidden">
         <div className="flex flex-col gap-2 px-4 py-3 border-b border-white/5 shrink-0">
           <div className="flex items-center gap-2">
             <span className="text-xs font-medium">Storage Accounting</span>
-            <span className="text-[11px] text-shell-text-tertiary">(mock)</span>
           </div>
           <div className="space-y-1">
             <div className="flex items-center justify-between text-xs">
               <span className="text-shell-text-secondary">
-                {fmtBytes(data.total_bytes)} used of {fmtBytes(data.cap_bytes)} cap
+                {data.cap_bytes > 0
+                  ? `${fmtBytes(data.total_bytes)} used of ${fmtBytes(data.cap_bytes)} cap`
+                  : `${fmtBytes(data.total_bytes)} used (no cap set)`}
               </span>
               <span className="tabular-nums text-shell-text-tertiary">{totalPct.toFixed(1)}%</span>
             </div>
@@ -1540,9 +1597,14 @@ export function LibraryApp({ windowId: _windowId }: { windowId: string }) {
     <main className="flex-1 flex flex-col overflow-hidden">
       <div className="flex flex-col gap-2 px-4 py-3 border-b border-white/5 shrink-0">
         <span className="text-xs font-medium">Library Settings</span>
-        <span className="text-[11px] text-shell-text-tertiary">(mock until #2060)</span>
       </div>
       <div className="flex-1 overflow-y-auto p-4 space-y-6">
+        {settingsError && (
+          <div className="flex items-center gap-1.5 text-xs text-red-400 bg-red-500/10 border border-red-500/20 rounded-md px-2 py-1">
+            <AlertCircle size={12} aria-hidden="true" />
+            {settingsError}
+          </div>
+        )}
         {/* Preferred Quality */}
         <section>
           <p className="text-[10px] uppercase tracking-wider text-shell-text-tertiary mb-2">Preferred Quality</p>
@@ -1553,15 +1615,11 @@ export function LibraryApp({ windowId: _windowId }: { windowId: string }) {
             <select
               id="preferred-quality"
               value={settings.preferred_quality}
-              onChange={(e) => {
-                const next = { ...settings, preferred_quality: e.target.value };
-                saveLibrarySettings(next);
-                setSettings(next);
-              }}
+              onChange={(e) => void handleQualityChange(e.target.value)}
               className="flex h-9 w-full rounded-lg border border-white/10 bg-shell-bg-deep px-3 text-sm text-shell-text focus-visible:outline-none focus-visible:border-accent/40"
             >
-              {QUALITY_OPTIONS.map((q) => (
-                <option key={q} value={q}>{q}</option>
+              {LIBRARY_QUALITIES.map((q) => (
+                <option key={q} value={q}>{q === "best" ? "Best" : `${q}p`}</option>
               ))}
             </select>
           </div>
@@ -1577,16 +1635,13 @@ export function LibraryApp({ windowId: _windowId }: { windowId: string }) {
             <Input
               id="storage-cap"
               type="number"
-              value={settings.storage_cap_bytes}
-              onChange={(e) => {
-                const next = { ...settings, storage_cap_bytes: parseInt(e.target.value) || 0 };
-                saveLibrarySettings(next);
-                setSettings(next);
-              }}
+              min={0}
+              value={capDraft}
+              onChange={(e) => void handleCapChange(e.target.value)}
               className="text-xs"
             />
             <p className="text-[11px] text-shell-text-tertiary">
-              {fmtBytes(settings.storage_cap_bytes)}
+              {fmtBytes(settings.storage_cap_bytes)} — 0 = no cap. Heavy downloads pause at the cap.
             </p>
           </div>
         </section>
@@ -1594,29 +1649,35 @@ export function LibraryApp({ windowId: _windowId }: { windowId: string }) {
         {/* Per-source Rules */}
         <section>
           <p className="text-[10px] uppercase tracking-wider text-shell-text-tertiary mb-2">Per-source Rules</p>
-          {settings.source_rules.length > 0 ? (
+          {ruleError && (
+            <div className="flex items-center gap-1.5 text-xs text-red-400 bg-red-500/10 border border-red-500/20 rounded-md px-2 py-1 mb-2">
+              <AlertCircle size={12} aria-hidden="true" />
+              {ruleError}
+            </div>
+          )}
+          {sourceRules.length > 0 ? (
             <table className="w-full text-xs">
               <thead>
                 <tr className="text-shell-text-tertiary border-b border-white/5">
-                  <th className="text-left pb-1.5 font-normal" scope="col">Source</th>
-                  <th className="text-left pb-1.5 font-normal" scope="col">Action</th>
+                  <th className="text-left pb-1.5 font-normal" scope="col">Source pattern</th>
                   <th className="text-left pb-1.5 font-normal" scope="col">Quality</th>
+                  <th className="text-left pb-1.5 font-normal" scope="col">Auto-download</th>
                   <th className="pb-1.5 w-8"></th>
                 </tr>
               </thead>
               <tbody>
-                {settings.source_rules.map((rule, idx) => (
-                  <tr key={`${rule.source}-${rule.action}-${rule.quality}-${idx}`} className="border-t border-white/5">
-                    <td className="py-1.5 pr-2 text-shell-text-secondary">{rule.source}</td>
-                    <td className="py-1.5 pr-2 text-shell-text-secondary">{rule.action}</td>
+                {sourceRules.map((rule) => (
+                  <tr key={rule.id} className="border-t border-white/5">
+                    <td className="py-1.5 pr-2 text-shell-text-secondary">{rule.source_pattern}</td>
                     <td className="py-1.5 pr-2 text-shell-text-secondary">{rule.quality}</td>
+                    <td className="py-1.5 pr-2 text-shell-text-secondary">{rule.auto_download ? "Yes" : "No"}</td>
                     <td className="py-1.5">
                       <Button
                         variant="ghost"
                         size="icon"
                         className="h-6 w-6 hover:text-red-400 hover:bg-red-500/15"
-                        onClick={() => handleDeleteSourceRule(idx)}
-                        aria-label={`Delete rule for ${rule.source}`}
+                        onClick={() => void handleDeleteSourceRule(rule.id)}
+                        aria-label={`Delete rule for ${rule.source_pattern}`}
                       >
                         <Trash2 size={11} />
                       </Button>
@@ -1634,51 +1695,45 @@ export function LibraryApp({ windowId: _windowId }: { windowId: string }) {
             <p className="text-[10px] text-shell-text-tertiary uppercase tracking-wider">Add rule</p>
             <div className="grid grid-cols-3 gap-2">
               <div className="space-y-1">
-                <label className="text-[10px] text-shell-text-tertiary" htmlFor="rule-source">Source</label>
-                <select
+                <label className="text-[10px] text-shell-text-tertiary" htmlFor="rule-source">Source pattern</label>
+                <Input
                   id="rule-source"
-                  value={newSourceRule.source}
-                  onChange={(e) => setNewSourceRule((prev) => ({ ...prev, source: e.target.value }))}
-                  className="flex h-7 w-full rounded-lg border border-white/10 bg-shell-bg-deep px-2 text-xs text-shell-text focus-visible:outline-none focus-visible:border-accent/40"
-                >
-                  <option value="">Select...</option>
-                  {SOURCE_TYPES.map((s) => (
-                    <option key={s} value={s}>{s}</option>
-                  ))}
-                </select>
-              </div>
-              <div className="space-y-1">
-                <label className="text-[10px] text-shell-text-tertiary" htmlFor="rule-action">Action</label>
-                <select
-                  id="rule-action"
-                  value={newSourceRule.action}
-                  onChange={(e) => setNewSourceRule((prev) => ({ ...prev, action: e.target.value as typeof prev.action }))}
-                  className="flex h-7 w-full rounded-lg border border-white/10 bg-shell-bg-deep px-2 text-xs text-shell-text focus-visible:outline-none focus-visible:border-accent/40"
-                >
-                  {ACTION_OPTIONS.map((a) => (
-                    <option key={a} value={a}>{a}</option>
-                  ))}
-                </select>
+                  type="text"
+                  placeholder="*youtube.com/*"
+                  value={newSourceRule.source_pattern}
+                  onChange={(e) => setNewSourceRule((prev) => ({ ...prev, source_pattern: e.target.value }))}
+                  className="h-7 text-xs"
+                />
               </div>
               <div className="space-y-1">
                 <label className="text-[10px] text-shell-text-tertiary" htmlFor="rule-quality">Quality</label>
                 <select
                   id="rule-quality"
                   value={newSourceRule.quality}
-                  onChange={(e) => setNewSourceRule((prev) => ({ ...prev, quality: e.target.value as typeof prev.quality }))}
+                  onChange={(e) => setNewSourceRule((prev) => ({ ...prev, quality: e.target.value }))}
                   className="flex h-7 w-full rounded-lg border border-white/10 bg-shell-bg-deep px-2 text-xs text-shell-text focus-visible:outline-none focus-visible:border-accent/40"
                 >
-                  {QUALITY_OPTIONS.map((q) => (
-                    <option key={q} value={q}>{q}</option>
+                  {LIBRARY_QUALITIES.map((q) => (
+                    <option key={q} value={q}>{q === "best" ? "Best" : `${q}p`}</option>
                   ))}
                 </select>
+              </div>
+              <div className="space-y-1">
+                <label className="text-[10px] text-shell-text-tertiary" htmlFor="rule-auto-download">Auto-download</label>
+                <input
+                  id="rule-auto-download"
+                  type="checkbox"
+                  checked={newSourceRule.auto_download}
+                  onChange={(e) => setNewSourceRule((prev) => ({ ...prev, auto_download: e.target.checked }))}
+                  className="h-4 w-4 block mt-1.5"
+                />
               </div>
             </div>
             <Button
               size="sm"
               className="text-xs"
-              onClick={handleAddSourceRule}
-              disabled={!newSourceRule.source}
+              onClick={() => void handleAddSourceRule()}
+              disabled={!newSourceRule.source_pattern.trim()}
               aria-label="Add source rule"
             >
               Add rule

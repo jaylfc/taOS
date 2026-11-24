@@ -195,3 +195,183 @@ export async function ingestLibraryUrl(
     return null;
   }
 }
+
+/* ------------------------------------------------------------------ */
+/*  Settings (#2060)                                                   */
+/* ------------------------------------------------------------------ */
+
+/** Quality values in the backend vocabulary (yt-dlp format heights). */
+export const LIBRARY_QUALITIES: string[] = ["360", "480", "720", "1080", "best"];
+
+export interface LibrarySettings {
+  preferred_quality: string;
+  storage_cap_bytes: number;
+}
+
+export const DEFAULT_LIBRARY_SETTINGS: LibrarySettings = {
+  preferred_quality: "720",
+  storage_cap_bytes: 50 * 1024 * 1024 * 1024,
+};
+
+export async function getLibrarySettings(): Promise<LibrarySettings> {
+  const data = await fetchJson<Partial<LibrarySettings>>(
+    "/api/library/settings",
+    {},
+  );
+  return {
+    preferred_quality:
+      typeof data.preferred_quality === "string"
+        ? data.preferred_quality
+        : DEFAULT_LIBRARY_SETTINGS.preferred_quality,
+    storage_cap_bytes:
+      typeof data.storage_cap_bytes === "number"
+        ? data.storage_cap_bytes
+        : DEFAULT_LIBRARY_SETTINGS.storage_cap_bytes,
+  };
+}
+
+/** Persist settings; returns the saved settings, or null on failure. */
+export async function updateLibrarySettings(
+  updates: Partial<LibrarySettings>,
+): Promise<LibrarySettings | null> {
+  try {
+    const res = await fetch("/api/library/settings", withCsrf({
+      method: "PUT",
+      headers: { "Content-Type": "application/json", Accept: "application/json" },
+      body: JSON.stringify(updates),
+    }));
+    if (!res.ok) return null;
+    const data = (await res.json()) as Partial<LibrarySettings>;
+    return {
+      preferred_quality:
+        typeof data.preferred_quality === "string"
+          ? data.preferred_quality
+          : DEFAULT_LIBRARY_SETTINGS.preferred_quality,
+      storage_cap_bytes:
+        typeof data.storage_cap_bytes === "number"
+          ? data.storage_cap_bytes
+          : DEFAULT_LIBRARY_SETTINGS.storage_cap_bytes,
+    };
+  } catch {
+    return null;
+  }
+}
+
+/* ------------------------------------------------------------------ */
+/*  Source rules (#2060)                                               */
+/* ------------------------------------------------------------------ */
+
+export interface LibrarySourceRule {
+  id: string;
+  source_pattern: string;
+  quality: string;
+  auto_download: number | boolean;
+  enabled: number | boolean;
+  created_at: number;
+}
+
+export async function listLibrarySourceRules(): Promise<{
+  rules: LibrarySourceRule[];
+  count: number;
+}> {
+  const data = await fetchJson<{ rules: LibrarySourceRule[]; count: number }>(
+    "/api/library/rules",
+    { rules: [], count: 0 },
+  );
+  return {
+    rules: Array.isArray(data.rules) ? data.rules : [],
+    count: data.count ?? 0,
+  };
+}
+
+export type CreateRuleResult =
+  | { ok: true; rule_id: string }
+  | { ok: false; status: number };
+
+export async function createLibrarySourceRule(input: {
+  source_pattern: string;
+  quality: string;
+  auto_download: boolean;
+}): Promise<CreateRuleResult> {
+  try {
+    const form = new FormData();
+    form.set("source_pattern", input.source_pattern);
+    form.set("quality", input.quality);
+    form.set("auto_download", input.auto_download ? "true" : "false");
+    const res = await fetch("/api/library/rules", withCsrf({
+      method: "POST",
+      headers: { Accept: "application/json" },
+      body: form,
+    }));
+    if (!res.ok) return { ok: false, status: res.status };
+    const data = (await res.json()) as { rule_id?: string };
+    return { ok: true, rule_id: data.rule_id ?? "" };
+  } catch {
+    return { ok: false, status: 0 };
+  }
+}
+
+export async function deleteLibrarySourceRule(ruleId: string): Promise<boolean> {
+  try {
+    const res = await fetch(`/api/library/rules/${encodeURIComponent(ruleId)}`, withCsrf({
+      method: "DELETE",
+      headers: { Accept: "application/json" },
+    }));
+    return res.ok;
+  } catch {
+    return false;
+  }
+}
+
+/* ------------------------------------------------------------------ */
+/*  Storage accounting (#2060)                                         */
+/* ------------------------------------------------------------------ */
+
+export interface LibraryUsageSource {
+  source_type: string;
+  bytes: number;
+  item_count: number;
+}
+
+export interface LibraryUsageItem {
+  id: string;
+  title: string;
+  source_type: string;
+  bytes: number;
+}
+
+export interface LibraryUsage {
+  total_count: number;
+  total_bytes: number;
+  by_kind: Record<string, { count: number; bytes: number }>;
+  by_source: Record<string, { count: number; bytes: number }>;
+  sources: LibraryUsageSource[];
+  items: LibraryUsageItem[];
+  cap_bytes: number;
+  paused_at_cap: boolean;
+}
+
+/** Fetch storage accounting; null when the endpoint is unavailable. */
+export async function getLibraryUsage(): Promise<LibraryUsage | null> {
+  try {
+    const res = await fetch("/api/library/usage", {
+      headers: { Accept: "application/json" },
+    });
+    if (!res.ok) return null;
+    const ct = res.headers.get("content-type") ?? "";
+    if (!ct.includes("application/json")) return null;
+    const data = (await res.json()) as Partial<LibraryUsage>;
+    return {
+      total_count: data.total_count ?? 0,
+      total_bytes: data.total_bytes ?? 0,
+      by_kind: data.by_kind ?? {},
+      by_source: data.by_source ?? {},
+      sources: Array.isArray(data.sources) ? data.sources : [],
+      items: Array.isArray(data.items) ? data.items : [],
+      cap_bytes: data.cap_bytes ?? 0,
+      paused_at_cap: data.paused_at_cap ?? false,
+    };
+  } catch {
+    return null;
+  }
+}
