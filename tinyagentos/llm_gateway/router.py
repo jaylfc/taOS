@@ -112,8 +112,10 @@ async def chat_completions(request: Request, caller: GatewayCaller = Depends(gat
         principal = caller.caller_id
         if body.get("stream"):
             from fastapi.responses import StreamingResponse
+            from starlette.background import BackgroundTask
 
             from tinyagentos.llm_gateway.anthropic import chat_completion_stream_anthropic
+            from tinyagentos.llm_gateway.forward import _close_gen
             gen = chat_completion_stream_anthropic(routes, body, principal, state)
             try:
                 first = await gen.__anext__()
@@ -123,11 +125,18 @@ async def chat_completions(request: Request, caller: GatewayCaller = Depends(gat
                 return exc.response()
 
             async def _full():
-                yield first
-                async for chunk in gen:
-                    yield chunk
+                try:
+                    yield first
+                    async for chunk in gen:
+                        yield chunk
+                finally:
+                    # See chat_completion_stream: close the attempt with us.
+                    await gen.aclose()
 
-            return StreamingResponse(_full(), media_type="text/event-stream", headers={"cache-control": "no-cache"})
+            return StreamingResponse(
+                _full(), media_type="text/event-stream", headers={"cache-control": "no-cache"},
+                background=BackgroundTask(_close_gen, gen),
+            )
         api_key = await resolve_api_key(state, route.api_key_ref)
         return JSONResponse(await chat_completion_anthropic(routes, body, api_key, principal, state))
 

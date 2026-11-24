@@ -473,6 +473,7 @@ async def chat_completion_anthropic(
         _conservative_budget_estimate,
         _record_spend,
         _record_trace,
+        _SchedulerInUse,
         resolve_api_key,
     )
     from tinyagentos.llm_usage.pricing import Cost, cost_of
@@ -483,41 +484,45 @@ async def chat_completion_anthropic(
         raise upstream_error("no Anthropic backends available")
 
     async def _call_one(route: Any) -> dict:
-        api_key = await resolve_api_key(state, route.api_key_ref)
-        anthropic_request = await _openai_to_anthropic(body, principal, state, api_key, route=route, stream=False)
-        response = await _call_anthropic(anthropic_request, api_key, route=route)
+        # The in-use count is owned by this ``with`` alone (see
+        # _SchedulerInUse): every exit of the attempt, key resolution
+        # through tracing, releases it.
+        with _SchedulerInUse(state, route):
+            api_key = await resolve_api_key(state, route.api_key_ref)
+            anthropic_request = await _openai_to_anthropic(body, principal, state, api_key, route=route, stream=False)
+            response = await _call_anthropic(anthropic_request, api_key, route=route)
 
-        request_text = json.dumps(body)
-        response_text = json.dumps(response)
-        usage_obj = from_anthropic(response)
+            request_text = json.dumps(body)
+            response_text = json.dumps(response)
+            usage_obj = from_anthropic(response)
 
-        if not usage_obj.known:
-            cost = Cost(None, False, "usage not reported by the backend")
-            await _record_trace(
-                state, principal, response.get("model", ""), usage_obj, cost,
-                route.backend_name,
-                request_text, response_text, 0, "success", estimated=True,
-            )
-            estimate = _conservative_budget_estimate(
-                route.backend_type or route.backend_name,
-                response.get("model", ""),
-                request_text, response_text,
-            )
-            if estimate > 0:
-                _record_spend(state, principal, estimate)
-        else:
-            cost = cost_of(route.backend_type or route.backend_name,
-                           response.get("model", ""), usage_obj)
-            await _record_trace(
-                state, principal, response.get("model", ""), usage_obj, cost,
-                route.backend_name,
-                request_text, response_text, 0, "success", estimated=False,
-            )
-            if cost and cost.usd and cost.usd > 0:
-                _record_spend(state, principal, cost.usd)
+            if not usage_obj.known:
+                cost = Cost(None, False, "usage not reported by the backend")
+                await _record_trace(
+                    state, principal, response.get("model", ""), usage_obj, cost,
+                    route.backend_name,
+                    request_text, response_text, 0, "success", estimated=True,
+                )
+                estimate = _conservative_budget_estimate(
+                    route.backend_type or route.backend_name,
+                    response.get("model", ""),
+                    request_text, response_text,
+                )
+                if estimate > 0:
+                    _record_spend(state, principal, estimate)
+            else:
+                cost = cost_of(route.backend_type or route.backend_name,
+                               response.get("model", ""), usage_obj)
+                await _record_trace(
+                    state, principal, response.get("model", ""), usage_obj, cost,
+                    route.backend_name,
+                    request_text, response_text, 0, "success", estimated=False,
+                )
+                if cost and cost.usd and cost.usd > 0:
+                    _record_spend(state, principal, cost.usd)
 
-        _notify_lifecycle(state, route.backend_name)
-        return response
+            _notify_lifecycle(state, route.backend_name)
+            return response
 
     response = await _call_with_retry(anthropic_routes, _call_one)
     result = await _anthropic_to_openai(response, body)
@@ -535,6 +540,7 @@ async def chat_completion_stream_anthropic(
         _conservative_budget_estimate,
         _record_spend,
         _record_trace,
+        _SchedulerInUse,
         _stream_with_retry,
         resolve_api_key,
     )
@@ -546,126 +552,131 @@ async def chat_completion_stream_anthropic(
         raise upstream_error("no Anthropic backends available for streaming")
 
     async def _stream_one(route: Any) -> AsyncGenerator[bytes, None]:
-        api_key = await resolve_api_key(state, route.api_key_ref)
-        anthropic_request = await _openai_to_anthropic(body, principal, state, api_key, route=route, stream=True)
-        translator = _StreamTranslator(body.get("model", "unknown"))
-        completion_text: list[str] = []
-        request_text = json.dumps(body)
-        stream_done = False
-        # Spend is settled exactly once, from a finally, on every way out of
-        # the stream: normal end, client abort (GeneratorExit), cancellation
-        # (CancelledError) or a mid-stream upstream error. An aborted or
-        # errored stream is still charged, or aborting would dodge the cap.
-        delta_usage_seen = False
-        upstream_failed = False
-        settled = False
+        # The in-use count is owned by this ``with`` alone: every exit of the
+        # attempt (key failure, pre-stream HTTP error, mid-stream error, client
+        # disconnect, cancellation, early aclose, an error in tracing) releases
+        # it, and a failover attempt's ``with`` ends before the next begins.
+        with _SchedulerInUse(state, route):
+            api_key = await resolve_api_key(state, route.api_key_ref)
+            anthropic_request = await _openai_to_anthropic(body, principal, state, api_key, route=route, stream=True)
+            translator = _StreamTranslator(body.get("model", "unknown"))
+            completion_text: list[str] = []
+            request_text = json.dumps(body)
+            stream_done = False
+            # Spend is settled exactly once, from a finally, on every way out of
+            # the stream: normal end, client abort (GeneratorExit), cancellation
+            # (CancelledError) or a mid-stream upstream error. An aborted or
+            # errored stream is still charged, or aborting would dodge the cap.
+            delta_usage_seen = False
+            upstream_failed = False
+            settled = False
 
-        async def _settle() -> None:
-            nonlocal settled
-            if settled:
-                return
-            settled = True
-            response_text = "".join(completion_text)
-            usage_obj: Usage = translator.usage_tracker.result()
-            # message_stop seen: the answer finished, whether or not the
-            # client stayed for the final [DONE].
-            finished = translator.done
-            status = "success" if finished else "failure"
-            # message_start alone reports an initial output count, not what
-            # was generated: an unfinished stream counts as real usage only
-            # once a message_delta usage arrived, else it is estimated.
-            real_usage = usage_obj.known and (finished or delta_usage_seen)
+            async def _settle() -> None:
+                nonlocal settled
+                if settled:
+                    return
+                settled = True
+                response_text = "".join(completion_text)
+                usage_obj: Usage = translator.usage_tracker.result()
+                # message_stop seen: the answer finished, whether or not the
+                # client stayed for the final [DONE].
+                finished = translator.done
+                status = "success" if finished else "failure"
+                # message_start alone reports an initial output count, not what
+                # was generated: an unfinished stream counts as real usage only
+                # once a message_delta usage arrived, else it is estimated.
+                real_usage = usage_obj.known and (finished or delta_usage_seen)
 
-            if not real_usage:
-                cost = Cost(None, False, "usage not reported by the backend")
-                await _record_trace(
-                    state, principal, body.get("model", ""), usage_obj, cost,
-                    route.backend_name,
-                    request_text, response_text, 0, status, estimated=True,
+                if not real_usage:
+                    cost = Cost(None, False, "usage not reported by the backend")
+                    await _record_trace(
+                        state, principal, body.get("model", ""), usage_obj, cost,
+                        route.backend_name,
+                        request_text, response_text, 0, status, estimated=True,
+                    )
+                    estimate = _conservative_budget_estimate(
+                        route.backend_type or route.backend_name,
+                        body.get("model", ""),
+                        request_text, response_text,
+                    )
+                    if estimate > 0:
+                        _record_spend(state, principal, estimate)
+                else:
+                    cost = cost_of(route.backend_type or route.backend_name,
+                                   body.get("model", ""), usage_obj)
+                    await _record_trace(
+                        state, principal, body.get("model", ""), usage_obj, cost,
+                        route.backend_name,
+                        request_text, response_text, 0, status, estimated=False,
+                    )
+                    if cost and cost.usd and cost.usd > 0:
+                        _record_spend(state, principal, cost.usd)
+
+                if not upstream_failed:
+                    _notify_lifecycle(state, route.backend_name)
+
+            async with httpx.AsyncClient(timeout=httpx.Timeout(connect=10.0, read=120.0, write=30.0, pool=10.0)) as client:
+                req = client.build_request(
+                    "POST",
+                    _messages_url(route),
+                    json=anthropic_request,
+                    headers={
+                        "content-type": "application/json",
+                        "x-api-key": api_key or "",
+                        "anthropic-version": ANTHROPIC_VERSION,
+                    },
                 )
-                estimate = _conservative_budget_estimate(
-                    route.backend_type or route.backend_name,
-                    body.get("model", ""),
-                    request_text, response_text,
-                )
-                if estimate > 0:
-                    _record_spend(state, principal, estimate)
-            else:
-                cost = cost_of(route.backend_type or route.backend_name,
-                               body.get("model", ""), usage_obj)
-                await _record_trace(
-                    state, principal, body.get("model", ""), usage_obj, cost,
-                    route.backend_name,
-                    request_text, response_text, 0, status, estimated=False,
-                )
-                if cost and cost.usd and cost.usd > 0:
-                    _record_spend(state, principal, cost.usd)
-
-            if not upstream_failed:
-                _notify_lifecycle(state, route.backend_name)
-
-        async with httpx.AsyncClient(timeout=httpx.Timeout(connect=10.0, read=120.0, write=30.0, pool=10.0)) as client:
-            req = client.build_request(
-                "POST",
-                _messages_url(route),
-                json=anthropic_request,
-                headers={
-                    "content-type": "application/json",
-                    "x-api-key": api_key or "",
-                    "anthropic-version": ANTHROPIC_VERSION,
-                },
-            )
-            resp = await client.send(req, stream=True)
-            err = await _anthropic_status_error(resp, api_key)
-            if err is not None:
-                raise err
-            try:
-                _buf = ""
-                async for raw in resp.aiter_text():
-                    if stream_done:
-                        break
-                    if not raw:
-                        continue
-                    _buf += raw.replace("\r\n", "\n")
-                    while True:
-                        if translator.done:
-                            yield b"data: [DONE]\n\n"
-                            stream_done = True
+                resp = await client.send(req, stream=True)
+                err = await _anthropic_status_error(resp, api_key)
+                if err is not None:
+                    raise err
+                try:
+                    _buf = ""
+                    async for raw in resp.aiter_text():
+                        if stream_done:
                             break
-                        idx = _buf.find("\n\n")
-                        if idx < 0:
-                            break
-                        frame, _buf = _buf[:idx], _buf[idx + 2:]
-                        data = _sse_data(frame)
-                        if not data:
+                        if not raw:
                             continue
+                        _buf += raw.replace("\r\n", "\n")
+                        while True:
+                            if translator.done:
+                                yield b"data: [DONE]\n\n"
+                                stream_done = True
+                                break
+                            idx = _buf.find("\n\n")
+                            if idx < 0:
+                                break
+                            frame, _buf = _buf[:idx], _buf[idx + 2:]
+                            data = _sse_data(frame)
+                            if not data:
+                                continue
+                            try:
+                                event = json.loads(data)
+                            except ValueError:
+                                logger.debug("llm_gateway: skipped a non-JSON Anthropic SSE frame")
+                                continue
+                            if not isinstance(event, dict):
+                                continue
+                            if event.get("type") == "message_delta" and isinstance(event.get("usage"), dict):
+                                delta_usage_seen = True
+                            for chunk in translator.feed(event):
+                                yield f"data: {json.dumps(chunk)}\n\n".encode("utf-8")
+                            if event.get("type") == "content_block_delta":
+                                delta = event.get("delta") or {}
+                                if delta.get("type") == "text_delta":
+                                    completion_text.append(delta.get("text", ""))
+                except Exception:
+                    upstream_failed = True
+                    raise
+                finally:
+                    # Shielded: on a client disconnect Starlette cancels a scope
+                    # that re-raises at every checkpoint, which would cut the
+                    # accounting off part way and let the abort go uncharged.
+                    with anyio.CancelScope(shield=True):
                         try:
-                            event = json.loads(data)
-                        except ValueError:
-                            logger.debug("llm_gateway: skipped a non-JSON Anthropic SSE frame")
-                            continue
-                        if not isinstance(event, dict):
-                            continue
-                        if event.get("type") == "message_delta" and isinstance(event.get("usage"), dict):
-                            delta_usage_seen = True
-                        for chunk in translator.feed(event):
-                            yield f"data: {json.dumps(chunk)}\n\n".encode("utf-8")
-                        if event.get("type") == "content_block_delta":
-                            delta = event.get("delta") or {}
-                            if delta.get("type") == "text_delta":
-                                completion_text.append(delta.get("text", ""))
-            except Exception:
-                upstream_failed = True
-                raise
-            finally:
-                # Shielded: on a client disconnect Starlette cancels a scope
-                # that re-raises at every checkpoint, which would cut the
-                # accounting off part way and let the abort go uncharged.
-                with anyio.CancelScope(shield=True):
-                    try:
-                        await resp.aclose()
-                    finally:
-                        await _settle()
+                            await resp.aclose()
+                        finally:
+                            await _settle()
 
     outer = _stream_with_retry(anthropic_routes, _stream_one)
     try:
