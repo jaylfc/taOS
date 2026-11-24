@@ -1,0 +1,29 @@
+{
+  "schema": 1,
+  "kind": "container-desktop-app",
+  "id": "chromium",
+  "name": "Chromium",
+  "version": "debian",
+  "description": "The open source browser behind Chrome, from Debian. It runs in your apps container, away from your files, and keeps its own profile there.",
+  "publisher": "The Chromium Authors (packaged by Debian)",
+  "homepage": "https://www.chromium.org/",
+  "licence": "BSD-3-Clause and others",
+  "terms": {
+    "note": "Open source. Installed from the Debian archive inside your apps container; the browser's own sandbox is left on. The icon shown here is a generic taOS icon.",
+    "url": "https://www.chromium.org/chromium-os/licenses/"
+  },
+  "icon": {"glyph": "browser"},
+  "categories": ["Network", "WebBrowser"],
+  "arch": ["amd64", "arm64"],
+  "recipe": [
+    {"op": "apt-install", "packages": ["chromium", "fonts-liberation"]}
+  ],
+  "binary": "/usr/bin/chromium",
+  "launch": {
+    "argv": ["/usr/bin/chromium", "--ozone-platform=wayland", "--enable-features=UseOzonePlatform,VaapiVideoDecoder"],
+    "env": {}
+  },
+  "window": {"app_id": "chromium"},
+  "mime_types": ["text/html", "x-scheme-handler/http", "x-scheme-handler/https"],
+  "grants": {"network": true, "gpu": true, "audio": true, "downloads": true}
+}

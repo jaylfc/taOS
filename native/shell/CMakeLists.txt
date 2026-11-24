@@ -24,6 +24,7 @@ add_subdirectory(dock)
 add_subdirectory(frame)
 add_subdirectory(launcher)
 add_subdirectory(notifyd)
+add_subdirectory(appgroups)
 
 # Shell session entry point test (needs only a POSIX sh).
 add_test(NAME session-script
