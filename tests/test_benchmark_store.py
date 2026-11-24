@@ -15,7 +15,7 @@ from pathlib import Path
 
 import pytest
 
-from tinyagentos.benchmark.store import BenchmarkStore
+from tinyagentos.benchmark.store import BenchmarkStore, REQUEST_TTL_SECONDS
 
 
 @pytest.mark.asyncio
@@ -142,3 +142,62 @@ async def test_leaderboard_ranks_workers(tmp_path: Path):
         assert leaderboard[0]["value"] == 200.0
     finally:
         await store.close()
+
+
+@pytest.mark.asyncio
+async def test_queued_run_upserts_expires_and_clears(tmp_path: Path):
+    """The queued manual run is one row per worker with a finite lifetime."""
+    store = BenchmarkStore(tmp_path / "bench.db")
+    await store.init()
+    try:
+        # Nothing queued
+        assert await store.get_pending_request("w") is None
+
+        await store.request_run(worker_id="w", requested_at=1000.0)
+        assert await store.get_pending_request("w", now=1100.0) == {
+            "worker_id": "w",
+            "requested_at": 1000.0,
+            "force": False,
+        }
+
+        # A plain repeat click is refused by the write itself (one conditional
+        # upsert) and leaves the queued run untouched -- two concurrent clicks
+        # cannot both believe they queued the run.
+        assert await store.request_run(worker_id="w", requested_at=1100.0) is None
+        assert (await store.get_pending_request("w", now=1200.0))["requested_at"] == 1000.0
+
+        # One row per worker: a forced second click replaces the queued run
+        # rather than stacking a backlog of runs.
+        assert await store.request_run(worker_id="w", force=True, requested_at=2000.0)
+        pending = await store.get_pending_request("w", now=2100.0)
+        assert pending == {"worker_id": "w", "requested_at": 2000.0, "force": True}
+
+        # Past its TTL the request is not delivered late ...
+        assert await store.get_pending_request("w", now=2000.0 + REQUEST_TTL_SECONDS + 1) is None
+        # ... and the expiry is a pure read: the inert row stays put (read with
+        # an earlier clock it is still there), so a GET never mutates and a
+        # fresh queue write simply replaces it.
+        assert (await store.get_pending_request("w", now=2100.0))["requested_at"] == 2000.0
+
+        await store.request_run(worker_id="w", requested_at=3000.0)
+        assert (await store.get_pending_request("w", now=3100.0))["requested_at"] == 3000.0
+        assert await store.clear_pending_request("w") is True
+        assert await store.clear_pending_request("w") is False
+
+        # A conditional clear names the run it served. Clearing an id that is no
+        # longer queued (an in-flight run reporting after a newer click replaced
+        # its row) must drop nothing -- the newer run survives.
+        await store.request_run(worker_id="w", requested_at=4000.0)
+        assert await store.clear_pending_request("w", requested_at=3999.0) is False
+        assert (await store.get_pending_request("w", now=4100.0))["requested_at"] == 4000.0
+        assert await store.clear_pending_request("w", requested_at=4000.0) is True
+        assert await store.get_pending_request("w", now=4100.0) is None
+    finally:
+        await store.close()
+
+
+@pytest.mark.asyncio
+async def test_pending_request_before_init_is_none_not_an_error(tmp_path: Path):
+    """The heartbeat reads this on a hot path; an uninitialised store must not raise."""
+    store = BenchmarkStore(tmp_path / "bench.db")
+    assert await store.get_pending_request("w") is None
