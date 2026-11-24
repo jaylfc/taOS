@@ -76,10 +76,11 @@ import shutil
 import socket
 import subprocess
 import sys
-import tempfile
 import time
 from pathlib import Path
 from typing import Callable, Optional
+
+from tinyagentos.atomic_io import atomic_write_text
 
 SERVICE_USER = "taos"
 SERVICE_GROUP = "taos"
@@ -255,30 +256,10 @@ def _read_slots(root: Path) -> dict[str, int]:
     return _parse_slots(text, path)
 
 
-def _fsync_dir(d: Path) -> None:
-    fd = os.open(d, os.O_RDONLY)
-    try:
-        os.fsync(fd)
-    finally:
-        os.close(fd)
-
-
 def _atomic_write(path: Path, data: str, mode: int) -> None:
-    fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.")
-    try:
-        with os.fdopen(fd, "w") as fh:
-            fh.write(data)
-            fh.flush()
-            os.fsync(fh.fileno())
-            os.fchmod(fh.fileno(), mode)
-        os.replace(tmp, path)
-    except BaseException:
-        try:
-            os.unlink(tmp)
-        except OSError:
-            pass
-        raise
-    _fsync_dir(path.parent)
+    # The repo's one atomic writer: temp file, fsync of the file, rename and
+    # fsync of the directory (tsk-ckb3mb forbids hand-rolled copies).
+    atomic_write_text(path, data, mode=mode)
 
 
 def _write_slots(root: Path, slots: dict[str, int]) -> None:
