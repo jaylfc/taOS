@@ -321,7 +321,8 @@ ActionInvoked; spec 1.2) and forwards every notification it accepts to the perso
 `POST /api/notifications/os`, so anything that uses `notify-send` or the desktop interface lands in the
 Notifications app. **Opt-in**: it is not in the default components, because it has no popup yet and would take the
 notification bus name from whatever shows them today. Enable it by adding `taos-notifyd` to `TAOS_SHELL_COMPONENTS`
-(in `/etc/taos/shell.env`), or install with `install-desktop.sh --with-notifyd`. Once enabled, `taos-shell-session`
+(in `/etc/taos/shell.env`), or install with `install-desktop.sh --with-notifyd`. Later installs and updates keep it when it is already in the
+line (a person's choice is never undone); `--without-notifyd` takes it out. Once enabled, `taos-shell-session`
 supervises it; the bus name is the single-instance lock (it never replaces another server: if the name is taken it
 writes `idle` and the reason to `$XDG_STATE_HOME/taos/notifyd/status` and exits 0).
 
@@ -329,7 +330,9 @@ writes `idle` and the reason to `$XDG_STATE_HOME/taos/notifyd/status` and exits 
   `Notify` returns, in `$XDG_STATE_HOME/taos/notifyd/` (mode 0700, files 0600), and deleted only when the
   controller answers 200 with the route's JSON. One record is in flight at a time, oldest first, retried
   with backoff (1 s doubling to 60 s; `Retry-After` honoured on 429; 401, 403, 404, 5xx and a dead controller
-  all keep the record). A 400, 413 or 422 moves the record to `rejected/` and raises a visible warning record.
+  all keep the record). A 400, 413 or 422 moves the record to `rejected/` and raises a visible warning record. If the warning cannot be numbered (the id
+  counter cannot be saved), the refusal is logged and `status` reports `rejected_unwarned` and a `warning`; the warning
+  record is raised as soon as the counter works again.
   The client id is minted once at accept, so a retry after a lost answer stores one row. It is
   `n<install id>.<boot id>.<counter>`: the install id is random, made once per state directory, the boot id is
   random per run, so a wiped directory or a lost counter never reuses an id. A counter that cannot be saved fails

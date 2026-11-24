@@ -34,3 +34,4 @@ taos_notifyd_test(test_service)
 
 add_test(NAME notifyd-e2e COMMAND sh ${CMAKE_CURRENT_SOURCE_DIR}/tests/e2e-notifyd.sh $<TARGET_FILE:taos-notifyd>)
 set_tests_properties(notifyd-e2e PROPERTIES TIMEOUT 180 LABELS e2e SKIP_RETURN_CODE 77)
+add_test(NAME notifyd-installer-choice COMMAND sh ${CMAKE_CURRENT_SOURCE_DIR}/tests/check-installer-notifyd.sh)

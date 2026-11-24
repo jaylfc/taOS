@@ -72,6 +72,7 @@ int main(int argc, char **argv)
         std::signal(SIGHUP, onSignal);
     }
     svc.writeStatus(u"serving"_s);
+    QObject::connect(&fwd, &Forwarder::healthChanged, &app, [&svc] { svc.writeStatus(u"serving"_s); });
     err << "taos-notifyd " << TAOS_NOTIFYD_VERSION << ": serving org.freedesktop.Notifications, "
         << buffer.count() << " buffered\n";
     fwd.kick(); // anything left over from an earlier run

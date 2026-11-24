@@ -60,7 +60,12 @@ bool Service::start(const QDBusConnection &bus, QString *error)
 void Service::writeStatus(const QString &state, const QString &reason) const
 {
     QJsonObject o{{u"state"_s, state}, {u"accepted"_s, m_accepted}, {u"filtered_by_drop_list"_s, m_filtered},
-                  {u"transient_skipped"_s, m_transient}, {u"pending"_s, m_buf->count()}};
+                  {u"transient_skipped"_s, m_transient}, {u"pending"_s, m_buf->count()},
+                  {u"quarantined"_s, m_fwd->quarantined()}};
+    if (m_fwd->unwarned() > 0) { // refused records kept in rejected/ that nobody has been told about yet
+        o[u"rejected_unwarned"_s] = m_fwd->unwarned();
+        o[u"warning"_s] = u"a refused notification is in rejected/ and its warning could not be recorded: %1"_s.arg(m_fwd->warningError());
+    }
     if (!reason.isEmpty())
         o[u"reason"_s] = reason;
     o[u"pid"_s] = qint64(QCoreApplication::applicationPid());

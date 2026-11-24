@@ -229,6 +229,39 @@ private Q_SLOTS:
             warned = warned || id != u"good"_s;
         QVERIFY2(warned, "a visible warning record must reach the controller");
     }
+    void aRefusalWhoseWarningCannotBeNumberedIsReportedThenWarnedOnceTheCounterWorks()
+    {
+        Controller c;
+        QVERIFY(c.stub.listen());
+        c.before = [](const StubRequest &r) {
+            if (QJsonDocument::fromJson(r.body).object()[u"id"_s].toString() == u"bad"_s) {
+                StubReply d; d.status = 422; d.body = "{}"; return d;
+            }
+            StubReply pass; pass.status = 0; return pass;
+        };
+        Rig r;
+        writeSession(r.runtime, c.stub.url());
+        r.add(u"bad"_s);
+        quint64 sq = 0;
+        for (int i = 0; i < 100; ++i) // use up the counter's block so the next number needs a disk write
+            QVERIFY(r.buf->nextSeq(&sq, nullptr));
+        const QString seqFile = r.dir.path() + u"/buf/seq"_s;
+        QVERIFY(QFile::remove(seqFile));
+        QVERIFY(QDir().mkpath(seqFile)); // the counter can no longer be saved
+        QSignalSpy health(r.fwd.get(), &Forwarder::healthChanged);
+        r.fwd->kick();
+        QTRY_COMPARE_WITH_TIMEOUT(r.fwd->quarantined(), 1, 3000);
+        QCOMPARE(QDir(r.dir.path() + u"/buf/rejected"_s).entryList({u"*.json"_s}).size(), 1);
+        QCOMPARE(r.fwd->unwarned(), 1);              // reported, not silent
+        QVERIFY(!r.fwd->warningError().isEmpty());
+        QVERIFY(health.count() >= 1);
+        QCOMPARE(c.rows.size(), 0);                  // no warning record exists yet
+        QVERIFY(QDir().rmdir(seqFile));              // the counter works again
+        r.fwd->kick();
+        QTRY_COMPARE_WITH_TIMEOUT(r.fwd->unwarned(), 0, 3000);
+        QTRY_VERIFY_WITH_TIMEOUT(!c.rows.isEmpty(), 3000); // the warning reached the controller
+        QTRY_COMPARE_WITH_TIMEOUT(r.buf->count(), 0, 3000);
+    }
     void sameIdDifferentContentIsARefusalKeptAside()
     {
         Controller c;

@@ -2,6 +2,7 @@
 #include "forwarder.h"
 
 #include <QDateTime>
+#include <QDebug>
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
@@ -77,6 +78,7 @@ void Forwarder::pump()
 {
     if (m_inflight)
         return;
+    retryWarnings(); // a refusal that could not be warned about yet
     const QList<WriteAheadBuffer::Entry> all = m_buf->pending();
     if (all.isEmpty()) {
         m_status = u"idle"_s;
@@ -172,11 +174,26 @@ bool Forwarder::quarantine(const WriteAheadBuffer::Entry &e, int status)
     ++m_quarantined;
     if (e.record.value(u"category"_s).toString().startsWith(u"taos.notifyd."_s))
         return true; // a refused warning record does not raise another warning
+    if (!raiseRejectedWarning(app, status)) {
+        // Cannot number a warning now. The refused copy is in rejected/; remember it, say so in the log
+        // and in the status file, and raise the warning as soon as the counter works again.
+        m_unwarned.append({app, status});
+        qWarning().noquote() << "taos-notifyd: a refused notification is in" << QDir(m_buf->dir()).filePath(u"rejected"_s)
+                             << "but its warning could not be recorded:" << m_warnError;
+    }
+    Q_EMIT healthChanged();
+    return true;
+}
+
+bool Forwarder::raiseRejectedWarning(const QString &app, int status)
+{
     QJsonObject w;
     quint64 seq = 0;
     QString err;
-    if (!m_buf->nextSeq(&seq, &err))
-        return true; // cannot number a warning now; the refused copy is in rejected/
+    if (!m_buf->nextSeq(&seq, &err)) {
+        m_warnError = err;
+        return false;
+    }
     w[u"id"_s] = m_buf->clientId(seq);
     w[u"app_name"_s] = u"taOS"_s;
     w[u"desktop_entry"_s] = u"taos-notifyd"_s;
@@ -190,8 +207,24 @@ bool Forwarder::quarantine(const WriteAheadBuffer::Entry &e, int status)
     w[u"expire_timeout_ms"_s] = -1;
     w[u"transient"_s] = false;
     w[u"posted_at"_s] = QDateTime::currentSecsSinceEpoch();
-    m_buf->append(seq, true, w);
+    const auto r = m_buf->append(seq, true, w);
+    if (!r.ok) {
+        m_warnError = r.error;
+        return false;
+    }
+    m_warnError.clear();
     return true;
+}
+
+void Forwarder::retryWarnings()
+{
+    bool changed = false;
+    while (!m_unwarned.isEmpty() && raiseRejectedWarning(m_unwarned.first().app, m_unwarned.first().status)) {
+        m_unwarned.removeFirst();
+        changed = true;
+    }
+    if (changed)
+        Q_EMIT healthChanged();
 }
 
 } // namespace Taos::Notifyd

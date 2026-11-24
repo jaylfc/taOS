@@ -46,15 +46,28 @@ public:
     int delivered() const { return m_delivered; }
     int quarantined() const { return m_quarantined; }
     QString status() const { return m_status; }
+    /// Refused records whose visible warning could not be written yet (the id counter failed). They are
+    /// safe in rejected/; the warning is raised as soon as the counter works again.
+    int unwarned() const { return int(m_unwarned.size()); }
+    QString warningError() const { return m_warnError; }
 
 Q_SIGNALS:
     void idle(); ///< the buffer is empty and nothing is in flight
+    void healthChanged(); ///< quarantined / unwarned counts changed (the status file reports them)
 
 private:
     void pump();
     void send(const WriteAheadBuffer::Entry &e, const Credentials &c, bool csrfReplay);
     void retryLater(int ms, const QString &why);
     bool quarantine(const WriteAheadBuffer::Entry &e, int status);
+    bool raiseRejectedWarning(const QString &app, int status); ///< false when it could not be numbered or stored
+    void retryWarnings();
+
+    struct Unwarned
+    {
+        QString app;
+        int status;
+    };
 
     WriteAheadBuffer *m_buf;
     Options m_o;
@@ -65,6 +78,8 @@ private:
     int m_delivered = 0, m_quarantined = 0;
     QString m_csrf;   ///< a CSRF token the controller handed back, newer than the file's
     QString m_status;
+    QList<Unwarned> m_unwarned;
+    QString m_warnError;
 };
 
 } // namespace Taos::Notifyd
