@@ -293,7 +293,6 @@ async def pull_update(target_ref: str) -> dict:
             "exit_code": 1,
         }
 
-    repo = _repo_dir()
     branch = target_ref
 
     # Parse "origin/branch" into fetch + checkout.
@@ -489,6 +488,7 @@ async def signal_update_outcome(
     Returns the HTTP status code, or 0 on connection failure.
     """
     import httpx
+
     from tinyagentos.worker.pairing import sign_request_headers
 
     path = f"/api/cluster/workers/{worker_name}/update-outcome"
@@ -559,10 +559,8 @@ async def run_full_update(
     Returns a dict describing each phase result. The restart phase
     is fire-and-forget — if it succeeds we never return.
     """
-    import datetime
 
     results: dict[str, dict] = {}
-    worker_name = agent.name
 
     # ── Phase 1: Checkpoint ───────────────────────────────────────
     logger.info("self-update: phase 1 — creating checkpoint")
@@ -679,9 +677,11 @@ async def _wait_for_drain(agent, timeout: float = 120) -> bool:
     proceed.
     """
     logger.info("self-update: waiting up to %.0fs for drain", timeout)
-    import httpx
-    from tinyagentos.worker.pairing import sign_request_headers
     import json as _json
+
+    import httpx
+
+    from tinyagentos.worker.pairing import sign_request_headers
 
     controller = agent.controller_url
     name = agent.name

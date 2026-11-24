@@ -1,7 +1,8 @@
 from __future__ import annotations
 
-import httpx
 from pathlib import Path
+
+import httpx
 
 # The capability vocabulary lives in a shared leaf module so the manifest parser
 # validates against the exact same set the broker enforces. Re-exported here so

@@ -4,13 +4,11 @@ import asyncio
 import shutil
 import time
 
-import tinyagentos
-
 import psutil
 from fastapi import APIRouter, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 
-from tinyagentos.agent_db import get_agent_summaries
+import tinyagentos
 from tinyagentos.backend_adapters import check_backend_health
 from tinyagentos.first_boot import mark_setup_complete
 
@@ -131,8 +129,9 @@ async def get_version(request: Request):
 @router.get("/api/system")
 async def api_system(request: Request):
     """Comprehensive system overview -- hardware, resources, platform stats."""
-    import psutil
     from dataclasses import asdict
+
+    import psutil
 
     from tinyagentos.system_stats import get_npu_usage, get_vram_usage
 

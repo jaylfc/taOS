@@ -18,8 +18,8 @@ from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
-from tinyagentos.trace_store import SCHEMA_VERSION, SERVER_ONLY_KINDS, VALID_KINDS
 from tinyagentos.otel.span_store import _safe_slug
+from tinyagentos.trace_store import SCHEMA_VERSION, SERVER_ONLY_KINDS, VALID_KINDS
 
 logger = logging.getLogger(__name__)
 

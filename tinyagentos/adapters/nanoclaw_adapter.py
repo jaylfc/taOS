@@ -1,5 +1,6 @@
 """NanoClaw adapter — proxies messages to the NanoClaw gateway."""
 import os
+
 import httpx
 from fastapi import FastAPI
 

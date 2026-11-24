@@ -207,7 +207,6 @@ async def fetch(
         like_count: int | None = info.get("like_count")
         duration: float | None = info.get("duration")
         upload_date: str = info.get("upload_date") or ""
-        thumbnail_url: str = info.get("thumbnail") or ""
 
         # Chapters: yt-dlp returns list of {title, start_time, end_time}
         raw_chapters: list[dict] = info.get("chapters") or []

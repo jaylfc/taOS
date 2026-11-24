@@ -20,8 +20,11 @@ from pathlib import Path
 from taosmd.session_catalog import SessionCatalog
 
 from .job_queue import (
-    JobQueue, JOB_EMBED, JOB_EXTRACT, JOB_ENRICH, JOB_CRYSTALLIZE,
-    JOB_SPLIT, JOB_INDEX,
+    JOB_CRYSTALLIZE,
+    JOB_ENRICH,
+    JOB_INDEX,
+    JOB_SPLIT,
+    JobQueue,
 )
 
 logger = logging.getLogger(__name__)
@@ -147,9 +150,9 @@ class JobWorker:
 
     async def _do_crystallize(self, payload: dict) -> dict:
         """Execute a crystallization job."""
-        from taosmd.session_catalog import SessionCatalog
         from taosmd.crystallize import CrystalStore
         from taosmd.knowledge_graph import TemporalKnowledgeGraph
+        from taosmd.session_catalog import SessionCatalog
 
         session_id = payload["session_id"]
         model = payload.get("model", "qwen3:4b")

@@ -15,7 +15,6 @@ GET /api/orb/catalog (the signed Orb catalog, spec s10).
 from __future__ import annotations
 
 import asyncio
-import hashlib
 import json
 from pathlib import Path
 
@@ -26,13 +25,13 @@ from tinyagentos.orb.bridges import evaluate_all
 from tinyagentos.orb.catalog_fetch import fetch_catalog, load_cached_catalog
 from tinyagentos.orb.catalog_sig import (
     CatalogFetchError,
-    CatalogSignatureMissing,
-    CatalogKeyUnknown,
-    CatalogSignatureInvalid,
-    CatalogSerialRegression,
-    CatalogStateCorrupt,
-    CatalogKindInvalid,
     CatalogInvalid,
+    CatalogKeyUnknown,
+    CatalogKindInvalid,
+    CatalogSerialRegression,
+    CatalogSignatureInvalid,
+    CatalogSignatureMissing,
+    CatalogStateCorrupt,
     default_state_path,
 )
 from tinyagentos.orb.discovery import browse_lan_orbs, list_usb_orbs, probe_agent_buddy

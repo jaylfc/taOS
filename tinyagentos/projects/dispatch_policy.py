@@ -9,7 +9,6 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
-
 OPEN_POOL = {"", "@any", "@all", "unassigned", "none", None}
 
 
@@ -112,15 +111,12 @@ def select_assignments(
             # Also check board dispatchable
             pid = c.get("project_id")
             if pid:
-                project = {"settings": {}}  # minimal project for check
                 # We don't have full project here, assume dispatchable unless board_inflight says otherwise
                 # The board hold check would need project settings passed in
                 # For now, we rely on the caller to filter non-dispatchable boards
                 pass
             eligible_candidates.append(c)
 
-    # Build agent index for faster lookup
-    agent_by_id = {a["id"]: a for a in agents}
 
     # Main assignment loop
     remaining = list(eligible_candidates)

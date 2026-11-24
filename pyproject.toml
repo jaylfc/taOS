@@ -130,6 +130,9 @@ dev = [
     # and a hosted runner has 2 vCPU, so -n auto caps at 2 workers no matter how
     # many tests there are; the only remaining lever is more jobs (#2135).
     "pytest-split>=0.9.0",
+    # Lint gate for the CI lint job (#739): `ruff check tinyagentos/`.
+    # Config lives in [tool.ruff] below.
+    "ruff>=0.17",
     "httpx",
     "respx>=0.21.0",
     "websockets>=12.0",
@@ -149,6 +152,36 @@ taos = "tinyagentos.app:main"
 taos-gui = "tinyagentos.app:gui"
 taos-worker-ctl = "tinyagentos.cli.worker:main"
 taosctl = "tinyagentos.cli.taosctl.__main__:main"
+
+[tool.ruff]
+# Ruff enforcement starts with #739: the CI lint job runs
+# `ruff check tinyagentos/`. target-version matches requires-python.
+target-version = "py311"
+# The tree was hand-wrapped well past the 88-char default long before
+# lint existed; 120 matches the bulk of it (only ~7% of lines in
+# tinyagentos/ exceed 120) without demanding a formatting rewrite.
+line-length = 120
+
+[tool.ruff.lint]
+select = ["E", "F", "I"]
+ignore = [
+    # Line length is not enforced yet: 4,713 violations at the 88-char
+    # default, 428 even at this config's 120. Enforcing it is a
+    # formatting pass of its own; the dead-code and import-order checks
+    # (F, I) are the ones that catch regressions, so they land first.
+    "E501",
+    # 335 violations across 46 files, and they are deliberate: late
+    # imports for circular-import avoidance (app.py, the routes
+    # package) and for optional dependencies. Moving them is a
+    # per-module refactor, not a lint fix.
+    "E402",
+]
+
+[tool.ruff.lint.per-file-ignores]
+# Vendored byte-identical copy: tests/cluster/test_ble_proto.py pins its
+# sha256 against the vendored source, so its import block keeps the
+# upstream order rather than isort's.
+"tinyagentos/cluster/ble/proto.py" = ["I001"]
 
 [tool.pytest.ini_options]
 # Per-test timeout: a single hung test fails fast and named instead of

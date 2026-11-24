@@ -38,7 +38,10 @@ import secrets
 import threading
 import time
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
+if TYPE_CHECKING:
+    from typing import Callable
 logger = logging.getLogger(__name__)
 
 # Default TTL for a reservation held by a hung installer. Model pulls can

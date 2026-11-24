@@ -11,19 +11,18 @@ from packaging.version import InvalidVersion, Version
 from pydantic import BaseModel
 
 from tinyagentos import upstream_versions
+from tinyagentos.auth_context import require_admin
 from tinyagentos.catalog.resolver import (
-    ResolveErr,
     ResolveOk,
     classify,
     resolve,
 )
 from tinyagentos.installers.base import get_installer
-from tinyagentos.routes.store_install import get_device_capability, forget_install_location
+from tinyagentos.routes.store_install import forget_install_location, get_device_capability
 from tinyagentos.store_popularity import (
     parse_repo,
     popularity_for_homepage_cached,
 )
-from tinyagentos.auth_context import require_admin
 
 logger = logging.getLogger(__name__)
 
@@ -588,17 +587,6 @@ async def uninstall_app(request: Request, body: UninstallRequest):
     # Remote installs (runtime_host != 127.0.0.1) are not removed either,
     # since one app may be installed on several remotes and we cannot yet
     # tell which one was removed.
-    store_for_loc = getattr(request.app.state, "installed_apps", None)
-    runtime_loc = None
-    if store_for_loc is not None:
-        try:
-            runtime_loc = await store_for_loc.get_runtime_location(body.app_id)
-        except Exception:  # noqa: BLE001
-            # A failing runtime-location read must never fail the uninstall
-            # itself; treat the app as local and proceed with the host-row
-            # cleanup anyway (#4132 follow-up).
-            runtime_loc = None
-    is_local = (runtime_loc is None) or (runtime_loc.get("runtime_host") in (None, "", "127.0.0.1"))
     # Always delete the local host row for non-LXC uninstalls, even when the
     # runtime location now points at a remote worker: forget_install_location
     # only matches location_ref="local", so a remote row (different
@@ -612,8 +600,9 @@ async def uninstall_app(request: Request, body: UninstallRequest):
 
 # ── Store templates ────────────────────────────────────────────────────
 
-import yaml
 from pathlib import Path
+
+import yaml
 
 _STORE_TEMPLATE_DIR = Path(__file__).parent.parent.parent / "app-catalog" / "templates"
 

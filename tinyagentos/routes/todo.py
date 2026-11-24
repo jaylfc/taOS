@@ -160,7 +160,7 @@ async def add_item(
     if err:
         return err
 
-    from datetime import datetime, timezone
+    from datetime import datetime
 
     due_at = None
     if body.due_at:
@@ -218,7 +218,7 @@ async def patch_item(
     if item["list_id"] != list_id:
         return JSONResponse({"error": "item not in list"}, status_code=404)
 
-    from datetime import datetime, timezone
+    from datetime import datetime
 
     _CLEAR_SENTINEL = -1.0
 

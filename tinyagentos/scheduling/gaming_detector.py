@@ -18,7 +18,6 @@ controller/Pi. It's opt-in via worker config.
 from __future__ import annotations
 
 import logging
-import os
 import re
 import subprocess
 import sys

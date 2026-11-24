@@ -5,7 +5,6 @@ from __future__ import annotations
 import logging
 
 from fastapi import APIRouter, Request
-from fastapi.responses import JSONResponse
 
 from tinyagentos.device_auth import require_device
 
@@ -46,7 +45,6 @@ async def list_share_destinations(request: Request):
                 continue
             if member in seen:
                 continue
-            label = member
             # A multi-user channel can carry another HUMAN username as a
             # member; a username that happens to equal an agent slug must not
             # resolve to that agent's chat. Skip known usernames outright.

@@ -1,5 +1,6 @@
 """OpenClaw adapter — translates messages to OpenClaw agent calls via its HTTP API."""
 import os
+
 import httpx
 from fastapi import FastAPI
 

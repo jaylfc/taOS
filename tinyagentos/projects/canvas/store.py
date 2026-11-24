@@ -368,7 +368,8 @@ class ProjectCanvasStore(ProjectsDBStore):
             if existing is None:
                 raise ValueError(f"element not found: {element_id}")
             return existing
-        sets.append("updated_at = ?"); params.append(time.time())
+        sets.append("updated_at = ?")
+        params.append(time.time())
         params.append(element_id)
         params.append(project_id)
         async with self._tx():

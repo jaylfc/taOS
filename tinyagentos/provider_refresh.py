@@ -73,11 +73,12 @@ class CloudProviderRefresher:
 
     async def _refresh_once(self) -> None:
         # Imported lazily to avoid a route<-service import cycle at module load.
-        from tinyagentos.routes.providers import (
-            refresh_cloud_backends_if_changed,
-            _fetch_litellm_models,
-        )
         import time as _time
+
+        from tinyagentos.routes.providers import (
+            _fetch_litellm_models,
+            refresh_cloud_backends_if_changed,
+        )
 
         config = getattr(self._state, "config", None)
         if config is None:

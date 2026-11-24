@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     import httpx
+
     from tinyagentos.knowledge_store import KnowledgeStore
 
 logger = logging.getLogger(__name__)

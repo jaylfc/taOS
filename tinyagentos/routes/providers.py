@@ -8,9 +8,10 @@ import httpx
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
+
 from tinyagentos.auth_context import require_admin
 from tinyagentos.backend_adapters import get_adapter
-from tinyagentos.config import save_config_locked, VALID_BACKEND_TYPES
+from tinyagentos.config import VALID_BACKEND_TYPES, save_config_locked
 from tinyagentos.lifecycle_manager import LifecycleManager
 from tinyagentos.providers import CLOUD_TYPES
 
@@ -297,8 +298,8 @@ async def _do_background_refresh(app_state) -> None:
         await _refresh_all_cloud_backends(app_state, config)
         data = await _fetch_litellm_models(proxy, app_state)
         if data:
-            import time as _time
             import asyncio as _asyncio
+            import time as _time
             payload: dict = {"data": data, "object": "list"}
             app_state.litellm_models_cache = payload
             app_state.litellm_models_cache_at = _asyncio.get_event_loop().time()

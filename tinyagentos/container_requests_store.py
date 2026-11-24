@@ -206,7 +206,6 @@ class ContainerRequestStore(BaseStore):
         created inside the lock so non-approve verdicts are also persisted
         atomically.
         """
-        from tinyagentos.containers.provisioning_policy import APPROVE
         async with self._create_lock:
             active_count = await self.count_active_for_agent(canonical_id)
             verdict = policy.evaluate(canonical_id, active_count)

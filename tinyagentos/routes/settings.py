@@ -1,7 +1,6 @@
 from __future__ import annotations
+
 import asyncio
-import datetime
-import httpx
 import io
 import ipaddress
 import logging
@@ -14,19 +13,21 @@ from collections import OrderedDict
 from pathlib import Path
 from urllib.parse import urlparse
 
+import httpx
 import yaml
 from fastapi import APIRouter, Depends, HTTPException, Request, UploadFile
 from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel
+
+from tinyagentos.auto_update import PREF_NAMESPACE, is_valid_branch_name, resolve_tracked_branch
 from tinyagentos.config import AppConfig, save_config_locked, validate_config
-from tinyagentos.hardware import _detect_device_class
-from tinyagentos.auto_update import resolve_tracked_branch, is_valid_branch_name, PREF_NAMESPACE
 from tinyagentos.data_snapshot import snapshot_data_dir
+from tinyagentos.hardware import _detect_device_class
+from tinyagentos.launchd_migration import apply_launchd_migration
 from tinyagentos.middleware.upload_body_limit import register_upload_cap
+from tinyagentos.restart_orchestrator import write_pending_restart
 from tinyagentos.safe_archive import ArchiveError, extract_tar_safely, open_tar_gz
 from tinyagentos.update_runner import switch_to_branch
-from tinyagentos.restart_orchestrator import write_pending_restart
-from tinyagentos.launchd_migration import apply_launchd_migration
 
 logger = logging.getLogger(__name__)
 
@@ -594,8 +595,8 @@ async def set_container_runtime(request: Request):
     await save_config_locked(config, request.app.state.config_path)
     # Apply immediately
     from tinyagentos.containers.backend import detect_runtime, set_backend
-    from tinyagentos.containers.lxc import LXCBackend
     from tinyagentos.containers.docker import DockerBackend
+    from tinyagentos.containers.lxc import LXCBackend
     effective = runtime
     if runtime == "auto":
         effective = detect_runtime()
@@ -617,8 +618,9 @@ async def check_for_updates(request: Request):
     """Check if a newer version of TinyAgentOS is available on GitHub."""
     import asyncio
     import re
+
     from tinyagentos import __version__
-    from tinyagentos.auto_update import changes_are_docs_only, remote_is_strictly_ahead, branch_is_diverged
+    from tinyagentos.auto_update import branch_is_diverged, changes_are_docs_only, remote_is_strictly_ahead
     from tinyagentos.update_preflight import check_preflight
     project_dir = str(Path(__file__).parent.parent.parent)
 
@@ -743,8 +745,9 @@ async def check_for_updates(request: Request):
 async def update_status(request: Request):
     """Return current SHA, pending restart SHA, and auto-update prefs."""
     import asyncio
+
+    from tinyagentos.auto_update import DEFAULT_PREFS, PREF_NAMESPACE, _ping_enabled_by_env
     from tinyagentos.restart_orchestrator import read_pending_restart
-    from tinyagentos.auto_update import PREF_NAMESPACE, DEFAULT_PREFS, _ping_enabled_by_env
 
     project_dir = Path(__file__).parent.parent.parent
 
@@ -771,7 +774,7 @@ async def update_status(request: Request):
             pass
 
     # GPG preferences for signature verification.
-    from tinyagentos.gpg_verify import GPG_PREF_NAMESPACE, DEFAULT_GPG_PREFS
+    from tinyagentos.gpg_verify import DEFAULT_GPG_PREFS, GPG_PREF_NAMESPACE
     gpg_prefs = dict(DEFAULT_GPG_PREFS)
     if settings:
         try:
@@ -1258,8 +1261,8 @@ async def apply_update(request: Request):
     # HEAD already contains that record's sha as an ancestor and no new commits
     # are being applied, so the earlier record is the one `taos rollback` must
     # restore. Best effort: a failed write must not block the update.
-    from tinyagentos.update_runner import record_current_rollback_target
     from tinyagentos.rollback import read_rollback_target
+    from tinyagentos.update_runner import record_current_rollback_target
 
     existing = read_rollback_target(project_dir)
     tip_proc = await asyncio.create_subprocess_exec(
@@ -1280,7 +1283,7 @@ async def apply_update(request: Request):
         await record_current_rollback_target(project_dir)
 
     # ── GPG signature verification (defence-in-depth) ──────────────────
-    from tinyagentos.gpg_verify import verify_remote_commit, resolve_gpg_prefs
+    from tinyagentos.gpg_verify import resolve_gpg_prefs, verify_remote_commit
     gpg_prefs = await resolve_gpg_prefs(request.app.state.desktop_settings)
     remote_sha = ""
     if gpg_prefs.enabled:
@@ -1388,6 +1391,7 @@ async def apply_update(request: Request):
 
     # Always restart after a successful update.
     import asyncio as _asyncio
+
     from tinyagentos.routes.system import _do_restart
     _asyncio.create_task(_do_restart(request.app.state))
     return {
@@ -1517,6 +1521,7 @@ async def set_update_channel(request: Request, body: UpdateChannel):
         )
 
     import asyncio as _asyncio
+
     from tinyagentos.routes.system import _do_restart
     # Hold a reference so the task isn't garbage-collected before it runs
     # (asyncio keeps only weak refs to tasks) — otherwise the restart can drop.

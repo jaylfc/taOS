@@ -23,7 +23,6 @@ from tinyagentos.auth import get_current_user
 from tinyagentos.browser_sessions import (
     BrowserWorkerError,
     list_browser_nodes,
-    pick_browser_node,
     resolve_browser_target,
 )
 from tinyagentos.routes.desktop_browser.session_token import mint_session_token

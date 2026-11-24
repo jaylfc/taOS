@@ -23,7 +23,6 @@ import logging
 import sqlite3
 import time
 import uuid
-from datetime import datetime, timezone
 from enum import IntEnum
 from pathlib import Path
 

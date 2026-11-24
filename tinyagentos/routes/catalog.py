@@ -8,8 +8,7 @@ from datetime import datetime
 
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import JSONResponse
-
-from taosmd import SessionCatalog, CatalogPipeline
+from taosmd import CatalogPipeline, SessionCatalog
 
 logger = logging.getLogger(__name__)
 

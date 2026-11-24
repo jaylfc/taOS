@@ -9,11 +9,10 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 
-from tinyagentos.notifications import VALID_LEVELS, OsIdConflict
-
-from tinyagentos.auth import get_current_user
 from tinyagentos.agent_token_auth import check_agent_scope_for_project, registry_agent_caller
+from tinyagentos.auth import get_current_user
 from tinyagentos.auth_context import require_admin
+from tinyagentos.notifications import VALID_LEVELS, OsIdConflict
 from tinyagentos.rate_limit import MovingWindowLimiter
 from tinyagentos.routes.auth import _require_admin
 

@@ -20,13 +20,13 @@ from tinyagentos.notification_labels import admin_user_ids, project_label
 from tinyagentos.projects.invite_store import (
     InviteAlreadyRedeemedError,
     InviteExpiredError,
-    InvitePinError,
     InvitePendingCapError,
+    InvitePinError,
     InviteRevokedError,
 )
 from tinyagentos.rate_limit import rate_limited_response
-from tinyagentos.routes.agent_auth_requests import VALID_SCOPES
 from tinyagentos.routes.a2a_bus import _is_url_safe_for_credential
+from tinyagentos.routes.agent_auth_requests import VALID_SCOPES
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -205,7 +205,7 @@ def _enumerate_lan_ips() -> list[str]:
         if not ip:
             return
         try:
-            addr = socket.inet_aton(ip)
+            socket.inet_aton(ip)
         except OSError:
             return
         # Exclude loopback and link-local.
@@ -502,8 +502,8 @@ async def build_connection_bundle(
         apis["a2a_bus_channels"] = "/api/a2a/bus/channels"
 
     delivery = {
-        "stream_path": f"/api/a2a/bus/stream?channel={{channel}}&since={{cursor}}",
-        "poll_path": f"/api/a2a/bus/messages?channel={{channel}}&since={{cursor}}",
+        "stream_path": "/api/a2a/bus/stream?channel={channel}&since={cursor}",
+        "poll_path": "/api/a2a/bus/messages?channel={channel}&since={cursor}",
         "check_interval_secs": check_interval_secs,
         "cursor": "ts",
         "filter": "mentions+project",
@@ -1302,7 +1302,6 @@ async def redeem_invite(request: Request, body: RedeemInviteIn):
 
     # Build a CreateAuthRequest-shaped record reusing the consent store's
     # create() so the downstream approve helper consumes a normal record.
-    from tinyagentos.auth_requests_store import AuthRequestsStore
     from tinyagentos.routes.agent_auth_requests import approve_request_record
 
     auth_store = request.app.state.auth_requests

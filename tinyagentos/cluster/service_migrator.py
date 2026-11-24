@@ -10,7 +10,6 @@ Migrates a running service to a new incus host by:
 """
 from __future__ import annotations
 
-import asyncio
 import logging
 import shlex
 import time

@@ -24,16 +24,15 @@ handles it via ``allow_name_change``.
 """
 import asyncio
 import logging
-import os
 import re
 import secrets
 import socket
 from pathlib import Path
 
-from tinyagentos.atomic_io import atomic_write_text
-from zeroconf import ServiceInfo
+from zeroconf import AddressResolver, ServiceInfo
 from zeroconf.asyncio import AsyncZeroconf
-from zeroconf import AddressResolver
+
+from tinyagentos.atomic_io import atomic_write_text
 
 logger = logging.getLogger(__name__)
 

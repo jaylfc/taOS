@@ -4,9 +4,15 @@ from fastapi import APIRouter, Query, Request
 from fastapi.responses import JSONResponse
 
 from tinyagentos.agent_templates import (
-    list_templates, get_template, CATEGORIES, EXTERNAL_SOURCES,
-    fetch_external_index, fetch_external_template, template_stats,
-    TEMPLATES, vendored_templates,
+    CATEGORIES,
+    EXTERNAL_SOURCES,
+    TEMPLATES,
+    fetch_external_index,
+    fetch_external_template,
+    get_template,
+    list_templates,
+    template_stats,
+    vendored_templates,
 )
 
 router = APIRouter()

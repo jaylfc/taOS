@@ -1,5 +1,6 @@
 """ZeroClaw adapter — proxies messages to the ZeroClaw gateway."""
 import os
+
 import httpx
 from fastapi import FastAPI
 

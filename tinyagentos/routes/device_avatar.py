@@ -8,18 +8,16 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import logging
-import os
 import struct
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
-from fastapi.responses import FileResponse
-from PIL import Image, ImageDraw, ImageFilter
+from PIL import Image, ImageDraw
 
 from tinyagentos.agent_avatars import avatar_hash, avatar_source_path
+from tinyagentos.atomic_io import atomic_write_bytes
 from tinyagentos.device_auth import device_scope
 from tinyagentos.device_scopes import AGENTS_READ
-from tinyagentos.atomic_io import atomic_write_bytes
 
 router = APIRouter()
 

@@ -24,7 +24,7 @@ from __future__ import annotations
 import logging
 import os
 import time
-from pathlib import Path
+from pathlib import Path  # noqa: F401
 from typing import TYPE_CHECKING
 
 from .worker_heartbeat import WorkerRegistry
@@ -207,7 +207,7 @@ class ResourceManager:
         Triggers a fresh hardware probe to set limits based on actual hardware.
         """
         self._yielded = False
-        snap = await self.refresh()  # Re-probe and apply full limits
+        await self.refresh()  # Re-probe and apply full limits
         limits = await self._queue.get_limits() if self._queue else {}
         logger.info("Resources reclaimed — worker at full capacity")
         return {"mode": "full", **limits}
@@ -464,7 +464,7 @@ class ResourceManager:
         """Quick check: is there capacity for a new job of this resource type?"""
         if not self._queue:
             return True
-        snap = await self.get_snapshot()
+        await self.get_snapshot()
         limits = await self._queue.get_limits()
         running = (await self._queue.stats()).get("running_by_resource", {})
         limit = limits.get(resource_type, 0)

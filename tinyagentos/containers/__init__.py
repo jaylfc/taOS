@@ -15,9 +15,9 @@ import time
 SNAPSHOT_TIMEOUT_S = 1800
 
 from .backend import ContainerInfo, _parse_memory, detect_runtime, get_backend, set_backend
-from .lxc import LXCBackend
 from .docker import DockerBackend
-from .native import NativeBackend
+from .lxc import LXCBackend
+from .native import NativeBackend as NativeBackend
 
 logger = logging.getLogger(__name__)
 

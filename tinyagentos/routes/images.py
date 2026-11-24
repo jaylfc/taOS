@@ -11,7 +11,7 @@ from pathlib import Path
 import httpx
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
 
 from tinyagentos.scheduler import (
     Capability,

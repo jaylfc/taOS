@@ -6,7 +6,7 @@ import logging
 import shutil
 from pathlib import Path
 
-from fastapi import APIRouter, Request, UploadFile, File, Form, Query
+from fastapi import APIRouter, File, Form, Query, Request, UploadFile
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from pydantic import BaseModel
 

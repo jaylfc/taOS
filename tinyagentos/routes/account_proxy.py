@@ -22,10 +22,10 @@ import httpx
 from fastapi import APIRouter, Depends, Request, Response
 from fastapi.responses import JSONResponse
 
-from tinyagentos.taosnet import mesh, mesh_credentials
+from tinyagentos.auth_context import require_admin
 from tinyagentos.issued_cookies import TAOS_ISSUED_COOKIES
 from tinyagentos.peer import resolve_local_identity_id
-from tinyagentos.auth_context import require_admin
+from tinyagentos.taosnet import mesh, mesh_credentials
 
 logger = logging.getLogger(__name__)
 

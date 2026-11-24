@@ -12,7 +12,6 @@ import os
 import subprocess
 import time
 
-
 REPO_PATH = os.environ.get("AGENT_STATE_REPO", "/root")
 INTERVAL = int(os.environ.get("COMMIT_INTERVAL", "300"))
 _STATE_LOCK_PATH = os.environ.get("AGENT_STATE_LOCK", "/tmp/agent_state.lock")
@@ -39,7 +38,7 @@ def _changed_summary() -> str:
     # is blind to the most common agent change — a new file under
     # workspace/ — and silently falls back to "auto-commit".
     rc, out, _ = _git("diff", "--cached", "--name-only")
-    lines = [l.strip() for l in out.strip().splitlines() if l.strip()] if rc == 0 else []
+    lines = [line.strip() for line in out.strip().splitlines() if line.strip()] if rc == 0 else []
     if not lines:
         return "auto-commit"
     if len(lines) == 1:

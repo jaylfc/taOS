@@ -24,12 +24,12 @@ multi-process serving is ever introduced, the cap check must move into a
 single transactional INSERT ... WHERE (SELECT COUNT ...) statement.
 """
 
+import asyncio
 import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 import aiosqlite
-import asyncio
 
 from tinyagentos.base_store import BaseStore
 

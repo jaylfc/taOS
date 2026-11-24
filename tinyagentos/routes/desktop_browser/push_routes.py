@@ -10,7 +10,6 @@ from pydantic import BaseModel, field_validator
 from tinyagentos.auth import get_current_user
 from tinyagentos.routes.desktop_browser import router
 
-
 # ---------------------------------------------------------------------------
 # Public endpoint — NO auth required.
 # ---------------------------------------------------------------------------

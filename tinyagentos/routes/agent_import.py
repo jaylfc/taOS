@@ -20,23 +20,22 @@ import logging
 import os
 import tarfile
 import tempfile
-from datetime import datetime, UTC
+from datetime import UTC, datetime
 from pathlib import Path
 
 from fastapi import Request, UploadFile
 from fastapi.responses import JSONResponse
 
-from tinyagentos.agent_db import find_agent
 from tinyagentos.agent_controller_listener import agent_controller_live_port
-from tinyagentos.llm_gateway.cutover import llm_gateway_live_port, llm_gateway_models_check
+from tinyagentos.agent_db import find_agent
 from tinyagentos.config import (
     normalize_agent,
-    save_config_locked,
-    unique_agent_slug,
-    validate_agent_name,
-    reserve_agent_slug,
     release_agent_slug,
+    reserve_agent_slug,
+    save_config_locked,
+    validate_agent_name,
 )
+from tinyagentos.llm_gateway.cutover import llm_gateway_live_port, llm_gateway_models_check
 
 logger = logging.getLogger(__name__)
 
@@ -339,7 +338,7 @@ async def import_hermes_agent(
         _BUNDLE_PATHS[unique_slug] = tmp_path
 
         async def _background_import():
-            from tinyagentos.deployer import deploy_agent, DeployRequest
+            from tinyagentos.deployer import DeployRequest, deploy_agent
             try:
                 result = await deploy_agent(DeployRequest(
                     name=unique_slug,
@@ -392,7 +391,6 @@ async def import_hermes_agent(
                     "jobs_paused": jobs_paused,
                 }
             except Exception as exc:  # noqa: BLE001
-                import traceback
                 logger.exception("import %s: background task failed: %s", unique_slug, exc)
                 agent = find_agent(config, unique_slug)
                 if agent is not None:
@@ -441,6 +439,7 @@ async def _run_profile_import(
     Returns the number of jobs paused.
     """
     import asyncio
+
     from tinyagentos.containers import exec_in_container, push_file
 
     container_name = f"taos-agent-{slug}"
@@ -601,9 +600,11 @@ async def _rewrite_model_config(container_name: str, slug: str, agent: dict | No
     profiles) and disable the gadget platform/plugin if present.
     A failed backup must FAIL the import.
     """
-    from tinyagentos.containers import exec_in_container, push_file
-    import yaml
     import tempfile
+
+    import yaml
+
+    from tinyagentos.containers import exec_in_container, push_file
 
     config_path = f"/root/.hermes/profiles/{slug}/config.yaml"
     backup_path = f"{config_path}.pre-import"
@@ -679,8 +680,9 @@ async def _pause_imported_jobs(container_name: str, slug: str) -> int:
     scripts/install_hermes.sh (HERMES_TAG=v2026.8.31). Hermes v0.23.2 keeps
     jobs.json at <profile>/cron/jobs.json (cron/jobs.py JOBS_FILE).
     """
-    from tinyagentos.containers import push_file
     import tempfile
+
+    from tinyagentos.containers import push_file
 
     jobs_path = f"/root/.hermes/profiles/{slug}/cron/jobs.json"
     status, jobs_content = await _read_container_file(
@@ -734,8 +736,9 @@ async def _write_transfer_notice(
     AND deliver it as the first chat message via the controller's chat store
     on the agent's DM channel.
     """
-    from tinyagentos.containers import exec_in_container, push_file
     import tempfile
+
+    from tinyagentos.containers import exec_in_container, push_file
 
     # Read jobs for the notice (Hermes v0.23.2: cron/jobs.json). Best-effort:
     # a confirmed absence means no jobs; a read failure is noted but does not

@@ -36,7 +36,6 @@ def _atomic_swap_dir(src: Path, dst: Path) -> None:
     If any step fails, dst is restored from trash and the error is raised.
     This ensures static/desktop always contains a complete, working bundle.
     """
-    import os
     pid = os.getpid()
     trash = dst.with_name(f"{dst.name}.trash-{pid}")
 
@@ -484,7 +483,6 @@ async def _try_prebuilt_desktop_bundle(project_root: Path) -> bool:
 
     import io
     import tarfile
-    import tempfile
 
     # Stage INSIDE static/ (same filesystem as the target) so the final swap is
     # an atomic rename, never a cross-device copy that could fail half-done and

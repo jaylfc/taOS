@@ -16,8 +16,8 @@ from __future__ import annotations
 import logging
 from pathlib import Path
 
-from tinyagentos.providers import CLOUD_TYPES as CLOUD_BACKEND_TYPES  # noqa: F401  (public re-export)
 from tinyagentos.litellm_config import EMBEDDING_ALIAS  # noqa: F401  (public re-export)
+from tinyagentos.providers import CLOUD_TYPES as CLOUD_BACKEND_TYPES  # noqa: F401  (public re-export)
 
 __all__ = ["EMBEDDING_ALIAS", "CLOUD_BACKEND_TYPES", "scoped_key_models", "LLMProxy"]
 

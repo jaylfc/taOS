@@ -56,7 +56,6 @@ async def resize_agent_quota(name: str, body: QuotaResizeRequest, request: Reque
     Returns the new quota state on success.
     Returns 409 if the storage pool does not support live resize (dir backend).
     """
-    from tinyagentos.disk_quota import DiskQuotaMonitor
 
     config = request.app.state.config
     notifications = request.app.state.notifications

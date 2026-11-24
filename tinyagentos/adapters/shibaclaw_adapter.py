@@ -1,5 +1,6 @@
 """ShibaClaw adapter — proxies messages to the ShibaClaw gateway."""
 import os
+
 import httpx
 from fastapi import FastAPI
 

@@ -109,8 +109,9 @@ def gpu_vram_snapshot() -> dict | None:
     Called from the worker heartbeat loop alongside capacity_snapshot().
     Best-effort: a missing nvidia-smi/rocm-smi or a probe timeout is not an error.
     """
-    from tinyagentos.system_stats import read_nvidia_vram, read_rocm_vram
     import time
+
+    from tinyagentos.system_stats import read_nvidia_vram, read_rocm_vram
 
     pair = read_nvidia_vram()
     if pair is None:

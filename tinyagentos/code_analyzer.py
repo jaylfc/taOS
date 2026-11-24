@@ -45,7 +45,6 @@ from __future__ import annotations
 # inside a regex pattern, docstring, or finding message describing what to
 # flag. Nothing in this module itself calls eval() or executes app-supplied
 # strings as code.
-
 import re
 from dataclasses import dataclass
 from typing import Literal
@@ -487,8 +486,8 @@ def detect_storage_exfil(filename: str, content: str) -> list[Finding]:
     """
     findings: list[Finding] = []
     lines = _iter_lines(content)
-    storage_lines = [i for i, l in enumerate(lines) if _STORAGE_READ_RE.search(l)]
-    network_lines = [i for i, l in enumerate(lines) if _NETWORK_CALL_RE.search(l)]
+    storage_lines = [i for i, line in enumerate(lines) if _STORAGE_READ_RE.search(line)]
+    network_lines = [i for i, line in enumerate(lines) if _NETWORK_CALL_RE.search(line)]
     if not storage_lines or not network_lines:
         return findings
     flagged: set[int] = set()

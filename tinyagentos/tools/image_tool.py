@@ -190,8 +190,9 @@ async def execute_image_generation(
     get an 'image_ref', so canvas_add_image works; a caller relying on the
     fallback must handle the bytes itself.
     """
-    import httpx
     import random
+
+    import httpx
 
     if seed is None:
         seed = random.randint(1, 999999)

@@ -9,10 +9,6 @@ from tinyagentos import atomic_io
 from tinyagentos.orb import catalog
 from tinyagentos.orb.catalog_sig import (
     CatalogFetchError,
-    CatalogSignatureMissing,
-    CatalogSerialRegression,
-    CatalogSignatureInvalid,
-    CatalogKeyUnknown,
     accept_catalog,
     verify_catalog,
 )

@@ -16,9 +16,9 @@ whatever their own surface raises or returns.
 from __future__ import annotations
 
 import gzip
-import zlib
 import tarfile
 import zipfile
+import zlib
 from contextlib import contextmanager
 from pathlib import Path
 

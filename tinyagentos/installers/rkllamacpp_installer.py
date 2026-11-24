@@ -49,7 +49,6 @@ from tinyagentos.installers.model_paths import (
     filename_from_url,
 )
 
-
 BACKEND_ID = "rk-llama.cpp"
 
 logger = logging.getLogger(__name__)

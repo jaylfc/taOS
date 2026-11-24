@@ -10,21 +10,20 @@ All routes live under /api/reddit/. The router reads these from
 """
 
 import logging
-from dataclasses import asdict
 from typing import Any
 
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
 
 from tinyagentos.knowledge_fetchers.reddit import (
-    RedditPost,
-    RedditComment,
-    fetch_thread,
-    fetch_subreddit,
-    flatten_to_text,
-    extract_metadata,
     _REDDIT_WWW,
     _USER_AGENT,
+    RedditComment,
+    RedditPost,
+    extract_metadata,
+    fetch_subreddit,
+    fetch_thread,
+    flatten_to_text,
 )
 
 logger = logging.getLogger(__name__)

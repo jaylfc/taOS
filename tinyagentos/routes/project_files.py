@@ -5,12 +5,11 @@ import json
 from pathlib import Path
 from typing import Literal
 
-from fastapi import APIRouter, HTTPException, Request, UploadFile, File, Form, Query
+from fastapi import APIRouter, File, Form, HTTPException, Query, Request, UploadFile
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from pydantic import BaseModel
 
 from tinyagentos.device_auth import require_device
-
 from tinyagentos.workspace_trash import (
     TrashItemNotFound,
     TrashRestoreConflict,
@@ -90,8 +89,8 @@ async def _authorize_files_actor(
     if project is None:
         return JSONResponse({"error": "not found"}, status_code=404)
     from tinyagentos.agent_token_auth import (
-        check_agent_scope_for_project,
         PROJECT_SCOPE_MISMATCH_DETAIL,
+        check_agent_scope_for_project,
     )
     scope = _FILES_READ_SCOPE if mode == "read" else _FILES_WRITE_SCOPE
     try:

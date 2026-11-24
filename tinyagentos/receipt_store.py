@@ -182,13 +182,17 @@ class ReceiptStore(BaseStore):
         The result set is bounded so a long-lived ledger cannot return everything."""
         conds, params = [], []
         if agent_canonical_id is not None:
-            conds.append("agent_canonical_id = ?"); params.append(agent_canonical_id)
+            conds.append("agent_canonical_id = ?")
+            params.append(agent_canonical_id)
         if project_id is not None:
-            conds.append("project_id = ?"); params.append(project_id)
+            conds.append("project_id = ?")
+            params.append(project_id)
         if trace_id is not None:
-            conds.append("trace_id = ?"); params.append(trace_id)
+            conds.append("trace_id = ?")
+            params.append(trace_id)
         if created_by_user_id is not None:
-            conds.append("created_by_user_id = ?"); params.append(created_by_user_id)
+            conds.append("created_by_user_id = ?")
+            params.append(created_by_user_id)
         where = (" WHERE " + " AND ".join(conds)) if conds else ""
         limit = max(1, min(int(limit), 1000))
         async with self._db.execute(

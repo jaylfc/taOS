@@ -16,18 +16,18 @@ from __future__ import annotations
 import hashlib
 import json
 import math
-import os
 import sqlite3
 import time
 from pathlib import Path
 
 from tinyagentos.hub.identity import (
     public_identity,
-    sign as _sign,
     signing_fingerprint,
     verify_signature,
 )
-
+from tinyagentos.hub.identity import (
+    sign as _sign,
+)
 
 # ---------------------------------------------------------------------------
 # Signed envelopes

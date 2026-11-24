@@ -10,6 +10,7 @@ from fastapi import APIRouter, Depends, Query, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
+from tinyagentos.auth_context import require_admin
 from tinyagentos.installers.model_paths import models_root
 from tinyagentos.model_sources import (
     estimate_ram_mb,
@@ -18,7 +19,6 @@ from tinyagentos.model_sources import (
     search_huggingface,
     search_ollama,
 )
-from tinyagentos.auth_context import require_admin
 
 logger = logging.getLogger(__name__)
 

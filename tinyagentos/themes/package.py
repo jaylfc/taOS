@@ -1,9 +1,14 @@
 from __future__ import annotations
-import io, zipfile
+
+import io
+import zipfile
 from pathlib import Path
+
 import yaml
+
 from tinyagentos.safe_archive import ArchiveError, check_zip_limits
-from tinyagentos.themes.schema import validate_theme_config, ThemeError
+from tinyagentos.themes.schema import ThemeError, validate_theme_config
+
 
 class ThemePackageError(Exception):
     pass

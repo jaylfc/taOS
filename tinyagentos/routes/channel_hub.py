@@ -66,7 +66,6 @@ async def _stop_prior_connector(connectors: dict, connector_key: str) -> None:
 async def channel_hub_status(request: Request):
     """Show active connectors, adapters, and message counts."""
     router_obj = request.app.state.channel_hub_router
-    adapter_mgr = request.app.state.adapter_manager
     connectors = getattr(request.app.state, "channel_hub_connectors", {})
 
     return {

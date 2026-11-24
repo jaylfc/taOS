@@ -5,7 +5,6 @@ import logging
 import secrets
 import sqlite3
 import time
-from pathlib import Path
 from typing import Optional
 
 from tinyagentos.base_store import BaseStore

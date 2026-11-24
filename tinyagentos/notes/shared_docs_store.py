@@ -195,7 +195,7 @@ class SharedDocsStore(BaseStore):
         await self._db.execute(
             "UPDATE shared_docs SET updated_at = ? WHERE id = ?", (now, doc_id)
         )
-        rev_id = await self._insert_with_retry(
+        await self._insert_with_retry(
             "INSERT INTO shared_doc_entry_revisions "
             "(id, entry_id, rev_index, editor_id, editor_type, op, diff, snapshot, created_at) "
             "VALUES (?, ?, 0, ?, ?, 'create', NULL, ?, ?)",
@@ -236,7 +236,7 @@ class SharedDocsStore(BaseStore):
         snapshot = new_text if next_index % CHECKPOINT_EVERY == 0 else None
 
         now = time.time()
-        rev_id = await self._insert_with_retry(
+        await self._insert_with_retry(
             "INSERT INTO shared_doc_entry_revisions "
             "(id, entry_id, rev_index, editor_id, editor_type, op, diff, snapshot, created_at) "
             "VALUES (?, ?, ?, ?, ?, 'edit', ?, ?, ?)",

@@ -4,7 +4,6 @@ import asyncio
 import json
 import logging
 import time
-from pathlib import Path
 
 from tinyagentos.base_store import BaseStore
 
@@ -453,7 +452,7 @@ class NotificationStore(BaseStore):
                 "COALESCE(nus.read_at, n.read) as read, n.source, n.data, n.user_id "
                 "FROM notifications n "
                 "LEFT JOIN notification_user_state nus ON n.id = nus.notification_id AND nus.user_id = ? "
-                f"WHERE (n.user_id IS NULL OR n.user_id = ?) AND (n.archived = 1 OR nus.archived_at IS NOT NULL)"
+                "WHERE (n.user_id IS NULL OR n.user_id = ?) AND (n.archived = 1 OR nus.archived_at IS NOT NULL)"
                 " ORDER BY n.timestamp DESC LIMIT ?"
             )
             params = (user_id, user_id, limit)
@@ -478,7 +477,7 @@ class NotificationStore(BaseStore):
             sql = (
                 "SELECT COUNT(*) FROM notifications n "
                 "LEFT JOIN notification_user_state nus ON n.id = nus.notification_id AND nus.user_id = ? "
-                f"WHERE (n.user_id IS NULL OR n.user_id = ?) AND (n.user_id IS NOT NULL OR nus.archived_at IS NULL) AND COALESCE(nus.read_at, n.read) = 0"
+                "WHERE (n.user_id IS NULL OR n.user_id = ?) AND (n.user_id IS NOT NULL OR nus.archived_at IS NULL) AND COALESCE(nus.read_at, n.read) = 0"
             )
             params = (user_id, user_id)
         else:

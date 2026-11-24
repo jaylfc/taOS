@@ -16,7 +16,6 @@ from __future__ import annotations
 import time
 from collections import defaultdict, deque
 
-
 # Sensible defaults: 3 failures in 60 seconds trips the breaker.
 # A tripped worker is excluded from routing for the cooldown period.
 DEFAULT_FAILURE_THRESHOLD = 3

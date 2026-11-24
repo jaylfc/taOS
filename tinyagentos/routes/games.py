@@ -6,10 +6,10 @@ import shutil
 import time
 from pathlib import Path
 
+import httpx
 from fastapi import APIRouter, Request
 from fastapi.responses import FileResponse, JSONResponse, Response
 from pydantic import BaseModel
-import httpx
 
 from tinyagentos.userspace.package import PackageError, build_package
 

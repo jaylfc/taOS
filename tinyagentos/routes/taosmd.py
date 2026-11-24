@@ -290,6 +290,7 @@ async def _run_setup(
 
     try:
         from dataclasses import asdict
+
         from tinyagentos.catalog.resolver import (
             DeviceCapability,
             ResolveErr,

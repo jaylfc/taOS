@@ -33,6 +33,7 @@ Bus API (verified live):
 """
 from __future__ import annotations
 
+import asyncio
 import ipaddress
 import logging
 import math
@@ -41,8 +42,6 @@ from dataclasses import dataclass
 from urllib.parse import urlparse
 
 import httpx
-import asyncio
-
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field
@@ -476,7 +475,7 @@ async def bus_stream(
                         next_line.cancel()
         except Exception as exc:  # noqa: BLE001 (surface a final SSE comment)
             logger.warning("A2A bus stream proxy failed (%s): %s", bus, exc)
-            yield f": stream error\n\n"
+            yield ": stream error\n\n"
 
     return StreamingResponse(
         event_stream(),

@@ -29,7 +29,6 @@ from tinyagentos.auth_context import require_admin
 from tinyagentos.catalog.resolver import (
     DeviceCapability,
     ResolveErr,
-    ResolveOk,
     classify,
     resolve,
 )

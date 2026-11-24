@@ -16,13 +16,24 @@ from starlette.responses import HTMLResponse, RedirectResponse
 
 from tinyagentos.agent_db import find_agent
 from tinyagentos.agent_token_auth import (
-    _enforce_rotation_cutoff, _get_grants_store, _get_keypair, _get_store,
-    _grant_unexpired, check_agent_identity,
+    _enforce_rotation_cutoff,
+    _get_grants_store,
+    _get_keypair,
+    _get_store,
+    _grant_unexpired,
+    check_agent_identity,
 )
 from tinyagentos.auth import AuthStoreCorruptError
 from tinyagentos.device_scopes import (
-    AGENTS_READ, CHAT_SEND, DECISIONS_ANSWER, FILES_UPLOAD, LIBRARY_INGEST,
-    PUSH_REGISTER, VOICE_STT, VOICE_TTS, effective_scopes,
+    AGENTS_READ,
+    CHAT_SEND,
+    DECISIONS_ANSWER,
+    FILES_UPLOAD,
+    LIBRARY_INGEST,
+    PUSH_REGISTER,
+    VOICE_STT,
+    VOICE_TTS,
+    effective_scopes,
 )
 from tinyagentos.device_store import DEVICE_TOKEN_PREFIX
 from tinyagentos.rate_limit import MovingWindowLimiter

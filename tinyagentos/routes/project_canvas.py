@@ -14,12 +14,12 @@ from collections import OrderedDict
 from typing import Literal
 
 from fastapi import APIRouter, HTTPException, Request
-from fastapi.responses import JSONResponse, StreamingResponse, FileResponse, Response
+from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
 from pydantic import BaseModel, Field
 
+from tinyagentos.projects.canvas.render import render_snapshot_png
 from tinyagentos.projects.canvas.store import CanvasPermissionError, guard_payload_update
 from tinyagentos.projects.canvas.unfurl import fetch_link_metadata
-from tinyagentos.projects.canvas.render import render_snapshot_png
 from tinyagentos.projects.canvas.watch_projection import build_watch_projection
 
 logger = logging.getLogger(__name__)
@@ -143,8 +143,8 @@ async def _authorize_canvas_actor(
         # to a system actor (there is no real principal to attribute to).
         return ("user", "system")
     from tinyagentos.agent_token_auth import (
-        check_agent_scope_for_project,
         PROJECT_SCOPE_MISMATCH_DETAIL,
+        check_agent_scope_for_project,
     )
     scope = _CANVAS_READ_SCOPE if mode == "read" else _CANVAS_WRITE_SCOPE
     try:

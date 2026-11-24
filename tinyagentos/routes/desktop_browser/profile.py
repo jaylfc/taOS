@@ -20,7 +20,6 @@ import time
 
 from tinyagentos.routes.desktop_browser.store import BrowserCookieStore, BrowserStore
 
-
 # Defaults bootstrapped per user. profile_id is the URL-safe identifier;
 # name is the human-facing label. Colour matches the chrome chip in
 # PR 4's frontend mockups.

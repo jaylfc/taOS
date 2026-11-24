@@ -74,4 +74,9 @@ def agent_port(config=None) -> int:
     return int(value) if value is not None else DEFAULT_AGENT_PORT
 
 # Export Anthropic translator
-from tinyagentos.llm_gateway.anthropic import chat_completion_anthropic, chat_completion_stream_anthropic
+from tinyagentos.llm_gateway.anthropic import (
+    chat_completion_anthropic as chat_completion_anthropic,
+)
+from tinyagentos.llm_gateway.anthropic import (
+    chat_completion_stream_anthropic as chat_completion_stream_anthropic,
+)

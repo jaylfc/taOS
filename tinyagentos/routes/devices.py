@@ -1,10 +1,11 @@
 # tinyagentos/routes/devices.py
 from __future__ import annotations
 
+from urllib.parse import urlparse
+
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field, field_validator, model_validator
-from urllib.parse import urlparse
 
 from tinyagentos.auth_context import CurrentUser, current_user
 from tinyagentos.device_auth import current_user_or_device

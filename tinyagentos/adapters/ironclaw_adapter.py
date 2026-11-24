@@ -1,5 +1,6 @@
 """IronClaw adapter — proxies messages to the IronClaw gateway."""
 import os
+
 from fastapi import FastAPI
 
 app = FastAPI()

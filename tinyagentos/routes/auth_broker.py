@@ -22,9 +22,7 @@ from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, Field
 
 from tinyagentos.agent_token_auth import check_agent_identity
-from tinyagentos.auth_broker import (
-    EXPIRY_SECONDS, AuthBrokerStore, OpenRequestExists, signin_host
-)
+from tinyagentos.auth_broker import EXPIRY_SECONDS, AuthBrokerStore, OpenRequestExists, signin_host
 from tinyagentos.auth_context import (
     current_user,
     require_agent_owner_or_admin,

@@ -312,6 +312,13 @@ jobs:
       - name: Check for syntax errors
         run: uv run --no-sync python -m compileall tinyagentos/ -q
 
+      # #739: ruff (E/F/I per [tool.ruff] in pyproject.toml) so unused
+      # imports, undefined names and import-order regressions fail CI
+      # instead of landing. Ruff itself comes from the dev group in the
+      # lockfile, installed by the sync step above.
+      - name: Ruff lint
+        run: uv run --no-sync ruff check tinyagentos/
+
   spa-build:
     runs-on: ubuntu-latest
     # Needs write access to manage the rolling 'bundle-latest' release below.

@@ -19,6 +19,7 @@ from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     import httpx
+
     from tinyagentos.config import AppConfig
     from tinyagentos.secrets import SecretsStore
 
@@ -78,7 +79,7 @@ async def mint_installation_token(
     if cached:
         return cached
 
-    from tinyagentos.github_app import generate_jwt, _auth_headers, _INSTALL_TOKEN_URL
+    from tinyagentos.github_app import _INSTALL_TOKEN_URL, _auth_headers, generate_jwt
 
     try:
         jwt = generate_jwt(app_id, private_key)
@@ -101,7 +102,7 @@ async def mint_installation_token(
             expires_str = data.get("expires_at", "")
             if expires_str:
                 try:
-                    from datetime import datetime, timezone as dt_timezone
+                    from datetime import datetime
                     expires_dt = datetime.fromisoformat(
                         expires_str.replace("Z", "+00:00")
                     )

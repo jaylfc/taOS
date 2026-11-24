@@ -1,5 +1,6 @@
 """Moltis adapter — proxies messages to the Moltis gateway."""
 import os
+
 import httpx
 from fastapi import FastAPI
 

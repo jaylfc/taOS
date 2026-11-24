@@ -13,7 +13,6 @@ import logging
 import shutil
 import sqlite3
 import time
-from pathlib import Path
 from typing import TYPE_CHECKING
 
 from tinyagentos.base_store import BaseStore

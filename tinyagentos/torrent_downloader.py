@@ -33,12 +33,13 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import logging
-import os
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable, Optional
+from typing import TYPE_CHECKING, Callable, Optional
 
+if TYPE_CHECKING:
+    from tinyagentos.torrent_settings import TorrentSettings
 logger = logging.getLogger(__name__)
 
 

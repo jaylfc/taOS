@@ -193,10 +193,10 @@ async def switch_to_branch(
             previous_sha="",
             new_sha="",
             ok=False,
-            message=f"GPG verification required but no key fingerprint configured — switch blocked.",
+            message="GPG verification required but no key fingerprint configured — switch blocked.",
         )
     if gpg_fingerprint:
-        from tinyagentos.gpg_verify import verify_commit, ensure_key_available
+        from tinyagentos.gpg_verify import ensure_key_available, verify_commit
         key_ok = await ensure_key_available(gpg_fingerprint)
         if not key_ok:
             logger.warning(

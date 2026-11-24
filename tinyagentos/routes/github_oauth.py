@@ -22,6 +22,7 @@ from fastapi import APIRouter, Depends, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
+from tinyagentos.auth_context import require_admin
 from tinyagentos.github_oauth import (
     ACCESS_TOKEN_URL,
     DEVICE_CODE_URL,
@@ -30,7 +31,6 @@ from tinyagentos.github_oauth import (
     USER_URL,
     client_id,
 )
-from tinyagentos.auth_context import require_admin
 
 logger = logging.getLogger(__name__)
 
@@ -272,9 +272,9 @@ async def list_app_installations(request: Request):
     installs_store = _app_installations_store(request)
 
     from tinyagentos.github_app import (
-        list_installations,
-        list_installation_repos_cached,
         get_installation_token,
+        list_installation_repos_cached,
+        list_installations,
     )
 
     # Fetch installations from the GitHub API using the JWT
@@ -413,6 +413,7 @@ async def app_installation_callback(
 
     http = _http(request)
     from fastapi.responses import RedirectResponse
+
     from tinyagentos.github_app import get_installation_token
 
     # Verify the installation works by minting a token

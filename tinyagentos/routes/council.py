@@ -3,10 +3,6 @@ from __future__ import annotations
 import logging
 
 from fastapi import APIRouter, Request
-from fastapi.responses import JSONResponse
-
-from tinyagentos.council.member_store import MemberStore
-from tinyagentos.council.role_registry import RoleRegistry
 
 logger = logging.getLogger(__name__)
 

@@ -14,14 +14,15 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field, field_validator
 from pydantic.types import StrictInt
 
-from tinyagentos.cluster.capabilities import hardware_to_targets, potential_capabilities as _potential_capabilities
+from tinyagentos.auth_context import require_admin
+from tinyagentos.cluster.capabilities import hardware_to_targets
+from tinyagentos.cluster.capabilities import potential_capabilities as _potential_capabilities
 from tinyagentos.cluster.optimiser import ClusterOptimiser
 from tinyagentos.cluster.worker_auth import _HMACError, require_worker_hmac
 from tinyagentos.cluster.worker_protocol import (
     WorkerInfo,
     invalid_resource_classes,
 )
-from tinyagentos.auth_context import require_admin
 from tinyagentos.rate_limit import MovingWindowLimiter, rate_limited_response
 from tinyagentos.routes.auth import _require_admin
 from tinyagentos.task_utils import _create_supervised_task
@@ -1160,6 +1161,7 @@ async def incus_enroll(request: Request, name: str, body: IncusEnrollRequest):
         )
 
     from urllib.parse import urlparse
+
     import tinyagentos.containers as containers
 
     cluster = request.app.state.cluster_manager
@@ -1269,6 +1271,7 @@ REMOTE_EXEC_ALLOWLIST = [
 # Per-worker deploy locks -- prevents concurrent install/restart on the
 # same worker (CodeRabbit finding on PR #1910).
 import collections
+
 _worker_deploy_locks: dict[str, asyncio.Lock] = collections.defaultdict(asyncio.Lock)
 
 

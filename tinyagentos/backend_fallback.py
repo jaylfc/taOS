@@ -69,7 +69,6 @@ class BackendFallback:
 
     def get_status(self) -> list[dict]:
         """Return status of all backends."""
-        now = time.time()
         result = []
         for b in self.backends:
             name = b["name"]

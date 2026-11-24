@@ -5,9 +5,10 @@ import enum
 import time
 import uuid
 from dataclasses import dataclass, field
-from typing import Any, Awaitable, Callable, Optional
+from typing import TYPE_CHECKING, Any, Awaitable, Callable, Optional
 
-
+if TYPE_CHECKING:
+    from tinyagentos.scheduler.resource import Resource
 class Capability(str, enum.Enum):
     """Stable capability identifiers for routing."""
     IMAGE_GENERATION = "image-generation"

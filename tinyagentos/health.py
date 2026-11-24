@@ -7,12 +7,12 @@ import time
 import httpx
 import psutil
 
+from tinyagentos.agent_db import get_agent_db
 from tinyagentos.backend_adapters import check_backend_health
 from tinyagentos.config import AppConfig
 from tinyagentos.metrics import MetricsStore
 from tinyagentos.notifications import NotificationStore
 from tinyagentos.qmd_client import QmdClient
-from tinyagentos.agent_db import get_agent_db
 
 logger = logging.getLogger(__name__)
 

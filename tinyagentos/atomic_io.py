@@ -24,12 +24,13 @@ from __future__ import annotations
 
 import errno
 import hashlib
-import psutil
 import logging
 import os
 import secrets
 import time
 from pathlib import Path
+
+import psutil
 
 __all__ = ["atomic_write_text", "atomic_write_bytes", "atomic_create_bytes", "durable_replace"]
 

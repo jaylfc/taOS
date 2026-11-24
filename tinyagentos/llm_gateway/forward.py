@@ -518,10 +518,10 @@ async def _chat_completion_one(
     try:
         async with httpx.AsyncClient(timeout=TIMEOUT, follow_redirects=False) as client:
             resp = await client.post(url, json=payload, headers=headers)
-    except httpx.TimeoutException as exc:
+    except httpx.TimeoutException:
         _record_request_finish(state, route, principal, started, reason="timeout")
         raise upstream_error(f"{what} timed out") from None
-    except httpx.HTTPError as exc:
+    except httpx.HTTPError:
         _record_request_finish(state, route, principal, started, reason="unreachable")
         raise upstream_error(f"{what} could not be reached") from None
 
@@ -969,7 +969,7 @@ async def chat_completion_stream(
     Retries only before any byte has been sent to the caller. Once the first
     chunk is yielded the stream is not retried, to avoid duplicating output.
     """
-    from fastapi.responses import JSONResponse, StreamingResponse
+    from fastapi.responses import StreamingResponse
 
     gen = _stream_with_retry(
         routes,

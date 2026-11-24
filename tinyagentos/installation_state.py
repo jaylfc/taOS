@@ -35,8 +35,7 @@ from "what's running right now".
 """
 from __future__ import annotations
 
-from typing import Any, Iterable, Optional
-
+from typing import Any, Iterable
 
 # Static map from catalog service manifest id → set of backend types
 # that satisfy it. The pragmatic alternative to making every manifest

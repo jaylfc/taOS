@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from urllib.parse import quote
 
-from tinyagentos.cli.taosctl.argtypes import positive_int, nonneg_int
+from tinyagentos.cli.taosctl.argtypes import nonneg_int, positive_int
 
 NOUN = "templates"
 

@@ -22,7 +22,7 @@ import signal
 import subprocess
 from pathlib import Path
 
-from .backend import ContainerBackend, ContainerInfo, PtyHandle, _parse_memory
+from .backend import ContainerBackend, ContainerInfo, PtyHandle
 
 logger = logging.getLogger(__name__)
 

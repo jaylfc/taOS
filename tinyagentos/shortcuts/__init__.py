@@ -2,8 +2,8 @@ from .types import (
     ContainerTerminalShortcut,
     DashboardAuth,
     DashboardShortcut,
-    ShortcutCommon,
     Shortcut,
+    ShortcutCommon,
     TokenSource,
     TuiShortcut,
 )

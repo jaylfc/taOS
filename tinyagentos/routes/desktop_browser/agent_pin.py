@@ -5,7 +5,6 @@ from typing import Awaitable, Callable
 
 from tinyagentos.routes.desktop_browser.store import BrowserStore
 
-
 MAX_PINS_PER_TAB = 4
 
 

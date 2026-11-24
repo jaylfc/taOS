@@ -160,10 +160,8 @@ class MCPServerStore(BaseStore):
     async def list_attachments_for_agent(
         self, agent_name: str, group_names: list[str]
     ) -> list[dict]:
-        placeholders = ",".join("?" for _ in group_names)
         group_ids = [f"group:{g}" for g in group_names]
         params: list = [agent_name] + group_ids
-        group_clause = f"scope_id IN ({placeholders})" if group_names else "0"
 
         sql = (
             "SELECT id, server_id, scope_kind, scope_id, allowed_tools, "

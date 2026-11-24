@@ -34,9 +34,12 @@ import re
 import secrets
 from dataclasses import dataclass
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from tinyagentos.opencode_runtime import OpenCodeServer, OpenCodeServerConfig
 
+if TYPE_CHECKING:
+    from tinyagentos.kilo_runtime import KiloHarness
 logger = logging.getLogger(__name__)
 
 TAOS_OPENCODE_PORT = 4188  # local-only port for the taOS agent opencode server
@@ -385,8 +388,6 @@ async def _ensure_taos_opencode_server_locked(app_state, model: str) -> OpenCode
         user_id = primary_user["id"] if primary_user else None
         taos_api_credential: str | None = None
         if user_id and signing_key_pem:
-            from tinyagentos.agent_registry_store import AgentRegistryStore
-            from tinyagentos.agent_grants_store import AgentGrantsStore
             registry_store = getattr(app_state, "agent_registry", None)
             grants_store = getattr(app_state, "agent_grants", None)
             if registry_store and grants_store:
@@ -591,17 +592,17 @@ def retire_picoclaw(app_state, *, revoke: bool = True) -> int:
 
 async def _provision_picoclaw_locked(app_state, models: list[str]):
     from tinyagentos.llm_gateway.auth import mint_gateway_key, revoke_keys_for
+    from tinyagentos.native_agent_identity import (
+        ensure_native_agent_identity,
+        rotate_native_agent_token,
+        token_path,
+    )
     from tinyagentos.picoclaw_runtime import (
         DEFAULT_MODEL,
         PicoClawBinaryNotFoundError,
         PicoClawHarness,
         home_for,
         resolve_picoclaw_binary,
-    )
-    from tinyagentos.native_agent_identity import (
-        ensure_native_agent_identity,
-        rotate_native_agent_token,
-        token_path,
     )
 
     binary = resolve_picoclaw_binary()
@@ -625,8 +626,6 @@ async def _provision_picoclaw_locked(app_state, models: list[str]):
     user_id = primary_user["id"] if primary_user else None
     if user_id and signing_key_pem:
         # Ensure the native agent identity exists with all required scopes.
-        from tinyagentos.agent_registry_store import AgentRegistryStore
-        from tinyagentos.agent_grants_store import AgentGrantsStore
         registry_store = getattr(app_state, "agent_registry", None)
         grants_store = getattr(app_state, "agent_grants", None)
         if registry_store and grants_store:
@@ -794,7 +793,7 @@ async def apply_framework(app_state) -> FrameworkDecision:
     from the token in Secrets. Hermes likewise: the probes are run here and
     the decision is applied; the harness is built per chat request."""
     from tinyagentos.claude_code_runtime import claude_code_token_present
-    from tinyagentos.hermes_runtime import hermes_key_present, hermes_api_up
+    from tinyagentos.hermes_runtime import hermes_api_up, hermes_key_present
     from tinyagentos.kilo_runtime import kilo_key_present, resolve_kilo_binary
 
     framework = (getattr(getattr(app_state, "config", None), "taos_agent", None) or {}).get("framework")

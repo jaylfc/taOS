@@ -34,7 +34,6 @@ from urllib.parse import urljoin
 
 from lxml import html as lxml_html
 
-
 # Upper bound on the CSS text the url()/@import rewriter will process for one
 # response. The regexes are linear-time but every match runs a Python callback,
 # so a 10 MB url(x) flood still costs ~20s on the event loop and inflates the

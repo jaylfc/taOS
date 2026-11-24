@@ -13,7 +13,6 @@ Every table keys on user_id for OS-grade multi-user isolation.
 """
 from __future__ import annotations
 
-
 BROWSER_SCHEMA = """
 CREATE TABLE IF NOT EXISTS profiles (
   user_id        TEXT NOT NULL,

@@ -26,9 +26,8 @@ from pydantic import BaseModel
 from tinyagentos.agent_token_auth import check_agent_identity
 from tinyagentos.containers.lxc import LXCBackend
 from tinyagentos.containers.provisioning_policy import (
-    ESCALATE,
-    PENDING,
     APPROVE,
+    PENDING,
     PolicyConfig,
     ProvisioningPolicy,
 )

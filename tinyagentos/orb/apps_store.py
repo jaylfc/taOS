@@ -11,11 +11,9 @@ from pathlib import Path
 import httpx
 
 from tinyagentos import atomic_io
-from tinyagentos.orb import catalog
-from tinyagentos.orb import catalog_sig
+from tinyagentos.orb import catalog, catalog_sig
 from tinyagentos.orb.catalog_fetch import SIG_MAX_BYTES, _get_capped
 from tinyagentos.orb.frames import OrbError
-
 
 MANIFEST_KIND = "orb-desktop-apps"
 PLATFORMS = ("macos-arm64", "macos-x64", "linux-x64", "linux-arm64", "windows-x64")

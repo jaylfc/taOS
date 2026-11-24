@@ -9,19 +9,19 @@ The query helpers refuse to operate without a user_id argument.
 from __future__ import annotations
 
 from tinyagentos.base_store import BaseStore
-from tinyagentos.routes.desktop_browser.schema import BROWSER_SCHEMA
+
 # BrowserCookieStore lives in cookie_store.py; re-exported here for back-compat.
 from tinyagentos.routes.desktop_browser.cookie_store import BrowserCookieStore  # noqa: F401
-
-from tinyagentos.routes.desktop_browser.store_mixins.profiles import ProfilesMixin
-from tinyagentos.routes.desktop_browser.store_mixins.windows import WindowsMixin
-from tinyagentos.routes.desktop_browser.store_mixins.history import HistoryMixin
+from tinyagentos.routes.desktop_browser.schema import BROWSER_SCHEMA
 from tinyagentos.routes.desktop_browser.store_mixins.bookmarks import BookmarksMixin
-from tinyagentos.routes.desktop_browser.store_mixins.pins import PinsMixin
 from tinyagentos.routes.desktop_browser.store_mixins.capabilities import CapabilitiesMixin
 from tinyagentos.routes.desktop_browser.store_mixins.drive_sessions import DriveSessionsMixin
-from tinyagentos.routes.desktop_browser.store_mixins.site_permissions import SitePermissionsMixin
+from tinyagentos.routes.desktop_browser.store_mixins.history import HistoryMixin
+from tinyagentos.routes.desktop_browser.store_mixins.pins import PinsMixin
+from tinyagentos.routes.desktop_browser.store_mixins.profiles import ProfilesMixin
 from tinyagentos.routes.desktop_browser.store_mixins.push import PushMixin
+from tinyagentos.routes.desktop_browser.store_mixins.site_permissions import SitePermissionsMixin
+from tinyagentos.routes.desktop_browser.store_mixins.windows import WindowsMixin
 
 
 class BrowserStore(

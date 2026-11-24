@@ -23,7 +23,6 @@ import subprocess
 import urllib.request
 from pathlib import Path
 from typing import Any, Callable
-from urllib.parse import urlparse
 
 import httpx
 

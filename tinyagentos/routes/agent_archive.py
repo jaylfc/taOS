@@ -15,7 +15,7 @@ from pathlib import Path
 from fastapi import Request
 
 from tinyagentos.agent_db import find_agent
-from tinyagentos.config import save_config_locked, unique_agent_slug, reserve_agent_slug, release_agent_slug
+from tinyagentos.config import release_agent_slug, reserve_agent_slug, save_config_locked
 from tinyagentos.containers import SNAPSHOT_TIMEOUT_S
 
 logger = logging.getLogger(__name__)
@@ -103,11 +103,12 @@ async def archive_agent_fully(request: Request, name: str) -> dict:
     can re-raise as JSONResponse.
     """
     import json as _json
+
     from tinyagentos.containers import (
         container_exists,
         resolve_agent_container,
-        stop_container,
         snapshot_create,
+        stop_container,
     )
 
     config = request.app.state.config
@@ -417,8 +418,13 @@ async def restore_archived(request: Request, archive_id: str):
 
 async def _restore_archived(request: Request, archive_id: str):
     import json as _json
+
     from tinyagentos.containers import (
-        snapshot_restore, rename_container, start_container, set_env, exec_in_container,
+        exec_in_container,
+        rename_container,
+        set_env,
+        snapshot_restore,
+        start_container,
     )
 
     config = request.app.state.config
@@ -667,6 +673,7 @@ async def purge_archived(request: Request, archive_id: str):
     Irreversible.
     """
     import shutil
+
     from tinyagentos.containers import destroy_container
 
     config = request.app.state.config

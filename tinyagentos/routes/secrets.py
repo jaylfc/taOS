@@ -12,7 +12,6 @@ from tinyagentos.auth_context import (
     current_user,
     require_admin,
     require_agent_owner_or_admin,
-    require_owner_or_admin,
 )
 from tinyagentos.secrets import WriteOnceError
 

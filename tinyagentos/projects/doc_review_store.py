@@ -86,7 +86,7 @@ class DocReviewStore(ProjectsDBStore):
                     changes_requested_by = actor_id
                     changes_requested_at = now
 
-                review_id = await self._insert_with_retry(
+                await self._insert_with_retry(
                     """INSERT INTO doc_reviews
                        (id, project_id, doc_path, review_state,
                         reviewed_by, reviewed_at,

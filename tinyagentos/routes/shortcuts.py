@@ -6,9 +6,9 @@ from typing import Any
 from fastapi import APIRouter, Depends, HTTPException, Request
 
 from tinyagentos.auth import get_current_user
-from tinyagentos.shortcuts.capabilities import user_has_capability
-from tinyagentos.shortcuts.tickets import mint_ticket, _GLOBAL_JTI_TRACKER
 from tinyagentos.cluster.worker_registry import get_local_worker
+from tinyagentos.shortcuts.capabilities import user_has_capability
+from tinyagentos.shortcuts.tickets import mint_ticket
 
 router = APIRouter()
 

@@ -38,9 +38,11 @@ from tinyagentos.agent_image import (
 )
 from tinyagentos.containers import (
     _resolve_container_project,
-    create_container, exec_in_container, push_file,
-    start_container, stop_container, destroy_container,
     add_proxy_device,
+    create_container,
+    destroy_container,
+    exec_in_container,
+    push_file,
 )
 from tinyagentos.llm_proxy import EMBEDDING_ALIAS
 
@@ -613,8 +615,8 @@ async def deploy_agent(req: DeployRequest) -> dict:
         # with chmod/chown via exec_in_container. An SSH key stored as an env var
         # alone would not be usable by the ssh binary.
         if _ssh_key_secrets:
-            import tempfile
             import os as _os
+            import tempfile
             # Ensure ~/.ssh exists and has the right permissions.
             code, output = await exec_in_container(
                 container_name,
@@ -774,8 +776,8 @@ async def deploy_agent(req: DeployRequest) -> dict:
                 _agent_rules_fn = getattr(_taosmd, "agent_rules", None)
                 if callable(_agent_rules_fn):
                     _rules = _agent_rules_fn().replace("<your-agent-name>", req.name)
-                    import tempfile
                     import os as _os
+                    import tempfile
                     # Read existing file from the container; treat any error as absent.
                     _read_rc, _existing = await exec_in_container(
                         container_name, ["cat", target_path]
@@ -812,10 +814,10 @@ async def deploy_agent(req: DeployRequest) -> dict:
         versioning_error = None
         try:
             from tinyagentos.agent_git import (
+                git_add_commit,
+                git_config_user,
                 git_init,
                 write_gitignore,
-                git_config_user,
-                git_add_commit,
             )
             await git_init(container_name)
             await write_gitignore(container_name)

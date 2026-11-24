@@ -20,7 +20,7 @@ from __future__ import annotations
 
 import logging
 from typing import Any
-from urllib.parse import urljoin, urlparse, urlsplit
+from urllib.parse import urljoin, urlsplit
 
 import httpx
 from fastapi import Depends, Request
@@ -35,7 +35,6 @@ from tinyagentos.routes.desktop_browser.ssrf import (
     guarded_async_client,
     validate_url_or_raise,
 )
-
 
 _logger = logging.getLogger(__name__)
 _FETCH_TIMEOUT = 15.0

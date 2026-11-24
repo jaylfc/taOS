@@ -1,5 +1,6 @@
 """Langroid adapter — translates messages to Langroid ChatAgent calls."""
 import os
+
 from fastapi import FastAPI
 
 app = FastAPI()

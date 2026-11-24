@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from typing import Optional
+from typing import TYPE_CHECKING, Optional
 
+if TYPE_CHECKING:
+    from dbus_fast.aio import MessageBus
 logger = logging.getLogger(__name__)
 
 _bus: Optional["MessageBus"] = None

@@ -29,28 +29,28 @@ import asyncio
 import base64
 import json
 import logging
-import mimetypes
 import re
 import sys
 import uuid
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, File, Request, UploadFile
-from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
+from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from pydantic import BaseModel
 
-from tinyagentos.adapters.opencode_adapter import OpenCodeAdapter, OpenCodeConfig
+from tinyagentos import taos_agent_shell_profile as shell_profile
 from tinyagentos.adapters.claude_code_cli_adapter import ClaudeCodeCliAdapter, ClaudeCodeCliConfig
-from tinyagentos.adapters.kilo_cli_adapter import KiloCliAdapter, KiloCliConfig
-from tinyagentos.adapters.picoclaw_cli_adapter import PicoClawCliAdapter, PicoClawCliConfig
 from tinyagentos.adapters.hermes_api_adapter import HermesApiAdapter, HermesApiConfig
+from tinyagentos.adapters.kilo_cli_adapter import KiloCliAdapter, KiloCliConfig
+from tinyagentos.adapters.opencode_adapter import OpenCodeAdapter, OpenCodeConfig
+from tinyagentos.adapters.picoclaw_cli_adapter import PicoClawCliAdapter, PicoClawCliConfig
 from tinyagentos.agent_loop import AgentLoop, LoopAction
 from tinyagentos.auth_context import CurrentUser, current_user
 from tinyagentos.claude_code_runtime import ClaudeCodeBinaryNotFoundError, ClaudeCodeTokenMissingError
+from tinyagentos.hermes_runtime import HERMES_API_KEY_SECRET, hermes_api_url
 from tinyagentos.kilo_runtime import KiloBinaryNotFoundError, KiloKeyMissingError
 from tinyagentos.opencode_runtime import OpenCodeBinaryNotFoundError
 from tinyagentos.picoclaw_runtime import PicoClawBinaryNotFoundError
-from tinyagentos import taos_agent_shell_profile as shell_profile
 from tinyagentos.taos_agent_runtime import (
     DEVICE_CLASS_CHOICES,
     FRAMEWORK_CHOICES,
@@ -68,7 +68,6 @@ from tinyagentos.taos_agent_runtime import (
     provision_picoclaw,
     system_agent_framework,
 )
-from tinyagentos.hermes_runtime import hermes_api_url, hermes_key_present, HERMES_API_KEY_SECRET
 from tinyagentos.task_utils import _create_supervised_task
 
 logger = logging.getLogger(__name__)

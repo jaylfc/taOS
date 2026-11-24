@@ -32,13 +32,13 @@ import secrets
 
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, Field
-from tinyagentos.routes.decisions import SERVER_RAISED_KEY
 
 from tinyagentos.device_pair_requests_store import (
-    DevicePairRequestsStore,
     _PENDING_CAP,
+    DevicePairRequestsStore,
     _live_status,
 )
+from tinyagentos.routes.decisions import SERVER_RAISED_KEY
 
 router = APIRouter()
 logger = logging.getLogger(__name__)

@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-from pathlib import Path
 
 from tinyagentos.base_store import BaseStore
 from tinyagentos.events.bus import SystemEvent

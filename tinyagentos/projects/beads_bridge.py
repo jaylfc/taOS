@@ -200,11 +200,12 @@ class BeadsBridge:
         target = beads_dir / "tasks.jsonl"
 
         tasks = await self._task_store.list_tasks(project_id=project_id)
+        import json
+
         from tinyagentos.projects.beads_format import (
             compute_ready,
             task_to_jsonl_dict,
         )
-        import json
 
         lines: list[str] = []
         for t in tasks:

@@ -9,10 +9,11 @@ Checks for:
 3. Files not writable by the service user that would block git operations
 """
 from __future__ import annotations
+
 import os
 import subprocess
 from pathlib import Path
-from typing import NamedTuple, List
+from typing import List, NamedTuple
 
 
 class PreflightIssue(NamedTuple):

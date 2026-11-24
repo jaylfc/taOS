@@ -24,9 +24,9 @@ from typing import Literal, Optional
 from uuid import uuid4
 
 import httpx
-from PIL import Image
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
+from PIL import Image
 from pydantic import BaseModel
 
 from tinyagentos.routes.images import _get_user_id, _image_url_path, _images_dir

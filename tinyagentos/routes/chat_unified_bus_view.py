@@ -19,7 +19,7 @@ from __future__ import annotations
 import logging
 
 from fastapi import APIRouter, HTTPException, Request
-from fastapi.responses import JSONResponse, Response
+from fastapi.responses import JSONResponse
 
 from tinyagentos.routes.a2a_bus import _authorize_bus_read, _bus_url
 from tinyagentos.routes.chat import caller_can_read_channel, channel_read_denied

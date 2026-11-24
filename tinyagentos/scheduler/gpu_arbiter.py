@@ -10,12 +10,10 @@ import asyncio
 import logging
 import time
 from dataclasses import dataclass, field
-from typing import Callable, Optional
+from typing import Callable
 
 from tinyagentos.scheduler.types import (
-    Capability,
     NoResourceAvailableError,
-    Priority,
     Task,
 )
 from tinyagentos.vram_reservation import VramReservationManager
@@ -416,8 +414,8 @@ class GpuArbiter:
             if worker.free_vram_mb is None:
                 continue  # non-NVIDIA worker — no VRAM probe
             worker_leases = sum(
-                l.required_vram_mb for l in leases
-                if self._resource_on_worker(l.resource_id, worker.name) and l.required_vram_mb > 0
+                lease.required_vram_mb for lease in leases
+                if self._resource_on_worker(lease.resource_id, worker.name) and lease.required_vram_mb > 0
             )
             available = worker.free_vram_mb - worker_leases - reserved
             if available >= required_vram_mb:

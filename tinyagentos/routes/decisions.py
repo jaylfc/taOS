@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import logging
 import os
-
 from dataclasses import dataclass
 
 import httpx
@@ -504,6 +503,7 @@ async def _agent_own_decisions(
     GET /api/decisions.  A *project_id* narrows the scope inside the store
     query, so the row limit applies after that filter."""
     from datetime import datetime, timezone
+
     from tinyagentos.agent_token_auth import _grant_unexpired
 
     # Collect project IDs the agent has active decisions_write grants for.
@@ -553,9 +553,9 @@ async def get_decision_as_agent(decision_id: str, request: Request):
     # JWT-first: validate the bearer token before touching the decision
     # store so invalid tokens cannot probe decision existence via timing.
     from tinyagentos.agent_token_auth import (
+        PROJECT_SCOPE_MISMATCH_DETAIL,
         check_agent_identity,
         check_agent_scope_for_project,
-        PROJECT_SCOPE_MISMATCH_DETAIL,
     )
     caller = await check_agent_identity(request)
     if caller is None:
@@ -855,8 +855,8 @@ async def withdraw_decision(
 
     if agent_cid is not None:
         from tinyagentos.agent_token_auth import (
-            check_agent_scope_for_project,
             PROJECT_SCOPE_MISMATCH_DETAIL,
+            check_agent_scope_for_project,
         )
         try:
             cid = await check_agent_scope_for_project(
@@ -1233,8 +1233,8 @@ async def answer_decision_as_agent(
     # Collapse PROJECT_SCOPE_MISMATCH to 404 so the route is not an
     # existence oracle (never distinguish 403-vs-404 to a caller).
     from tinyagentos.agent_token_auth import (
-        check_agent_scope_for_project,
         PROJECT_SCOPE_MISMATCH_DETAIL,
+        check_agent_scope_for_project,
     )
     try:
         canonical_id = await check_agent_scope_for_project(

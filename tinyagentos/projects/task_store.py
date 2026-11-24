@@ -413,9 +413,14 @@ class ProjectTaskStore(ProjectsDBStore):
         # dedicated to-open transitions do): claim_task requires
         # claimed_by IS NULL, so a stale claimer leaves the card unclaimable.
         if status == "open":
-            sets.append("claimed_by = ?"); params.append(None); patch["claimed_by"] = None
-            sets.append("claimed_at = ?"); params.append(None); patch["claimed_at"] = None
-        sets.append("updated_at = ?"); params.append(time.time())
+            sets.append("claimed_by = ?")
+            params.append(None)
+            patch["claimed_by"] = None
+            sets.append("claimed_at = ?")
+            params.append(None)
+            patch["claimed_at"] = None
+        sets.append("updated_at = ?")
+        params.append(time.time())
         params.append(task_id)
         where = "id = ?"
         if status is not None:
@@ -461,7 +466,6 @@ class ProjectTaskStore(ProjectsDBStore):
         return changed
 
     async def unassign_if(self, task_id: str, expected_assignee: str, actor: str) -> bool:
-        now = time.time()
         async with self._tx():
             cursor = await self._db.execute(
                 """UPDATE project_tasks

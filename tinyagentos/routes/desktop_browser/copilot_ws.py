@@ -19,8 +19,7 @@ from pydantic import BaseModel
 from starlette.websockets import WebSocketDisconnect
 
 from tinyagentos.auth import get_current_user
-from tinyagentos.routes.desktop_browser import router
-from tinyagentos.routes.desktop_browser import push
+from tinyagentos.routes.desktop_browser import push, router
 
 _logger = logging.getLogger(__name__)
 

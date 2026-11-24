@@ -2,7 +2,7 @@
 import hashlib
 import struct
 
-from .frames import CHUNK, OrbError, T_DATA, cstr, encode_frame, from_cstr
+from .frames import CHUNK, T_DATA, OrbError, cstr, encode_frame, from_cstr
 from .image import APPID_LEN, LABEL_LEN, NAME_LEN
 
 ADD_FLAG = 0x80

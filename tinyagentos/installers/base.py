@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import subprocess
 from abc import ABC, abstractmethod
 
 
@@ -34,10 +33,10 @@ class AppInstaller(ABC):
 
 
 def get_installer(method: str, **kwargs) -> AppInstaller:
-    from tinyagentos.installers.pip_installer import PipInstaller
     from tinyagentos.installers.docker_installer import DockerInstaller
     from tinyagentos.installers.download_installer import DownloadInstaller
     from tinyagentos.installers.lxc_installer import LXCInstaller
+    from tinyagentos.installers.pip_installer import PipInstaller
     from tinyagentos.installers.rkllama_installer import RkllamaInstaller
 
     if method == "pip":
