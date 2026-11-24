@@ -2662,3 +2662,400 @@ class TestOfficeHardening:
         artifacts = await PptxProcessor(lib_store, storage_dir).process(item)
         assert len(artifacts) == 1
         assert "Grouped shape text" in Path(artifacts[0]["path"]).read_text()
+
+
+# ---------------------------------------------------------------------------
+# Library P2 (#2059): YouTube all-language transcripts, description artifact,
+# and failure states on the item card data
+# ---------------------------------------------------------------------------
+
+
+def _async_raise(exc):
+    """Return an async callable that raises ``exc`` (for mocking fetch)."""
+    async def _inner(*args, **kwargs):
+        raise exc
+    return _inner
+
+
+class TestYouTubeProcessorP2:
+    @pytest.mark.asyncio
+    async def test_description_and_all_language_transcripts(self, lib_store, storage_dir):
+        """Description becomes an indexable artifact; every transcript
+        language gets its own transcript artifact with the right language."""
+        from unittest.mock import patch
+
+        from tinyagentos.library_collections import _TEXT_ARTIFACT_KINDS
+
+        item_id = await lib_store.create_item(
+            kind="url:youtube",
+            source_url="https://youtube.com/watch?v=multi123",
+        )
+        item = await lib_store.get_item(item_id)
+
+        mock_result = {
+            "title": "Multi Video",
+            "author": "Chan",
+            "content": "English transcript.",
+            "description": "A full description of the video.",
+            "thumbnail": None,
+            "transcripts": [
+                {"language": "en", "content": "English transcript."},
+                {"language": "es", "content": "Transcripción en español."},
+            ],
+            "metadata": {
+                "video_id": "multi123",
+                "channel": "Chan",
+                "duration": 60,
+                "upload_date": "20260101",
+                "chapters": [],
+            },
+        }
+
+        with patch(
+            "tinyagentos.knowledge_fetchers.youtube.fetch",
+            _async_return(mock_result),
+        ):
+            proc = YouTubeProcessor(lib_store, storage_dir)
+            artifacts = await proc.process(item)
+
+        kinds = {a["kind"] for a in artifacts}
+        assert "description" in kinds
+        # The collections handoff only indexes known text kinds; the
+        # description artifact must be one of them or it never reaches agents.
+        assert "description" in _TEXT_ARTIFACT_KINDS
+
+        desc = [a for a in artifacts if a["kind"] == "description"][0]
+        assert Path(desc["path"]).read_text(encoding="utf-8") == (
+            "A full description of the video."
+        )
+
+        transcripts = [a for a in artifacts if a["kind"] == "transcript"]
+        assert len(transcripts) == 2
+        assert {a["meta"]["language"] for a in transcripts} == {"en", "es"}
+
+        updated = await lib_store.get_item(item_id)
+        meta = json.loads(updated["meta_json"])
+        assert meta["transcript_status"] == "available"
+        assert set(meta["transcript_languages"]) == {"en", "es"}
+
+    @pytest.mark.asyncio
+    async def test_no_transcript_records_card_state(self, lib_store, storage_dir):
+        """A video with no captions must say so on the item card data —
+        not silently land with metadata only (issue #2059, pitfall 8)."""
+        from unittest.mock import patch
+
+        item_id = await lib_store.create_item(
+            kind="url:youtube",
+            source_url="https://youtube.com/watch?v=nocaps123",
+        )
+
+        mock_result = {
+            "title": "No Captions",
+            "author": "Chan",
+            "content": "",
+            "description": "Has a description but no captions.",
+            "thumbnail": None,
+            "transcripts": [],
+            "metadata": {
+                "video_id": "nocaps123",
+                "channel": "Chan",
+                "chapters": [],
+            },
+        }
+
+        with patch(
+            "tinyagentos.knowledge_fetchers.youtube.fetch",
+            _async_return(mock_result),
+        ):
+            await run_pipeline(lib_store, item_id, storage_dir)
+
+        item = await lib_store.get_item(item_id)
+        # The cheap artifacts that DO exist still land, so the item is ready…
+        assert item["status"] == "ready"
+        artifacts = await lib_store.get_artifacts(item_id)
+        kinds = {a["kind"] for a in artifacts}
+        assert "description" in kinds
+        assert "transcript" not in kinds
+        # …but the missing transcript is explicit on the card data.
+        meta = json.loads(item["meta_json"])
+        assert meta["transcript_status"] == "unavailable"
+
+    @pytest.mark.asyncio
+    async def test_unavailable_video_records_failure_state(self, lib_store, storage_dir):
+        """An unavailable video ends in error with the specific reason on
+        the card, not the pipeline's generic failure message."""
+        from unittest.mock import patch
+
+        item_id = await lib_store.create_item(
+            kind="url:youtube",
+            source_url="https://youtube.com/watch?v=gone123",
+        )
+
+        with patch(
+            "tinyagentos.knowledge_fetchers.youtube.fetch",
+            _async_raise(RuntimeError(
+                "yt-dlp metadata fetch failed for "
+                "'https://youtube.com/watch?v=gone123': ERROR: Video unavailable"
+            )),
+        ):
+            await run_pipeline(lib_store, item_id, storage_dir)
+
+        item = await lib_store.get_item(item_id)
+        assert item["status"] == "error"
+        meta = json.loads(item["meta_json"])
+        assert meta["youtube_fetch_state"] == "unavailable"
+        assert "unavailable" in meta["error"].lower()
+        assert meta["error"] != "Pipeline failed for kind=url:youtube"
+
+    @pytest.mark.asyncio
+    async def test_geo_blocked_video_records_failure_state(self, lib_store, storage_dir):
+        """A geo-blocked video is classified as such on the item card."""
+        from unittest.mock import patch
+
+        item_id = await lib_store.create_item(
+            kind="url:youtube",
+            source_url="https://youtube.com/watch?v=geo123",
+        )
+
+        with patch(
+            "tinyagentos.knowledge_fetchers.youtube.fetch",
+            _async_raise(RuntimeError(
+                "yt-dlp metadata fetch failed for "
+                "'https://youtube.com/watch?v=geo123': ERROR: The uploader "
+                "has not made this video available in your country"
+            )),
+        ):
+            await run_pipeline(lib_store, item_id, storage_dir)
+
+        item = await lib_store.get_item(item_id)
+        assert item["status"] == "error"
+        meta = json.loads(item["meta_json"])
+        assert meta["youtube_fetch_state"] == "geo_blocked"
+        assert "geo" in meta["error"].lower()
+
+
+class TestWebProcessorP2:
+    @pytest.mark.asyncio
+    async def test_page_with_no_extractable_text_records_state(self, lib_store, storage_dir):
+        """A fetched page with no readable text records that state on the
+        item instead of silently producing a metadata-only success."""
+        from unittest.mock import patch
+
+        html = (
+            "<html><body><script>var tracker = 1;</script>"
+            "<img src=\"/pixel.png\"></body></html>"
+        )
+
+        item_id = await lib_store.create_item(
+            kind="url:web",
+            source_url="https://example.com/empty-article",
+            title="",
+        )
+        item = await lib_store.get_item(item_id)
+
+        proc = WebProcessor(lib_store, storage_dir)
+        mock_resp = _mock_httpx_response(html, 200)
+        with (
+            patch("httpx.AsyncClient") as mock_client_cls,
+            patch(
+                "tinyagentos.routes.desktop_browser.ssrf.validate_url_or_raise",
+            ),
+        ):
+            mock_client_cls.return_value.__aenter__.return_value.stream = (
+                _mock_stream_callable(mock_resp)
+            )
+            artifacts = await proc.process(item)
+
+        kinds = {a["kind"] for a in artifacts}
+        assert "text" not in kinds
+
+        updated = await lib_store.get_item(item_id)
+        meta = json.loads(updated["meta_json"])
+        assert meta["text_status"] == "no_text_extracted"
+
+class TestYouTubeProcessorP2Regressions:
+    @pytest.mark.asyncio
+    async def test_private_video_with_geo_in_id_is_not_geo_blocked(self, lib_store, storage_dir):
+        """A private-video failure whose URL contains "geo" (in the video
+        ID) must classify as private, not geo_blocked."""
+        from unittest.mock import patch
+
+        item_id = await lib_store.create_item(
+            kind="url:youtube",
+            source_url="https://youtube.com/watch?v=geoABCDEFGH",
+        )
+
+        with patch(
+            "tinyagentos.knowledge_fetchers.youtube.fetch",
+            _async_raise(RuntimeError(
+                "yt-dlp metadata fetch failed for "
+                "'https://youtube.com/watch?v=geoABCDEFGH': "
+                "ERROR: This video is private"
+            )),
+        ):
+            await run_pipeline(lib_store, item_id, storage_dir)
+
+        item = await lib_store.get_item(item_id)
+        assert item["status"] == "error"
+        meta = json.loads(item["meta_json"])
+        assert meta["youtube_fetch_state"] == "private"
+
+    @pytest.mark.asyncio
+    async def test_preview_prefers_primary_transcript(self, lib_store, storage_dir):
+        """The card preview uses the primary transcript (fetch's content),
+        not whichever language sorts first in the transcripts list."""
+        from unittest.mock import patch
+
+        item_id = await lib_store.create_item(
+            kind="url:youtube",
+            source_url="https://youtube.com/watch?v=preview123",
+        )
+        item = await lib_store.get_item(item_id)
+
+        mock_result = {
+            "title": "Preview Video",
+            "author": "Chan",
+            "content": "Primary English transcript text.",
+            "description": "",
+            "thumbnail": None,
+            "transcripts": [
+                {"language": "ar", "content": "Arabic transcript text here."},
+                {"language": "en", "content": "Primary English transcript text."},
+            ],
+            "metadata": {"video_id": "preview123", "channel": "Chan", "chapters": []},
+        }
+
+        with patch(
+            "tinyagentos.knowledge_fetchers.youtube.fetch",
+            _async_return(mock_result),
+        ):
+            proc = YouTubeProcessor(lib_store, storage_dir)
+            await proc.process(item)
+
+        updated = await lib_store.get_item(item_id)
+        meta = json.loads(updated["meta_json"])
+        assert meta["preview"] == "Primary English transcript text."
+
+
+    @pytest.mark.asyncio
+    async def test_failure_classification_ignores_keywords_in_url(self, lib_store, storage_dir):
+        """A generic fetch failure for a URL that happens to contain
+        "private", "unavailable" and "timeout" must classify as
+        fetch_failed: classification matches on the error text with the
+        source URL stripped, never on the URL itself."""
+        from unittest.mock import patch
+
+        url = "https://youtube.com/watch?v=private-unavailable-timeout"
+        item_id = await lib_store.create_item(
+            kind="url:youtube",
+            source_url=url,
+        )
+
+        with patch(
+            "tinyagentos.knowledge_fetchers.youtube.fetch",
+            _async_raise(RuntimeError(
+                f"yt-dlp metadata fetch failed for {url!r}: "
+                "ERROR: something unexpected happened"
+            )),
+        ):
+            await run_pipeline(lib_store, item_id, storage_dir)
+
+        item = await lib_store.get_item(item_id)
+        assert item["status"] == "error"
+        meta = json.loads(item["meta_json"])
+        assert meta["youtube_fetch_state"] == "fetch_failed"
+
+
+class TestYouTubeProcessorP2Reprocess:
+    @pytest.mark.asyncio
+    async def test_successful_reprocess_clears_stale_failure_state(self, lib_store, storage_dir):
+        """Reprocessing after a failed, uncaptioned attempt must not keep
+        the old youtube_fetch_state or transcript_note once the retry
+        lands with captions."""
+        from unittest.mock import patch
+
+        item_id = await lib_store.create_item(
+            kind="url:youtube",
+            source_url="https://youtube.com/watch?v=retry123",
+        )
+        await lib_store.update_item(item_id, meta_json={
+            "youtube_fetch_state": "unavailable",
+            "transcript_status": "unavailable",
+            "transcript_note": (
+                "No subtitles or captions were available for this video."
+            ),
+        })
+        item = await lib_store.get_item(item_id)
+
+        mock_result = {
+            "title": "Retry Video",
+            "author": "Chan",
+            "content": "English transcript.",
+            "description": "",
+            "thumbnail": None,
+            "transcripts": [
+                {"language": "en", "content": "English transcript."},
+            ],
+            "metadata": {
+                "video_id": "retry123",
+                "channel": "Chan",
+                "chapters": [],
+            },
+        }
+
+        with patch(
+            "tinyagentos.knowledge_fetchers.youtube.fetch",
+            _async_return(mock_result),
+        ):
+            proc = YouTubeProcessor(lib_store, storage_dir)
+            await proc.process(item)
+
+        updated = await lib_store.get_item(item_id)
+        meta = json.loads(updated["meta_json"])
+        assert "youtube_fetch_state" not in meta
+        assert meta["transcript_status"] == "available"
+        assert meta["transcript_languages"] == ["en"]
+        assert "transcript_note" not in meta
+
+    @pytest.mark.asyncio
+    async def test_uncaptioned_reprocess_clears_stale_languages(self, lib_store, storage_dir):
+        """A reprocess that finds no captions must drop the previous
+        attempt's transcript_languages."""
+        from unittest.mock import patch
+
+        item_id = await lib_store.create_item(
+            kind="url:youtube",
+            source_url="https://youtube.com/watch?v=retry456",
+        )
+        await lib_store.update_item(item_id, meta_json={
+            "transcript_status": "available",
+            "transcript_languages": ["en", "es"],
+        })
+        item = await lib_store.get_item(item_id)
+
+        mock_result = {
+            "title": "Retry Video",
+            "author": "Chan",
+            "content": "",
+            "description": "",
+            "thumbnail": None,
+            "transcripts": [],
+            "metadata": {
+                "video_id": "retry456",
+                "channel": "Chan",
+                "chapters": [],
+            },
+        }
+
+        with patch(
+            "tinyagentos.knowledge_fetchers.youtube.fetch",
+            _async_return(mock_result),
+        ):
+            proc = YouTubeProcessor(lib_store, storage_dir)
+            await proc.process(item)
+
+        updated = await lib_store.get_item(item_id)
+        meta = json.loads(updated["meta_json"])
+        assert meta["transcript_status"] == "unavailable"
+        assert "transcript_languages" not in meta
+        assert meta["transcript_note"]

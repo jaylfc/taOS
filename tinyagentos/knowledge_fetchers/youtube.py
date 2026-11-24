@@ -18,6 +18,13 @@ logger = logging.getLogger(__name__)
 
 _YTDLP_NOT_FOUND_MSG = "yt-dlp not installed -- install the optional media extra"
 
+# Per-step subprocess budgets (seconds). Each yt-dlp invocation gets its
+# own budget, so a slow caption step cannot be starved by -- or squeeze --
+# the metadata step; callers wrapping fetch() must leave room for all of
+# them instead of applying one shared allowance to the whole fetch.
+_METADATA_TIMEOUT_S = 120
+_MEDIA_TIMEOUT_S = 120
+
 # Quality format map for yt-dlp -f flag
 _QUALITY_FORMATS: dict[str, str] = {
     "360": "bestvideo[height<=360]+bestaudio/best[height<=360]",
@@ -138,6 +145,19 @@ def format_timestamp(seconds: float) -> str:
 # Main fetch function
 # ---------------------------------------------------------------------------
 
+def _vtt_language(vtt_path: Path, video_id: str) -> str:
+    """Caption language from a yt-dlp subtitle filename.
+
+    yt-dlp writes ``<id>.<lang>.vtt`` (e.g. ``abc123.en.vtt``,
+    ``abc123.en-orig.vtt``); a bare ``<id>.vtt`` has no language marker.
+    """
+    stem = vtt_path.stem
+    prefix = f"{video_id}."
+    if stem.startswith(prefix):
+        return stem[len(prefix):] or "unknown"
+    return "unknown"
+
+
 async def fetch(
     url: str,
     media_dir: str | Path = "data/knowledge-media/youtube",
@@ -168,7 +188,9 @@ async def fetch(
             stderr=asyncio.subprocess.PIPE,
         )
         tracked_procs.append(proc)
-        stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=120)
+        stdout, stderr = await asyncio.wait_for(
+            proc.communicate(), timeout=_METADATA_TIMEOUT_S,
+        )
         tracked_procs.remove(proc)
         if proc.returncode != 0:
             err = stderr.decode(errors="replace").strip()
@@ -199,42 +221,80 @@ async def fetch(
         ]
 
         # ------------------------------------------------------------------ #
-        # Step 2+3: download thumbnail and captions in one invocation
+        # Step 2+3: download thumbnail and captions
         # ------------------------------------------------------------------ #
-        out_proc = await asyncio.create_subprocess_exec(
-            ytdlp,
+        # Manual and automatic captions are fetched in separate
+        # invocations, each with its own timeout: --sub-lang applies to
+        # both kinds, and "all" for automatic captions would request
+        # every auto-translated track (100+ per video), risking rate
+        # limits and timeouts. Manual captions are fetched for all
+        # languages; automatic captions only for en.*.
+        async def _run_media_step(*extra_args: str) -> None:
+            media_proc = await asyncio.create_subprocess_exec(
+                ytdlp, *extra_args,
+                "--sub-format", "vtt",
+                "--skip-download",
+                "-o", str(media_dir / "%(id)s"),
+                url,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            tracked_procs.append(media_proc)
+            await asyncio.wait_for(
+                media_proc.communicate(), timeout=_MEDIA_TIMEOUT_S,
+            )
+            tracked_procs.remove(media_proc)
+            if media_proc.returncode != 0:
+                logger.warning("yt-dlp media download failed for %s", url)
+
+        await _run_media_step(
             "--write-thumbnail",
             "--convert-thumbnails", "png",
-            "--write-auto-sub",
             "--write-sub",
-            "--sub-lang", "en",
-            "--sub-format", "vtt",
-            "--skip-download",
-            "-o", str(media_dir / "%(id)s"),
-            url,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
+            "--sub-lang", "all",
         )
-        tracked_procs.append(out_proc)
-        await asyncio.wait_for(out_proc.communicate(), timeout=120)
-        tracked_procs.remove(out_proc)
-        if out_proc.returncode != 0:
-            logger.warning("yt-dlp media download failed for %s", url)
+        await _run_media_step(
+            "--write-auto-sub",
+            "--sub-lang", "en.*",
+            # Never replace a manual caption file for the same language:
+            # yt-dlp overwrites existing subtitle files by default, which
+            # would discard the manual transcript fetched above. Automatic
+            # languages with no manual file are still downloaded.
+            "--no-overwrites",
+        )
 
         # ------------------------------------------------------------------ #
-        # Step 4: parse VTT
+        # Step 4: parse VTT — one transcript per caption language
         # ------------------------------------------------------------------ #
-        segments: list[dict] = []
-        vtt_candidates = sorted(media_dir.glob(f"{video_id}*.vtt"))
-        if vtt_candidates:
-            vtt_file = vtt_candidates[0]
+        transcripts: list[dict] = []
+        for vtt_file in sorted(media_dir.glob(f"{video_id}*.vtt")):
             try:
                 vtt_text = vtt_file.read_text(encoding="utf-8", errors="replace")
-                segments = parse_vtt(vtt_text)
+                file_segments = parse_vtt(vtt_text)
             except Exception as exc:
-                logger.warning("Failed to parse VTT for %s: %s", video_id, exc)
+                logger.warning("Failed to parse VTT %s: %s", vtt_file, exc)
+                continue
+            if not file_segments:
+                continue
+            transcripts.append({
+                "language": _vtt_language(vtt_file, video_id),
+                "segments": file_segments,
+                "content": "\n".join(seg["text"] for seg in file_segments),
+            })
 
-        transcript = "\n".join(seg["text"] for seg in segments)
+        # Primary transcript: English when available, else the first
+        # language captured. ``content``/``transcript_segments`` keep their
+        # historical meaning for existing consumers.
+        primary = (
+            next((t for t in transcripts if t["language"] == "en"), None)
+            or next(
+                (t for t in transcripts if t["language"].startswith("en-")),
+                None,
+            )
+            or (transcripts[0] if transcripts else None)
+        )
+        segments: list[dict] = primary["segments"] if primary else []
+        transcript = primary["content"] if primary else ""
 
         thumbnail_path = None
         for candidate in sorted(media_dir.glob(f"{video_id}.*")):
@@ -246,6 +306,8 @@ async def fetch(
             "title": title,
             "author": channel,
             "content": transcript,
+            "description": description,
+            "transcripts": transcripts,
             "thumbnail": str(thumbnail_path) if thumbnail_path else None,
             "metadata": {
                 "video_id": video_id,
@@ -256,6 +318,7 @@ async def fetch(
                 "upload_date": upload_date,
                 "chapters": chapters,
                 "transcript_segments": segments,
+                "transcript_languages": [t["language"] for t in transcripts],
             },
         }
     finally:
