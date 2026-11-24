@@ -101,6 +101,7 @@ from tinyagentos.app_orchestrator import AppOrchestrator
 from tinyagentos.computer_use import ComputerUseManager
 from tinyagentos.webhook_notifier import WebhookNotifier
 from tinyagentos.llm_proxy import LLMProxy
+from tinyagentos.logging_config import configure_logging
 from tinyagentos.agent_image import ensure_all_base_images_present as _ensure_agent_images_present
 from tinyagentos.agent_image import is_prefetch_enabled as _is_prefetch_enabled
 from tinyagentos.agent_image import register_prefetch_endpoint
@@ -220,6 +221,10 @@ def _resolve_browser_cookie_key(data_dir: "Path") -> str:
 
 
 def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) -> FastAPI:
+    # Configure logging for all start paths (factory, test client, python -m tinyagentos).
+    # Idempotent: safe to call multiple times.
+    configure_logging()
+
     from tinyagentos.registry import AppRegistry
     from tinyagentos.hardware import get_hardware_profile
 
