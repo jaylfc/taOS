@@ -1119,3 +1119,22 @@ async def test_ready_blocked_on_label_does_not_match_across_projects(client):
         f"{foreign_labeled['id']} in project {pid_a}"
     )
 
+
+
+@pytest.mark.asyncio
+async def test_put_project_setting_round_trips(client):
+    """PUT /settings/{key} exercises require_owner_or_admin (#739).
+
+    On dev the route called require_owner_or_admin without importing it,
+    so every PUT raised NameError. The owner can write a setting and read
+    it back.
+    """
+    pid = (await client.post("/api/projects", json={"name": "S", "slug": "s"})).json()["id"]
+
+    resp = await client.put(f"/api/projects/{pid}/settings/theme", json={"value": "dark"})
+    assert resp.status_code == 200
+    assert resp.json() == {"key": "theme", "value": "dark"}
+
+    resp = await client.get(f"/api/projects/{pid}/settings/theme")
+    assert resp.status_code == 200
+    assert resp.json()["value"] == "dark"

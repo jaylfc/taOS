@@ -177,6 +177,12 @@ ignore = [
     "E402",
 ]
 
+[tool.ruff.lint.per-file-ignores]
+# Vendored byte-identical copy: tests/cluster/test_ble_proto.py pins its
+# sha256 against the vendored source, so its import block keeps the
+# upstream order rather than isort's.
+"tinyagentos/cluster/ble/proto.py" = ["I001"]
+
 [tool.pytest.ini_options]
 # Per-test timeout: a single hung test fails fast and named instead of
 # silently eating the entire 45-minute CI budget.  120 s covers the

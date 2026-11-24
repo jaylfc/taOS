@@ -24,6 +24,7 @@ from __future__ import annotations
 import logging
 import os
 import time
+from pathlib import Path  # noqa: F401
 from typing import TYPE_CHECKING
 
 from .worker_heartbeat import WorkerRegistry

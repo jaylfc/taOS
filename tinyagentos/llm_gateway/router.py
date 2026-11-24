@@ -19,6 +19,7 @@ from tinyagentos.llm_gateway.errors import (
     model_not_permitted,
 )
 from tinyagentos.llm_gateway.forward import (
+    OLLAMA_PROVIDERS,  # noqa: F401
     chat_completion,
     chat_completion_stream,
     forwardable,
