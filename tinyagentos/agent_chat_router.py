@@ -62,6 +62,7 @@ class AgentChatRouter:
 
         chat_messages = self._state.chat_messages
         chat_hub = self._state.chat_hub
+        in_use = getattr(self._state, "in_use", None)
 
         loop = self._agent_loops.setdefault(agent_name, AgentLoop())
         action = await loop.handle_message(text, msg_id=trace_id)
@@ -70,61 +71,70 @@ class AgentChatRouter:
             # drives this message at its safe point (drain below).
             return
 
-        # Turn-holder: drive the turn, then iteratively (never recursively)
-        # drive every message queued while it ran. Each queued message keeps
-        # its own trace id.
-        pending: list[tuple[str, Any]] = [(text, trace_id)]
-        while pending:
-            cur_text, cur_trace = pending.pop(0)
-            # Stamp delivered for this trace_id right before driving the turn
-            if chat_messages:
+        # Turn-holder: increment counter for this agent turn
+        if in_use is not None:
+            await in_use.increment_agent_turn()
+
+        try:
+            # Turn-holder: drive the turn, then iteratively (never recursively)
+            # drive every message queued while it ran. Each queued message keeps
+            # its own trace id.
+            pending: list[tuple[str, Any]] = [(text, trace_id)]
+            while pending:
+                cur_text, cur_trace = pending.pop(0)
+                # Stamp delivered for this trace_id right before driving the turn
+                if chat_messages:
+                    try:
+                        msg = await chat_messages.get_message(cur_trace)
+                        if msg:
+                            receipt_row = await chat_messages.mark_delivered(cur_trace, agent_name)
+                            if receipt_row and chat_hub:
+                                channel_id = msg.get("channel_id")
+                                if channel_id:
+                                    await chat_hub.broadcast(channel_id, {
+                                        "type": "receipt",
+                                        "seq": chat_hub.next_seq(),
+                                        "message_id": receipt_row["message_id"],
+                                        "agent_id": receipt_row["reader_id"],
+                                        "reader_type": receipt_row["reader_type"],
+                                        "delivered_at": receipt_row["delivered_at"],
+                                        "seen_at": receipt_row["seen_at"],
+                                    })
+                    except Exception:
+                        logger.exception("agent_chat_router: mark_delivered failed for %s", agent_name)
                 try:
-                    msg = await chat_messages.get_message(cur_trace)
-                    if msg:
-                        receipt_row = await chat_messages.mark_delivered(cur_trace, agent_name)
-                        if receipt_row and chat_hub:
-                            channel_id = msg.get("channel_id")
-                            if channel_id:
-                                await chat_hub.broadcast(channel_id, {
-                                    "type": "receipt",
-                                    "seq": chat_hub.next_seq(),
-                                    "message_id": receipt_row["message_id"],
-                                    "agent_id": receipt_row["reader_id"],
-                                    "reader_type": receipt_row["reader_type"],
-                                    "delivered_at": receipt_row["delivered_at"],
-                                    "seen_at": receipt_row["seen_at"],
-                                })
-                except Exception:
-                    logger.exception("agent_chat_router: mark_delivered failed for %s", agent_name)
-            try:
-                await drive_turn(
-                    slug=agent_name, text=cur_text, trace_id=cur_trace,
-                    record_reply=record_reply,
-                )
-            except Exception as exc:  # noqa: BLE001
-                # Log like _route does: this task has no other supervisor, and
-                # a raise must not drop the messages queued behind the failed
-                # turn (they are still drained and driven below).
-                logger.warning(
-                    "acp turn for agent %s failed: %s",
-                    agent_name, exc, exc_info=True,
-                )
-            finally:
-                # MUST run even when drive_turn raises or the task is
-                # cancelled — skipping it would wedge the loop in WORKING
-                # forever and silence the agent.
-                queued = await loop.reach_safe_point()
-            for m in queued:
-                followup = await loop.handle_message(m.content, msg_id=m.id)
-                if followup is LoopAction.IMMEDIATE:
-                    pending.append((m.content, m.id))
-                # QUEUED here means this holder already restarted the turn
-                # with an earlier drained message (handle_message and the
-                # drain are atomic - the lock is never held across an await,
-                # so no other caller can interleave). The message sits in the
-                # loop's queue and this holder's next reach_safe_point
-                # re-drains it; WORKING always implies the current holder
-                # reaches another safe point.
+                    await drive_turn(
+                        slug=agent_name, text=cur_text, trace_id=cur_trace,
+                        record_reply=record_reply,
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    # Log like _route does: this task has no other supervisor, and
+                    # a raise must not drop the messages queued behind the failed
+                    # turn (they are still drained and driven below).
+                    logger.warning(
+                        "acp turn for agent %s failed: %s",
+                        agent_name, exc, exc_info=True,
+                    )
+                finally:
+                    # MUST run even when drive_turn raises or the task is
+                    # cancelled — skipping it would wedge the loop in WORKING
+                    # forever and silence the agent.
+                    queued = await loop.reach_safe_point()
+                for m in queued:
+                    followup = await loop.handle_message(m.content, msg_id=m.id)
+                    if followup is LoopAction.IMMEDIATE:
+                        pending.append((m.content, m.id))
+                    # QUEUED here means this holder already restarted the turn
+                    # with an earlier drained message (handle_message and the
+                    # drain are atomic - the lock is never held across an await,
+                    # so no other caller can interleave). The message sits in the
+                    # loop's queue and this holder's next reach_safe_point
+                    # re-drains it; WORKING always implies the current holder
+                    # reaches another safe point.
+        finally:
+            # Always release the turn counter when the turn-holder finishes
+            if in_use is not None:
+                await in_use.decrement_agent_turn()
 
     def dispatch(self, message: dict, channel: dict) -> None:
         """Fire-and-forget entry point. Runs routing in a supervised background task."""

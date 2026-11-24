@@ -113,18 +113,29 @@ async def chat_completions(request: Request, caller: GatewayCaller = Depends(gat
         if body.get("stream"):
             from fastapi.responses import StreamingResponse
             from tinyagentos.llm_gateway.anthropic import chat_completion_stream_anthropic
+            in_use = getattr(state, "in_use", None)
+            if in_use is not None:
+                await in_use.increment_gateway_stream()
             gen = chat_completion_stream_anthropic(routes, body, principal, state)
             try:
                 first = await gen.__anext__()
             except StopAsyncIteration:
+                if in_use is not None:
+                    await in_use.decrement_gateway_stream()
                 return StreamingResponse((), media_type="text/event-stream", headers={"cache-control": "no-cache"})
             except GatewayError as exc:
+                if in_use is not None:
+                    await in_use.decrement_gateway_stream()
                 return exc.response()
 
             async def _full():
-                yield first
-                async for chunk in gen:
-                    yield chunk
+                try:
+                    yield first
+                    async for chunk in gen:
+                        yield chunk
+                finally:
+                    if in_use is not None:
+                        await in_use.decrement_gateway_stream()
 
             return StreamingResponse(_full(), media_type="text/event-stream", headers={"cache-control": "no-cache"})
         api_key = await resolve_api_key(state, route.api_key_ref)

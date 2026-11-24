@@ -189,6 +189,21 @@ class BridgeSessionRegistry:
         if session.pending_hops.pop(trace_id, None) is not None and self._in_use is not None:
             await self._in_use.decrement_agent_turn()
 
+    async def _release_all_pending_turns(self, session: _AgentSession) -> None:
+        """Release all pending turns for a session (e.g., on session drop)."""
+        if self._in_use is None:
+            return
+        for trace_id in list(session.pending_hops.keys()):
+            session.pending_hops.pop(trace_id, None)
+            await self._in_use.decrement_agent_turn()
+
+    async def remove_session(self, slug: str) -> None:
+        """Remove a session and release all its pending turns."""
+        async with self._lock:
+            session = self._sessions.pop(slug, None)
+        if session is not None:
+            await self._release_all_pending_turns(session)
+
     def _get_or_create(self, slug: str) -> _AgentSession:
         if slug not in self._sessions:
             self._sessions[slug] = _AgentSession()
@@ -211,9 +226,10 @@ class BridgeSessionRegistry:
             session = self._get_or_create(slug)
         trace_id = msg.get("trace_id") or msg.get("id")
         if trace_id is not None:
+            if trace_id not in session.pending_hops:
+                if self._in_use is not None:
+                    await self._in_use.increment_agent_turn()
             session.pending_hops[trace_id] = int(msg.get("hops_since_user") or 0)
-            if self._in_use is not None:
-                await self._in_use.increment_agent_turn()
         # Store data as JSON string so subscribe can read id without re-encoding
         event: dict = {"event": "user_message", "data": json.dumps(msg)}
         outbox = self._guest_outbox
@@ -537,6 +553,7 @@ class BridgeSessionRegistry:
             # write entirely (but archive write above still ran / was attempted).
             # Replies without an id are not deduplicated.
             if reply_id is not None and session.is_final_id_seen(reply_id):
+                await self._release_turn(session, trace_id)
                 return
 
             # Write trace event (only for new reply_ids).
@@ -550,59 +567,61 @@ class BridgeSessionRegistry:
                 )
 
             persisted = None
-            if channel_id:
-                if pending_msg_id and self._chat_messages:
-                    # Edit the streaming placeholder to final content.
-                    await self._chat_messages.edit_message(pending_msg_id, final_content)
-                    await self._chat_messages.update_state(pending_msg_id, "complete")
-                    # Update content_blocks if we have validated blocks
-                    if validated_blocks is not None:
-                        merged = await self._chat_messages.extend_content_blocks(pending_msg_id, validated_blocks)
-                        validated_blocks_for_broadcast = merged
-                    else:
-                        validated_blocks_for_broadcast = None
-                    await self._release_turn(session, trace_id)
-                    if self._chat_hub:
-                        # Broadcast message_edit with content and optionally content_blocks
-                        broadcast_payload = {
-                            "type": "message_edit",
-                            "seq": self._chat_hub.next_seq(),
-                            "message_id": pending_msg_id,
-                            "content": final_content,
-                            "edited_at": time.time(),
-                        }
+            try:
+                if channel_id:
+                    if pending_msg_id and self._chat_messages:
+                        # Edit the streaming placeholder to final content.
+                        await self._chat_messages.edit_message(pending_msg_id, final_content)
+                        await self._chat_messages.update_state(pending_msg_id, "complete")
+                        # Update content_blocks if we have validated blocks
                         if validated_blocks is not None:
-                            broadcast_payload["content_blocks"] = validated_blocks_for_broadcast
-                        await self._chat_hub.broadcast(channel_id, broadcast_payload)
-                        await self._chat_hub.broadcast(channel_id, {
-                            "type": "message_state",
-                            "seq": self._chat_hub.next_seq(),
-                            "message_id": pending_msg_id,
-                            "state": "complete",
-                        })
-                elif self._chat_messages and self._chat_channels:
-                    # No streaming placeholder — create the message directly.
-                    _final_hops = session.pending_hops.get(trace_id, 0)
-                    await self._release_turn(session, trace_id)
-                    new_msg = await self._chat_messages.send_message(
-                        channel_id=channel_id,
-                        author_id=slug,
-                        author_type="agent",
-                        content=final_content,
-                        state="complete",
-                        content_blocks=validated_blocks,  # passes None or list, which send_message handles
-                        metadata={"trace_id": trace_id, "openclaw_msg_id": msg_id, "hops_since_user": _final_hops},
-                    )
-                    await self._chat_channels.update_last_message_at(channel_id)
-                    if self._chat_hub:
-                        await self._chat_hub.broadcast(channel_id, {
-                            "type": "message",
-                            "seq": self._chat_hub.next_seq(),
-                            **new_msg,
-                        })
-                    persisted = new_msg
-                if reply_id is not None:
-                    session.mark_final_id_seen(reply_id)
+                            merged = await self._chat_messages.extend_content_blocks(pending_msg_id, validated_blocks)
+                            validated_blocks_for_broadcast = merged
+                        else:
+                            validated_blocks_for_broadcast = None
+                        if self._chat_hub:
+                            # Broadcast message_edit with content and optionally content_blocks
+                            broadcast_payload = {
+                                "type": "message_edit",
+                                "seq": self._chat_hub.next_seq(),
+                                "message_id": pending_msg_id,
+                                "content": final_content,
+                                "edited_at": time.time(),
+                            }
+                            if validated_blocks is not None:
+                                broadcast_payload["content_blocks"] = validated_blocks_for_broadcast
+                            await self._chat_hub.broadcast(channel_id, broadcast_payload)
+                            await self._chat_hub.broadcast(channel_id, {
+                                "type": "message_state",
+                                "seq": self._chat_hub.next_seq(),
+                                "message_id": pending_msg_id,
+                                "state": "complete",
+                            })
+                    elif self._chat_messages and self._chat_channels:
+                        # No streaming placeholder — create the message directly.
+                        _final_hops = session.pending_hops.get(trace_id, 0)
+                        new_msg = await self._chat_messages.send_message(
+                            channel_id=channel_id,
+                            author_id=slug,
+                            author_type="agent",
+                            content=final_content,
+                            state="complete",
+                            content_blocks=validated_blocks,  # passes None or list, which send_message handles
+                            metadata={"trace_id": trace_id, "openclaw_msg_id": msg_id, "hops_since_user": _final_hops},
+                        )
+                        await self._chat_channels.update_last_message_at(channel_id)
+                        if self._chat_hub:
+                            await self._chat_hub.broadcast(channel_id, {
+                                "type": "message",
+                                "seq": self._chat_hub.next_seq(),
+                                **new_msg,
+                            })
+                        persisted = new_msg
+                    if reply_id is not None:
+                        session.mark_final_id_seen(reply_id)
+            finally:
+                # Always release the turn, even if chat persistence fails or channel_id is None
+                await self._release_turn(session, trace_id)
 
             # Re-dispatch so other agents in the channel see this reply.
             router = self._router
