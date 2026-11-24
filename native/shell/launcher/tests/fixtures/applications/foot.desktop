@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=Terminal
+GenericName=Terminal Emulator
+Comment=Run commands
+Icon=utilities-terminal
+Exec=foot
+Keywords=shell;console;command;
+Categories=System;TerminalEmulator;

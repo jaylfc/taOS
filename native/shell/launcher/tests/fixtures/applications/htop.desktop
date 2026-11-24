@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=Htop
+GenericName=Process Viewer
+Comment=Watch processes
+Icon=htop
+Exec=htop
+Keywords=cpu;memory;
+Categories=System;Monitor;
+Terminal=true

@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=Image Viewer
+GenericName=Image Viewer
+Comment=View pictures
+Icon=image-x-generic
+Exec=taos-images %f
+Keywords=photos;pictures;
+Categories=Graphics;Viewer;

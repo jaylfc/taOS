@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=Settings
+GenericName=System Settings
+Comment=Change how taOS works
+Icon=preferences-system
+Exec=taos-settings
+Keywords=preferences;options;
+Categories=Settings;

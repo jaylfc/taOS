@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=Files
+GenericName=File Manager
+Comment=Browse files and folders
+Icon=system-file-manager
+Exec=taos-files %U
+Keywords=folders;explorer;
+Categories=System;FileManager;

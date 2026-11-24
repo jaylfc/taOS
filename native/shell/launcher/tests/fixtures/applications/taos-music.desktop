@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=Music
+GenericName=Music Player
+Comment=Play your music
+Icon=multimedia-audio-player
+Exec=taos-music
+Keywords=songs;audio;
+Categories=AudioVideo;Audio;

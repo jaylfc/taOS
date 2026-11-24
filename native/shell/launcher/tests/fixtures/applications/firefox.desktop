@@ -1,0 +1,18 @@
+[Desktop Entry]
+Type=Application
+Name=Firefox
+GenericName=Web Browser
+Comment=Browse the web
+Icon=firefox
+Exec=firefox %u
+Keywords=internet;www;browser;
+Categories=Network;WebBrowser;
+Actions=new-window;new-private;
+
+[Desktop Action new-window]
+Name=New Window
+Exec=firefox --new-window
+
+[Desktop Action new-private]
+Name=New Private Window
+Exec=firefox --private-window

@@ -1,0 +1,6 @@
+[
+ {"id": 11, "app_id": "firefox", "title": "taOS docs - Mozilla Firefox", "pid": 2101, "workspace": 1, "focused": true, "minimised": false, "floating": false, "fullscreen": false, "output": "DP-1"},
+ {"id": 14, "app_id": "foot", "title": "alex@taos: ~/Development", "pid": 2210, "workspace": 1, "focused": false, "minimised": false, "floating": false, "fullscreen": false, "output": "DP-1"},
+ {"id": 17, "app_id": "org.taos.Files", "title": "Documents", "pid": 2302, "workspace": 2, "focused": false, "minimised": false, "floating": true, "fullscreen": false, "output": "DP-1"},
+ {"id": 21, "app_id": "gedit", "title": "notes.txt", "pid": 2455, "workspace": 2, "focused": false, "minimised": true, "floating": false, "fullscreen": false, "output": "DP-1"}
+]
