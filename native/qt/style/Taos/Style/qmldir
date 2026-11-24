@@ -1,0 +1,5 @@
+module Taos.Style
+singleton TaosStyle 1.0 TaosStyle.qml
+TaosWindow 1.0 TaosWindow.qml
+TaosTitleBar 1.0 TaosTitleBar.qml
+TitleButton 1.0 TitleButton.qml
