@@ -708,6 +708,51 @@ class TestApplyUpdateRollback:
         assert resp.status_code == 200, resp.text
         assert read_rollback_target(repo) is None
 
+    @pytest.mark.asyncio
+    async def test_rollback_retry_preserves_original_target(
+        self, client, tmp_path, monkeypatch
+    ):
+        import tinyagentos.routes.settings as settings_mod
+        from tinyagentos.rollback import record_pre_update, read_rollback_target
+
+        repo, old_sha = self._make_repo_with_origin(tmp_path)
+        fake_settings = repo / "tinyagentos" / "routes" / "settings.py"
+        fake_settings.parent.mkdir(parents=True, exist_ok=True)
+        fake_settings.write_text("# test shim\n")
+        monkeypatch.setattr(settings_mod, "__file__", str(fake_settings))
+
+        # Seed the pre-update record for A exactly as the first update wrote it.
+        record_pre_update(repo, branch="main", sha=old_sha, ts=1)
+
+        # Move HEAD to B as if the merge had already happened (a failed update
+        # left the tree at the new tip).
+        self._git(repo, "merge", "--ff-only", "origin/main")
+
+        async def fake_restart(_app_state):
+            return None
+
+        with (
+            patch("tinyagentos.update_preflight.check_preflight", return_value=[]),
+            patch(
+                "tinyagentos.routes.settings.resolve_tracked_branch",
+                new=AsyncMock(return_value="main"),
+            ),
+            patch("tinyagentos.routes.settings._run_capture", new=AsyncMock(return_value=(0, "ok"))),
+            patch("tinyagentos.routes.settings._stash_local_source_changes", new=AsyncMock(return_value=False)),
+            patch("tinyagentos.routes.settings._update_local_taosmd", new=AsyncMock(return_value={"skipped": "test"})),
+            patch("tinyagentos.routes.settings._pip_rebuild_restart", new=AsyncMock(return_value=(0, "ok", None))),
+            patch("tinyagentos.routes.system._do_restart", new=fake_restart),
+            patch("tinyagentos.routes.settings.write_pending_restart"),
+        ):
+            resp = await client.post("/api/settings/update")
+
+        assert resp.status_code == 200, resp.text
+        target = read_rollback_target(repo)
+        assert target is not None
+        # The retry must not overwrite the original pre-update target A.
+        assert target["sha"] == old_sha
+        assert target["branch"] == "main"
+
 
 class TestLaunchdMigrationWarning:
     """Migration warnings must reach the user exactly once, no substring sniffing."""

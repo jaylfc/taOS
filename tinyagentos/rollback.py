@@ -15,14 +15,22 @@ is treated as "no usable record", which sends the script to its recovery-tag
 fallback instead of dead-ending.
 
 File: ``<project_dir>/.taos-rollback`` (single record, overwritten each update).
+
+``record_pre_update`` writes best effort. If the durable atomic write cannot
+complete it returns ``None`` (and logs a warning) instead of raising; the
+caller is responsible for removing any stale record so rollback never targets
+an update that was never fully applied.
 """
 
 from __future__ import annotations
 
+import logging
 import re
 from pathlib import Path
 
 from tinyagentos.atomic_io import atomic_write_text
+
+logger = logging.getLogger(__name__)
 
 ROLLBACK_FILE = ".taos-rollback"
 
@@ -71,7 +79,7 @@ def _shq(value: str) -> str:
     return "'" + str(value).replace("'", "'\\''") + "'"
 
 
-def record_pre_update(project_dir, *, branch: str, sha: str, ts: int) -> Path:
+def record_pre_update(project_dir, *, branch: str, sha: str, ts: int) -> Path | None:
     """Write the pre-update branch + commit so a rollback can restore both.
 
     Overwrites any prior record: rollback targets the state immediately before
@@ -79,22 +87,29 @@ def record_pre_update(project_dir, *, branch: str, sha: str, ts: int) -> Path:
 
     Raises ``ValueError`` for a ``sha`` that is not a full git object name or a
     ``branch`` carrying a newline (which would forge a second record line).
-    The caller records best-effort, so a rejected write simply leaves the
-    rollback script on its recovery-tag fallback rather than on a bad target.
+
+    The durable write runs best effort: if it cannot complete, ``None`` is
+    returned (and a warning logged) instead of raising, so a failed write never
+    blocks an update. The caller must remove any stale record so rollback does
+    not target an update that was never fully applied.
     """
     if not _SHA_RE.fullmatch(str(sha)):
         raise ValueError(f"rollback sha is not a git object name: {sha!r}")
     if "\n" in str(branch) or "\r" in str(branch):
         raise ValueError(f"rollback branch contains a newline: {branch!r}")
     path = Path(project_dir) / ROLLBACK_FILE
-    atomic_write_text(
-        path,
-        "# taOS rollback target -- the branch + commit the last update left.\n"
-        "# Data only: scripts/rollback.sh parses these lines, it never sources them.\n"
-        f"prev_branch={_shq(branch)}\n"
-        f"prev_sha={_shq(sha)}\n"
-        f"prev_ts={_shq(ts)}\n",
-    )
+    try:
+        atomic_write_text(
+            path,
+            "# taOS rollback target -- the branch + commit the last update left.\n"
+            "# Data only: scripts/rollback.sh parses these lines, it never sources them.\n"
+            f"prev_branch={_shq(branch)}\n"
+            f"prev_sha={_shq(sha)}\n"
+            f"prev_ts={_shq(ts)}\n",
+        )
+    except Exception:  # noqa: BLE001
+        logger.warning("rollback: failed to write rollback target", exc_info=True)
+        return None
     return path
 
 

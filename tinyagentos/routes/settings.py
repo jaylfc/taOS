@@ -1203,10 +1203,14 @@ async def apply_update(request: Request):
 
     # Record the pre-update branch + commit before mutating the working tree so
     # `taos rollback` can restore both after the most common update path.
-    # Best effort: a failed write must not block the update.
-    from tinyagentos.update_runner import record_current_rollback_target
-
-    await record_current_rollback_target(project_dir)
+    # The record is written only when the update will actually advance HEAD
+    # (HEAD != the fetched tip of the tracked branch) or when no rollback
+    # record exists yet: a retry after a failed update must not overwrite the
+    # original pre-update target, because HEAD already contains that record's
+    # sha as an ancestor and no new commits are being applied. Best effort: a
+    # failed write must not block the update.
+    # The actual write happens below, once the fetch has returned the tracked
+    # branch tip we compare HEAD against.
 
     # The desktop rebuild leaves the tree dirty in two ways, and a dirty
     # tracked file makes the next git pull --ff-only refuse to overwrite the
@@ -1246,6 +1250,34 @@ async def apply_update(request: Request):
             {"error": f"Fetch failed: {(fetch_out.decode(errors='replace') if fetch_out else 'unknown error').strip()[:300]}"},
             status_code=500,
         )
+
+    # Record the pre-update branch + commit before mutating the working tree,
+    # but only when the update will actually advance HEAD (HEAD != the fetched
+    # tip of the tracked branch) or when no rollback record exists yet. A retry
+    # after a failed update must not overwrite the original pre-update target:
+    # HEAD already contains that record's sha as an ancestor and no new commits
+    # are being applied, so the earlier record is the one `taos rollback` must
+    # restore. Best effort: a failed write must not block the update.
+    from tinyagentos.update_runner import record_current_rollback_target
+    from tinyagentos.rollback import read_rollback_target
+
+    existing = read_rollback_target(project_dir)
+    tip_proc = await asyncio.create_subprocess_exec(
+        "git", "rev-parse", f"origin/{branch}",
+        stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL,
+        cwd=str(project_dir),
+    )
+    tip_out, _ = await tip_proc.communicate()
+    tip = (tip_out.decode() if tip_out else "").strip()
+    head_proc = await asyncio.create_subprocess_exec(
+        "git", "rev-parse", "HEAD",
+        stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL,
+        cwd=str(project_dir),
+    )
+    head_out, _ = await head_proc.communicate()
+    head = (head_out.decode() if head_out else "").strip()
+    if not existing or head != tip:
+        await record_current_rollback_target(project_dir)
 
     # ── GPG signature verification (defence-in-depth) ──────────────────
     from tinyagentos.gpg_verify import verify_remote_commit, resolve_gpg_prefs

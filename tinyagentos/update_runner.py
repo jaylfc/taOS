@@ -42,17 +42,30 @@ def record_rollback_target(project_dir, branch: str, sha: str, ts: int) -> bool:
     Always called before an update mutates the tree, so even a clean
     fast-forward (no recovery tag) leaves a restore point. Returns True when a
     record was written.
+
+    When the new record cannot be written, the previous record is removed best
+    effort (and a warning logged) so ``taos rollback`` reports no target rather
+    than rolling back to an update that was never fully applied.
     """
     if not branch or not sha:
         return False
     try:
-        from tinyagentos.rollback import record_pre_update
+        from tinyagentos.rollback import ROLLBACK_FILE, record_pre_update
 
-        record_pre_update(project_dir, branch=branch, sha=sha, ts=ts)
-        return True
+        wrote = record_pre_update(project_dir, branch=branch, sha=sha, ts=ts) is not None
     except Exception:  # noqa: BLE001
         logger.warning("update_runner: failed to record rollback target", exc_info=True)
+        wrote = False
+    if not wrote:
+        try:
+            Path(project_dir, ROLLBACK_FILE).unlink(missing_ok=True)
+        except OSError:  # pragma: no cover - best effort cleanup
+            pass
+        logger.warning(
+            "update_runner: failed to record rollback target; stale record removed"
+        )
         return False
+    return True
 
 
 def _record_rollback_target(project_dir, branch: str, sha: str, ts: int) -> None:
@@ -65,6 +78,12 @@ async def record_current_rollback_target(project_dir: Path) -> bool:
 
     Runs git calls and the atomic write off the event loop. Best effort: any
     failure logs a warning and returns False without raising.
+
+    Callers must only invoke this when the update will actually advance HEAD
+    (HEAD differs from the fetched tip of the tracked branch) or when no
+    rollback record exists yet; otherwise a retry would clobber the original
+    pre-update target and rollback could no longer undo the update. That
+    guard is applied by the caller before invoking this helper.
     """
     try:
         import subprocess
@@ -240,7 +259,10 @@ async def switch_to_branch(
 
     # After the dirty probe so the gitignored state file
     # never triggers a spurious stash.
-    _record_rollback_target(project_dir, cur_branch, current_sha, ts)
+    # The durable write must not block the event loop, so run it off-loop.
+    await asyncio.to_thread(
+        _record_rollback_target, project_dir, cur_branch, current_sha, ts
+    )
 
     result = UpdateResult(previous_sha=current_sha, new_sha=current_sha)
 
