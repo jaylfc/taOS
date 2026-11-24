@@ -17,6 +17,8 @@
 #   --root DIR          install into DIR instead of / (a fake root for testing; the validation then reads
 #                       DIR/etc/taos/sway/config). Without it the script must run as root.
 #   --check-only        validate and stage, install nothing
+#   --with-notifyd      also start taos-notifyd (the notification server) with the session. Off by default: it has no
+#                       popup yet, so it would take the notification bus name and show the person nothing
 #
 # What it installs (paths relative to the root):
 #   /opt/taos/shell/bin/<piece>         the shell binaries and taos-shell-session, taos-window-session-hook
@@ -26,7 +28,8 @@
 #   /etc/taos/sway.d/NN-*.conf          the sway snippets (swayfx layer_effects lines enabled; 05-session-env.conf
 #                                       gives D-Bus activated services the Wayland session variables)
 #   /etc/taos/sway/config               ONLY the line `$mod+space floating toggle` moves to `$mod+Shift+space`
-#   /etc/taos/shell.env                 TAOS_SHELL_COMPONENTS="taos-bar taos-overview taos-dock taos-launcher taos-frame taos-notifyd"
+#   /etc/taos/shell.env                 TAOS_SHELL_COMPONENTS="taos-bar taos-overview taos-dock taos-launcher taos-frame"
+#                                       (add taos-notifyd with --with-notifyd; off by default until a popup exists)
 # Backups, timestamped, next to what they back up: <dir>.bak-<stamp> for /opt/taos/shell/bin,
 # /opt/taos/apps/bin and /etc/taos/sway.d, and <file>.bak-<stamp> for the two edited files. The last lines
 # printed are the rollback command.
@@ -39,6 +42,7 @@ sway_fallback=""
 shell_build=""
 apps_builds=""
 check_only=0
+with_notifyd=0
 while [ $# -gt 0 ]; do
     case $1 in
         --root) root=${2:?}; shift 2 ;;
@@ -47,6 +51,7 @@ while [ $# -gt 0 ]; do
         --shell-build) shell_build=${2:?}; shift 2 ;;
         --apps-build) apps_builds="$apps_builds ${2:?}"; shift 2 ;;
         --check-only) check_only=1; shift ;;
+        --with-notifyd) with_notifyd=1; shift ;;
         -h|--help) sed -n '2,34p' "$0"; exit 0 ;;
         *) echo "install-desktop: unknown option $1" >&2; exit 2 ;;
     esac
@@ -71,7 +76,8 @@ shell_bin=$R/opt/taos/shell/bin
 apps_dir=$R/opt/taos/apps
 themes_dir=$R/usr/share/taos/themes
 local_bin=$R/usr/local/bin
-components="taos-bar taos-overview taos-dock taos-launcher taos-frame taos-notifyd"
+components="taos-bar taos-overview taos-dock taos-launcher taos-frame"
+[ "$with_notifyd" -eq 0 ] || components="$components taos-notifyd"
 pieces="taos-bar taos-overview taos-dock taos-window taos-display taos-theme taos-launcher taos-search taos-frame taos-notifyd"
 
 stage=$(mktemp -d "${TMPDIR:-/tmp}/taos-install-stage.XXXXXX")

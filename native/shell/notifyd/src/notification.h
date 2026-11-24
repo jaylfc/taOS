@@ -40,7 +40,7 @@ QString stripMarkup(const QString &s);
 /// Cut to `max` characters with an ellipsis.
 QString clip(const QString &s, int max);
 /// Build a Notification from the arguments of org.freedesktop.Notifications.Notify.
-Notification fromNotify(const QString &appName, quint32 fdId, quint64 seq, quint32 replacesId, const QString &appIcon,
+Notification fromNotify(const QString &appName, quint32 fdId, const QString &clientId, const QString &replacesClientId, const QString &appIcon,
                         const QString &summary, const QString &body, const QStringList &actions,
                         const QVariantMap &hints, int expireTimeout, qint64 now);
 /// The key filters and logs use: the desktop entry, else the app name (lower case, ".desktop" removed).

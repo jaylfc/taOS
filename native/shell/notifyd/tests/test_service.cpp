@@ -121,12 +121,76 @@ private Q_SLOTS:
         const auto p = r.buf.pending();
         QCOMPARE(p.size(), 1);
         const QJsonObject o = p[0].record;
-        QCOMPARE(o[u"summary"_s].toString(), u"New <b>mail</b>"_s); // summary is plain text per spec: untouched
+        QCOMPARE(o[u"summary"_s].toString(), u"New mail"_s);        // markup is removed from the summary too
         QCOMPARE(o[u"body"_s].toString(), u"A & B link"_s);         // body markup stripped
         QCOMPARE(o[u"desktop_entry"_s].toString(), u"org.example.Mail"_s);
         QCOMPARE(o[u"urgency"_s].toString(), u"critical"_s);
         QVERIFY(p[0].critical);
-        QCOMPARE(o[u"id"_s].toString(), u"n%1"_s.arg(id));
+        QVERIFY(o[u"id"_s].toString().startsWith(u"n%1."_s.arg(r.buf.installId())));
+    }
+    void markup_is_stripped_from_every_text_field()
+    {
+        Rig r;
+        QDBusConnection srv = connect();
+        QVERIFY(r.svc.start(srv, nullptr));
+        QDBusConnection cli = connect();
+        const QString img = u"<img src=\"http://127.0.0.1:9/x.png\">"_s;
+        call(cli, u"Notify"_s, QVariantList{u"App"_s + img, 0u, QString(), img + u"title<b>!</b>"_s, u"b"_s + img,
+                                            QStringList{u"k"_s, u"go"_s + img}, QVariantMap{{u"desktop-entry"_s, u"x"_s + img}}, -1});
+        const QJsonObject o = r.buf.pending().first().record;
+        QCOMPARE(o[u"app_name"_s].toString(), u"App"_s);
+        QCOMPARE(o[u"summary"_s].toString(), u"title!"_s);
+        QCOMPARE(o[u"body"_s].toString(), u"b"_s);
+        QCOMPARE(o[u"desktop_entry"_s].toString(), u"x"_s);
+        QCOMPARE(o[u"actions"_s].toArray().first().toObject()[u"label"_s].toString(), u"go"_s);
+        QVERIFY(!QJsonDocument(o).toJson().contains("<img"));
+    }
+    void a_replace_only_applies_to_the_same_sender()
+    {
+        Rig r;
+        QDBusConnection srv = connect();
+        QVERIFY(r.svc.start(srv, nullptr));
+        QDBusConnection owner = connect(), other = connect();
+        const uint id = call(owner, u"Notify"_s, notifyArgs(u"a"_s, 0, u"mine"_s)).arguments().first().toUInt();
+        // another app guessing the id gets a NEW notification, never a replacement of the first
+        const uint theirs = call(other, u"Notify"_s, notifyArgs(u"b"_s, id, u"theirs"_s)).arguments().first().toUInt();
+        QVERIFY(theirs != id);
+        QVERIFY(!r.buf.pending().last().record.contains(u"replaces"_s));
+        // the owner's own replace still works
+        QCOMPARE(call(owner, u"Notify"_s, notifyArgs(u"a"_s, id, u"mine again"_s)).arguments().first().toUInt(), id);
+        QVERIFY(r.buf.pending().last().record.contains(u"replaces"_s));
+        // an id this run never handed out is a new notification
+        const uint ghost = call(owner, u"Notify"_s, notifyArgs(u"a"_s, 99999, u"ghost"_s)).arguments().first().toUInt();
+        QVERIFY(ghost != 99999);
+    }
+    void transient_ones_are_counted_and_critical_ones_are_kept()
+    {
+        Rig r;
+        QDBusConnection srv = connect();
+        QVERIFY(r.svc.start(srv, nullptr));
+        QDBusConnection cli = connect();
+        call(cli, u"Notify"_s, notifyArgs(u"vol"_s, 0, u"osd"_s, {}, {{u"transient"_s, true}}));
+        QCOMPARE(r.buf.count(), 0);
+        QCOMPARE(r.svc.transientSkipped(), 1);
+        call(cli, u"Notify"_s, notifyArgs(u"bat"_s, 0, u"battery critical"_s, {},
+                                          {{u"transient"_s, true}, {u"urgency"_s, QVariant::fromValue(uchar(2))}}));
+        QCOMPARE(r.buf.count(), 1);
+        QVERIFY(r.buf.pending().first().critical);
+        QFile f(r.buf.dir() + u"/status"_s);
+        QVERIFY(f.open(QIODevice::ReadOnly));
+        const QJsonObject st = QJsonDocument::fromJson(f.readAll()).object();
+        QCOMPARE(st[u"transient_skipped"_s].toInt(), 1);
+        QVERIFY(!QJsonDocument(st).toJson().contains("osd")); // counts, never content
+    }
+    void a_failed_counter_write_fails_the_call()
+    {
+        Rig r;
+        QDBusConnection srv = connect();
+        QVERIFY(r.svc.start(srv, nullptr));
+        QDBusConnection cli = connect();
+        QVERIFY(QDir().mkpath(r.buf.dir() + u"/seq"_s)); // the counter cannot be saved
+        QCOMPARE(call(cli, u"Notify"_s, notifyArgs(u"a"_s, 0, u"x"_s)).type(), QDBusMessage::ErrorMessage);
+        QCOMPARE(r.buf.count(), 0);
     }
     void replace_returns_the_same_id_and_links_the_rows()
     {
@@ -139,7 +203,7 @@ private Q_SLOTS:
         QCOMPARE(again, id);
         const auto p = r.buf.pending();
         QCOMPARE(p.size(), 2);
-        QCOMPARE(p[1].record[u"replaces"_s].toString(), u"n%1"_s.arg(id));
+        QCOMPARE(p[1].record[u"replaces"_s].toString(), p[0].record[u"id"_s].toString()); // points at the first post
         QVERIFY(p[1].record[u"id"_s] != p[0].record[u"id"_s]); // every post has its own id
     }
     void limits_are_applied_before_buffering()
@@ -206,6 +270,12 @@ private Q_SLOTS:
         QString why;
         QVERIFY(!second.svc.start(b, &why));
         QVERIFY2(why.contains(u"not taking it over"_s), qPrintable(why));
+        second.svc.writeStatus(u"idle"_s, why); // what main() does before it exits 0
+        QFile sf(second.buf.dir() + u"/status"_s);
+        QVERIFY(sf.open(QIODevice::ReadOnly));
+        const QJsonObject st = QJsonDocument::fromJson(sf.readAll()).object();
+        QCOMPARE(st[u"state"_s].toString(), u"idle"_s);
+        QVERIFY(st[u"reason"_s].toString().contains(u"owned by another"_s));
         QDBusConnection cli = connect();
         call(cli, u"Notify"_s, notifyArgs(u"x"_s, 0, u"to the first"_s));
         QCOMPARE(first.buf.count(), 1);

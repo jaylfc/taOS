@@ -74,6 +74,10 @@ wait_rows() { # title count seconds
 }
 buffered() { ls "$STATE"/*.json 2>/dev/null | wc -l; }
 
+# 0. opt-in: the session does not start it unless asked
+if grep -q 'TAOS_SHELL_COMPONENTS:-[^}]*taos-notifyd' "$HERE/../../taos-shell-session"; then bad "taos-notifyd is in the default components"; else ok "not in the default session components (opt-in)"; fi
+grep -q '"state": "serving"' "$STATE/status" && ok "status file says serving" || bad "status file missing or not serving"
+
 # 1. one notification from an ordinary client: exactly one row
 send from-os-app "hello"
 if wait_rows from-os-app 1 10; then ok "notify -> one row"; else bad "notify -> one row (got $(rows from-os-app))"; fi

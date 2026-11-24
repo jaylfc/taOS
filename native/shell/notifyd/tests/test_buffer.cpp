@@ -16,6 +16,15 @@ static QJsonObject rec(const QString &id, const QString &summary = u"s"_s)
     return {{u"id"_s, id}, {u"summary"_s, summary}, {u"app_name"_s, u"app"_s}};
 }
 
+static quint64 seq(WriteAheadBuffer &b)
+{
+    quint64 s = 0;
+    QString err;
+    if (!b.nextSeq(&s, &err))
+        qWarning("nextSeq failed: %s", qPrintable(err));
+    return s;
+}
+
 class TestBuffer : public QObject
 {
     Q_OBJECT
@@ -35,8 +44,8 @@ private Q_SLOTS:
         {
             WriteAheadBuffer b(opts(t.path()));
             QVERIFY(b.open(nullptr));
-            QVERIFY(b.append(b.nextSeq(), false, rec(u"n1"_s)).ok);
-            QVERIFY(b.append(b.nextSeq(), true, rec(u"n2"_s)).ok);
+            QVERIFY(b.append(seq(b), false, rec(u"n1"_s)).ok);
+            QVERIFY(b.append(seq(b), true, rec(u"n2"_s)).ok);
             // the process dies here: no confirm, no clean shutdown, no destructor work to rely on
         }
         // a half-written record from a crash mid-write is invisible and cleaned up
@@ -56,7 +65,7 @@ private Q_SLOTS:
         QTemporaryDir t;
         WriteAheadBuffer b(opts(t.path()));
         QVERIFY(b.open(nullptr));
-        QVERIFY(b.append(b.nextSeq(), false, rec(u"n1"_s)).ok);
+        QVERIFY(b.append(seq(b), false, rec(u"n1"_s)).ok);
         QCOMPARE(QFileInfo(t.path() + u"/buf"_s).permissions() & 0x77, QFileDevice::Permissions());
         const auto p = b.pending();
         QCOMPARE(QFileInfo(p[0].path).permissions() & 0x77, QFileDevice::Permissions());
@@ -69,7 +78,7 @@ private Q_SLOTS:
             WriteAheadBuffer b(opts(t.path()));
             QVERIFY(b.open(nullptr));
             for (int i = 0; i < 7; ++i) {
-                const quint64 s = b.nextSeq();
+                const quint64 s = seq(b);
                 QVERIFY2(s > last, "id went backwards");
                 last = s;
             }
@@ -81,14 +90,14 @@ private Q_SLOTS:
         QFile::remove(t.path() + u"/buf/seq"_s);
         WriteAheadBuffer b2(opts(t.path()));
         QVERIFY(b2.open(nullptr));
-        QVERIFY(b2.nextSeq() > last + 50);
+        QVERIFY(seq(b2) > last + 50);
     }
     void duplicateConfirmIsHarmless()
     {
         QTemporaryDir t;
         WriteAheadBuffer b(opts(t.path()));
         QVERIFY(b.open(nullptr));
-        const quint64 s = b.nextSeq();
+        const quint64 s = seq(b);
         QVERIFY(b.append(s, false, rec(u"n"_s)).ok);
         QVERIFY(b.confirm(s));
         QVERIFY(b.confirm(s)); // the second confirm (a duplicate send answered twice) finds nothing: still fine
@@ -99,10 +108,10 @@ private Q_SLOTS:
         QTemporaryDir t;
         WriteAheadBuffer b(opts(t.path(), 5, 2));
         QVERIFY(b.open(nullptr));
-        QVERIFY(b.append(b.nextSeq(), true, rec(u"crit"_s)).ok);
+        QVERIFY(b.append(seq(b), true, rec(u"crit"_s)).ok);
         for (int i = 1; i <= 5; ++i)
-            QVERIFY(b.append(b.nextSeq(), false, rec(u"m%1"_s.arg(i))).ok);
-        const auto r = b.append(b.nextSeq(), false, rec(u"m6"_s));
+            QVERIFY(b.append(seq(b), false, rec(u"m%1"_s.arg(i))).ok);
+        const auto r = b.append(seq(b), false, rec(u"m6"_s));
         QVERIFY(r.ok);
         QCOMPARE(r.dropped, 2);
         QStringList ids;
@@ -131,10 +140,10 @@ private Q_SLOTS:
         WriteAheadBuffer b(opts(t.path(), 3, 2));
         QVERIFY(b.open(nullptr));
         for (int i = 1; i <= 3; ++i)
-            QVERIFY(b.append(b.nextSeq(), false, rec(u"m%1"_s.arg(i))).ok);
+            QVERIFY(b.append(seq(b), false, rec(u"m%1"_s.arg(i))).ok);
         // dropped.jsonl cannot be created: a directory sits where the file should be
         QVERIFY(QDir().mkpath(t.path() + u"/buf/dropped.jsonl"_s));
-        const auto r = b.append(b.nextSeq(), false, rec(u"m4"_s));
+        const auto r = b.append(seq(b), false, rec(u"m4"_s));
         QVERIFY(!r.ok);
         QVERIFY(!r.error.isEmpty());
         QStringList ids;
@@ -148,9 +157,9 @@ private Q_SLOTS:
         WriteAheadBuffer b(opts(t.path(), 2, 1, 10));
         QVERIFY(b.open(nullptr));
         for (int i = 1; i <= 6; ++i)
-            QVERIFY(b.append(b.nextSeq(), true, rec(u"c%1"_s.arg(i))).ok); // more critical than the non-critical cap
+            QVERIFY(b.append(seq(b), true, rec(u"c%1"_s.arg(i))).ok); // more critical than the non-critical cap
         for (int i = 1; i <= 4; ++i)
-            b.append(b.nextSeq(), false, rec(u"n%1"_s.arg(i)));
+            b.append(seq(b), false, rec(u"n%1"_s.arg(i)));
         int crit = 0;
         for (const auto &e : b.pending())
             if (e.critical && e.record[u"id"_s].toString().startsWith(u"c"_s))
@@ -158,17 +167,71 @@ private Q_SLOTS:
         QCOMPARE(crit, 6);
         // at the hard cap an append is refused with an error, never accepted and dropped
         while (b.count() < 10)
-            QVERIFY(b.append(b.nextSeq(), true, rec(u"f"_s)).ok);
-        const auto r = b.append(b.nextSeq(), true, rec(u"over"_s));
+            QVERIFY(b.append(seq(b), true, rec(u"f"_s)).ok);
+        const auto r = b.append(seq(b), true, rec(u"over"_s));
         QVERIFY(!r.ok);
         QVERIFY(r.error.contains(u"full"_s));
+    }
+    void idsAreUniqueAcrossAWipedStateDirectory()
+    {
+        QTemporaryDir t;
+        QString first, firstInstall;
+        {
+            WriteAheadBuffer b(opts(t.path()));
+            QVERIFY(b.open(nullptr));
+            first = b.clientId(seq(b));
+            firstInstall = b.installId();
+            QCOMPARE(firstInstall.size(), 16);
+        }
+        {   // same directory, next run: same install, so the counter goes on
+            WriteAheadBuffer b(opts(t.path()));
+            QVERIFY(b.open(nullptr));
+            QCOMPARE(b.installId(), firstInstall);
+            QVERIFY(b.clientId(seq(b)) != first);
+        }
+        // the directory is wiped: the counter restarts at 1 but the id must not repeat
+        QVERIFY(QDir(t.path() + u"/buf"_s).removeRecursively());
+        WriteAheadBuffer b(opts(t.path()));
+        QVERIFY(b.open(nullptr));
+        QCOMPARE(seq(b), quint64(1));
+        QVERIFY(b.installId() != firstInstall);
+        QVERIFY(!b.clientId(1).contains(firstInstall));
+    }
+    void aFailedCounterWriteFailsInsteadOfRepeating()
+    {
+        QTemporaryDir t;
+        WriteAheadBuffer b(opts(t.path()));
+        QVERIFY(b.open(nullptr));
+        QVERIFY(QDir().mkpath(t.path() + u"/buf/seq"_s)); // the counter file cannot be replaced
+        quint64 s = 77;
+        QString err;
+        QVERIFY(!b.nextSeq(&s, &err));
+        QVERIFY(!err.isEmpty());
+        QCOMPARE(s, quint64(77)); // no number was handed out
+    }
+    void pendingComesFromMemoryAfterStartup()
+    {
+        QTemporaryDir t;
+        WriteAheadBuffer b(opts(t.path()));
+        QVERIFY(b.open(nullptr));
+        const quint64 a = seq(b), c = seq(b);
+        QVERIFY(b.append(a, false, rec(u"a"_s)).ok);
+        QVERIFY(b.append(c, false, rec(u"c"_s)).ok);
+        QCOMPARE(b.pending().size(), 2);
+        QVERIFY(b.confirm(a));
+        QCOMPARE(b.pending().size(), 1);
+        QCOMPARE(b.pending().first().record[u"id"_s].toString(), u"c"_s);
+        // and a restart sees the same
+        WriteAheadBuffer b2(opts(t.path()));
+        QVERIFY(b2.open(nullptr));
+        QCOMPARE(b2.count(), 1);
     }
     void quarantineKeepsTheRecord()
     {
         QTemporaryDir t;
         WriteAheadBuffer b(opts(t.path()));
         QVERIFY(b.open(nullptr));
-        const quint64 s = b.nextSeq();
+        const quint64 s = seq(b);
         QVERIFY(b.append(s, false, rec(u"bad"_s)).ok);
         QVERIFY(b.quarantine(s));
         QCOMPARE(b.count(), 0);

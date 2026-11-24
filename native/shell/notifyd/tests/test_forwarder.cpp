@@ -85,7 +85,9 @@ class TestForwarder : public QObject
         }
         void add(const QString &id, const QString &cat = QString())
         {
-            QVERIFY(buf->append(buf->nextSeq(), false, rec(id, cat)).ok);
+            quint64 sq = 0;
+            QVERIFY(buf->nextSeq(&sq, nullptr));
+            QVERIFY(buf->append(sq, false, rec(id, cat)).ok);
         }
     };
 
@@ -96,7 +98,7 @@ private Q_SLOTS:
         QCOMPARE(classify(200, R"({"id":null,"stored":false})"), Verdict::Confirm); // transient or muted
         QCOMPARE(classify(200, "<html>captive portal</html>"), Verdict::RetryBackoff);
         QCOMPARE(classify(200, R"({"ok":true})"), Verdict::RetryBackoff);
-        for (int s : {400, 413, 422})
+        for (int s : {400, 409, 413, 422})
             QCOMPARE(classify(s, "{}"), Verdict::Quarantine);
         QCOMPARE(classify(429, "{}"), Verdict::RetryAfter);
         for (int s : {401, 403, 404, 500, 502, 503})
@@ -226,6 +228,82 @@ private Q_SLOTS:
         for (const QString &id : c.rows) // the warning record went through the buffer to the controller
             warned = warned || id != u"good"_s;
         QVERIFY2(warned, "a visible warning record must reach the controller");
+    }
+    void sameIdDifferentContentIsARefusalKeptAside()
+    {
+        Controller c;
+        QVERIFY(c.stub.listen());
+        c.before = [](const StubRequest &r) {
+            if (QJsonDocument::fromJson(r.body).object()[u"id"_s].toString() == u"dup"_s) {
+                StubReply d; d.status = 409; d.body = R"({"error":"id_reused_with_different_content"})"; return d;
+            }
+            StubReply pass; pass.status = 0; return pass;
+        };
+        Rig r;
+        writeSession(r.runtime, c.stub.url());
+        r.add(u"dup"_s);
+        r.fwd->kick();
+        QTRY_COMPARE_WITH_TIMEOUT(r.buf->count(), 0, 3000);
+        QCOMPARE(r.fwd->quarantined(), 1); // not a success: kept in rejected/ with a warning
+        QCOMPARE(QDir(r.dir.path() + u"/buf/rejected"_s).entryList({u"*.json"_s}).size(), 1);
+        QCOMPARE(r.fwd->delivered(), 1);   // the warning record itself
+    }
+    void aRefusedRecordThatCannotBeMovedBacksOffAndWarnsOnce()
+    {
+        Controller c;
+        QVERIFY(c.stub.listen());
+        c.before = [](const StubRequest &r) {
+            if (QJsonDocument::fromJson(r.body).object()[u"id"_s].toString() == u"bad"_s) {
+                StubReply d; d.status = 422; d.body = "{}"; return d;
+            }
+            StubReply pass; pass.status = 0; return pass;
+        };
+        Rig r(50, 200);
+        writeSession(r.runtime, c.stub.url());
+        // rejected/ is a plain file: the record cannot be moved aside
+        QVERIFY(QDir(r.dir.path() + u"/buf/rejected"_s).removeRecursively());
+        QFile blocker(r.dir.path() + u"/buf/rejected"_s);
+        QVERIFY(blocker.open(QIODevice::WriteOnly)); blocker.close();
+        r.add(u"bad"_s);
+        r.fwd->kick();
+        QTest::qWait(800);
+        QCOMPARE(r.buf->count(), 1);                 // kept
+        QVERIFY2(c.stub.requests.size() < 15, qPrintable(u"%1 requests in 0.8 s: no backoff"_s.arg(c.stub.requests.size())));
+        QCOMPARE(r.fwd->quarantined(), 0);
+        QVERIFY(c.rows.isEmpty() || !c.rows.contains(u"bad"_s)); // and no warning record was sent
+        QCOMPARE(c.order.size(), 0);
+        // the obstacle goes away: set aside once, exactly one warning
+        QVERIFY(QFile::remove(r.dir.path() + u"/buf/rejected"_s));
+        QVERIFY(QDir().mkpath(r.dir.path() + u"/buf/rejected"_s));
+        QTRY_COMPARE_WITH_TIMEOUT(r.buf->count(), 0, 3000);
+        QCOMPARE(r.fwd->quarantined(), 1);
+        QCOMPARE(c.order.size(), 1); // one warning record reached the controller
+    }
+    void aWipedStateDirectoryDoesNotMakeANewNotificationLookDelivered()
+    {
+        Controller c; // idempotent on the id, like the real route
+        QVERIFY(c.stub.listen());
+        QTemporaryDir dir;
+        const QString runtime = dir.path() + u"/run"_s;
+        QDir().mkpath(runtime);
+        writeSession(runtime, c.stub.url());
+        for (int run = 0; run < 2; ++run) {
+            WriteAheadBuffer::Options bo;
+            bo.dir = dir.path() + u"/buf"_s;
+            WriteAheadBuffer buf(bo);
+            QVERIFY(buf.open(nullptr));
+            quint64 sq = 0;
+            QVERIFY(buf.nextSeq(&sq, nullptr));
+            QCOMPARE(sq, quint64(1)); // the counter restarts at 1 in both runs
+            QVERIFY(buf.append(sq, false, rec(buf.clientId(sq))).ok);
+            Forwarder::Options fo; fo.runtimeDir = runtime; fo.backoffMinMs = 20;
+            Forwarder fwd(&buf, fo);
+            fwd.kick();
+            QTRY_COMPARE_WITH_TIMEOUT(buf.count(), 0, 3000);
+            QVERIFY(QDir(bo.dir).removeRecursively()); // wiped between the two
+        }
+        QCOMPARE(c.order.size(), 2); // both stored, none mistaken for the first
+        QVERIFY(c.stub.requests.size() == 2);
     }
     void aRefusedWarningDoesNotRaiseAnotherWarning()
     {

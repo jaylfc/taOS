@@ -54,7 +54,7 @@ private:
     void pump();
     void send(const WriteAheadBuffer::Entry &e, const Credentials &c, bool csrfReplay);
     void retryLater(int ms, const QString &why);
-    void quarantine(const WriteAheadBuffer::Entry &e, int status);
+    bool quarantine(const WriteAheadBuffer::Entry &e, int status);
 
     WriteAheadBuffer *m_buf;
     Options m_o;

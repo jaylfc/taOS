@@ -5,6 +5,11 @@
 #include <QDBusError>
 #include <QDBusMessage>
 #include <QDateTime>
+#include <QCoreApplication>
+#include <QDir>
+#include <QJsonDocument>
+#include <QJsonObject>
+#include <QSaveFile>
 #include <QTextStream>
 
 using namespace Qt::StringLiterals;
@@ -52,30 +57,85 @@ bool Service::start(const QDBusConnection &bus, QString *error)
     return true;
 }
 
+void Service::writeStatus(const QString &state, const QString &reason) const
+{
+    QJsonObject o{{u"state"_s, state}, {u"accepted"_s, m_accepted}, {u"filtered_by_drop_list"_s, m_filtered},
+                  {u"transient_skipped"_s, m_transient}, {u"pending"_s, m_buf->count()}};
+    if (!reason.isEmpty())
+        o[u"reason"_s] = reason;
+    o[u"pid"_s] = qint64(QCoreApplication::applicationPid());
+    const QString path = QDir(m_buf->dir()).filePath(u"status"_s);
+    if (state != u"serving"_s) {
+        // An idle second instance must not overwrite the status of a live serving one.
+        QFile old(path);
+        if (old.open(QIODevice::ReadOnly)) {
+            const QJsonObject prev = QJsonDocument::fromJson(old.readAll()).object();
+            const qint64 pid = prev.value(u"pid"_s).toInteger();
+            if (prev.value(u"state"_s).toString() == u"serving"_s && pid != QCoreApplication::applicationPid()
+                && QFile::exists(u"/proc/%1"_s.arg(pid)))
+                return;
+        }
+    }
+    QSaveFile f(path);
+    if (f.open(QIODevice::WriteOnly)) {
+        f.write(QJsonDocument(o).toJson(QJsonDocument::Indented));
+        f.commit();
+    }
+}
+
 quint32 Service::notify(const QString &appName, quint32 replacesId, const QString &appIcon, const QString &summary,
                         const QString &body, const QStringList &actions, const QVariantMap &hints, int expireTimeout,
                         QString *errorOut)
 {
-    const quint64 seq = m_buf->nextSeq();
-    const quint32 fdId = replacesId > 0 ? replacesId : quint32(seq);
-    const Notification n = fromNotify(appName, fdId, seq, replacesId, appIcon, summary, body, actions, hints,
-                                      expireTimeout, QDateTime::currentSecsSinceEpoch());
+    quint64 seq = 0;
+    QString err;
+    if (!m_buf->nextSeq(&seq, &err)) {
+        if (errorOut) *errorOut = err;
+        return 0; // never carry on with a number that could repeat
+    }
+    const QString sender = calledFromDBus() ? message().service() : QString();
+    // A replace only applies to a notification this same app connection raised in this run;
+    // anything else is a new notification.
+    FdInfo replaced;
+    bool replacing = false;
+    if (replacesId > 0 && m_fd.contains(replacesId) && m_fd.value(replacesId).sender == sender) {
+        replaced = m_fd.value(replacesId);
+        replacing = true;
+    }
+    const quint32 fdId = replacing ? replacesId : quint32(seq);
+    const QString clientId = m_buf->clientId(seq);
+    const Notification n = fromNotify(appName, fdId, clientId, replacing ? replaced.firstClientId : QString(), appIcon,
+                                      summary, body, actions, hints, expireTimeout, QDateTime::currentSecsSinceEpoch());
     if (m_drop.matches(appKey(n))) {
         ++m_filtered;
         QTextStream(stderr) << "taos-notifyd: dropped a notification from " << appKey(n) << " (drop list)\n";
+        writeStatus(u"serving"_s);
         return fdId;
     }
-    if (n.transient) {
-        ++m_transient; // shown-not-stored by definition; there is no popup yet, so nothing to keep
+    if (n.transient && !n.critical()) {
+        // Transient means "show, do not keep"; there is no popup to show it, and the controller does not store
+        // it. It is counted (never its content) so it does not vanish without trace. Critical ones are kept.
+        ++m_transient;
+        QTextStream(stderr) << "taos-notifyd: skipped a transient notification from " << appKey(n) << " (counted)\n";
+        writeStatus(u"serving"_s);
         return fdId;
     }
-    const auto r = m_buf->append(seq, n.critical(), n.toJson());
+    QJsonObject rec = n.toJson();
+    if (n.transient)
+        rec[u"transient"_s] = false; // a critical transient is kept like any other: the controller stores it
+    const auto r = m_buf->append(seq, n.critical(), rec);
     if (!r.ok) {
         if (errorOut) *errorOut = r.error;
         return 0;
     }
     if (r.dropped > 0)
         QTextStream(stderr) << "taos-notifyd: buffer full, dropped " << r.dropped << " oldest notifications after a warning record\n";
+    if (!replacing) {
+        m_fd.insert(fdId, {sender, clientId});
+        m_fdOrder.append(fdId);
+        while (m_fdOrder.size() > 4096)
+            m_fd.remove(m_fdOrder.takeFirst());
+    }
     ++m_accepted;
     m_fwd->kick();
     return fdId;

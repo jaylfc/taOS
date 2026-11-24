@@ -12,6 +12,7 @@
 #include <QDir>
 #include <QJsonObject>
 #include <QList>
+#include <QMap>
 #include <QString>
 
 namespace Taos::Notifyd {
@@ -43,8 +44,14 @@ public:
     explicit WriteAheadBuffer(const Options &o);
     /// Creates the directory, removes half-written temp files. False with `error` on failure.
     bool open(QString *error);
-    /// The next id (also the freedesktop id). Persistent: never repeats after a restart.
-    quint64 nextSeq();
+    /// The next sequence number. Persistent: never repeats after a restart. False (with `error`) when the
+    /// counter cannot be made durable: the caller must then fail the Notify, never carry on with a number
+    /// that could repeat.
+    bool nextSeq(quint64 *seq, QString *error);
+    /// The id the controller dedupes on: "n<install id>.<boot id>.<seq>". The install id is random, made once
+    /// per state directory (so a wiped directory starts a new one); the boot id is random per run.
+    QString clientId(quint64 seq) const;
+    QString installId() const { return m_install; }
     /// Writes `record` durably under `seq`. When the buffer is over its cap, drops the oldest
     /// non-critical records, but only after the warning record is on disk.
     AppendResult append(quint64 seq, bool critical, const QJsonObject &record);
@@ -61,9 +68,12 @@ private:
     QString nameFor(quint64 seq, bool critical) const;
     bool writeFileDurably(const QString &path, const QByteArray &bytes, QString *error) const;
     bool syncDir(const QString &dir) const;
-    QList<Entry> scan() const;
+    bool ensureInstallId(QString *error);
+    void loadIndex();
 
     Options m_o;
+    QMap<quint64, Entry> m_index; ///< what is pending, in memory after start-up
+    QString m_install, m_boot;
     quint64 m_next = 1;
     quint64 m_highWater = 0;
 };

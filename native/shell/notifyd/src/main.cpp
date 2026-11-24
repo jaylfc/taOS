@@ -56,6 +56,7 @@ int main(int argc, char **argv)
     if (!svc.start(bus, &why)) {
         err << "taos-notifyd: " << why << "\n";
         // Another server owns the name, or there is no bus: a permanent condition, not a crash.
+        svc.writeStatus(u"idle"_s, why);
         return bus.isConnected() ? 0 : 1;
     }
 
@@ -70,6 +71,7 @@ int main(int argc, char **argv)
         std::signal(SIGINT, onSignal);
         std::signal(SIGHUP, onSignal);
     }
+    svc.writeStatus(u"serving"_s);
     err << "taos-notifyd " << TAOS_NOTIFYD_VERSION << ": serving org.freedesktop.Notifications, "
         << buffer.count() << " buffered\n";
     fwd.kick(); // anything left over from an earlier run

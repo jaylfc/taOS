@@ -56,20 +56,21 @@ QJsonObject Notification::toJson() const
     return o;
 }
 
-Notification fromNotify(const QString &appName, quint32 fdId, quint64 seq, quint32 replacesId, const QString &appIcon,
+Notification fromNotify(const QString &appName, quint32 fdId, const QString &clientId, const QString &replacesClientId, const QString &appIcon,
                         const QString &summary, const QString &body, const QStringList &actions,
                         const QVariantMap &hints, int expireTimeout, qint64 now)
 {
     Notification n;
     n.fdId = fdId;
-    n.clientId = u"n%1"_s.arg(seq);
-    if (replacesId > 0)
-        n.replacesClientId = u"n%1"_s.arg(replacesId);
-    n.appName = clip(appName, kMaxApp);
-    n.desktopEntry = clip(hints.value(u"desktop-entry"_s).toString(), kMaxApp);
-    n.summary = clip(summary, kMaxSummary);
+    n.clientId = clientId;
+    n.replacesClientId = replacesClientId;
+    // Everything an app supplies is plain text to us: markup is removed from every text field, so
+    // nothing downstream can be handed a tag (an image tag in a title must never reach a rich-text renderer).
+    n.appName = clip(stripMarkup(appName), kMaxApp);
+    n.desktopEntry = clip(stripMarkup(hints.value(u"desktop-entry"_s).toString()), kMaxApp);
+    n.summary = clip(stripMarkup(summary), kMaxSummary);
     n.body = clip(stripMarkup(body), kMaxBody);
-    n.category = clip(hints.value(u"category"_s).toString(), 64);
+    n.category = clip(stripMarkup(hints.value(u"category"_s).toString()), 64);
     n.icon = clip(appIcon.isEmpty() ? hints.value(u"image-path"_s).toString() : appIcon, kMaxIcon);
     switch (hints.value(u"urgency"_s).toInt()) {
     case 0: n.urgency = u"low"_s; break;
@@ -80,7 +81,7 @@ Notification fromNotify(const QString &appName, quint32 fdId, quint64 seq, quint
     for (int i = 0; i + 1 < actions.size() && n.actions.size() < kMaxActions; i += 2) {
         if (actions.at(i).isEmpty())
             continue;
-        n.actions.append({clip(actions.at(i), kMaxKey), clip(actions.at(i + 1), 128)});
+        n.actions.append({clip(actions.at(i), kMaxKey), clip(stripMarkup(actions.at(i + 1)), 128)});
     }
     n.expireMs = expireTimeout < -1 ? -1 : qMin(expireTimeout, 86'400'000);
     n.transient = hints.value(u"transient"_s).toBool();

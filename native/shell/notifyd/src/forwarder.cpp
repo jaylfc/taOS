@@ -47,7 +47,7 @@ Verdict classify(int status, const QByteArray &body)
         // A 200 that is not the route's answer (a captive portal, a proxy) is not a confirmation.
         return d.isObject() && d.object().contains(u"id"_s) ? Verdict::Confirm : Verdict::RetryBackoff;
     }
-    if (status == 400 || status == 413 || status == 422)
+    if (status == 400 || status == 409 || status == 413 || status == 422)
         return Verdict::Quarantine;
     if (status == 429)
         return Verdict::RetryAfter;
@@ -142,8 +142,12 @@ void Forwarder::send(const WriteAheadBuffer::Entry &e, const Credentials &c, boo
             QTimer::singleShot(0, this, &Forwarder::pump);
             break;
         case Verdict::Quarantine:
-            quarantine(e, status);
-            QTimer::singleShot(0, this, &Forwarder::pump);
+            if (quarantine(e, status)) {
+                QTimer::singleShot(0, this, &Forwarder::pump);
+            } else { // could not move it aside: keep it, back off, and raise no warning yet
+                retryLater(m_backoff, u"could not move a refused record aside"_s);
+                m_backoff = qMin(m_backoff * 2, m_o.backoffMaxMs);
+            }
             break;
         case Verdict::RetryAfter: {
             bool ok = false;
@@ -159,17 +163,21 @@ void Forwarder::send(const WriteAheadBuffer::Entry &e, const Credentials &c, boo
     });
 }
 
-void Forwarder::quarantine(const WriteAheadBuffer::Entry &e, int status)
+bool Forwarder::quarantine(const WriteAheadBuffer::Entry &e, int status)
 {
     // Kept (rejected/), and made visible: a critical warning record goes through the same buffer.
     const QString app = e.record.value(u"app_name"_s).toString();
-    m_buf->quarantine(e.seq);
+    if (!m_buf->quarantine(e.seq))
+        return false; // still pending; the warning is raised once, after it has really been set aside
     ++m_quarantined;
     if (e.record.value(u"category"_s).toString().startsWith(u"taos.notifyd."_s))
-        return; // a refused warning record does not raise another warning
+        return true; // a refused warning record does not raise another warning
     QJsonObject w;
-    const quint64 seq = m_buf->nextSeq();
-    w[u"id"_s] = u"n%1"_s.arg(seq);
+    quint64 seq = 0;
+    QString err;
+    if (!m_buf->nextSeq(&seq, &err))
+        return true; // cannot number a warning now; the refused copy is in rejected/
+    w[u"id"_s] = m_buf->clientId(seq);
     w[u"app_name"_s] = u"taOS"_s;
     w[u"desktop_entry"_s] = u"taos-notifyd"_s;
     w[u"summary"_s] = u"A notification could not be delivered"_s;
@@ -183,6 +191,7 @@ void Forwarder::quarantine(const WriteAheadBuffer::Entry &e, int status)
     w[u"transient"_s] = false;
     w[u"posted_at"_s] = QDateTime::currentSecsSinceEpoch();
     m_buf->append(seq, true, w);
+    return true;
 }
 
 } // namespace Taos::Notifyd

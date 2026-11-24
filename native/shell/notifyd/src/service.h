@@ -6,6 +6,7 @@
 #include <QDBusAbstractAdaptor>
 #include <QDBusConnection>
 #include <QDBusContext>
+#include <QHash>
 #include <QObject>
 #include <QSet>
 #include <QStringList>
@@ -41,6 +42,9 @@ public:
     bool start(const QDBusConnection &bus, QString *error);
     int filtered() const { return m_filtered; }
     int accepted() const { return m_accepted; }
+    int transientSkipped() const { return m_transient; }
+    /// `status` in the state directory: what the daemon is doing and its counters (never any content).
+    void writeStatus(const QString &state, const QString &reason = QString()) const;
 
     // Called by the adaptor.
     quint32 notify(const QString &appName, quint32 replacesId, const QString &appIcon, const QString &summary,
@@ -58,6 +62,13 @@ private:
     Forwarder *m_fwd;
     DropList m_drop;
     int m_filtered = 0, m_accepted = 0, m_transient = 0;
+    struct FdInfo
+    {
+        QString sender;        ///< the bus connection that raised it
+        QString firstClientId; ///< the controller id of its first post: what a replace points at
+    };
+    QHash<quint32, FdInfo> m_fd; ///< live freedesktop ids of this run
+    QList<quint32> m_fdOrder;    ///< oldest first, to bound m_fd
 };
 
 class NotificationsAdaptor : public QDBusAbstractAdaptor
