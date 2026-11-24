@@ -485,14 +485,24 @@ async def trigger_download(
         )
 
     storage_dir = _library_dir(request)
-    quality_val = (
-        quality
-        or item.get("quality", "")
-        or (await store.get_settings())["preferred_quality"]
-    )
+    # Effective quality for the response, in the pipeline's precedence
+    # order: explicit > matching rule > item > settings. Only the
+    # explicit quality is passed on - run_heavy_pipeline applies the
+    # rest itself, so a matching rule is never bypassed by the
+    # settings fallback.
+    quality_val = quality or ""
+    if not quality_val:
+        matched = await store.match_rules(item.get("source_url", ""))
+        if matched:
+            quality_val = matched[0].get("quality", "") or ""
+    if not quality_val:
+        quality_val = (
+            item.get("quality", "")
+            or (await store.get_settings())["preferred_quality"]
+        )
 
     task_set = getattr(request.app.state, "_background_tasks", None)
-    coro = _heavy_download_task(request.app, item_id, store, storage_dir, quality_val)
+    coro = _heavy_download_task(request.app, item_id, store, storage_dir, quality or "")
     if task_set is None:
         _track_background_task(coro)
     else:
@@ -569,11 +579,17 @@ async def create_rule(
             {"error": f"A rule for {source_pattern!r} already exists"},
             status_code=409,
         )
-    rule_id = await store.create_rule(
-        source_pattern=source_pattern,
-        quality=quality or "720",
-        auto_download=auto_download,
-    )
+    try:
+        rule_id = await store.create_rule(
+            source_pattern=source_pattern,
+            quality=quality or "720",
+            auto_download=auto_download,
+        )
+    except ValueError:
+        return JSONResponse(
+            {"error": f"A rule for {source_pattern!r} already exists"},
+            status_code=409,
+        )
     return JSONResponse(
         {"rule_id": rule_id, "source_pattern": source_pattern, "status": "created"},
         status_code=201,

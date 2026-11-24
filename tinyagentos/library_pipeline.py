@@ -1603,8 +1603,10 @@ async def run_heavy_pipeline(
             "total_bytes": cap_status["total_bytes"],
         }
 
-    # Create a job entry
-    await store.create_job(item_id, "heavy_download")
+    # Create a job entry. Keep its ID: every outcome below updates THIS
+    # job, never "the latest job for the item" - a second trigger (or a
+    # cap pause) can create a newer job while this download runs.
+    job_id = await store.create_job(item_id, "heavy_download")
 
     try:
         proc = HeavyDownloadProcessor(store, storage_dir)
@@ -1613,14 +1615,11 @@ async def run_heavy_pipeline(
         artifacts = await proc.process(item_with_quality)
 
         if artifacts:
-            await store.update_job(
-                (await store.get_item_jobs(item_id))[-1]["id"],
-                state="done",
-            )
+            await store.update_job(job_id, state="done")
             return artifacts[0].get("meta", {})
         else:
             await store.update_job(
-                (await store.get_item_jobs(item_id))[-1]["id"],
+                job_id,
                 state="error",
                 error="Download produced no artifacts",
             )
@@ -1631,11 +1630,9 @@ async def run_heavy_pipeline(
         # cheap-tier ingest.  Do not flip it to 'error'; surface the failure on
         # the heavy_download job instead (queryable via /download/status).
         try:
-            jobs = await store.get_item_jobs(item_id)
-            if jobs:
-                await store.update_job(
-                    jobs[-1]["id"], state="error", error="Heavy download failed"
-                )
+            await store.update_job(
+                job_id, state="error", error="Heavy download failed"
+            )
         except Exception:
             logger.exception("Failed to record heavy download error for %s", item_id)
         return None

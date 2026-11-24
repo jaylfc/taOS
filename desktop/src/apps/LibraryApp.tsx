@@ -153,6 +153,7 @@ interface StorageViewData {
 /* ------------------------------------------------------------------ */
 
 const POLL_INTERVAL_MS = 3000;
+const USAGE_POLL_INTERVAL_MS = 15_000;
 const ACTIVE_JOB_STATES = new Set(["queued", "processing"]);
 const FAILED_JOB_STATE = "error";
 
@@ -161,7 +162,11 @@ function isJobActive(state: string): boolean {
 }
 
 function isJobActiveOrFailed(state: string): boolean {
-  return isJobActive(state) || state === FAILED_JOB_STATE;
+  /* "paused" (a heavy download held at the storage cap, #2060) is
+     displayable: the row's Error column carries the reason. Paused is
+     NOT in ACTIVE_JOB_STATES, so paused jobs never keep the queue
+     polling - they are display-only. */
+  return isJobActive(state) || state === FAILED_JOB_STATE || state === "paused";
 }
 
 function jobStateColor(state: string): string {
@@ -169,6 +174,7 @@ function jobStateColor(state: string): string {
   if (state === "processing") return "bg-amber-500/15 text-amber-400 border-amber-500/30";
   if (state === "error") return "bg-red-500/15 text-red-400 border-red-500/30";
   if (state === "done" || state === "completed") return "bg-green-500/15 text-green-400 border-green-500/30";
+  if (state === "paused") return "bg-violet-500/15 text-violet-400 border-violet-500/30";
   return "bg-white/10 text-shell-text-tertiary border-white/10";
 }
 
@@ -278,6 +284,14 @@ export function LibraryApp({ windowId: _windowId }: { windowId: string }) {
   }>({ source_pattern: "", quality: "720", auto_download: false });
   const [ruleError, setRuleError] = useState<string | null>(null);
   const [usage, setUsage] = useState<LibraryUsage | null>(null);
+  /* Guards for the mount load below: if the user edits settings or
+     rules before the initial GETs resolve, the stale initial response
+     must not overwrite the completed edit. */
+  const settingsEditedRef = useRef(false);
+  const rulesEditedRef = useRef(false);
+  /* Settings saves are serialized through this chain (see saveSettings). */
+  const settingsSaveChainRef = useRef<Promise<void>>(Promise.resolve());
+  const settingsSaveSeqRef = useRef(0);
 
   /* Load persisted settings + source rules once on mount. */
   useEffect(() => {
@@ -288,25 +302,37 @@ export function LibraryApp({ windowId: _windowId }: { windowId: string }) {
         listLibrarySourceRules(),
       ]);
       if (cancelled) return;
-      setSettings(loadedSettings);
-      setCapDraft(String(loadedSettings.storage_cap_bytes));
-      setSourceRules(loadedRules.rules);
+      if (!settingsEditedRef.current) {
+        setSettings(loadedSettings);
+        setCapDraft(String(loadedSettings.storage_cap_bytes));
+      }
+      if (!rulesEditedRef.current) {
+        setSourceRules(loadedRules.rules);
+      }
     })();
     return () => {
       cancelled = true;
     };
   }, []);
 
-  /* Load storage accounting whenever the storage view is opened. */
+  /* Load storage accounting when the storage view opens, and keep it
+     fresh while the view stays open: downloads finish in the
+     background, so the figures and the paused-at-cap state must not go
+     stale until the user leaves and returns. */
   useEffect(() => {
     if (activeView !== "storage") return;
     let cancelled = false;
-    (async () => {
+    const load = async () => {
       const data = await getLibraryUsage();
       if (!cancelled) setUsage(data);
-    })();
+    };
+    void load();
+    const timer = setInterval(() => {
+      void load();
+    }, USAGE_POLL_INTERVAL_MS);
     return () => {
       cancelled = true;
+      clearInterval(timer);
     };
   }, [activeView]);
 
@@ -778,21 +804,43 @@ export function LibraryApp({ windowId: _windowId }: { windowId: string }) {
 
   /* ---------- settings handlers ---------- */
 
-  const handleQualityChange = useCallback(
-    async (quality: string) => {
-      const saved = await updateLibrarySettings({ preferred_quality: quality });
-      if (saved) {
-        setSettings(saved);
-        setSettingsError(null);
-      } else {
-        setSettingsError("Could not save the preferred quality.");
-      }
+  /* Serialize settings saves: PUTs run one at a time, in the order
+     the edits were made, so an earlier value can never land after a
+     later one on the server; and only the newest save's response is
+     applied to state, so an older response cannot replace a newer
+     edit either. */
+  const saveSettings = useCallback(
+    (patch: Partial<LibrarySettings>, failureMessage: string) => {
+      const seq = ++settingsSaveSeqRef.current;
+      settingsSaveChainRef.current = settingsSaveChainRef.current.then(
+        async () => {
+          const saved = await updateLibrarySettings(patch);
+          if (seq !== settingsSaveSeqRef.current) return;
+          if (saved) {
+            setSettings(saved);
+            setSettingsError(null);
+          } else {
+            setSettingsError(failureMessage);
+          }
+        },
+      );
     },
     [],
   );
 
+  const handleQualityChange = useCallback(
+    (quality: string) => {
+      settingsEditedRef.current = true;
+      saveSettings(
+        { preferred_quality: quality },
+        "Could not save the preferred quality.",
+      );
+    },
+    [saveSettings],
+  );
+
   const handleCapChange = useCallback(
-    async (raw: string) => {
+    (raw: string) => {
       setCapDraft(raw);
       const parsed = Number(raw);
       if (raw.trim() === "" || !Number.isInteger(parsed) || parsed < 0) {
@@ -801,15 +849,13 @@ export function LibraryApp({ windowId: _windowId }: { windowId: string }) {
         );
         return;
       }
-      const saved = await updateLibrarySettings({ storage_cap_bytes: parsed });
-      if (saved) {
-        setSettings(saved);
-        setSettingsError(null);
-      } else {
-        setSettingsError("Could not save the storage cap.");
-      }
+      settingsEditedRef.current = true;
+      saveSettings(
+        { storage_cap_bytes: parsed },
+        "Could not save the storage cap.",
+      );
     },
-    [],
+    [saveSettings],
   );
 
   const handleAddSourceRule = useCallback(async () => {
@@ -840,6 +886,7 @@ export function LibraryApp({ windowId: _windowId }: { windowId: string }) {
       return;
     }
     setRuleError(null);
+    rulesEditedRef.current = true;
     const refreshed = await listLibrarySourceRules();
     setSourceRules(refreshed.rules);
     setNewSourceRule({ source_pattern: "", quality: "720", auto_download: false });
@@ -848,6 +895,7 @@ export function LibraryApp({ windowId: _windowId }: { windowId: string }) {
   const handleDeleteSourceRule = useCallback(async (ruleId: string) => {
     const ok = await deleteLibrarySourceRule(ruleId);
     if (ok) {
+      rulesEditedRef.current = true;
       setSourceRules((prev) => prev.filter((r) => r.id !== ruleId));
     }
   }, []);

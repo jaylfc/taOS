@@ -1514,6 +1514,16 @@ class TestLibraryStoreRules:
 # P3: HeavyDownloadProcessor
 # ---------------------------------------------------------------------------
 
+    @pytest.mark.asyncio
+    async def test_create_rule_duplicate_pattern_rejected(self, lib_store):
+        """Rule patterns are unique case-insensitively, enforced by the
+        store insert itself, not just a route pre-check."""
+        await lib_store.create_rule(source_pattern="*youtube.com/*")
+        with pytest.raises(ValueError):
+            await lib_store.create_rule(source_pattern="*YouTube.com/*")
+        rules = await lib_store.list_rules()
+        assert len(rules) == 1
+
 
 class TestHeavyDownloadProcessor:
     @pytest.mark.asyncio
@@ -1704,6 +1714,42 @@ class TestRunHeavyPipeline:
         jobs = await lib_store.get_item_jobs(item_id)
         heavy_jobs = [j for j in jobs if j["stage"] == "heavy_download"]
         assert len(heavy_jobs) >= 1
+
+    @pytest.mark.asyncio
+    async def test_run_heavy_pipeline_updates_own_job(self, lib_store, storage_dir):
+        """The pipeline completes the job IT created, even when a newer
+        job for the same item appears while the download runs."""
+        item_id = await lib_store.create_item(
+            kind="url:youtube",
+            source_url="https://youtube.com/watch?v=own-job",
+        )
+        storage_dir.joinpath("downloads").mkdir(parents=True, exist_ok=True)
+        mock_path = str(storage_dir / "downloads" / "test.mp4")
+        storage_dir.joinpath("downloads", "test.mp4").write_text("fake data")
+
+        async def _download_with_interloper(*args, **kwargs):
+            # A second trigger lands while this download is running.
+            await lib_store.create_job(item_id, "heavy_download")
+            return mock_path
+
+        from unittest.mock import patch
+
+        from tinyagentos.library_pipeline import run_heavy_pipeline
+
+        with patch(
+            "tinyagentos.knowledge_fetchers.youtube.download_video",
+            _download_with_interloper,
+        ):
+            result = await run_heavy_pipeline(
+                lib_store, item_id, storage_dir, quality="720",
+            )
+
+        assert result is not None
+        jobs = await lib_store.get_item_jobs(item_id)
+        heavy = [j for j in jobs if j["stage"] == "heavy_download"]
+        assert len(heavy) == 2
+        assert heavy[0]["state"] == "done"    # the pipeline's own job
+        assert heavy[1]["state"] == "queued"  # the interloper, untouched
 
 
 # ---------------------------------------------------------------------------
@@ -3132,6 +3178,17 @@ class TestLibrarySettingsStore:
         status = await lib_store.storage_cap_status()
         assert status["paused_at_cap"] is False
 
+    @pytest.mark.asyncio
+    async def test_update_settings_rejected_update_writes_nothing(self, lib_store):
+        """Validation runs before any write: a combined update with a
+        valid quality and an invalid cap persists neither field."""
+        with pytest.raises(ValueError):
+            await lib_store.update_settings(
+                preferred_quality="1080", storage_cap_bytes=-1
+            )
+        settings = await lib_store.get_settings()
+        assert settings["preferred_quality"] == "720"
+
 
 class TestHeavyDownloadStorageCap:
     @pytest.mark.asyncio
@@ -3341,3 +3398,32 @@ class TestLibrarySettingsRoutes:
             "/api/library/rules", data={"source_pattern": "*.dup.com/*"},
         )
         assert resp.status_code == 409
+
+    @pytest.mark.asyncio
+    async def test_trigger_download_rule_quality_beats_settings(self, client):
+        """Manual-trigger quality precedence: a matching rule beats the
+        settings preferred quality; the setting is only the fallback
+        the pipeline applies last."""
+        resp = await client.put(
+            "/api/library/settings", json={"preferred_quality": "1080"}
+        )
+        assert resp.status_code == 200
+        resp = await client.post(
+            "/api/library/rules",
+            data={"source_pattern": "*youtube.com/*", "quality": "480"},
+        )
+        assert resp.status_code == 201
+
+        resp = await client.post(
+            "/api/library/ingest",
+            data={"url": "https://youtube.com/watch?v=rule-prec"},
+        )
+        assert resp.status_code == 202
+        item_id = resp.json()["item_id"]
+
+        import asyncio as _asyncio
+        await _asyncio.sleep(0.5)
+
+        resp = await client.post(f"/api/library/items/{item_id}/download")
+        assert resp.status_code == 202
+        assert resp.json()["quality"] == "480"

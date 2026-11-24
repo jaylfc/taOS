@@ -383,13 +383,14 @@ class LibraryStore(BaseStore):
         Raises ValueError for an unknown quality or a negative cap.
         Returns the full settings dict after the update.
         """
+        # Validate everything before writing anything: a rejected
+        # update must leave no partial state behind.
         if preferred_quality is not None:
             if preferred_quality not in LIBRARY_QUALITIES:
                 raise ValueError(
                     f"Invalid preferred_quality {preferred_quality!r}; "
                     f"must be one of {list(LIBRARY_QUALITIES)}"
                 )
-            await self._set_setting_raw("preferred_quality", preferred_quality)
         if storage_cap_bytes is not None:
             if isinstance(storage_cap_bytes, bool) or not isinstance(
                 storage_cap_bytes, int
@@ -399,6 +400,9 @@ class LibraryStore(BaseStore):
                 raise ValueError(
                     "storage_cap_bytes must be >= 0 (0 disables the cap)"
                 )
+        if preferred_quality is not None:
+            await self._set_setting_raw("preferred_quality", preferred_quality)
+        if storage_cap_bytes is not None:
             await self._set_setting_raw(
                 "storage_cap_bytes", str(storage_cap_bytes)
             )
@@ -431,12 +435,26 @@ class LibraryStore(BaseStore):
     ) -> str:
         rule_id = uuid.uuid4().hex[:16]
         now = time.time()
-        await self._db.execute(
+        # Single-statement insert-if-absent: the duplicate check and the
+        # insert are atomic, so concurrent creates cannot both succeed.
+        cursor = await self._db.execute(
             """INSERT INTO library_rules
                (id, source_pattern, quality, auto_download, enabled, created_at)
-               VALUES (?, ?, ?, ?, ?, ?)""",
-            (rule_id, source_pattern, quality, int(auto_download), int(enabled), now),
+               SELECT ?, ?, ?, ?, ?, ?
+               WHERE NOT EXISTS (
+                   SELECT 1 FROM library_rules
+                   WHERE LOWER(source_pattern) = LOWER(?)
+               )""",
+            (
+                rule_id, source_pattern, quality,
+                int(auto_download), int(enabled), now,
+                source_pattern,
+            ),
         )
+        if cursor.rowcount == 0:
+            raise ValueError(
+                f"A rule for source_pattern {source_pattern!r} already exists"
+            )
         await self._db.commit()
         return rule_id
 
@@ -523,7 +541,10 @@ class LibraryStore(BaseStore):
             )
         ]
 
-        cap_status = await self.storage_cap_status()
+        # Derive the cap state from the total read above so the two
+        # fields always describe the same value, even under concurrent
+        # item writes.
+        cap_bytes = (await self.get_settings())["storage_cap_bytes"]
         return {
             "total_count": total_count,
             "total_bytes": total_bytes,
@@ -531,8 +552,8 @@ class LibraryStore(BaseStore):
             "by_source": by_source,
             "sources": sources,
             "items": top_items,
-            "cap_bytes": cap_status["cap_bytes"],
-            "paused_at_cap": cap_status["paused_at_cap"],
+            "cap_bytes": cap_bytes,
+            "paused_at_cap": bool(cap_bytes > 0 and total_bytes >= cap_bytes),
         }
 
     @staticmethod
