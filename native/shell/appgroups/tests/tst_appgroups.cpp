@@ -47,6 +47,7 @@ class TstAppGroups : public QObject
         e.insert(u"HOME"_s, m_tmp.path() + u"/home"_s);
         e.insert(u"TAOS_APPGROUPS_EXEC"_s, u"/stable/bin/taos-appgroups"_s);
         e.insert(u"INCUS_SOCKET"_s, u"/nonexistent"_s);
+        e.insert(u"TAOS_APPGROUPS_DRI_DIR"_s, m_tmp.path() + u"/dri"_s);
         e.insert(u"FAKE_SHA"_s, u"7baa36baab285cb46101af958b8f7be6305458db9a44d8b3d0938d61f38597d7"_s);
         e.insert(u"FAKE_FPR"_s, u"35BAA0B33E9EB396F59CA838C0BA5CE6DC6315A3"_s);
         for (auto it = env.begin(); it != env.end(); ++it)
@@ -78,6 +79,10 @@ private slots:
         catDir = m_tmp.path() + u"/cat"_s;
         QDir().mkpath(fakeDir);
         QDir().mkpath(m_tmp.path() + u"/home"_s);
+        // a GPU with two render nodes and a card node: the lowest render node is granted, never the card
+        QDir().mkpath(m_tmp.path() + u"/dri"_s);
+        for (const char *n : {"card0", "renderD129", "renderD130"})
+            writeFile(m_tmp.path() + u"/dri/"_s + QLatin1String(n), "x");
     }
     void init()
     {
@@ -137,9 +142,9 @@ private slots:
         QVERIFY(calls.contains(u"tar -xzf /var/tmp/taos-dl-antigravity -C /opt/antigravity --strip-components=1"_s));
         QVERIFY(!calls.contains(u"--no-sandbox"_s));
         QVERIFY(!calls.contains(u"security.privileged=true"_s));
-        QVERIFY(calls.contains(u"gpu-intel unix-char source=/dev/dri/renderD128"_s));
-        QVERIFY(!calls.contains(u"renderD129"_s));
+        QVERIFY(calls.contains(u"gpu unix-char source="_s + m_tmp.path() + u"/dri/renderD129 path=/dev/dri/renderD129"_s));
         QVERIFY(!calls.contains(u"renderD130"_s));
+        QVERIFY(!calls.contains(u"card0"_s));
         // Every event line is one JSON object (the Store parses them).
         for (const QString &l : r.raw.trimmed().split(u'\n'))
             QVERIFY2(!QJsonDocument::fromJson(l.toUtf8()).isNull(), qPrintable(l));
@@ -153,6 +158,33 @@ private slots:
         QVERIFY2(r.err.contains(u"pinned checksum"_s), qPrintable(r.err));
         QVERIFY(!QFileInfo::exists(xdgData + u"/applications/taos-appgroups-antigravity.desktop"_s));
         QCOMPARE(cli({u"list"_s, u"--json"_s}).last.value(u"apps"_s).toArray().size(), 0);
+    }
+    void noRenderNodeSkipsTheGpuGrantWithAMessage()
+    {
+        const QString empty = m_tmp.path() + u"/nodri"_s;
+        QDir().mkpath(empty);
+        const Run r = cli({u"install"_s, u"antigravity"_s}, {{u"TAOS_APPGROUPS_DRI_DIR"_s, empty}});
+        QVERIFY2(r.code == 0, qPrintable(r.raw + r.err));
+        QVERIFY2(r.err.contains(u"no GPU render node"_s), qPrintable(r.err));
+        QVERIFY(!QString::fromUtf8(readAll(fakeDir + u"/calls.log"_s)).contains(u"unix-char"_s));
+    }
+    void launcherTextFromTheManifestCannotAddKeys()
+    {
+        QDir().mkpath(catDir);
+        QString text = QString::fromUtf8(readAll(QStringLiteral(CATALOG_DIR) + u"/antigravity.json"_s));
+        text.replace(u"\"id\": \"antigravity\""_s, u"\"id\": \"nl\""_s)
+            .replace(u"\"name\": \"Antigravity\""_s, u"\"name\": \"Evil\\nExec=/bin/false\\rX-Bad=1\""_s)
+            .replace(u"\"description\": \"Google's"_s, u"\"description\": \"line one\\nHidden=true\\n Google's"_s)
+            .replace(u"/opt/antigravity"_s, u"/opt/nl"_s);
+        writeFile(catDir + u"/nl.json"_s, text.toUtf8());
+        const Run r = cli({u"install"_s, u"nl"_s}, {{u"TAOS_APPGROUPS_CATALOG"_s, catDir}});
+        QVERIFY2(r.code == 0, qPrintable(r.raw + r.err));
+        const QString d = QString::fromUtf8(readAll(xdgData + u"/applications/taos-appgroups-nl.desktop"_s));
+        QVERIFY(d.contains(u"Name=Evil Exec=/bin/false X-Bad=1\n"_s));
+        QVERIFY(d.contains(u"Comment=line one Hidden=true Google's"_s));
+        QCOMPARE(d.count(u"\nExec="_s), 1);
+        QVERIFY(!d.contains(u"\nHidden="_s));
+        QVERIFY(!d.contains(u"\nX-Bad="_s));
     }
     void wrongKeyFingerprintIsRefused()
     {

@@ -23,7 +23,7 @@ buttons match. Unknown fields, ops or grants make the manifest invalid.
 ## Grants
 
 Profile `user-apps`: unprivileged, no nesting, root disk, host fonts and system themes read only. Per group, from the
-union of its apps: a network device, the Intel render node only (never the card nodes or the NVIDIA nodes), the two
+union of its apps: a network device, the render node of the GPU that is present (Intel, AMD or NVIDIA; the lowest `renderD*`, never a card node; no node, no GPU grant and a message), the two
 shared folders (`~/Documents for apps`, `~/Downloads for apps`) when asked for, and per session a proxy to the Wayland
 socket (and the pulse socket for apps with audio).
 

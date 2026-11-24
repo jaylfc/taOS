@@ -15,6 +15,7 @@
 #include <QRegularExpression>
 #include <QSaveFile>
 #include <QStandardPaths>
+#include <QTextStream>
 #include <QThread>
 
 #include <unistd.h>
@@ -29,7 +30,6 @@ constexpr int kUid = 1000;  // the app user inside every group container
 const QString kSessionDir = u"/var/lib/taos/session"_s;
 const QString kBootMarker = u"/var/lib/taos/bootstrapped-1"_s;
 const QString kHomeBase = u"/home/taos/apps"_s;
-const QString kIntelNode = u"/dev/dri/renderD128"_s;
 
 struct Proc {
     bool started = false;
@@ -44,6 +44,24 @@ QString envOr(const char *name, const QString &fallback)
 {
     const QString v = qEnvironmentVariable(name);
     return v.isEmpty() ? fallback : v;
+}
+
+// The GPU grant is the render node of whichever adapter is present (Intel, AMD or NVIDIA): the lowest renderD* in the
+// DRM directory. Never a card node. Empty when there is none (no GPU, or a machine without a render driver).
+QString renderNode()
+{
+    const QDir dir(envOr("TAOS_APPGROUPS_DRI_DIR", u"/dev/dri"_s));
+    const QStringList nodes = dir.entryList({u"renderD*"_s}, QDir::System | QDir::Files | QDir::NoDotAndDotDot | QDir::Readable, QDir::Name);
+    return nodes.isEmpty() ? QString() : dir.absoluteFilePath(nodes.first());
+}
+
+// Text that goes into a one-line .desktop key: no newline or other control character may survive.
+QString oneLine(const QString &s)
+{
+    QString o;
+    for (const QChar c : s)
+        o += (c.unicode() < 0x20 || c.unicode() == 0x7f || c.category() == QChar::Other_Control || c == QChar(0x2028) || c == QChar(0x2029)) ? QChar(u' ') : c;
+    return o.simplified();
 }
 
 } // namespace
@@ -68,6 +86,8 @@ struct Engine::Impl {
             mode = u"per-user"_s;
         } else {
             mode = u"admin-default-project"_s;
+            QTextStream(stderr) << "taos-appgroups: warning: no per-user incus socket (" << userSocket
+                                << "): using the admin socket and the default project, so people on this machine are NOT isolated from each other\n";
         }
     }
 
@@ -492,8 +512,12 @@ Result applyGrants(const Engine::Impl *d, const QString &ct, const Grants &g, bo
     if (g.downloads)
         QDir().mkpath(downloadsHost());
     bool good = want(u"eth0"_s, g.network || forceNetwork, {u"nic"_s, u"network="_s + firstManagedNetwork(d), u"name=eth0"_s});
-    good = good && want(u"gpu-intel"_s, g.gpu,
-                        {u"unix-char"_s, u"source="_s + kIntelNode, u"path="_s + kIntelNode, u"uid=1000"_s, u"gid=1000"_s, u"mode=0660"_s});
+    const QString node = g.gpu ? renderNode() : QString();
+    if (g.gpu && node.isEmpty())
+        QTextStream(stderr) << "taos-appgroups: no GPU render node found (no /dev/dri/renderD*): the app runs without GPU access\n";
+    good = good && want(u"gpu-intel"_s, false, {});   // the device name of earlier versions (Intel only)
+    good = good && want(u"gpu"_s, !node.isEmpty(),
+                        {u"unix-char"_s, u"source="_s + node, u"path=/dev/dri/"_s + QFileInfo(node).fileName(), u"uid=1000"_s, u"gid=1000"_s, u"mode=0660"_s});
     good = good && want(u"documents"_s, g.documents,
                         {u"disk"_s, u"source="_s + docsHost(), u"path=/mnt/taos/documents"_s, u"shift=true"_s});
     good = good && want(u"downloads"_s, g.downloads,
@@ -535,7 +559,7 @@ Result bootstrap(Engine::Impl *d, const QString &ct)
         return Result::fail(ExitStep, u"the container has no network (cannot resolve deb.debian.org)"_s);
     if (!d->exec(ct, {u"apt-get"_s, u"update"_s}, log, env).ok())
         return Result::fail(ExitStep, u"apt-get update failed, see %1"_s.arg(log));
-    // Runtime pieces every desktop app needs: TLS roots, curl and gpg for recipe steps, Mesa for the Intel GPU,
+    // Runtime pieces every desktop app needs: TLS roots, curl and gpg for recipe steps, Mesa for the GPU,
     // fonts, the pulse client, a session bus, and the usual helpers.
     const QStringList pk = basePackages();
     if (!d->exec(ct, QStringList{u"apt-get"_s, u"install"_s, u"-y"_s, u"--no-install-recommends"_s} + pk, log, env).ok())
@@ -743,7 +767,7 @@ bool writeLauncher(const Manifest &m, const QString &group, QString *err)
     QFile::setPermissions(iconPath(m.id), QFile::ReadOwner | QFile::WriteOwner | QFile::ReadGroup | QFile::ReadOther);
     QDir().mkpath(Engine::applicationsDir());
     QString t = u"[Desktop Entry]\nType=Application\nVersion=1.5\n"_s;
-    t += u"Name=%1\nComment=%2\n"_s.arg(m.name, m.description.left(120));
+    t += u"Name=%1\nComment=%2\n"_s.arg(oneLine(m.name), oneLine(m.description).left(120));
     t += u"Exec=%1 run %2 %U\n"_s.arg(desktopQuote(selfExec()), m.id);
     t += u"Icon=%1\nTerminal=false\nStartupWMClass=%2\n"_s.arg(iconPath(m.id), m.windowAppId);
     t += u"Categories=%1\n"_s.arg((m.categories.isEmpty() ? QStringList{u"Utility"_s} : m.categories).join(u';') + u';');
