@@ -62,7 +62,12 @@ class StoreEngine : public QObject {
     Q_PROPERTY(QObject *webapps READ webappsObject CONSTANT)
     Q_PROPERTY(QObject *themes READ themesObject CONSTANT)
     Q_PROPERTY(QString profileId READ profileId NOTIFY stateChanged)
-    Q_PROPERTY(QVariantList sections READ sections CONSTANT)
+    /// The sidebar: a section with nothing to show is left out. Changes with the catalogue.
+    Q_PROPERTY(QVariantList sections READ sections NOTIFY revisionChanged)
+    /// True while the entries shown are the catalogue saved with the app (the controller's did not load).
+    Q_PROPERTY(bool usingSnapshot READ usingSnapshot NOTIFY stateChanged)
+    /// One plain line about the saved catalogue ("" while the live one is shown).
+    Q_PROPERTY(QString statusText READ statusText NOTIFY stateChanged)
 public:
     explicit StoreEngine(QObject *parent = nullptr);
     ~StoreEngine() override;
@@ -90,7 +95,13 @@ public:
     WebAppsService *web() { return m_web; }
     ThemesService *themesService() { return m_themes.get(); }
     QVariantList sections() const;
+    bool usingSnapshot() const { return m_cat.usingSnapshot(); }
+    QString statusText() const;
     Catalog &catalog() { return m_cat; }
+    /// Loads catalog/snapshot.json, art-index.json and curated.json (embedded at :/my.taos.store/catalog/, or the
+    /// folder in TAOS_STORE_CATALOG_DIR) unless already set. Missing files are fine: the Store then has no
+    /// saved catalogue and no bundled art.
+    void loadBundledCatalog();
 
     // ---- catalogue
     Q_INVOKABLE void refresh();
@@ -98,6 +109,8 @@ public:
     Q_INVOKABLE QVariantList list(const QString &section, const QString &query = {}, const QString &chip = {}) const;
     Q_INVOKABLE QVariantList chips(const QString &section) const { return m_cat.chips(section); }
     Q_INVOKABLE QVariantList discover() const { return m_cat.discover(); }
+    /// {hero, shelves:[{id,title,style,section,items,total}]}, see Catalog::discoverPage.
+    Q_INVOKABLE QVariantMap discoverPage() const { return m_cat.discoverPage(); }
     Q_INVOKABLE QVariantList search(const QString &query) const { return m_cat.search(query); }
     Q_INVOKABLE int count(const QString &section) const;
     /// One entry, with what the detail page needs (permissions rows, model variants, instances).
@@ -164,7 +177,7 @@ private:
     QHash<QString, QJsonObject> m_modelRows;       ///< /api/models rows by id
     QTimer m_poll;
     QString m_errorText, m_errorKind, m_profile;
-    bool m_running = false, m_loaded = false, m_haveBuiltin = false;
+    bool m_running = false, m_loaded = false, m_haveBuiltin = false, m_haveBundled = false;
     int m_loading = 0;
     int m_revision = 0;
 };

@@ -164,6 +164,12 @@ private slots:
                 for (int fg : {ThemeTokens::Text, ThemeTokens::TextSecondary, ThemeTokens::TextTertiary})
                     QVERIFY2(Contrast::ratio(t[fg], t[ThemeTokens::Surface]) >= 4.5, qPrintable(d.id + v + ThemeTokens::name(fg)));
                 QVERIFY2(Contrast::ratio(t[ThemeTokens::AccentText], t[ThemeTokens::Accent]) >= 4.5, qPrintable(d.id + v));
+                // placeholder text sits on a field: the text colour at 6 % over the page, raised or ground colour (apps Look.field)
+                for (int bg : {ThemeTokens::Ground, ThemeTokens::Surface, ThemeTokens::Raised}) {
+                    QColor fld = Contrast::over(QColor::fromRgbF(t[ThemeTokens::Text].redF(), t[ThemeTokens::Text].greenF(), t[ThemeTokens::Text].blueF(), 0.06), t[bg]);
+                    QVERIFY2(Contrast::ratio(t[ThemeTokens::TextTertiary], fld) >= 4.5, qPrintable(d.id + v + QStringLiteral(" tertiary on a field over ") + ThemeTokens::name(bg)));
+                    QVERIFY2(Contrast::ratio(t[ThemeTokens::TextTertiary], t[bg]) >= 4.5, qPrintable(d.id + v + QStringLiteral(" tertiary on ") + ThemeTokens::name(bg)));
+                }
             }
     }
     void thirdPartyThemesLoadFromUserAndSystem() {

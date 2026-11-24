@@ -2,6 +2,7 @@
 // The Store window loaded in a QML engine against the fake controller and a fake browser: the sections, the Web apps
 // page end to end (add from the catalogue, expand, clone, remove with a second click), the Add website dialog and its
 // address check, the Docker consent card, and the refusal a member gets, in words.
+#include <QPointer>
 #include <QTemporaryDir>
 
 #include "apphost.h"
@@ -113,14 +114,70 @@ private Q_SLOTS:
     {
         open(true);
         for (const QString &s : {u"discover"_s, u"apps"_s, u"webapps"_s, u"models"_s, u"themes"_s, u"plugins"_s, u"installed"_s, u"updates"_s})
-            QVERIFY2(byName(m_win, u"section-"_s + s), qPrintable(s));
+            QVERIFY2(waitFor([&] { return byName(m_win, u"section-"_s + s) != nullptr; }), qPrintable(s));   // sections with nothing in them wait for the catalogue
         QVERIFY(waitFor([this] { return byName(m_win, u"disc-youtube"_s) != nullptr; }));
         auto *yt = byName(m_win, u"disc-youtube"_s);
         QVERIFY(yt->isVisible());
-        QCOMPARE(yt->property("entry").toMap()[u"name"_s].toString(), u"YouTube"_s);
+        QCOMPARE(yt->property("name").toString(), u"YouTube"_s);
         // YouTube is the first web app of Discover
         auto *first = findItem(m_win->contentItem(), [](QQuickItem *i) { return i->objectName().startsWith(u"disc-"_s) && i->isVisible(); });
         QCOMPARE(first->objectName(), u"disc-youtube"_s);
+    }
+
+    void keyboard_focus_survives_a_refresh_and_the_keys_work()
+    {
+        open(true);
+        QVERIFY(waitFor([this] { return byName(m_win, u"disc-youtube"_s) != nullptr; }));
+        QVERIFY(waitFor([this] { return m_win->property("engine").value<QObject *>()->property("loaded").toBool(); }));
+        QTest::qWait(1500);   // the first load settles before the user starts tabbing
+        QPointer<QQuickItem> yt = byName(m_win, u"disc-youtube"_s);
+        yt->forceActiveFocus(Qt::TabFocusReason);
+        QVERIFY(yt->hasActiveFocus());
+        // a refresh hands the page new arrays with the same content: the focused row must be the same object, still focused
+        auto *engine = m_win->property("engine").value<QObject *>();
+        const int before = engine->property("revision").toInt();
+        QMetaObject::invokeMethod(engine, "refresh");
+        QVERIFY(waitFor([&] { return engine->property("revision").toInt() > before; }));
+        QTest::qWait(300);
+        QVERIFY2(yt, "the focused row was destroyed by the refresh");
+        QCOMPARE(byName(m_win, u"disc-youtube"_s), yt.data());
+        QVERIFY(yt->hasActiveFocus());
+        // Right moves to the next row of the shelf
+        QTest::keyClick(m_win, Qt::Key_Right);
+        QVERIFY(waitFor([&] { return !yt->hasActiveFocus() && m_win->activeFocusItem() && m_win->activeFocusItem()->objectName().startsWith(u"disc-"_s); }));
+        const QString second = m_win->activeFocusItem()->objectName();
+        QVERIFY(second != u"disc-youtube"_s);
+        QTest::keyClick(m_win, Qt::Key_Left);
+        QVERIFY(waitFor([&] { return yt->hasActiveFocus(); }));
+        // Enter opens the detail page, Escape goes back to Discover
+        QTest::keyClick(m_win, Qt::Key_Return);
+        QVERIFY(waitFor([this] { return m_win->property("detailId").toString() == u"youtube"_s || !m_win->property("detailId").toString().isEmpty(); }));
+        QTest::keyClick(m_win, Qt::Key_Escape);
+        QVERIFY(waitFor([this] { return m_win->property("detailId").toString().isEmpty(); }));
+    }
+
+    void tab_walks_the_window_and_reaches_the_shelf()
+    {
+        open(true);
+        QVERIFY(waitFor([this] { return byName(m_win, u"disc-youtube"_s) != nullptr; }));
+        QTest::qWait(800);
+        QStringList seen;
+        bool reachedShelf = false;
+        auto *search = byName(m_win, u"searchField"_s);
+        QVERIFY(search);
+        search->forceActiveFocus(Qt::TabFocusReason);
+        QObject *last = m_win->activeFocusItem();
+        for (int i = 0; i < 60 && !reachedShelf; ++i) {
+            QTest::keyClick(m_win, Qt::Key_Tab);
+            QVERIFY2(waitFor([&] { return m_win->activeFocusItem() != last; }, 2000), qPrintable(u"Tab stuck after "_s + seen.join(u", "_s)));
+            last = m_win->activeFocusItem();
+            seen << last->objectName() + u"/"_s + QString::fromLatin1(last->metaObject()->className());
+            reachedShelf = last->objectName().startsWith(u"disc-"_s);
+        }
+        QVERIFY2(reachedShelf, qPrintable(seen.join(u" > "_s)));
+        qInfo().noquote() << "TAB ORDER:" << seen.join(u" > "_s);
+        QTest::keyClick(m_win, Qt::Key_Tab, Qt::ShiftModifier);
+        QVERIFY(waitFor([&] { return m_win->activeFocusItem() != last; }));
     }
 
     void web_apps_end_to_end()

@@ -5,6 +5,7 @@
 // searching, sectioning, and deciding what an entry needs (Docker, a licence, hardware fit).
 #include <QJsonArray>
 #include <QJsonObject>
+#include <QPair>
 #include <QSet>
 #include <QHash>
 #include <QVariantList>
@@ -36,6 +37,9 @@ QString sectionOfKind(const QString &kind);
 QString fitFromTiers(const QJsonObject &tiers, const QString &profileId);
 QString fitText(const QString &fit);
 
+/// "379.0k" for 379000, "950" below a thousand, "" for 0 or less.
+QString starsText(int stars);
+
 class Catalog {
 public:
     void setServer(const QJsonArray &entries);
@@ -46,6 +50,22 @@ public:
     void markInstalled(const QString &id, bool installed);
     void setInstalled(const QSet<QString> &ids);
     void setInstanceCounts(const QHash<QString, int> &counts);
+    /// The catalogue saved with the app (same shape as GET /api/store/catalog). Shown only while no controller
+    /// catalogue has been loaded; once one is, it only fills in what a live entry lacks (stars, tagline).
+    void setSnapshot(const QJsonArray &entries);
+    /// The artwork index (catalog/art-index.json): {icons:{id:file}, iconExt:{file:ext}, families:[{prefix,icon}],
+    /// covers:[name], coverAlias:{id:name}}. `base` is the folder URL of the assets ("qrc:/my.taos.store/assets").
+    void setArt(const QJsonObject &index, const QString &base = QStringLiteral("qrc:/my.taos.store/assets"));
+    /// The editor's picks (catalog/curated.json): featured id and the shelf id lists.
+    void setCurated(const QJsonObject &curated);
+    /// True while the entries shown come from the saved snapshot.
+    bool usingSnapshot() const { return m_serverArr.isEmpty() && !m_snapArr.isEmpty(); }
+    /// Icon of an app, first match wins: the icon bundled for its id, the bundled icon of its family (qwen3-8b
+    /// takes the qwen one), the controller's own icon when it is a web or file address. Empty when none: the
+    /// face then draws its styled letter tile.
+    QString iconUrl(const QString &id, const QString &serverIcon = {}) const;
+    /// Banner art bundled for an id (directly or through an alias), empty when there is none.
+    QString coverUrl(const QString &id) const;
 
     bool empty() const { return m_entries.isEmpty(); }
     int size() const { return m_entries.size(); }
@@ -63,13 +83,24 @@ public:
     QVariantList search(const QString &query) const;
     /// Discover: [{id,title,items}] groups.
     QVariantList discover() const;
+    /// The Discover page: {hero: entry or {}, shelves: [{id,title,style,section,items,total}]}. `style` is "cards"
+    /// (banner cards) or "compact" (two-column rows); a shelf with nothing to show is left out.
+    QVariantMap discoverPage() const;
     int count(const QString &section) const;
 
     static int score(const QVariantMap &e, const QStringList &words);
 
 private:
     void rebuild();
-    QJsonArray m_serverArr, m_webArr;
+    QJsonArray m_serverArr, m_webArr, m_snapArr;
+    QHash<QString, QJsonObject> m_snapById;
+    QJsonObject m_curated;
+    QHash<QString, QString> m_iconOf;       ///< app id -> icon file stem
+    QHash<QString, QString> m_iconExt;      ///< icon file stem -> "png" | "svg"
+    QList<QPair<QString, QString>> m_families;   ///< id prefix -> icon file stem
+    QSet<QString> m_covers;
+    QHash<QString, QString> m_coverAlias;
+    QString m_assetBase;
     QList<QVariantMap> m_entries;
     QHash<QString, int> m_index;
     QString m_profile;

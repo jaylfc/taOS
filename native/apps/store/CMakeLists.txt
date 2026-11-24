@@ -3,7 +3,7 @@ find_package(Qt6 6.8 REQUIRED COMPONENTS Qml Quick QuickControls2)
 
 add_subdirectory(core)
 
-set(TAOS_STORE_QML Main.qml AppIcon.qml AppRow.qml StateButton.qml Pill.qml ListPage.qml WebAppsPage.qml ThemesPage.qml
+set(TAOS_STORE_QML Main.qml StableModel.qml GetButton.qml CardGrid.qml CompactGrid.qml Pill.qml ListPage.qml WebAppsPage.qml ThemesPage.qml
     InstalledPage.qml DiscoverPage.qml DetailPage.qml AddWebsiteDialog.qml)
 set(TAOS_STORE_QML_ABS)
 foreach(f ${TAOS_STORE_QML})
@@ -21,6 +21,11 @@ taos_add_native_app(
 qt_add_resources(taos-store "taos-store_qml" PREFIX "/my.taos.store" BASE ${CMAKE_CURRENT_SOURCE_DIR}/qml FILES ${TAOS_STORE_QML_ABS})
 qt_add_resources(taos-store "taos-store_catalog" PREFIX "/my.taos.store/catalog" BASE ${CMAKE_CURRENT_SOURCE_DIR}/catalog
                  FILES ${CMAKE_CURRENT_SOURCE_DIR}/catalog/webapps.json)
+# the saved catalogue and its artwork (see assets/NOTICE); `assets/` is read at /my.taos.store/assets
+file(GLOB_RECURSE TAOS_STORE_ART CONFIGURE_DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/assets/icons/* ${CMAKE_CURRENT_SOURCE_DIR}/assets/covers/*)
+qt_add_resources(taos-store "taos-store_art" PREFIX "/my.taos.store" BASE ${CMAKE_CURRENT_SOURCE_DIR}
+                 FILES ${TAOS_STORE_ART} ${CMAKE_CURRENT_SOURCE_DIR}/catalog/snapshot.json
+                 ${CMAKE_CURRENT_SOURCE_DIR}/catalog/art-index.json ${CMAKE_CURRENT_SOURCE_DIR}/catalog/curated.json)
 taos_apps_use_common(taos-store)
 set(TAOS_STORE_QML ${TAOS_STORE_QML} PARENT_SCOPE)
 add_subdirectory(tests)

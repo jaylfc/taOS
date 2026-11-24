@@ -1,0 +1,335 @@
+{
+ "about": "Editor picks and artwork index for the bundled snapshot. Hand edited. tools/make_snapshot.py reads it.",
+ "featured": "comfyui",
+ "shelves": {
+  "popular": [
+   "openclaw",
+   "hermes",
+   "n8n",
+   "ollama",
+   "stable-diffusion-webui",
+   "sd-webui"
+  ],
+  "subscriptions": [
+   "sonarr",
+   "radarr",
+   "qbittorrent",
+   "sabnzbd",
+   "homebridge",
+   "adguard-home",
+   "uptime-kuma",
+   "nextcloud"
+  ],
+  "home": [
+   "home-assistant",
+   "immich",
+   "jellyfin",
+   "vaultwarden"
+  ]
+ },
+ "icons": {
+  "comfyui": "comfyui",
+  "ollama": "ollama",
+  "n8n": "n8n",
+  "home-assistant": "home-assistant",
+  "uptime-kuma": "uptime-kuma",
+  "searxng": "searxng",
+  "gitea": "gitea",
+  "code-server": "coder",
+  "jupyter-lab": "jupyter",
+  "tailscale": "tailscale",
+  "caddy": "caddy",
+  "immich": "immich",
+  "jellyfin": "jellyfin",
+  "vaultwarden": "vaultwarden",
+  "sonarr": "sonarr",
+  "radarr": "radarr",
+  "qbittorrent": "qbittorrent",
+  "sabnzbd": "sabnzbd",
+  "homebridge": "homebridge",
+  "adguard-home": "adguard-home",
+  "nextcloud": "nextcloud",
+  "github-mcp-server": "github",
+  "mcp-memory": "mcp",
+  "smolagents": "hugging-face",
+  "openai-agents-sdk": "openai",
+  "qwen3-4b": "qwen",
+  "qwen3-1.7b": "qwen",
+  "qwen3-8b": "qwen",
+  "gemma-3-4b": "google-gemini",
+  "kokoro-tts": "kokoro-web",
+  "whisper-stt": "web-whisper",
+  "open-webui": "open-webui",
+  "filebrowser": "filebrowser",
+  "paperless-ngx": "paperless-ngx",
+  "libretranslate": "libretranslate",
+  "excalidraw": "excalidraw",
+  "memos": "memos",
+  "stirling-pdf": "stirling-pdf",
+  "jan": "jan",
+  "anything-llm": "anything-llm",
+  "librechat": "librechat",
+  "linkwarden": "linkwarden",
+  "qdrant": "qdrant",
+  "whisper": "web-whisper",
+  "openclaw": "openclaw",
+  "hermes": "hermes-agent",
+  "youtube": "webapp-youtube",
+  "youtube-music": "webapp-youtube-music",
+  "whatsapp-web": "webapp-whatsapp-web",
+  "telegram-web": "webapp-telegram-web",
+  "discord": "webapp-discord",
+  "x": "webapp-x",
+  "github": "webapp-github",
+  "google-maps": "webapp-google-maps"
+ },
+ "iconFamilies": [
+  {
+   "prefix": "qwen",
+   "icon": "qwen"
+  },
+  {
+   "prefix": "gemma",
+   "icon": "google-gemini"
+  },
+  {
+   "prefix": "llama",
+   "icon": "meta"
+  },
+  {
+   "prefix": "whisper",
+   "icon": "web-whisper"
+  },
+  {
+   "prefix": "deepseek",
+   "icon": "deepseek"
+  },
+  {
+   "prefix": "mistral",
+   "icon": "mistral-ai"
+  },
+  {
+   "prefix": "mixtral",
+   "icon": "mistral-ai"
+  },
+  {
+   "prefix": "flux-",
+   "icon": "black-forest-labs"
+  }
+ ],
+ "overrides": {
+  "comfyui": {
+   "tagline": "Node-based Stable Diffusion workflow editor",
+   "stars": 98000
+  },
+  "openclaw": {
+   "stars": 379000,
+   "tagline": "Multi-channel agent framework"
+  },
+  "hermes": {
+   "stars": 195100,
+   "tagline": "Autonomous agent gateway"
+  },
+  "n8n": {
+   "stars": 192800,
+   "tagline": "Workflow automation"
+  },
+  "ollama": {
+   "stars": 174300,
+   "tagline": "Run models locally"
+  },
+  "stable-diffusion-webui": {
+   "stars": 163700
+  },
+  "sd-webui": {
+   "stars": 163700
+  },
+  "uptime-kuma": {
+   "stars": 60300,
+   "tagline": "Fancy self-hosted monitoring tool"
+  },
+  "code-server": {
+   "stars": 70000
+  },
+  "searxng": {
+   "stars": 15000
+  },
+  "gitea": {
+   "stars": 45000
+  },
+  "tailscale": {
+   "stars": 20000
+  }
+ },
+ "extra": [
+  {
+   "id": "home-assistant",
+   "name": "Home Assistant",
+   "type": "service",
+   "category": "home",
+   "version": "latest",
+   "description": "Run your whole smart home locally. 2,000+ integrations, no cloud.",
+   "tagline": "Open-source home automation platform",
+   "repo": "home-assistant/core",
+   "stars": 72400,
+   "license": "",
+   "requires": {},
+   "hardware_tiers": {},
+   "install_method": "docker"
+  },
+  {
+   "id": "immich",
+   "name": "Immich",
+   "type": "service",
+   "category": "home",
+   "version": "latest",
+   "description": "Your own Google Photos. AI search, face grouping, phone backup.",
+   "tagline": "Self-hosted photo and video library",
+   "repo": "immich-app/immich",
+   "stars": 50100,
+   "license": "",
+   "requires": {},
+   "hardware_tiers": {},
+   "install_method": "docker"
+  },
+  {
+   "id": "jellyfin",
+   "name": "Jellyfin",
+   "type": "service",
+   "category": "home",
+   "version": "latest",
+   "description": "Stream your movies, shows and music to any device. Zero fees.",
+   "tagline": "Free and open source media server",
+   "repo": "jellyfin/jellyfin",
+   "stars": 35000,
+   "license": "",
+   "requires": {},
+   "hardware_tiers": {},
+   "install_method": "docker"
+  },
+  {
+   "id": "vaultwarden",
+   "name": "Vaultwarden",
+   "type": "service",
+   "category": "home",
+   "version": "latest",
+   "description": "Self-hosted Bitwarden. Your passwords never leave the house.",
+   "tagline": "Unofficial Bitwarden-compatible server",
+   "repo": "dani-garcia/vaultwarden",
+   "stars": 42000,
+   "license": "",
+   "requires": {},
+   "hardware_tiers": {},
+   "install_method": "docker"
+  },
+  {
+   "id": "sonarr",
+   "name": "Sonarr",
+   "type": "service",
+   "category": "home",
+   "version": "latest",
+   "description": "TV series library manager and downloader automation.",
+   "tagline": "Smart PVR for Usenet and BitTorrent users",
+   "repo": "Sonarr/Sonarr",
+   "stars": 11200,
+   "license": "",
+   "requires": {},
+   "hardware_tiers": {},
+   "install_method": "docker"
+  },
+  {
+   "id": "radarr",
+   "name": "Radarr",
+   "type": "service",
+   "category": "home",
+   "version": "latest",
+   "description": "Movie collection manager and download automator.",
+   "tagline": "Fork of Sonarr to work with movies",
+   "repo": "Radarr/Radarr",
+   "stars": 9600,
+   "license": "",
+   "requires": {},
+   "hardware_tiers": {},
+   "install_method": "docker"
+  },
+  {
+   "id": "qbittorrent",
+   "name": "qBittorrent",
+   "type": "service",
+   "category": "home",
+   "version": "latest",
+   "description": "Fast and lightweight BitTorrent client with web UI.",
+   "tagline": "Open-source software alternative to uTorrent",
+   "repo": "qbittorrent/qBittorrent",
+   "stars": 27600,
+   "license": "",
+   "requires": {},
+   "hardware_tiers": {},
+   "install_method": "docker"
+  },
+  {
+   "id": "sabnzbd",
+   "name": "SABnzbd",
+   "type": "service",
+   "category": "home",
+   "version": "latest",
+   "description": "The automated Usenet download application.",
+   "tagline": "Open source binary newsreader",
+   "repo": "sabnzbd/sabnzbd",
+   "stars": 2600,
+   "license": "",
+   "requires": {},
+   "hardware_tiers": {},
+   "install_method": "docker"
+  },
+  {
+   "id": "homebridge",
+   "name": "Homebridge",
+   "type": "service",
+   "category": "home",
+   "version": "latest",
+   "description": "Bring non-native devices into Apple Home via HomeKit.",
+   "tagline": "HomeKit support for non-native accessories",
+   "repo": "homebridge/homebridge",
+   "stars": 24500,
+   "license": "",
+   "requires": {},
+   "hardware_tiers": {},
+   "install_method": "docker"
+  },
+  {
+   "id": "adguard-home",
+   "name": "AdGuard Home",
+   "type": "service",
+   "category": "infrastructure",
+   "version": "latest",
+   "description": "Network-wide ad and tracker blocking. No cloud dependency.",
+   "tagline": "Network-wide software for blocking ads",
+   "repo": "AdguardTeam/AdGuardHome",
+   "stars": 26800,
+   "license": "",
+   "requires": {},
+   "hardware_tiers": {},
+   "install_method": "docker"
+  },
+  {
+   "id": "nextcloud",
+   "name": "Nextcloud",
+   "type": "service",
+   "category": "productivity",
+   "version": "latest",
+   "description": "Files, calendar, contacts and office suite in one open-source platform.",
+   "tagline": "The most popular self-hosted collaboration platform",
+   "repo": "nextcloud/server",
+   "stars": 28100,
+   "license": "",
+   "requires": {},
+   "hardware_tiers": {},
+   "install_method": "docker"
+  }
+ ],
+ "coverAlias": {
+  "stable-diffusion-webui": "stable-diffusion",
+  "sd-webui": "stable-diffusion-bw"
+ }
+}

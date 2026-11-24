@@ -11,8 +11,9 @@ import Taos.Store 1.0
 // state machine) and the web apps engine. Operate-mode UI: tokens only, words for every state, full keyboard use.
 TaosWindow {
     id: win
-    width: 1120
-    height: 740
+    // 1500 x 950 where the screen has room; on a smaller one, leave space for the bar and the dock
+    width: Math.min(1500, Math.max(900, Screen.width - 80))
+    height: Math.min(950, Math.max(600, Screen.height - 200))
     minimumWidth: 520
     minimumHeight: 420
     title: qsTr("Store")
@@ -65,7 +66,13 @@ TaosWindow {
     Shortcut { sequence: "Ctrl+N"; onActivated: addDialog.open() }
     Shortcut { sequence: "Escape"; enabled: win.detailId !== ""; onActivated: win.detailId = "" }
 
-    readonly property var sectionDefs: engine.sections
+    readonly property var sectionDefs: engine.revision >= 0 ? engine.sections : []
+    readonly property string deviceText: {
+        const p = engine.profileId
+        if (p === "") return engine.usingSnapshot ? qsTr("Not connected") : qsTr("Reading this device")
+        const t = p.replace(/-/g, " ")
+        return t.charAt(0).toUpperCase() + t.slice(1)
+    }
     function countText(id) {
         if (engine.revision < 0) return ""
         if (id === "discover") return ""
@@ -77,80 +84,93 @@ TaosWindow {
     Item {
         id: sidebar
         visible: !win.narrow
-        width: visible ? 216 : 0
+        width: visible ? 248 : 0
         anchors { left: parent.left; top: parent.top; bottom: parent.bottom }
         Rectangle { anchors { right: parent.right; top: parent.top; bottom: parent.bottom } width: 1; color: Look.hairline }
         ColumnLayout {
-            anchors { fill: parent; leftMargin: 12; rightMargin: 12; topMargin: 14 }
-            spacing: 10
+            anchors { fill: parent; leftMargin: Look.space3; rightMargin: Look.space3; topMargin: Look.space4; bottomMargin: Look.space3 }
+            spacing: Look.space3
             TaosField {
                 id: search
                 objectName: "searchField"
                 Layout.fillWidth: true
-                placeholderText: qsTr("Search the Store")
+                implicitHeight: 36
+                leftPadding: 34
+                placeholderText: qsTr("Search apps, agents, models")
                 accessibleName: qsTr("Search the Store")
                 text: win.query
                 onTextChanged: { win.query = text; if (text !== "") win.detailId = "" }
-                Keys.onEscapePressed: { text = ""; sections.forceActiveFocus() }
-                Keys.onDownPressed: sections.forceActiveFocus()
+                Keys.onEscapePressed: { text = ""; nextItemInFocusChain(true).forceActiveFocus() }
+                Keys.onDownPressed: nextItemInFocusChain(true).forceActiveFocus()
+                Glyph { x: 11; anchors.verticalCenter: parent.verticalCenter; name: "search"; size: 15; stroke: 2; color: Look.textTertiary }
             }
-            ListView {
-                id: sections
-                objectName: "sections"
-                Layout.fillWidth: true
-                Layout.fillHeight: true
-                model: win.sectionDefs
+            C.ScrollView {
+                Layout.fillWidth: true; Layout.fillHeight: true
+                contentWidth: availableWidth
                 clip: true
-                keyNavigationEnabled: true
-                activeFocusOnTab: true
-                spacing: 2
-                currentIndex: { for (let i = 0; i < win.sectionDefs.length; i++) if (win.sectionDefs[i].id === win.section) return i; return 0 }
-                onCurrentIndexChanged: {}
-                Keys.onReturnPressed: win.go(win.sectionDefs[currentIndex].id)
-                delegate: C.ItemDelegate {
-                    id: srow
-                    required property var modelData
-                    required property int index
-                    width: ListView.view.width
-                    height: 32
-                    padding: 0
-                    topPadding: 0; bottomPadding: 0
-                    hoverEnabled: true
-                    objectName: "section-" + modelData.id
-                    readonly property bool current: win.section === modelData.id
-                    // a gap before the Library group
-                    topInset: modelData.group === "library" && (index === 0 || win.sectionDefs[index - 1].group !== "library") ? 0 : 0
-                    Accessible.role: Accessible.RadioButton
-                    Accessible.name: modelData.title + (win.countText(modelData.id) !== "" ? ", " + win.countText(modelData.id) : "")
-                    Accessible.checked: current
-                    onClicked: { win.go(modelData.id); sections.currentIndex = index }
-                    background: Rectangle {
-                        radius: 7
-                        color: srow.current ? Look.selection : srow.hovered || srow.visualFocus ? Look.hover : "transparent"
-                        border.width: srow.visualFocus ? 2 : 0
-                        border.color: Look.focusRing
-                        Behavior on color { ColorAnimation { duration: Look.fast } }
-                    }
-                    contentItem: RowLayout {
-                        spacing: 8
-                        TaosText { text: srow.modelData.title; Layout.fillWidth: true; Layout.leftMargin: 10
-                                   font.weight: srow.current ? Font.DemiBold : Font.Normal }
-                        TaosText { text: win.countText(srow.modelData.id); color: Look.textTertiary; font.pixelSize: Look.small
-                                   font.features: { "tnum": 1 }; Layout.rightMargin: 10 }
+                Column {
+                    id: navCol
+                    objectName: "sections"
+                    width: parent.width
+                    spacing: 2
+                    Repeater {
+                        model: win.sectionDefs
+                        delegate: Column {
+                            id: navEntry
+                            required property var modelData
+                            required property int index
+                            width: navCol.width
+                            spacing: 2
+                            // a heading and a gap before the Library group
+                            TaosText {
+                                visible: navEntry.modelData.group === "library" && (navEntry.index === 0 || win.sectionDefs[navEntry.index - 1].group !== "library")
+                                height: visible ? 34 : 0
+                                width: parent.width
+                                leftPadding: Look.space3
+                                verticalAlignment: Text.AlignBottom
+                                bottomPadding: Look.space1
+                                text: qsTr("Library")
+                                font.pixelSize: Look.caption; font.weight: Font.DemiBold; color: Look.textTertiary
+                                font.capitalization: Font.AllUppercase; font.letterSpacing: 1.0
+                                Accessible.ignored: false; Accessible.role: Accessible.Heading; Accessible.name: text
+                            }
+                            SidebarItem {
+                                width: parent.width
+                                objectName: "section-" + navEntry.modelData.id
+                                text: navEntry.modelData.title
+                                glyph: navEntry.modelData.glyph
+                                count: win.countText(navEntry.modelData.id)
+                                current: win.section === navEntry.modelData.id
+                                onClicked: win.go(navEntry.modelData.id)
+                                Keys.onDownPressed: nextItemInFocusChain(true).forceActiveFocus()
+                                Keys.onUpPressed: nextItemInFocusChain(false).forceActiveFocus()
+                            }
+                        }
                     }
                 }
-                section.property: "group"
-                section.criteria: ViewSection.FullString
-                section.delegate: Item {
-                    required property string section
-                    width: ListView.view ? ListView.view.width : 0
-                    height: section === "library" ? 26 : 0
-                    visible: section === "library"
-                    TaosText { anchors { left: parent.left; leftMargin: 10; bottom: parent.bottom; bottomMargin: 2 }
-                               text: qsTr("Library")
-                               font.pixelSize: Look.caption; font.weight: Font.DemiBold; color: Look.textTertiary
-                               font.capitalization: Font.AllUppercase; font.letterSpacing: 0.6
-                               Accessible.ignored: false; Accessible.role: Accessible.Heading; Accessible.name: text }
+            }
+            // this device: where installs go and whether the controller answered
+            Rectangle {
+                objectName: "deviceCard"
+                Layout.fillWidth: true
+                implicitHeight: 56
+                radius: Look.radiusCard - 2
+                color: Look.surface
+                border.width: 1; border.color: Look.hairline
+                Accessible.role: Accessible.StaticText
+                Accessible.name: qsTr("Controller, %1").arg(win.deviceText)
+                RowLayout {
+                    anchors { fill: parent; leftMargin: Look.space3; rightMargin: Look.space3 }
+                    spacing: Look.space3
+                    Glyph { name: "server"; size: 18; stroke: 1.8; color: Look.textSecondary }
+                    ColumnLayout {
+                        Layout.fillWidth: true; spacing: 0
+                        TaosText { text: qsTr("Controller"); font.pixelSize: Look.body; font.weight: Font.DemiBold }
+                        TaosText { text: win.deviceText; Layout.fillWidth: true; elide: Text.ElideRight
+                                   font.pixelSize: Look.small; color: Look.textSecondary }
+                    }
+                    Rectangle { width: 8; height: 8; radius: 4
+                                color: engine.loaded && !engine.usingSnapshot ? Look.success : Look.warning }
                 }
             }
         }
@@ -165,14 +185,16 @@ TaosWindow {
         // narrow: search and sections on top
         ColumnLayout {
             visible: win.narrow
-            Layout.fillWidth: true; Layout.margins: 12; Layout.bottomMargin: 4; spacing: 8
+            Layout.fillWidth: true; Layout.margins: Look.space3; Layout.bottomMargin: Look.space1; spacing: Look.space2
             TaosField {
                 id: searchNarrow
                 Layout.fillWidth: true
-                placeholderText: qsTr("Search the Store")
+                leftPadding: 34
+                placeholderText: qsTr("Search apps, agents, models")
                 accessibleName: qsTr("Search the Store")
                 text: win.query
                 onTextChanged: { win.query = text; if (text !== "") win.detailId = "" }
+                Glyph { x: 11; anchors.verticalCenter: parent.verticalCenter; name: "search"; size: 15; stroke: 2; color: Look.textTertiary }
             }
             Flickable {
                 Layout.fillWidth: true; Layout.preferredHeight: 30
@@ -188,35 +210,46 @@ TaosWindow {
             }
         }
 
-        // the controller's trouble, in words (web apps and themes keep working)
+        // what the page is showing, in one quiet line: the saved catalogue when the controller did not answer
         Rectangle {
-            id: banner
-            objectName: "errorBanner"
-            visible: engine.errorText !== "" && win.section !== "webapps" && win.section !== "themes"
+            id: status
+            objectName: "statusLine"
+            visible: engine.statusText !== "" && win.section !== "webapps" && win.section !== "themes"
             Layout.fillWidth: true
-            Layout.leftMargin: 20; Layout.rightMargin: 20; Layout.topMargin: 12
-            implicitHeight: bannerRow.implicitHeight + 16
-            radius: Look.radiusControl
-            color: Look.tint(Look.warning, 0.12)
-            border.width: 1; border.color: Look.tint(Look.warning, 0.32)
-            Accessible.role: Accessible.AlertMessage
-            Accessible.name: engine.errorText
+            Layout.leftMargin: Look.space5; Layout.rightMargin: Look.space5; Layout.topMargin: Look.space3
+            implicitHeight: 32
+            radius: 16
+            color: Look.field
+            border.width: 1; border.color: Look.hairline
+            Accessible.role: Accessible.StaticText
+            Accessible.name: engine.statusText
             RowLayout {
-                id: bannerRow
-                anchors { fill: parent; margins: 8; leftMargin: 12 }
-                spacing: 10
-                TaosText {
-                    Layout.fillWidth: true; wrapMode: Text.Wrap; font.pixelSize: Look.small
-                    text: (engine.errorKind === "unauthenticated" ? qsTr("Sign in to taOS to see the full catalogue. ")
-                           : engine.errorKind === "forbidden" ? qsTr("Your account cannot see the catalogue. ") : engine.errorText + " ")
-                          + qsTr("Web apps and themes work without it.")
-                }
-                TaosButton { text: qsTr("Try again"); compact: true; onClicked: engine.refresh() }
+                anchors { fill: parent; leftMargin: Look.space3; rightMargin: Look.space1 }
+                spacing: Look.space2
+                Rectangle { width: 6; height: 6; radius: 3; color: Look.warning }
+                TaosText { Layout.fillWidth: true; text: engine.statusText; elide: Text.ElideRight
+                           font.pixelSize: Look.small; color: Look.textSecondary }
+                PillButton { text: qsTr("Try again"); compact: true; variant: "outline"; Layout.preferredHeight: 24
+                             accessibleName: qsTr("Try the controller again"); onClicked: engine.refresh() }
             }
+        }
+        // a plain line when a loaded catalogue has since failed to refresh
+        TaosText {
+            visible: engine.errorText !== "" && !engine.usingSnapshot && win.section !== "webapps" && win.section !== "themes"
+            objectName: "errorLine"
+            Layout.fillWidth: true; Layout.leftMargin: Look.space5; Layout.rightMargin: Look.space5; Layout.topMargin: Look.space3
+            wrapMode: Text.Wrap; font.pixelSize: Look.small; color: Look.textSecondary
+            text: qsTr("The catalogue could not be refreshed. %1").arg(engine.errorText)
+            Accessible.ignored: false; Accessible.role: Accessible.AlertMessage; Accessible.name: text
         }
 
         Item {
+            id: pageHost
             Layout.fillWidth: true; Layout.fillHeight: true
+            // restrained page change: a short fade
+            NumberAnimation { id: fade; target: pageHost; property: "opacity"; from: 0; to: 1; duration: Look.fast + 40; easing.type: Look.ease }
+            property string key: win.shown + "/" + win.detailId
+            onKeyChanged: fade.restart()
 
             DiscoverPage { anchors.fill: parent; engine: engine; visible: win.shown === "discover" && win.detailId === ""
                            onOpenDetail: (id) => win.openApp(id); onGotoSection: (s) => win.go(s) }
@@ -227,9 +260,15 @@ TaosWindow {
                        visible: win.shown === "apps" && win.detailId === ""; onOpenDetail: (id) => win.openApp(id) }
             WebAppsPage { anchors.fill: parent; engine: engine; query: win.query; visible: win.shown === "webapps" && win.detailId === ""
                           onOpenDetail: (id) => win.openApp(id); onAddWebsite: addDialog.open() }
+            ListPage { anchors.fill: parent; engine: engine; section: "agents"; title: qsTr("Agents"); query: win.query
+                       blurb: qsTr("Agent frameworks: the harness an agent runs in.")
+                       visible: win.shown === "agents" && win.detailId === ""; onOpenDetail: (id) => win.openApp(id) }
             ListPage { anchors.fill: parent; engine: engine; section: "models"; title: qsTr("Models"); query: win.query
                        blurb: engine.profileId !== "" ? qsTr("Marked by how well they run on this device (%1).").arg(engine.profileId) : qsTr("Marked by how well they run on this device.")
                        visible: win.shown === "models" && win.detailId === ""; onOpenDetail: (id) => win.openApp(id) }
+            ListPage { anchors.fill: parent; engine: engine; section: "mcp"; title: qsTr("MCP Servers"); query: win.query
+                       blurb: qsTr("Tool servers your agents can call.")
+                       visible: win.shown === "mcp" && win.detailId === ""; onOpenDetail: (id) => win.openApp(id) }
             ThemesPage { anchors.fill: parent; engine: engine; query: win.query; visible: win.shown === "themes" && win.detailId === "" }
             ListPage { anchors.fill: parent; engine: engine; section: "plugins"; title: qsTr("Plugins"); query: win.query
                        blurb: qsTr("Tools and tool servers your agents can use.")

@@ -21,17 +21,19 @@ Item {
     Keys.onEscapePressed: page.back()
 
     C.ScrollView {
+        id: scroll
         anchors.fill: parent
         contentWidth: availableWidth
         clip: true
         ColumnLayout {
-            x: Math.max(20, (parent.width - width) / 2)
-            width: Math.min(parent.width - 40, 720)
-            spacing: 18
+            id: col
+            x: Math.max(Look.space4, (scroll.availableWidth - width) / 2)
+            width: Math.min(scroll.availableWidth - Look.space4 * 2, 940)
+            spacing: Look.space4
 
-            TaosButton {
-                Layout.topMargin: 16
-                text: qsTr("Back"); variant: "ghost"; compact: true
+            PillButton {
+                Layout.topMargin: Look.space4
+                text: qsTr("Back"); glyph: "arrow-left"; variant: "outline"; compact: true
                 objectName: "backButton"
                 accessibleName: qsTr("Back to the list")
                 onClicked: page.back()
@@ -42,31 +44,25 @@ Item {
                 text: qsTr("That app is not in the catalogue."); color: Look.textSecondary
             }
 
-            // ---- header
-            RowLayout {
+            // ---- header: art, icon, name, facts, marks and the action
+            DetailHeader {
                 visible: page.known
-                spacing: 16
-                AppIcon { size: 72; letter: page.e.letter ? page.e.letter : "?" }
-                ColumnLayout {
-                    Layout.fillWidth: true; spacing: 3
-                    TaosText { text: page.e.name ? page.e.name : ""; font.pixelSize: Look.heading + 4; font.weight: Font.DemiBold
-                               Accessible.ignored: false; Accessible.role: Accessible.Heading; Accessible.name: text }
-                    TaosText {
-                        text: [page.e.kind === "webapp" ? qsTr("Web app") : page.e.kind === "model" ? qsTr("Model") : page.e.kind === "agent" ? qsTr("Agent framework")
-                               : page.e.kind === "plugin" ? qsTr("Plugin") : page.e.kind === "mcp" ? qsTr("Tool server") : qsTr("App"),
-                               page.e.category, page.e.version ? "v" + page.e.version : "", page.e.sizeText].filter(s => s).join("  ·  ")
-                        color: Look.textSecondary; font.pixelSize: Look.small; font.features: { "tnum": 1 }
-                    }
-                    Flow {
-                        Layout.fillWidth: true; spacing: 6
-                        Chip { visible: page.e.needsDocker === true; text: qsTr("Needs Docker"); tone: "warning"; glyph: "alert" }
-                        Chip { visible: !!page.e.fit; text: page.e.fitText ? page.e.fitText : ""
-                               tone: page.e.fit === "green" ? "success" : page.e.fit === "yellow" ? "warning" : "danger" }
-                        Chip { visible: page.e.installed === true && page.e.kind !== "webapp"; text: qsTr("Installed"); tone: "success"; glyph: "check" }
-                        Chip { visible: page.e.updateAvailable === true; text: qsTr("Update available"); tone: "accent" }
-                    }
-                }
-                StateButton { engine: page.engine; entry: page.e; compact: false; showRemove: true; pick: page.variant; onReview: {} }
+                Layout.fillWidth: true
+                name: page.e.name ? page.e.name : ""
+                letter: page.e.letter ? page.e.letter : ""
+                iconUrl: page.e.iconUrl ? page.e.iconUrl : ""
+                coverUrl: page.e.coverUrl ? page.e.coverUrl : ""
+                subtitle: [page.e.kind === "webapp" ? qsTr("Web app") : page.e.kind === "model" ? qsTr("Model") : page.e.kind === "agent" ? qsTr("Agent framework")
+                           : page.e.kind === "plugin" ? qsTr("Plugin") : page.e.kind === "mcp" ? qsTr("Tool server") : qsTr("App"),
+                           page.e.categoryLabel, page.e.version ? "v" + page.e.version : "", page.e.sizeText].filter(s => s).join("  ·  ")
+                actions: Component { GetButton { engine: page.engine; entry: page.e; compact: false; showRemove: true; pick: page.variant; onReview: {} } }
+                Chip { visible: page.e.needsDocker === true; text: qsTr("Needs Docker"); tone: "warning"; glyph: "alert" }
+                Chip { visible: !!page.e.fit; text: page.e.fitText ? page.e.fitText : ""
+                       tone: page.e.fit === "green" ? "success" : page.e.fit === "yellow" ? "warning" : "danger" }
+                Chip { visible: page.e.installed === true && page.e.kind !== "webapp"; text: qsTr("Installed"); tone: "success"; glyph: "check" }
+                Chip { visible: page.e.updateAvailable === true; text: qsTr("Update available"); tone: "accent" }
+                Chip { visible: !!page.e.starsText; text: "★ " + page.e.starsText }
+                Chip { visible: !!page.e.license; text: page.e.license ? page.e.license : "" }
             }
 
             // ---- model variant picker
@@ -141,12 +137,16 @@ Item {
             }
 
             // ---- about
+            TaosText { visible: page.known && !!page.e.description; text: qsTr("About"); font.pixelSize: Look.small; font.weight: Font.DemiBold
+                       color: Look.textSecondary; font.capitalization: Font.AllUppercase; font.letterSpacing: 0.6
+                       Accessible.ignored: false; Accessible.role: Accessible.Heading; Accessible.name: text }
             TaosText {
                 visible: page.known
                 Layout.fillWidth: true; wrapMode: Text.Wrap
                 text: page.e.description ? page.e.description : ""
                 font.pixelSize: Look.bodyLarge
-                lineHeight: 1.25
+                lineHeight: 1.3
+                color: Look.text
             }
 
             // ---- what it asks for
@@ -159,7 +159,7 @@ Item {
                 Rectangle {
                     Layout.fillWidth: true
                     implicitHeight: asksCol.implicitHeight
-                    radius: 10; color: Look.surface; clip: true
+                    radius: Look.radiusCard; color: Look.surface; clip: true
                     ColumnLayout {
                         id: asksCol
                         width: parent.width

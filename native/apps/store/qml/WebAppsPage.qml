@@ -8,14 +8,15 @@ import Taos.Apps 1.0
 // of sites you can add. Every instance has its own storage and sign-in.
 Item {
     id: page
+    StableModel { id: mineStable; source: page.mine }
     property var engine
     property string query: ""
     property string selected: ""
     signal openDetail(string id)
     signal addWebsite()
     readonly property var web: engine.webapps
-    readonly property var mine: engine.revision >= 0 ? web.instances : []
-    readonly property var catalogue: engine.revision >= 0 ? engine.list("webapps", query, "") : []
+    readonly property var mine: visible && engine.revision >= 0 ? web.instances : []
+    readonly property var catalogue: visible && engine.revision >= 0 ? engine.list("webapps", query, "") : []
     property string confirm: ""        // "<action>:<id>" waiting for a second click
     property string renaming: ""
     onSelectedChanged: { confirm = ""; renaming = "" }
@@ -32,12 +33,12 @@ Item {
 
             RowLayout {
                 Layout.fillWidth: true
-                Layout.margins: 20; Layout.bottomMargin: 6
+                Layout.margins: 24; Layout.bottomMargin: 6
                 spacing: 12
                 ColumnLayout {
                     spacing: 2
                     Layout.fillWidth: true
-                    TaosText { text: qsTr("Web apps"); font.pixelSize: Look.heading; font.weight: Font.DemiBold
+                    TaosText { text: qsTr("Web apps"); font.pixelSize: Look.pageTitle; font.weight: Font.Bold
                                Accessible.ignored: false; Accessible.role: Accessible.Heading; Accessible.name: text }
                     TaosText {
                         Layout.fillWidth: true
@@ -60,7 +61,7 @@ Item {
                 visible: !page.web.browserAvailable
                 objectName: "noBrowserBanner"
                 Layout.fillWidth: true
-                Layout.leftMargin: 20; Layout.rightMargin: 20; Layout.topMargin: 8
+                Layout.leftMargin: 24; Layout.rightMargin: 24; Layout.topMargin: 8
                 implicitHeight: bannerText.implicitHeight + 20
                 radius: Look.radiusControl
                 color: Look.tint(Look.warning, 0.12)
@@ -87,15 +88,15 @@ Item {
             Rectangle {
                 visible: page.mine.length > 0
                 Layout.fillWidth: true
-                Layout.leftMargin: 20; Layout.rightMargin: 20
+                Layout.leftMargin: 24; Layout.rightMargin: 24
                 implicitHeight: instCol.implicitHeight
-                radius: 10; color: Look.surface; clip: true
+                radius: Look.radiusCard; color: Look.surface; clip: true
                 ColumnLayout {
                     id: instCol
                     width: parent.width
                     spacing: 0
                     Repeater {
-                        model: page.mine
+                        model: mineStable.value
                         delegate: ColumnLayout {
                             id: inst
                             required property var modelData
@@ -120,7 +121,7 @@ Item {
                                 }
                                 contentItem: RowLayout {
                                     spacing: 12
-                                    AppIcon { Layout.leftMargin: 12; size: 36; letter: inst.modelData.letter; iconUrl: inst.modelData.iconUrl }
+                                    AppTile { Layout.leftMargin: 12; size: 40; letter: inst.modelData.letter; iconUrl: inst.modelData.iconUrl; name: inst.modelData.name ? inst.modelData.name : "" }
                                     ColumnLayout {
                                         Layout.fillWidth: true; spacing: 1
                                         TaosText { text: inst.modelData.name; font.weight: Font.DemiBold; elide: Text.ElideRight; Layout.fillWidth: true }
@@ -212,36 +213,18 @@ Item {
                 color: Look.textSecondary; font.capitalization: Font.AllUppercase; font.letterSpacing: 0.6
                 Accessible.ignored: false; Accessible.role: Accessible.Heading; Accessible.name: text
             }
-            Rectangle {
-                Layout.fillWidth: true
-                Layout.leftMargin: 20; Layout.rightMargin: 20; Layout.bottomMargin: 24
-                implicitHeight: Math.max(60, catCol.implicitHeight)
-                radius: 10; color: Look.surface; clip: true
-                ColumnLayout {
-                    id: catCol
-                    width: parent.width
-                    spacing: 0
-                    Repeater {
-                        model: page.catalogue
-                        delegate: AppRow {
-                            required property var modelData
-                            required property int index
-                            Layout.fillWidth: true
-                            engine: page.engine
-                            entry: modelData
-                            last: index === page.catalogue.length - 1
-                            objectName: "web-" + modelData.id
-                            onOpen: (id) => page.openDetail(id)
-                        }
-                    }
-                }
-                TaosText {
-                    visible: page.catalogue.length === 0
-                    anchors.centerIn: parent
-                    text: page.query !== "" ? qsTr("No web app matches “%1”. Use Add website for any address.").arg(page.query) : qsTr("Nothing here yet.")
-                    color: Look.textSecondary
-                }
-                Rectangle { anchors.fill: parent; radius: parent.radius; color: "transparent"; border.width: 1; border.color: Look.hairline }
+            CompactGrid {
+                visible: page.catalogue.length > 0
+                Layout.fillWidth: true; Layout.preferredHeight: visible ? implicitHeight : 0
+                Layout.leftMargin: 24; Layout.rightMargin: 24; Layout.bottomMargin: 24
+                engine: page.engine; items: page.catalogue; tag: "web"
+                onOpenDetail: (id) => page.openDetail(id)
+            }
+            TaosText {
+                visible: page.catalogue.length === 0
+                Layout.leftMargin: 24; Layout.bottomMargin: 24
+                text: page.query !== "" ? qsTr("No web app matches “%1”. Use Add website for any address.").arg(page.query) : qsTr("Nothing here yet. Use Add website to add any address.")
+                color: Look.textSecondary
             }
         }
     }
