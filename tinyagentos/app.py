@@ -1561,13 +1561,61 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
 
         # Core-aware model scheduler (tsk-mo6f5o): manages resident model
         # records with NPU-core-aware scheduling and in-use accounting.
-        # Constructed with the activity feed for lifecycle events; NO evict_fn
-        # (eviction and unloading belong to the second card).
+        # Constructed with the activity feed for lifecycle events. Pressure
+        # eviction stays registry-only (no evict_fn); TTL idle eviction
+        # (#62) is wired with a real unload hook below.
+        from typing import Optional as _Optional
+
+        from tinyagentos.backend_unload import unload_model as _unload_model
         from tinyagentos.scheduler.core_aware_scheduler import CoreAwareModelScheduler
+        from tinyagentos.scheduler.loaded_model import LoadedModel as _LoadedModel
         from tinyagentos.scheduler.resource_shape import get_default_shape
+
+        # Idle TTL eviction (#62): the sweep unloads residents idle past
+        # their per-class TTL through backend_unload, honouring the
+        # catalog ttl_seconds override (manifest lifecycle.ttl_seconds).
+        # The closures resolve the resident's backend name against the
+        # live config on every call, so backends added after startup
+        # are covered.
+        def _backend_config_for(name: str) -> _Optional[dict]:
+            for b in config.backends:
+                if b.get("name") == name:
+                    return b
+            return None
+
+        async def _idle_unload(model: _LoadedModel) -> bool:
+            backend = _backend_config_for(model.backend)
+            if backend is None:
+                return False
+            async with httpx.AsyncClient() as client:
+                return await _unload_model(
+                    client,
+                    backend_type=backend.get("type", ""),
+                    base_url=backend.get("url", ""),
+                    model=model.model_id,
+                )
+
+        def _ttl_resolver(model: _LoadedModel) -> _Optional[float]:
+            backend = _backend_config_for(model.backend)
+            if backend is None:
+                return None
+            raw = backend.get("ttl_seconds")
+            return float(raw) if raw is not None else None
+
+        def _backend_type_lookup(name: str) -> str:
+            backend = _backend_config_for(name)
+            return (backend or {}).get("type", "")
+
         app.state.model_scheduler = CoreAwareModelScheduler(
             shape_lookup=get_default_shape,
             activity_feed=app.state.model_activity,
+            idle_unload_fn=_idle_unload,
+            ttl_resolver=_ttl_resolver,
+            backend_type_lookup=_backend_type_lookup,
+        )
+        _create_supervised_task(
+            app.state.model_scheduler.idle_eviction_loop(),
+            app.state._background_tasks,
         )
 
         # Wire NotificationStore → EventBus so SSE clients get instant push.

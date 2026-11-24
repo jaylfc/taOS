@@ -1,0 +1,3 @@
+### Added
+
+- **Scheduler: per-class TTL idle eviction (#62)** — the core-aware model scheduler now unloads models that sit idle past a per-class TTL (image gen 5 min, STT/TTS 2 min, embedding 30 s, reranker 15 s, query expansion 15 s, chat ≤4B 10 min, chat ≥7B and reasoning 30 min) through the backend unload adapters, skipping pinned/always-resident and in-use models. A backend can override the class TTL with `lifecycle.ttl_seconds` in its catalog manifest (carried as `ttl_seconds` on the backend entry). Deliberately not included: dropping rkllama's `--preload` (protected by the #1730 guard) and a user pinning surface — both are flagged on #62 for a decision.

@@ -60,6 +60,24 @@ BACKEND_CAPABILITIES: dict[str, set[str]] = {
 }
 
 
+def _ttl_seconds_from(backend: dict) -> Optional[float]:
+    """Per-backend idle TTL override (seconds) from a backend config
+    dict, or None. Source: manifest lifecycle.ttl_seconds via
+    auto-register (#62). Distinct from keep_alive_minutes, which stops
+    the whole service; this unloads individual idle models."""
+    raw = backend.get("ttl_seconds")
+    if raw is None:
+        return None
+    try:
+        return float(raw)
+    except (TypeError, ValueError):
+        logger.warning(
+            "backend %r: ignoring non-numeric ttl_seconds %r",
+            backend.get("name"), raw,
+        )
+        return None
+
+
 @dataclass
 class BackendEntry:
     """One backend as seen by the catalog right now."""
@@ -76,6 +94,7 @@ class BackendEntry:
     lifecycle_state: str = "running"    # "stopped"|"starting"|"running"|"draining"|"stopping"
     auto_manage: bool = False
     keep_alive_minutes: int = 10
+    ttl_seconds: Optional[float] = None
     enabled: bool = True
 
     def has_model(self, model_id: str) -> bool:
@@ -120,6 +139,7 @@ class BackendEntry:
             "lifecycle_state": self.lifecycle_state,
             "auto_manage": self.auto_manage,
             "keep_alive_minutes": self.keep_alive_minutes,
+            "ttl_seconds": self.ttl_seconds,
             "enabled": self.enabled,
         }
 
@@ -300,6 +320,7 @@ class BackendCatalog:
                     lifecycle_state="stopped",
                     auto_manage=True,
                     keep_alive_minutes=b.get("keep_alive_minutes", 10),
+                    ttl_seconds=_ttl_seconds_from(b),
                     enabled=b.get("enabled", True),
                 )
             out.append(entry)
@@ -406,6 +427,7 @@ class BackendCatalog:
                     lifecycle_state=lifecycle_state,
                     auto_manage=auto_manage,
                     keep_alive_minutes=keep_alive_minutes,
+                    ttl_seconds=_ttl_seconds_from(backend),
                     enabled=backend.get("enabled", True),
                 )
             else:
@@ -433,6 +455,7 @@ class BackendCatalog:
             lifecycle_state=self._lifecycle_states.get(name, "running"),
             auto_manage=backend.get("auto_manage", False),
             keep_alive_minutes=backend.get("keep_alive_minutes", 10),
+            ttl_seconds=_ttl_seconds_from(backend),
             enabled=backend.get("enabled", True),
         )
 

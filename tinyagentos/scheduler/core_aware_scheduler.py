@@ -41,6 +41,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from typing import Any, Callable, Optional
 
 from tinyagentos.model_activity import (
@@ -50,8 +51,10 @@ from tinyagentos.model_activity import (
     MODEL_UNLOAD,
 )
 from tinyagentos.scheduler.loaded_model import (
+    DEFAULT_MODEL_TTLS,
     LoadedModel,
     PriorityClass,
+    classify_model,
     priority_rank,
 )
 from tinyagentos.scheduler.resource_shape import (
@@ -156,6 +159,19 @@ class CoreAwareModelScheduler:
         evict_fn: optional async callable(model: LoadedModel) invoked when
             a resident is evicted. If None, evictions update the registry
             only.
+        idle_unload_fn: optional async callable(model: LoadedModel) -> bool
+            invoked by the TTL idle sweep (#62) to actually unload an
+            expired resident through backend_unload; the resident is
+            deregistered only when it returns truthy. If None, the sweep
+            deregisters without an unload call (registry-only).
+        ttl_resolver: optional callable(model: LoadedModel) -> float | None
+            returning a per-backend TTL override in seconds (the catalog
+            ttl_seconds); None means "no override, use the class TTL".
+        backend_type_lookup: optional callable(backend_name) -> str
+            returning the backend type for a configured backend name,
+            used to classify residents whose record does not pin a
+            model class.
+        clock: time source for the idle sweep; injectable for tests.
     """
 
     def __init__(
@@ -165,6 +181,10 @@ class CoreAwareModelScheduler:
         reload_fn: Optional[Callable[[LoadedModel, str], Any]] = None,
         evict_fn: Optional[Callable[[LoadedModel], Any]] = None,
         activity_feed: Any = None,
+        idle_unload_fn: Optional[Callable[[LoadedModel], Any]] = None,
+        ttl_resolver: Optional[Callable[[LoadedModel], Optional[float]]] = None,
+        backend_type_lookup: Optional[Callable[[str], str]] = None,
+        clock: Callable[[], float] = time.time,
     ):
         self._shape_lookup = shape_lookup or get_default_shape
         self.max_wait_ms = max_wait_ms
@@ -174,6 +194,11 @@ class CoreAwareModelScheduler:
         # event below is mirrored into it; when None the scheduler behaves
         # exactly as before.  Wire with set_activity_feed() for late binding.
         self._activity_feed: Any = activity_feed
+        # TTL idle eviction (#62): see ttl_for() / evict_idle().
+        self._idle_unload_fn = idle_unload_fn
+        self._ttl_resolver = ttl_resolver
+        self._backend_type_lookup = backend_type_lookup
+        self._clock = clock
         # Registry: model_id -> LoadedModel
         self._residents: dict[tuple[str, str], LoadedModel] = {}
         # Event bus: list of (event_name, dict) tuples appended in order.
@@ -301,6 +326,115 @@ class CoreAwareModelScheduler:
             # gone by the time the Model Activity hook runs.
             self._emit("model_unloaded", {"model_id": model_id, "backend": model.backend})
         return model
+
+    # -----------------------------------------------------------------------
+    # TTL idle eviction (#62)
+    # -----------------------------------------------------------------------
+
+    def ttl_for(self, model: LoadedModel) -> Optional[float]:
+        """Idle TTL in seconds for a resident, or None for no eviction.
+
+        The catalog override (ttl_resolver, wired from the backend's
+        ttl_seconds) wins when it returns a value. Otherwise the
+        resident's model class -- pinned on the record when known, else
+        classified from model id + backend type -- indexes
+        DEFAULT_MODEL_TTLS. Unclassified residents return None and are
+        never idle-evicted.
+        """
+        if self._ttl_resolver is not None:
+            override = self._ttl_resolver(model)
+            if override is not None:
+                return float(override)
+        model_class = model.model_class or classify_model(
+            model.model_id, self._backend_type_for(model.backend)
+        )
+        return DEFAULT_MODEL_TTLS.get(model_class)
+
+    async def evict_idle(self, now: Optional[float] = None) -> list[LoadedModel]:
+        """Unload every resident idle past its TTL. Returns the evicted.
+
+        Skips always-resident (pinned / always_resident priority) and
+        in-use residents -- backend_unload's caller contract is that
+        the caller guarantees no request in flight, and in_use_count
+        is that guarantee. With an idle_unload_fn wired, the resident
+        is deregistered only when the hook confirms the unload; a
+        refused or failed unload keeps the record so the next sweep
+        can retry. Without a hook the sweep is registry-only,
+        mirroring pressure eviction with evict_fn=None.
+        """
+        if now is None:
+            now = self._clock()
+        evicted: list[LoadedModel] = []
+        for model in list(self._residents.values()):
+            if model.is_always_resident() or model.in_use_count > 0:
+                continue
+            ttl = self.ttl_for(model)
+            if ttl is None:
+                continue
+            idle_for = now - model.last_used_at
+            if idle_for < ttl:
+                continue
+            if self._idle_unload_fn is not None:
+                try:
+                    ok = self._idle_unload_fn(model)
+                    if asyncio.iscoroutine(ok):
+                        ok = await ok
+                except Exception:  # noqa: BLE001 - one bad unload must not stop the sweep
+                    logger.warning(
+                        "scheduler: idle unload hook failed for %r; keeping resident",
+                        model.model_id, exc_info=True,
+                    )
+                    continue
+                if not ok:
+                    logger.info(
+                        "scheduler: idle unload of %r refused; keeping resident",
+                        model.model_id,
+                    )
+                    continue
+            key = self._resident_key(model.model_id, model.backend)
+            self._residents.pop(key, None)
+            self._emit("model_evicted", {
+                "model_id": model.model_id,
+                "backend": model.backend,
+                "priority": model.priority,
+                "reason": "idle_ttl",
+                "idle_seconds": idle_for,
+                "ttl_seconds": ttl,
+            })
+            logger.info(
+                "scheduler: idle-evicted %r on %r (idle %.0fs >= ttl %.0fs)",
+                model.model_id, model.backend, idle_for, ttl,
+            )
+            evicted.append(model)
+        return evicted
+
+    async def idle_eviction_loop(self, interval_seconds: float = 30.0) -> None:
+        """Run evict_idle() forever on an interval. Cancel to stop.
+
+        Started by the app as a supervised background task. A failing
+        sweep is logged and the loop continues.
+        """
+        while True:
+            try:
+                await self.evict_idle()
+            except Exception:  # noqa: BLE001 - the sweep must survive its own errors
+                logger.exception("scheduler: idle eviction sweep failed")
+            await asyncio.sleep(interval_seconds)
+
+    def _backend_type_for(self, backend_name: str) -> str:
+        """Backend type for a configured backend name, via the injected
+        lookup; "" when unknown (classification then falls back to the
+        model-name chat heuristics)."""
+        if self._backend_type_lookup is None:
+            return ""
+        try:
+            return self._backend_type_lookup(backend_name) or ""
+        except Exception:  # noqa: BLE001 - classification must never break a sweep
+            logger.warning(
+                "scheduler: backend_type_lookup failed for %r",
+                backend_name, exc_info=True,
+            )
+            return ""
 
     # -----------------------------------------------------------------------
     # Core-aware load entry point
