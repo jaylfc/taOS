@@ -1,0 +1,3 @@
+### Fixed
+
+- **Desktop SPA blank in old system webviews (#2082)** — the bundle calls runtime APIs that postdate old webview engines (`Object.hasOwn`, Chromium 93; `structuredClone`, Chromium 98; `Array`/`String.prototype.at`, Chromium 92), so on e.g. Ubuntu Touch's Chromium 87 Morph webview the app threw during startup and rendered a silent blank screen. All three shells now load `compat.js` first: a small feature-detected polyfill script (mirroring the workaround taOSmobile injected by hand), precached by the service worker alongside `boot.js`. It also installs a `window.onerror` fallback that paints a readable error — including a too-old-webview hint — whenever startup fails before first render, instead of leaving a blank screen on devices with no console.
