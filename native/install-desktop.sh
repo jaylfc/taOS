@@ -26,7 +26,7 @@
 #   /etc/taos/sway.d/NN-*.conf          the sway snippets (swayfx layer_effects lines enabled; 05-session-env.conf
 #                                       gives D-Bus activated services the Wayland session variables)
 #   /etc/taos/sway/config               ONLY the line `$mod+space floating toggle` moves to `$mod+Shift+space`
-#   /etc/taos/shell.env                 TAOS_SHELL_COMPONENTS="taos-bar taos-overview taos-dock taos-launcher taos-frame"
+#   /etc/taos/shell.env                 TAOS_SHELL_COMPONENTS="taos-bar taos-overview taos-dock taos-launcher taos-frame taos-notifyd"
 # Backups, timestamped, next to what they back up: <dir>.bak-<stamp> for /opt/taos/shell/bin,
 # /opt/taos/apps/bin and /etc/taos/sway.d, and <file>.bak-<stamp> for the two edited files. The last lines
 # printed are the rollback command.
@@ -71,8 +71,8 @@ shell_bin=$R/opt/taos/shell/bin
 apps_dir=$R/opt/taos/apps
 themes_dir=$R/usr/share/taos/themes
 local_bin=$R/usr/local/bin
-components="taos-bar taos-overview taos-dock taos-launcher taos-frame"
-pieces="taos-bar taos-overview taos-dock taos-window taos-display taos-theme taos-launcher taos-search taos-frame"
+components="taos-bar taos-overview taos-dock taos-launcher taos-frame taos-notifyd"
+pieces="taos-bar taos-overview taos-dock taos-window taos-display taos-theme taos-launcher taos-search taos-frame taos-notifyd"
 
 stage=$(mktemp -d "${TMPDIR:-/tmp}/taos-install-stage.XXXXXX")
 trap 'rm -rf "$stage"' EXIT

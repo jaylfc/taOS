@@ -72,6 +72,8 @@ def reset():
             me_cookie_only=False,
             snapshot_delay_ms=0,
             sse_delay_ms=0,
+            os_ids={},      # client id -> row id (POST /api/notifications/os is idempotent on it)
+            os_posts=0,     # every POST that reached the handler, duplicates included
         )
 
 
@@ -186,7 +188,9 @@ class H(BaseHTTPRequestHandler):
     def control(self, verb, path):
         if path == "/__fake/stats":
             with lock:
-                return self.send_json({"sse_open": live["sse_open"], "sse_total": state["sse_total"], "requests": state["requests"]})
+                return self.send_json({"sse_open": live["sse_open"], "sse_total": state["sse_total"], "requests": state["requests"],
+                                       "os_posts": state["os_posts"],
+                                       "os_rows": [r for r in state["notifications"] if str(r.get("source", "")).startswith("os:")]})
         b = self.body()
         with lock:
             if b.get("reset"):
@@ -267,6 +271,27 @@ class H(BaseHTTPRequestHandler):
 
     def r_POST(self, path, q):
         parts = path.strip("/").split("/")
+        if path == "/api/notifications/os":
+            # The OS (freedesktop) notification ingest: one row per client id, retries answer duplicate.
+            b = self.body()
+            cid = b.get("id")
+            if not isinstance(cid, str) or not cid or not isinstance(b.get("summary"), str):
+                return self.send_json({"error": "invalid"}, 422)
+            with lock:
+                state["os_posts"] += 1
+                if cid in state["os_ids"]:
+                    return self.send_json({"id": state["os_ids"][cid], "duplicate": True})
+                rid = max([r["id"] for r in state["notifications"]] + [0]) + 1
+                state["os_ids"][cid] = rid
+                state["notifications"].insert(0, dict(
+                    id=rid, timestamp=b.get("posted_at") or time.time(), level="warning" if b.get("urgency") == "critical" else "info",
+                    title=b["summary"], message=b.get("body", ""), read=False,
+                    source="os:" + (b.get("desktop_entry") or b.get("app_name", "app")).lower(),
+                    data={"os": {"client_id": cid}}, user_id="local"))
+                qs = list(state["sse_queues"])
+            for q2 in qs:
+                q2.put(("data", {"kind": "notification.added", "id": "n%d" % rid}))
+            return self.send_json({"id": rid, "duplicate": False})
         if path == "/api/notifications/read-all":
             n = 0
             for r in state["notifications"]:

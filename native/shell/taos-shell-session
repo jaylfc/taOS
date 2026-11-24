@@ -11,7 +11,7 @@
 # Environment (all optional):
 #   TAOS_SHELL_ENV_FILE     env file sourced first (default /etc/taos/shell.env), so a
 #                           packaged Qt prefix can set LD_LIBRARY_PATH and friends
-#   TAOS_SHELL_COMPONENTS   space separated component names (default: taos-bar taos-overview taos-dock taos-frame)
+#   TAOS_SHELL_COMPONENTS   space separated component names (default: taos-bar taos-overview taos-dock taos-frame taos-notifyd)
 #   TAOS_SHELL_BIN_DIR      where component binaries live (default: this script's
 #                           directory, then PATH)
 #   TAOS_SHELL_ARGS_<NAME>  extra arguments for a component, NAME upper case with
@@ -40,7 +40,7 @@ case $SELF in
 esac
 SELF_DIR=$(dirname "$SELF")
 
-COMPONENTS=${TAOS_SHELL_COMPONENTS:-taos-bar taos-overview taos-dock taos-frame}
+COMPONENTS=${TAOS_SHELL_COMPONENTS:-taos-bar taos-overview taos-dock taos-frame taos-notifyd}
 SLEEP_CMD=${TAOS_SHELL_SLEEP_CMD:-sleep}
 SLEEP_REAL=sleep
 BACKOFF_STEPS="1 2 5 30"
