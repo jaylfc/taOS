@@ -4,6 +4,7 @@ import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from tinyagentos.agent_chat_router import AgentChatRouter
+from tinyagentos.taosmd_client import AnswerContextResult
 
 
 class _FakeBridge:
@@ -120,6 +121,7 @@ class TestAgentChatRouter:
         state.chat_messages.get_messages = AsyncMock(return_value=[
             {"author_id": "user", "author_type": "user", "content": "hello"},
         ])
+        state.chat_messages.set_metadata = AsyncMock()
         state.chat_channels = MagicMock()
         state.chat_channels.update_last_message_at = AsyncMock()
         state.chat_hub = MagicMock()
@@ -130,6 +132,19 @@ class TestAgentChatRouter:
             "big-model": _FakeManifest("big-model", 32768),
             "small-model": _FakeManifest("small-model", 8192),
         })
+        # Mock taosmd_client
+        mock_client = AsyncMock()
+        mock_client.answer_context = AsyncMock(return_value=AnswerContextResult(
+            context="test context",
+            dropped=0,
+            budget_tokens=4096,  # 8192 // 2
+            used_tokens=1000,
+            layers={},
+            depth="standard",
+            intent="general",
+            latency_ms=50.0,
+        ))
+        state.taosmd_client = mock_client
         # lively group fans out to both agents so min window applies
         channel = {
             "id": "c1", "type": "group",
@@ -144,13 +159,23 @@ class TestAgentChatRouter:
             "author_type": "user", "content": "hello", "created_at": 1.0,
         }
         with patch(
-            "tinyagentos.chat.context_window.build_context_window",
-            return_value=[],
-        ) as build:
+            "tinyagentos.agent_chat_router.answer_context",
+            return_value=AnswerContextResult(
+                context="test context",
+                dropped=0,
+                budget_tokens=4096,
+                used_tokens=1000,
+                layers={},
+                depth="standard",
+                intent="general",
+                latency_ms=50.0,
+            ),
+        ) as mock_answer:
             await AgentChatRouter(state)._route(message, channel)
-        build.assert_called_once()
-        # min known window is 8192 -> floor budget 512
-        assert build.call_args.kwargs["max_tokens"] == 512
+        mock_answer.assert_awaited_once()
+        # min known window is 8192 -> budget 4096 (share of window)
+        call_kwargs = mock_answer.call_args.kwargs
+        assert call_kwargs["budget_tokens"] == 4096
 
     @pytest.mark.asyncio
     async def test_context_budget_defaults_when_windows_unknown(self):
@@ -161,18 +186,43 @@ class TestAgentChatRouter:
         state.chat_messages.get_messages = AsyncMock(return_value=[
             {"author_id": "user", "author_type": "user", "content": "hello"},
         ])
+        state.chat_messages.set_metadata = AsyncMock()
+        # Mock taosmd_client
+        mock_client = AsyncMock()
+        mock_client.answer_context = AsyncMock(return_value=AnswerContextResult(
+            context="test context",
+            dropped=0,
+            budget_tokens=4000,
+            used_tokens=1000,
+            layers={},
+            depth="standard",
+            intent="general",
+            latency_ms=50.0,
+        ))
+        state.taosmd_client = mock_client
         message = {
             "id": "m1", "channel_id": "c1", "author_id": "user",
             "author_type": "user", "content": "hello", "created_at": 1.0,
         }
         channel = {"id": "c1", "type": "dm", "members": ["user", "openclaw"]}
         with patch(
-            "tinyagentos.chat.context_window.build_context_window",
-            return_value=[],
-        ) as build:
+            "tinyagentos.agent_chat_router.answer_context",
+            return_value=AnswerContextResult(
+                context="test context",
+                dropped=0,
+                budget_tokens=4000,
+                used_tokens=1000,
+                layers={},
+                depth="standard",
+                intent="general",
+                latency_ms=50.0,
+            ),
+        ) as mock_answer:
             await AgentChatRouter(state)._route(message, channel)
-        build.assert_called_once()
-        assert build.call_args.kwargs["max_tokens"] == 4000
+        mock_answer.assert_awaited_once()
+        # No known windows -> default budget 4000
+        call_kwargs = mock_answer.call_args.kwargs
+        assert call_kwargs["budget_tokens"] == 4000
 
     @pytest.mark.asyncio
     async def test_context_budget_capped_when_a_recipient_window_is_unknown(self):
@@ -195,6 +245,7 @@ class TestAgentChatRouter:
         state.chat_messages.get_messages = AsyncMock(return_value=[
             {"author_id": "user", "author_type": "user", "content": "hello"},
         ])
+        state.chat_messages.set_metadata = AsyncMock()
         state.chat_channels = MagicMock()
         state.chat_channels.update_last_message_at = AsyncMock()
         state.chat_hub = MagicMock()
@@ -206,6 +257,19 @@ class TestAgentChatRouter:
         state.registry = _FakeRegistry({
             "big-model": _FakeManifest("big-model", 32768),
         })
+        # Mock taosmd_client
+        mock_client = AsyncMock()
+        mock_client.answer_context = AsyncMock(return_value=AnswerContextResult(
+            context="test context",
+            dropped=0,
+            budget_tokens=4000,  # capped at default because of unknown window
+            used_tokens=1000,
+            layers={},
+            depth="standard",
+            intent="general",
+            latency_ms=50.0,
+        ))
+        state.taosmd_client = mock_client
         channel = {
             "id": "c1", "type": "group",
             "members": ["user", "big", "cloud"],
@@ -219,13 +283,23 @@ class TestAgentChatRouter:
             "author_type": "user", "content": "hello", "created_at": 1.0,
         }
         with patch(
-            "tinyagentos.chat.context_window.build_context_window",
-            return_value=[],
-        ) as build:
+            "tinyagentos.agent_chat_router.answer_context",
+            return_value=AnswerContextResult(
+                context="test context",
+                dropped=0,
+                budget_tokens=4000,
+                used_tokens=1000,
+                layers={},
+                depth="standard",
+                intent="general",
+                latency_ms=50.0,
+            ),
+        ) as mock_answer:
             await AgentChatRouter(state)._route(message, channel)
-        build.assert_called_once()
-        # 32768 alone would give 21744; the unknown recipient caps it at 4000.
-        assert build.call_args.kwargs["max_tokens"] == 4000
+        mock_answer.assert_awaited_once()
+        # 32768 alone would give 16384; the unknown recipient caps it at 4000.
+        call_kwargs = mock_answer.call_args.kwargs
+        assert call_kwargs["budget_tokens"] == 4000
 
     @pytest.mark.asyncio
     async def test_skips_non_user_messages(self):

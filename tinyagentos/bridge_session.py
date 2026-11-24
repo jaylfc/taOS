@@ -216,17 +216,22 @@ class BridgeSessionRegistry:
             return
         try:
             store = await self._trace_registry.get(slug)
+            payload = {
+                "from": msg.get("from", "user"),
+                "text": msg.get("text", ""),
+                "message_id": msg.get("id"),
+                "author_type": msg.get("author_type", "user"),
+                "delivery": "queued",
+            }
+            # Include answer_context metadata for trace visibility
+            answer_meta = msg.get("answer_context_meta")
+            if answer_meta:
+                payload["answer_context"] = answer_meta
             await store.record(
                 "message_in",
                 trace_id=msg.get("trace_id") or msg.get("id"),
                 channel_id=msg.get("channel_id"),
-                payload={
-                    "from": msg.get("from", "user"),
-                    "text": msg.get("text", ""),
-                    "message_id": msg.get("id"),
-                    "author_type": msg.get("author_type", "user"),
-                    "delivery": "queued",
-                },
+                payload=payload,
             )
         except Exception:
             logger.exception(
@@ -526,11 +531,20 @@ class BridgeSessionRegistry:
             # Write trace event (only for new reply_ids).
             if self._trace_registry:
                 store = await self._trace_registry.get(slug)
+                payload = {"content": final_content}
+                # Include answer_context metadata from the original message
+                if self._chat_messages:
+                    try:
+                        orig = await self._chat_messages.get_message(trace_id)
+                        if orig and orig.get("metadata", {}).get("answer_context_meta"):
+                            payload["answer_context"] = orig["metadata"]["answer_context_meta"]
+                    except Exception:
+                        pass
                 await store.record(
                     "message_out",
                     trace_id=trace_id,
                     channel_id=channel_id,
-                    payload={"content": final_content},
+                    payload=payload,
                 )
 
             persisted = None

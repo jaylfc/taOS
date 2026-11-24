@@ -20,6 +20,11 @@ memory and Agent A's deletions cannot trample anyone else's data. See
 ``traceparent`` and ``X-TaOS-Conversation-Id`` headers so the memory
 backend (qmd / taosmd) can nest its spans under the caller's OTel trace.
 The headers are built by ``build_trace_context_headers()``.
+
+Agent callers (bound local token, registry JWT) route through taOSmd
+answer_context for unified memory context with token budget and dropped
+counts. Human callers (admin session, unbound host token) use raw qmd
+search for the Memory app and CLI.
 """
 from __future__ import annotations
 
@@ -37,6 +42,7 @@ from tinyagentos.agent_token_auth import check_agent_scope
 from tinyagentos.auth_context import current_user, require_agent_owner_or_admin
 from tinyagentos.otel.trace_context import build_trace_context_headers
 from tinyagentos.routes.delegation import _resolve_agent_name
+from tinyagentos.taosmd_client import get_taosmd_client
 
 logger = logging.getLogger(__name__)
 
@@ -233,15 +239,24 @@ async def memory_search(request: Request, body: SearchRequest):
     is intentionally not supported here -- agents do not share memory.
     Aggregating across agents is a separate concern that belongs in a
     future ``/api/memory/all`` endpoint, gated by user permission.
+
+    Agent callers (bound local token, registry JWT with memory_read) use
+    taOSmd answer_context for unified context with token budget.
+    Human callers (admin session, unbound host token) use raw qmd search.
     """
     # Check for local token FIRST (before check_agent_scope which treats any Bearer as registry JWT)
     is_local, bound_agent = _local_token_caller(request)
+    is_agent_caller = False
+    agent_name = None
+
     if is_local:
         if bound_agent is not None:
             # Bound agent: fence to own namespace
             if body.agent is not None and body.agent != bound_agent:
                 raise HTTPException(status_code=403, detail="Agent can only search its own memory")
             body.agent = bound_agent
+            agent_name = bound_agent
+            is_agent_caller = True
         # Unbound (host) token: keep existing admin behaviour (body.agent respected as-is)
     else:
         # Registry JWT path
@@ -257,7 +272,64 @@ async def memory_search(request: Request, body: SearchRequest):
                 raise HTTPException(status_code=403, detail="Agent can only search its own memory")
             # Use the resolved config agent name for the agent namespace
             body.agent = agent_config_name
-    
+            agent_name = agent_config_name
+            is_agent_caller = True
+
+    # Agent callers use answer_context; human callers use raw qmd
+    if is_agent_caller and agent_name:
+        # Get agent's model context window for budget calculation
+        budget_tokens = 4000  # default
+        agent_record = find_agent(request.app.state.config, agent_name)
+        if agent_record and agent_record.get("model"):
+            try:
+                from tinyagentos.cluster.model_resolver import _find_model_manifest
+                registry = getattr(request.app.state, "registry", None)
+                manifest = _find_model_manifest(registry, agent_record["model"])
+                if manifest and getattr(manifest, "context_window", 0):
+                    # Use ~50% of context window for memory budget (share, not whole)
+                    budget_tokens = max(512, int(manifest.context_window) // 2)
+            except Exception:
+                pass
+
+        try:
+            client = get_taosmd_client(request)
+            result = await client.answer_context(
+                query=body.query,
+                agent=agent_name,
+                budget_tokens=budget_tokens,
+                now=datetime.now(UTC).timestamp(),
+                reasoning_reserve=1024,
+                depth="standard",
+            )
+            # Convert answer_context result to search results format
+            # answer_context returns a context string; we parse it into chunks
+            # For now, return the context as a single result with metadata
+            return {
+                "results": [{
+                    "content": result.context,
+                    "metadata": {
+                        "answer_context": True,
+                        "dropped": result.dropped,
+                        "budget_tokens": result.budget_tokens,
+                        "used_tokens": result.used_tokens,
+                        "layers": result.layers,
+                        "depth": result.depth,
+                        "intent": result.intent,
+                    }
+                }] if result.context else [],
+                "query": body.query,
+                "agent": agent_name,
+                "answer_context_meta": {
+                    "dropped": result.dropped,
+                    "budget_tokens": result.budget_tokens,
+                    "used_tokens": result.used_tokens,
+                }
+            }
+        except Exception as exc:
+            logger.warning("answer_context failed for agent %s: %s", agent_name, exc)
+            # Fall through to raw qmd search on failure
+
+    # Human callers or fallback: raw qmd search
     db_path = _agent_db_path(request, body.agent)
     search_fn = _qmd_vsearch if body.mode == "semantic" else _qmd_search
 
