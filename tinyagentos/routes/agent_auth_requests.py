@@ -127,6 +127,28 @@ VALID_SCOPES = frozenset({
     # (revoked/blocked/live_token), host_lan_ip or hardware. A global scope:
     # deliberately not project-bound, so it is not in _PROJECT_SCOPES.
     "cluster_read",
+    # Memory service record authorship: write history records, naming a real
+    # writer. The controller's service principal holds records:write only.
+    "records:write",
+    # Read history records written to the memory service.
+    "records:read",
+    # Write blobs to the memory service.
+    "blobs:write",
+    # Read blobs from the memory service.
+    "blobs:read",
+    # Send on the A2A bus. Maps to the existing a2a_send grant: the bus send
+    # route already authorizes via a2a_send, so bus:send is that grant under
+    # the memory-service vocabulary name.
+    "bus:send",
+    # Read from the A2A bus.
+    "bus:read",
+    # Read the controller's own bus inbox.
+    "bus:inbox",
+    # Reveal a secret to the holder of the token (least-privilege secrets
+    # read, distinct from the agent-wide secrets_read_own).
+    "secrets:reveal",
+    # Administer the archive: read, write and delete archived records.
+    "archive:admin",
 })
 
 

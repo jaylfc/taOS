@@ -677,6 +677,28 @@ Minted by `ensure_native_agent_identity()` in `tinyagentos/native_agent_identity
 - **The revocation feed covers agent identities only, and that is a decision rather than a gap.** `GET /api/agents/registry/revoked` reads `agent_registry` and returns `{canonical_id, revoked_at}` per entry. Human credential withdrawal is handled through the session/auth layer, so humans will never appear here. Decided 2026-08-13, after a downstream spec was written assuming the opposite. If you are building something that needs to learn a *human's* credential was withdrawn, this feed is the wrong source and the requirement should be raised rather than implemented against it -- `tests/test_agent_registry.py::test_revoked_feed_shape` fails if the feed is widened, deliberately.
 - **Nothing in the chat runtime reads the token yet.** The identity is minted; wiring it into what the agent sends is a separate change. It is deliberately absent from the agent manual until then -- the manual is injected into the agent's prompt and sits at its size ceiling, so it should not describe a capability the agent does not yet have.
 
+## The controller's service identity
+
+Every install mints a service principal for the OS-native controller at first boot. No admin step, no prompt: if the install has an owner, the controller has an identity of its own for writing history records to the memory service, which must name a real writer.
+
+| | |
+|---|---|
+| origin | `taos-controller` |
+| handle | `service:controller` |
+| owner | the install's primary user (`user_id`) |
+| scopes | `records:write` only |
+| token | `<data_dir>/.secrets/taos_controller_token`, mode 0600 |
+
+Minted by `ensure_controller_service_identity()` in `tinyagentos/controller_service_identity.py`, called from the application lifespan on every start and idempotent by install id. Never fatal on failure: an install without an owner defers until one exists, and an install without the identity is degraded, not broken.
+
+**Anchored to `<data_dir>/.install_id`**, the same id the version ping uses, via `install_id()` in `tinyagentos/auto_update.py`.
+
+**The token is never in an environment variable.** It is written to the taOS secrets area under the data directory (`<data_dir>/.secrets/taos_controller_token`, mode 0600) and renewed by the controller.
+
+**A service-principal token is not accepted where an agent or human token is required.** `_verify_agent_scope` in `tinyagentos/agent_token_auth.py` returns `None` for any `principal_type` other than `agent` or `human`, so the controller identity cannot be used as an agent backdoor.
+
+The controller's single scope, `records:write`, is part of the grant vocabulary alongside `records:read`, `blobs:write`, `blobs:read`, `bus:send` (maps to the existing `a2a_send` grant), `bus:read`, `bus:inbox`, `secrets:reveal` and `archive:admin`.
+
 ## Response caching (`Cache-Control: no-store` on `/api/` and `/agent/`)
 
 `SecurityHeadersMiddleware` (`tinyagentos/middleware/security_headers.py`) adds

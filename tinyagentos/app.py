@@ -646,6 +646,29 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
             )
         except Exception:
             logger.exception("native agent identity could not be ensured at startup")
+        # First-boot service identity for the controller.  The memory service is
+        # where history records live and a record has to name a real writer, so
+        # the controller registers a service principal for itself and writes its
+        # token to the secrets area under the data directory.  Runs on EVERY
+        # start (idempotent by install id), is never fatal, and defers until an
+        # owner exists.  The service principal holds records:write only -- a
+        # service-principal token is not accepted anywhere an agent or human
+        # token is required.
+        try:
+            from tinyagentos.controller_service_identity import (
+                ensure_controller_service_identity,
+            )
+
+            _owner = auth_manager.get_primary_user()
+            await ensure_controller_service_identity(
+                registry=agent_registry_store,
+                grants=agent_grants_store,
+                data_dir=data_dir,
+                signing_key_pem=agent_registry_keypair[0],
+                user_id=(_owner or {}).get("id", ""),
+            )
+        except Exception:
+            logger.exception("controller service identity could not be ensured at startup")
         await user_shares_store.init()
         app.state.user_shares = user_shares_store
         await sharing_grants_store.init()

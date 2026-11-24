@@ -436,8 +436,8 @@ def mint_registry_token(
       iss           - "taos-registry"
       iat           - unix timestamp of issuance
       jti           - unique token id
-      principal_type- "agent" (default) or "human" — the two principal types
-                      verified through the same Ed25519 chain
+      principal_type- "agent" (default), "human" or "service" — the principal
+                      kinds verified through the same Ed25519 chain
       user_id       - owning user_id at registration time (agent tokens only)
       framework     - agent framework at registration time (agent tokens only)
       project_id    - project binding, present only when non-empty; absent means

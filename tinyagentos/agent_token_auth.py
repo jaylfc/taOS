@@ -201,7 +201,11 @@ async def _verify_agent_scope(
         raise HTTPException(status_code=401, detail="token missing sub claim")
 
     principal_type = payload.get("principal_type", "")
-    if principal_type == "human":
+    if principal_type not in ("agent", "human"):
+        # A service-principal token is never accepted where an agent or human
+        # token is required: fall through so the caller's own handling (which
+        # 401s an unauthenticated caller) applies instead of treating the
+        # service identity as an agent.
         return None
 
     # Agent must be active in the registry.
@@ -242,7 +246,9 @@ async def check_agent_scope(request: Request, required_scope: str) -> Optional[s
     Returns None when no Authorization header is present (the caller falls
     through to its own admin/session handling), or when a valid human-principal
     token is presented (``principal_type == "human"`` short-circuits here so a
-    human token never reaches the agent-registry check).
+    human token never reaches the agent-registry check). A service-principal
+    token (``principal_type == "service"``) is likewise not accepted as an agent
+    and returns None, so it is never authorized by ``check_agent_scope``.
 
     Raises:
       401 -- Authorization header present but the token is malformed, has a bad
@@ -272,7 +278,9 @@ async def registry_agent_caller(request: Request, required_scope: str) -> Option
          *required_scope* grant).  Returns the agent's canonical_id.
 
     A human-principal registry token returns None (as ``check_agent_scope``
-    does) and so falls through to the caller's human path, which 401s it.
+    does) and so falls through to the caller's human path, which 401s it. A
+    service-principal token is not accepted as an agent either and likewise
+    returns None.
     """
     if getattr(request.state, "user_id", None):
         return None
