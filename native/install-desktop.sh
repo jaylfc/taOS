@@ -154,9 +154,20 @@ cp "$stage"/sway.d/*.conf "$vroot/sway.d/"
 # the config's absolute includes point into the temp copy; the person's own ~/.config is not read
 sed -e "s|/etc/taos/sway.d|$vroot/sway.d|g" -e "s|~/.config/taos|$vroot/home/.config/taos|g" \
     -e "s|\$HOME/.config/taos|$vroot/home/.config/taos|g" "$stage/sway-config" >"$vroot/config"
+# The GPU render node the headless validation start uses: TAOS_VALIDATE_RENDER_NODE, else the first one present.
+vnode=${TAOS_VALIDATE_RENDER_NODE:-}
+if [ -z "$vnode" ]; then
+    for n in /dev/dri/renderD*; do [ -c "$n" ] && { vnode=$n; break; }; done
+fi
+if [ -z "$vnode" ] || [ ! -c "$vnode" ]; then
+    echo "install-desktop: no GPU render node (/dev/dri/renderD*) found${TAOS_VALIDATE_RENDER_NODE:+, and TAOS_VALIDATE_RENDER_NODE=$TAOS_VALIDATE_RENDER_NODE is not a device}." >&2
+    echo "  The compositor config is checked by starting the compositor headless, which needs a render node." >&2
+    echo "  Set TAOS_VALIDATE_RENDER_NODE to one, or run on a machine with a GPU driver loaded." >&2
+    exit 1
+fi
 validate_with() { # <sway binary>: sets vout, vrc, vread (1 when the compositor got as far as reading the config)
     vout=$(env -i PATH="$PATH" HOME="$vroot/home" XDG_RUNTIME_DIR="$vroot/run" WLR_BACKENDS=headless \
-               WLR_RENDER_DRM_DEVICE=${TAOS_VALIDATE_RENDER_NODE:-$(ls /dev/dri/renderD* 2>/dev/null | head -n 1)} __EGL_VENDOR_LIBRARY_FILENAMES=/usr/share/glvnd/egl_vendor.d/50_mesa.json WLR_LIBINPUT_NO_DEVICES=1 ${LD_LIBRARY_PATH:+LD_LIBRARY_PATH="$LD_LIBRARY_PATH"} \
+               WLR_RENDER_DRM_DEVICE=$vnode __EGL_VENDOR_LIBRARY_FILENAMES=/usr/share/glvnd/egl_vendor.d/50_mesa.json WLR_LIBINPUT_NO_DEVICES=1 ${LD_LIBRARY_PATH:+LD_LIBRARY_PATH="$LD_LIBRARY_PATH"} \
                "$1" -C -d -c "$vroot/config" 2>&1) && vrc=0 || vrc=$?
     if printf '%s\n' "$vout" | grep -q -E 'Config command|Loading config|Read line'; then vread=1; else vread=0; fi
 }
@@ -200,8 +211,11 @@ backup "$sway_conf"
 backup "$shell_env"
 
 # ---------------------------------------------------------------- 3. install
+changes="$stage/changes"
+: >"$changes"
 put() { # <src> <dest> <mode>: copy beside, then rename, so a running copy keeps working
     mkdir -p "$(dirname "$2")"
+    if [ ! -e "$2" ]; then echo "new $2" >>"$changes"; elif ! cmp -s "$1" "$2"; then echo "changed $2" >>"$changes"; fi
     cp "$1" "$2.new"
     chmod "$3" "$2.new"
     mv -f "$2.new" "$2"
@@ -216,15 +230,19 @@ for f in "$stage"/bin/*; do
 done
 echo "installed shell binaries to $shell_bin, wrappers to $local_bin"
 
+( cd "$apps_dir/bin" 2>/dev/null && md5sum -- * 2>/dev/null ) >"$stage/apps-before" || true
 args=""
 for d in $apps_builds; do args="$args --bin-dir $d"; done
 # shellcheck disable=SC2086
 sh "$here/apps/install-apps.sh" "$R/usr/local" --app-dir "$apps_dir" --runtime-app-dir /opt/taos/apps --no-icon-cache $args
 
+( cd "$apps_dir/bin" 2>/dev/null && md5sum -- * 2>/dev/null ) >"$stage/apps-after" || true
 mkdir -p "$themes_dir"
 for t in "$here"/shell/common/resources/themes/*/; do
     n=$(basename "$t")
     mkdir -p "$themes_dir/$n"
+    if [ ! -e "$themes_dir/$n/theme.json" ]; then echo "new $themes_dir/$n/theme.json" >>"$changes"
+    elif ! cmp -s "$t"theme.json "$themes_dir/$n/theme.json"; then echo "changed $themes_dir/$n/theme.json" >>"$changes"; fi
     cp "$t"theme.json "$themes_dir/$n/theme.json.new"
     mv -f "$themes_dir/$n/theme.json.new" "$themes_dir/$n/theme.json"
 done
@@ -235,6 +253,8 @@ for t in "$here"/shell/themes/*/; do
     mkdir -p "$themes_dir/$n"
     (cd "$t" && find . -type f) | while IFS= read -r f; do
         mkdir -p "$themes_dir/$n/$(dirname "$f")"
+        if [ ! -e "$themes_dir/$n/$f" ]; then echo "new $themes_dir/$n/$f" >>"$changes"
+        elif ! cmp -s "$t$f" "$themes_dir/$n/$f"; then echo "changed $themes_dir/$n/$f" >>"$changes"; fi
         cp "$t$f" "$themes_dir/$n/$f.new"
         mv -f "$themes_dir/$n/$f.new" "$themes_dir/$n/$f"
     done
@@ -276,6 +296,44 @@ else
 fi
 put "$stage/shell.env" "$shell_env" 0644
 echo "TAOS_SHELL_COMPONENTS=\"$components\" in $shell_env"
+
+# ---------------------------------------------------------------- 3b. what applies how
+apps_changed=$(diff "$stage/apps-before" "$stage/apps-after" 2>/dev/null | sed -n 's/^> [0-9a-f]*  *//p' | tr '\n' ' ')
+bins_changed=$(sed -n "s#^\(changed\|new\) $shell_bin/##p" "$changes" | grep -v '\.new$' | tr '\n' ' ')
+snips_changed=$(sed -n "s#^\(changed\|new\) $sway_d/##p" "$changes" | tr '\n' ' ')
+data_changed=$(grep -c " $themes_dir/\| $fc_dir/" "$changes" || true)
+echo
+echo "=== what this changed, and what it needs ==="
+echo "Running processes keep what they started with. Nothing was restarted or reloaded."
+if [ -n "$snips_changed" ]; then
+    echo "COMPOSITOR CONFIG RELOAD needed (swaymsg reload, as the logged-in user, or restart-desktop-pieces.sh --reload):"
+    echo "  sway snippets changed: $snips_changed"
+    echo "  new for_window rules apply to windows opened after the reload; 'exec' lines (not exec_always) do not run again."
+else
+    echo "compositor config reload: not needed (no sway snippet changed)"
+fi
+pieces_restart=""
+for c in $components; do case " $bins_changed " in *" $c "*) pieces_restart="$pieces_restart $c";; esac; done
+if [ -n "$pieces_restart" ]; then
+    echo "SHELL PIECES RESTART needed (restart-desktop-pieces.sh, as the logged-in user; no window is closed):"
+    echo "  changed:$pieces_restart"
+else
+    echo "shell pieces restart: not needed (no bar, overview, dock, launcher or frame binary changed)"
+fi
+case " $bins_changed " in *" taos-window "*) echo "taos-window changed: the running mode daemon keeps the old binary until the session is restarted (restart-desktop-pieces.sh never restarts it).";; esac
+case " $bins_changed " in *" taos-window-session-hook "*) echo "taos-window-session-hook changed: the running watcher keeps the old copy; stop it by its pid (it is a sh script named taos-window-session-hook) and start the new one, or log out and in. The new copy is single-instance and exits when its compositor socket is gone.";; esac
+case " $bins_changed " in *" taos-theme "*|*" taos-appgroups "*|*" taos-display "*|*" taos-search "*) echo "command line tools changed (${bins_changed}): used by the next command, nothing to restart.";; esac
+if [ -n "$apps_changed" ]; then
+    echo "APPS changed: $apps_changed"
+    echo "  open copies keep running the old binary. Close them and open them again."
+    echo "  The new apps keep their single-instance socket in \$XDG_RUNTIME_DIR/taos (the old ones used /tmp): while an OLD copy is"
+    echo "  still open, starting the app again opens a SECOND copy instead of raising the first. Close old windows first."
+fi
+if [ "$data_changed" -gt 0 ]; then
+    echo "themes, wallpapers and fonts: $data_changed file(s) changed. No restart: the theme list is read when a theme is chosen."
+    echo "  Bundled fonts reach the compositor's title bars through fontconfig; sway reads fonts when its config loads, so they show after the reload above."
+fi
+echo "============================================="
 
 # ---------------------------------------------------------------- 4. rollback
 rb=$R/opt/taos/desktop-rollback-$stamp.sh

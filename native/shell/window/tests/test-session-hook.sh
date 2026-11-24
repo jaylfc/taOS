@@ -66,4 +66,27 @@ taos-theme set graphite --mode light >/dev/null 2>&1
 i=0; while [ $i -lt 20 ] && ! grep -q 'color-scheme prefer-light' "$GS_LOG"; do sleep 0.5; i=$((i+1)); done
 check "watch publishes the new mode when the file changes" "grep -q 'color-scheme prefer-light' $GS_LOG"
 kill $w 2>/dev/null
+wait $w 2>/dev/null
+# single instance: while one watcher runs a second one gives up, and a watcher leaves when its compositor socket is gone
+# the same with flock, and with the mkdir lock used when flock is missing (forced here)
+for mode in flock mkdir; do
+    if [ "$mode" = mkdir ]; then export TAOS_HOOK_NO_FLOCK=1; elif ! command -v flock >/dev/null 2>&1; then continue; fi
+    export XDG_RUNTIME_DIR="$tmp/run"; mkdir -p "$XDG_RUNTIME_DIR"
+    sock="$XDG_RUNTIME_DIR/sway.sock"
+    python3 -c "import socket,sys; s=socket.socket(socket.AF_UNIX); s.bind(sys.argv[1]); import time; time.sleep(60)" "$sock" &
+    sp=$!
+    i=0; while [ $i -lt 20 ] && [ ! -S "$sock" ]; do sleep 0.2; i=$((i+1)); done
+    SWAYSOCK=$sock sh "$hook" watch &
+    w1=$!
+    sleep 1
+    SWAYSOCK=$sock sh "$hook" watch &
+    w2=$!
+    i=0; while [ $i -lt 40 ] && kill -0 $w2 2>/dev/null; do sleep 0.25; i=$((i+1)); done
+    check "[$mode] a second watcher gives up while the first runs" "! kill -0 $w2 2>/dev/null && kill -0 $w1 2>/dev/null"
+    kill $sp 2>/dev/null; rm -f "$sock"
+    i=0; while [ $i -lt 20 ] && kill -0 $w1 2>/dev/null; do sleep 0.5; i=$((i+1)); done
+    check "[$mode] the watcher exits when its session socket is gone" "! kill -0 $w1 2>/dev/null"
+    kill $w1 $w2 2>/dev/null; wait 2>/dev/null
+done
+unset TAOS_HOOK_NO_FLOCK
 exit $fail

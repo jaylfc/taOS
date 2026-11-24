@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 #pragma once
+#include <QFileSystemWatcher>
 #include <QObject>
 #include <QSize>
 #include <QTimer>
@@ -131,12 +132,16 @@ signals:
 
 private:
     void relayout();
+    void rescanApps();       // an application folder changed: new or removed launcher entries show up live
+    void watchAppDirs();
     void updateReveal();
     void windowAction(const QString &id);
     Options m_o;
     DockSettings m_settings;
     DesktopModeWatcher m_modes;
     DesktopIndex m_index;
+    QFileSystemWatcher m_appWatch;
+    QTimer m_appDebounce;
     DockModel m_model;
     TaskbarModel m_taskbar;
     WindowEngine *m_engine = nullptr;

@@ -111,6 +111,32 @@ private slots:
             QVERIFY2(c.revealed() != r.expect || !r.expect, "a hidden dock starts not revealed");
         }
     }
+    void followsNewPinsAndNewLauncherEntriesLive() {
+        QTemporaryDir d;
+        const QString apps = d.path() + QStringLiteral("/applications");
+        DockController::Options o;
+        o.configPath = d.path() + QStringLiteral("/dock.json");
+        o.modePath = d.path() + QStringLiteral("/desktop.json");
+        o.appDirs = {apps};   // does not exist yet: the first install creates it
+        put(o.configPath, R"({"pinned":["early"]})");
+        DockController c(o);
+        auto shown = [&](const char *id) {
+            for (const DockItem &i : c.model()->items()) if (i.key == QLatin1String(id)) return true;
+            return false;
+        };
+        QVERIFY(!shown("early"));   // pinned, but nothing launchable by that name yet
+        QVERIFY(QDir().mkpath(apps));
+        put(apps + QStringLiteral("/early.desktop"), "[Desktop Entry]\nType=Application\nName=Early\nExec=early\n");
+        QTRY_VERIFY_WITH_TIMEOUT(shown("early"), 5000);       // the entry appears: the dock follows new launcher entries
+        // a pin written after start shows up, then an install of a pinned app in a subfolder
+        put(o.configPath, R"({"pinned":["early","late"]})");
+        QTest::qWait(500);
+        QVERIFY(!shown("late"));
+        put(apps + QStringLiteral("/late.desktop"), "[Desktop Entry]\nType=Application\nName=Late\nExec=late\n");
+        QTRY_VERIFY_WITH_TIMEOUT(shown("late"), 5000);
+        QFile::remove(apps + QStringLiteral("/early.desktop"));
+        QTRY_VERIFY_WITH_TIMEOUT(!shown("early"), 5000);       // removal follows too
+    }
     void followsLiveChange() {
         QTemporaryDir d;
         DockController::Options o;
