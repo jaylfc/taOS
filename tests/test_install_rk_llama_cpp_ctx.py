@@ -66,3 +66,21 @@ def test_log_line_includes_ctx():
     assert re.search(r'log "writing \$UNIT_PATH \(port \$PORT, ctx \$CTX\)"', text), (
         'log line must include ctx value like "(port $PORT, ctx $CTX)"'
     )
+
+
+def test_unit_sets_hybrid_pattern_int8_standard():
+    """#361: HYBRID_PATTERN=INT8_STANDARD flows through the rk-llama.cpp
+    unit so a Store install gets the tuned config by default."""
+    text = INSTALL_RKLLAMACPP_SH.read_text()
+    assert re.search(r"^Environment=HYBRID_PATTERN=INT8_STANDARD$", text, re.MULTILINE), (
+        "rkllamacpp unit must set Environment=HYBRID_PATTERN=INT8_STANDARD"
+    )
+
+
+def test_execstart_pins_big_cores_with_taskset():
+    """#361: llama-server runs under taskset -c 4-7 (the RK3588's A76 big
+    cores), matching the recipe the perf-mode issue documents."""
+    text = INSTALL_RKLLAMACPP_SH.read_text()
+    assert re.search(r"ExecStart=/usr/bin/taskset -c 4-7 ", text), (
+        "ExecStart must pin llama-server to cores 4-7 via taskset"
+    )

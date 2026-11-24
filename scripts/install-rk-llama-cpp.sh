@@ -127,9 +127,10 @@ User=$TARGET_USER
 Group=$TARGET_GROUP
 WorkingDirectory=$INSTALL_DIR
 Environment=LD_LIBRARY_PATH=$INSTALL_DIR/lib
+Environment=HYBRID_PATTERN=INT8_STANDARD
 EnvironmentFile=$INSTALL_DIR/active.alias
 LimitNOFILE=65536
-ExecStart=$INSTALL_DIR/bin/llama-server -m $INSTALL_DIR/active.gguf --alias \${TAOS_ACTIVE_ALIAS} --host $HOST --port $PORT -c $CTX
+ExecStart=/usr/bin/taskset -c 4-7 $INSTALL_DIR/bin/llama-server -m $INSTALL_DIR/active.gguf --alias \${TAOS_ACTIVE_ALIAS} --host $HOST --port $PORT -c $CTX
 Restart=on-failure
 RestartSec=5
 KillMode=mixed
