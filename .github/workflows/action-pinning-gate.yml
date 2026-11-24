@@ -13,9 +13,9 @@ name: Action-pinning gate
 
 on:
   push:
-    branches: [master, dev, release/*]
+    branches: [master, dev, native, release/*]
   pull_request:
-    branches: [master, dev, release/*]
+    branches: [master, dev, native, release/*]
 
 jobs:
   action-pinning-gate:

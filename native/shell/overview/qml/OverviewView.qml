@@ -190,7 +190,7 @@ Item {
                 readonly property var lr: Overview.layout[conId]
                 readonly property bool present: lr !== undefined
                 readonly property bool selected: index === Overview.selectedIndex
-                readonly property bool hot: selected || ma.containsMouse
+                readonly property bool hot: selected || winArea.containsMouse
                 x: present ? lr.x : 0
                 y: present ? lr.y : 0
                 width: present ? lr.width : 0
@@ -229,7 +229,7 @@ Item {
                         anchors.fill: parent
                         radius: 12
                         color: "transparent"
-                        border.width: win.selected ? 3 : (ma.containsMouse ? 2 : 0)
+                        border.width: win.selected ? 3 : (winArea.containsMouse ? 2 : 0)
                         border.color: Style.accent
                         visible: border.width > 0
                     }
@@ -289,7 +289,7 @@ Item {
                     }
                 }
                 MouseArea {
-                    id: ma
+                    id: winArea
                     anchors.fill: parent
                     hoverEnabled: true
                     onPositionChanged: Overview.selectedIndex = win.index

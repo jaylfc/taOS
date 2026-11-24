@@ -3,6 +3,7 @@
 
 #include <QCoreApplication>
 #include <QJSEngine>
+#include <QJSValue>
 #include <QJsonValue>
 
 namespace Taos {
@@ -35,7 +36,12 @@ void AppContext::call(const QString &op, const QVariantMap &args, const QJSValue
 void AppContext::http(const QString &method, const QString &path, const QVariantMap &query, const QVariant &body,
                       const QJSValue &callback)
 {
-    deliver(client()->http(method, path, QJsonObject::fromVariantMap(query), QJsonValue::fromVariant(body)), callback);
+    // Qt 6.12 hands a JS object over as a QVariant holding a QJSValue, which
+    // QJsonValue::fromVariant turns into null (the request went out with no body).
+    QVariant plain = body;
+    if (plain.metaType() == QMetaType::fromType<QJSValue>())
+        plain = qvariant_cast<QJSValue>(plain).toVariant();
+    deliver(client()->http(method, path, QJsonObject::fromVariantMap(query), QJsonValue::fromVariant(plain)), callback);
 }
 
 } // namespace Taos

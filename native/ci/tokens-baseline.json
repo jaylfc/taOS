@@ -1,0 +1,14 @@
+{
+ "shell/bar/qml/MenuPanel.qml": 1,
+ "shell/dock/qml/DockMenu.qml": 1,
+ "shell/dock/qml/DockSettings.qml": 1,
+ "shell/greeter/qml/Avatar.qml": 7,
+ "shell/greeter/qml/ClockBlock.qml": 1,
+ "shell/greeter/qml/GlassPanel.qml": 2,
+ "shell/greeter/qml/Main.qml": 1,
+ "shell/greeter/qml/UserTile.qml": 1,
+ "shell/launcher/qml/Glass.qml": 1,
+ "shell/overview/qml/Glass.qml": 1,
+ "shell/overview/qml/Monogram.qml": 4,
+ "shell/overview/qml/WindowThumb.qml": 1
+}
