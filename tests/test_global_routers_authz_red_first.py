@@ -384,15 +384,23 @@ class TestTasksAdminAllowed:
 
 
 @pytest.mark.asyncio
-class TestDesktopMemberRejected:
-    async def test_update_desktop_settings_rejected(self, client, app):
+class TestDesktopMemberAllowed:
+    async def test_update_desktop_settings_allowed(self, client, app):
+        """A member may write their OWN desktop settings row (session-only PUT).
+
+        The per-person desktop routes gate on ``require_session_user``: any
+        signed-in member can write their own row, so a member PUT returns 200.
+        """
+        store = MagicMock()
+        store.update_settings = AsyncMock(return_value=None)
+        client._transport.app.state.desktop_settings = store
         member = await _member_client(app)
         try:
             resp = await member.put("/api/desktop/settings", json={"theme": "dark"})
         finally:
             await member.aclose()
-        assert resp.status_code == 403, resp.text
-        assert resp.json() == FORBIDDEN
+        assert resp.status_code == 200, resp.text
+        assert resp.json() == {"ok": True}
 
 
 @pytest.mark.asyncio

@@ -4,6 +4,7 @@ import { useSessionPersistence } from "../use-session-persistence";
 import { useDockStore } from "@/stores/dock-store";
 import { useThemeStore } from "@/stores/theme-store";
 import { useAuthReadyStore } from "@/stores/auth-ready-store";
+import { useNotificationStore } from "@/stores/notification-store";
 import { APP_REDIRECTS } from "@/registry/app-registry";
 import { useProcessStore } from "@/stores/process-store";
 import { _resetMobileShellForTests, isShellDevice, primeDeviceClass } from "@/lib/mobile-shell";
@@ -427,5 +428,55 @@ describe("useSessionPersistence — window restore on a taOSmobile handset", () 
     });
     const shellCalls = vi.mocked(globalThis.fetch).mock.calls.filter(([u]) => String(u).includes(":6973"));
     expect(shellCalls).toHaveLength(0);
+  });
+});
+
+describe("useSessionPersistence — auto-save error paths", () => {
+  it("shows a plain error when the dock auto-save PUT is rejected (non-ok / 403)", async () => {
+    // fetch does not reject on 403, so the hook must treat non-ok as a failure
+    // and surface a plain error notification instead of silently succeeding.
+    vi.spyOn(globalThis, "fetch").mockImplementation((input, init) => {
+      const url = typeof input === "string" ? input : input.toString();
+      if (url.includes("/api/desktop/dock")) {
+        const initObj = init as RequestInit | undefined;
+        if (initObj?.method === "PUT") {
+          return Promise.resolve(
+            new Response(JSON.stringify({ error: "forbidden" }), { status: 403 }),
+          );
+        }
+        return Promise.resolve(
+          new Response(JSON.stringify({ pinned: ["messages"], position: "bottom" })),
+        );
+      }
+      if (url.includes("/api/desktop/settings")) {
+        return Promise.resolve(new Response(JSON.stringify({ wallpaper: "graphite" })));
+      }
+      return Promise.resolve(new Response(JSON.stringify({})));
+    });
+
+    useAuthReadyStore.setState({ ready: true });
+    render(<TestPersistence />);
+
+    // Let the restore GET /api/desktop/dock land so dockRestored flips.
+    await waitFor(
+      () => {
+        const calls = (globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls;
+        return calls.some(([u]: unknown) => String(u).includes("/api/desktop/dock"));
+      },
+      { timeout: 2000 },
+    );
+    await new Promise((r) => setTimeout(r, 50));
+
+    act(() => {
+      useDockStore.getState().setPosition("left");
+    });
+
+    // Past the 1s dock debounce.
+    await new Promise((r) => setTimeout(r, 1500));
+
+    const notifs = useNotificationStore.getState().notifications;
+    expect(
+      notifs.some((n) => n.title === "Failed to save dock" && n.level === "error"),
+    ).toBe(true);
   });
 });
