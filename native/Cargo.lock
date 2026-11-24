@@ -1259,6 +1259,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "taos-cast"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "signal-hook",
+]
+
+[[package]]
 name = "taos-client"
 version = "0.1.0"
 dependencies = [
