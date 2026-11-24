@@ -71,9 +71,9 @@ class AgentChatRouter:
             # drives this message at its safe point (drain below).
             return
 
-        # Turn-holder: increment counter for this agent turn
+        # Turn-holder: increment counter for this agent turn (inside guarded region)
         if in_use is not None:
-            await in_use.increment_agent_turn()
+            in_use.increment_agent_turn()
 
         try:
             # Turn-holder: drive the turn, then iteratively (never recursively)
@@ -134,7 +134,7 @@ class AgentChatRouter:
         finally:
             # Always release the turn counter when the turn-holder finishes
             if in_use is not None:
-                await in_use.decrement_agent_turn()
+                in_use.decrement_agent_turn()
 
     def dispatch(self, message: dict, channel: dict) -> None:
         """Fire-and-forget entry point. Runs routing in a supervised background task."""

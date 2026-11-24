@@ -8,8 +8,6 @@ value can never go negative.
 """
 from __future__ import annotations
 
-import asyncio
-
 
 class InUseCounters:
     """Plain-integer busy counters for the health probe."""
@@ -17,25 +15,20 @@ class InUseCounters:
     def __init__(self) -> None:
         self.gateway_streams = 0
         self.agent_turns = 0
-        self._lock = asyncio.Lock()
 
-    async def increment_gateway_stream(self) -> None:
-        async with self._lock:
-            self.gateway_streams += 1
+    def increment_gateway_stream(self) -> None:
+        self.gateway_streams += 1
 
-    async def decrement_gateway_stream(self) -> None:
-        async with self._lock:
-            if self.gateway_streams > 0:
-                self.gateway_streams -= 1
+    def decrement_gateway_stream(self) -> None:
+        if self.gateway_streams > 0:
+            self.gateway_streams -= 1
 
-    async def increment_agent_turn(self) -> None:
-        async with self._lock:
-            self.agent_turns += 1
+    def increment_agent_turn(self) -> None:
+        self.agent_turns += 1
 
-    async def decrement_agent_turn(self) -> None:
-        async with self._lock:
-            if self.agent_turns > 0:
-                self.agent_turns -= 1
+    def decrement_agent_turn(self) -> None:
+        if self.agent_turns > 0:
+            self.agent_turns -= 1
 
     def snapshot(self) -> dict:
         return {

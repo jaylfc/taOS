@@ -162,6 +162,7 @@ class BridgeSessionRegistry:
         chat_hub=None,
         archive=None,
         in_use=None,
+        turn_timeout: float = 300.0,  # 5 minutes default
     ) -> None:
         self._trace_registry = trace_registry
         self._chat_messages = chat_messages
@@ -176,8 +177,12 @@ class BridgeSessionRegistry:
         # _is_guest(slug) is True when no config agent has that name.
         self._guest_outbox = None
         self._is_guest = None
+        # Turn timeout tracking
+        self._turn_timeout = turn_timeout
+        self._turn_deadlines: dict[tuple[str, str], float] = {}  # (slug, trace_id) -> deadline
+        self._timeout_task: asyncio.Task | None = None
 
-    async def _release_turn(self, session: _AgentSession, trace_id: str | None) -> None:
+    def _release_turn(self, slug: str, session: _AgentSession, trace_id: str | None) -> None:
         """Decrement the in-flight agent turn when a pending hop is cleared.
 
         A turn is in flight exactly while its trace id sits in
@@ -186,23 +191,51 @@ class BridgeSessionRegistry:
         """
         if trace_id is None:
             return
-        if session.pending_hops.pop(trace_id, None) is not None and self._in_use is not None:
-            await self._in_use.decrement_agent_turn()
+        if session.pending_hops.pop(trace_id, None) is not None:
+            # Remove deadline
+            self._turn_deadlines.pop((slug, trace_id), None)
+            if self._in_use is not None:
+                self._in_use.decrement_agent_turn()
 
-    async def _release_all_pending_turns(self, session: _AgentSession) -> None:
+    def _release_all_pending_turns(self, slug: str, session: _AgentSession) -> None:
         """Release all pending turns for a session (e.g., on session drop)."""
         if self._in_use is None:
             return
         for trace_id in list(session.pending_hops.keys()):
             session.pending_hops.pop(trace_id, None)
-            await self._in_use.decrement_agent_turn()
+            self._turn_deadlines.pop((slug, trace_id), None)
+            self._in_use.decrement_agent_turn()
 
     async def remove_session(self, slug: str) -> None:
         """Remove a session and release all its pending turns."""
         async with self._lock:
             session = self._sessions.pop(slug, None)
         if session is not None:
-            await self._release_all_pending_turns(session)
+            self._release_all_pending_turns(slug, session)
+
+    async def _turn_timeout_loop(self) -> None:
+        """Background task that checks for expired turns and releases them."""
+        try:
+            while True:
+                await asyncio.sleep(10.0)  # Check every 10 seconds (faster for tests)
+                now = time.monotonic()
+                expired: list[tuple[str, str]] = []
+                for (slug, trace_id), deadline in self._turn_deadlines.items():
+                    if now >= deadline:
+                        expired.append((slug, trace_id))
+                for slug, trace_id in expired:
+                    async with self._lock:
+                        session = self._sessions.get(slug)
+                    if session is not None:
+                        if session.pending_hops.pop(trace_id, None) is not None:
+                            self._turn_deadlines.pop((slug, trace_id), None)
+                            if self._in_use is not None:
+                                self._in_use.decrement_agent_turn()
+                            logger.warning("bridge_session: turn timeout for %s (trace_id=%s)", slug, trace_id)
+        except asyncio.CancelledError:
+            pass
+        except Exception:
+            logger.exception("bridge_session: turn timeout loop crashed")
 
     def _get_or_create(self, slug: str) -> _AgentSession:
         if slug not in self._sessions:
@@ -228,8 +261,13 @@ class BridgeSessionRegistry:
         if trace_id is not None:
             if trace_id not in session.pending_hops:
                 if self._in_use is not None:
-                    await self._in_use.increment_agent_turn()
+                    self._in_use.increment_agent_turn()
+                # Set turn deadline for timeout tracking
+                self._turn_deadlines[(slug, trace_id)] = time.monotonic() + self._turn_timeout
             session.pending_hops[trace_id] = int(msg.get("hops_since_user") or 0)
+        # Start timeout task if not already running
+        if self._timeout_task is None or self._timeout_task.done():
+            self._timeout_task = asyncio.create_task(self._turn_timeout_loop())
         # Store data as JSON string so subscribe can read id without re-encoding
         event: dict = {"event": "user_message", "data": json.dumps(msg)}
         outbox = self._guest_outbox
@@ -553,7 +591,7 @@ class BridgeSessionRegistry:
             # write entirely (but archive write above still ran / was attempted).
             # Replies without an id are not deduplicated.
             if reply_id is not None and session.is_final_id_seen(reply_id):
-                await self._release_turn(session, trace_id)
+                self._release_turn(slug, session, trace_id)
                 return
 
             # Write trace event (only for new reply_ids).
@@ -621,7 +659,7 @@ class BridgeSessionRegistry:
                         session.mark_final_id_seen(reply_id)
             finally:
                 # Always release the turn, even if chat persistence fails or channel_id is None
-                await self._release_turn(session, trace_id)
+                self._release_turn(slug, session, trace_id)
 
             # Re-dispatch so other agents in the channel see this reply.
             router = self._router
@@ -748,7 +786,7 @@ class BridgeSessionRegistry:
                     logger.exception("archive dual-write failed (error)")
             # Set any pending message to error state.
             pending_msg_id = session.pop_pending_msg(trace_id)
-            await self._release_turn(session, trace_id)
+            self._release_turn(slug, session, trace_id)
             if pending_msg_id and self._chat_messages:
                 await self._chat_messages.update_state(pending_msg_id, "error")
                 if channel_id and self._chat_hub:

@@ -114,19 +114,27 @@ async def chat_completions(request: Request, caller: GatewayCaller = Depends(gat
             from fastapi.responses import StreamingResponse
             from tinyagentos.llm_gateway.anthropic import chat_completion_stream_anthropic
             in_use = getattr(state, "in_use", None)
-            if in_use is not None:
-                await in_use.increment_gateway_stream()
             gen = chat_completion_stream_anthropic(routes, body, principal, state)
             try:
                 first = await gen.__anext__()
             except StopAsyncIteration:
-                if in_use is not None:
-                    await in_use.decrement_gateway_stream()
                 return StreamingResponse((), media_type="text/event-stream", headers={"cache-control": "no-cache"})
             except GatewayError as exc:
-                if in_use is not None:
-                    await in_use.decrement_gateway_stream()
                 return exc.response()
+
+            if in_use is not None:
+                in_use.increment_gateway_stream()
+
+            class _Guard:
+                __slots__ = ("released",)
+                def __init__(self) -> None:
+                    self.released = False
+                def release(self) -> None:
+                    if not self.released and in_use is not None:
+                        self.released = True
+                        in_use.decrement_gateway_stream()
+
+            guard = _Guard()
 
             async def _full():
                 try:
@@ -134,10 +142,17 @@ async def chat_completions(request: Request, caller: GatewayCaller = Depends(gat
                     async for chunk in gen:
                         yield chunk
                 finally:
-                    if in_use is not None:
-                        await in_use.decrement_gateway_stream()
+                    guard.release()
 
-            return StreamingResponse(_full(), media_type="text/event-stream", headers={"cache-control": "no-cache"})
+            async def _background_release() -> None:
+                guard.release()
+
+            return StreamingResponse(
+                _full(),
+                media_type="text/event-stream",
+                headers={"cache-control": "no-cache"},
+                background=_background_release,
+            )
         api_key = await resolve_api_key(state, route.api_key_ref)
         return JSONResponse(await chat_completion_anthropic(routes, body, api_key, principal, state))
 
