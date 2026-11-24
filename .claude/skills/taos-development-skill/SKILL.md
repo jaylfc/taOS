@@ -267,7 +267,10 @@ time, so patching the module attribute AFTER `create_app` does nothing.
   component test fails CI), `desktop-e2e` (the Playwright suite under `desktop/tests`, run on
   webkit - see "Desktop SPA build + test" below), a "Verify app starts" `create_app` import
   smoke, `lint`
-  (`compileall`), and `docs-build`. `docs-build` is the only job with the mkdocs
+  (`compileall` plus `ruff check tinyagentos/` - the E/F/I rules configured in
+  `[tool.ruff]` in `pyproject.toml`, so unused imports, undefined names and
+  import-order regressions fail CI; run the same command locally before pushing),
+  and `docs-build`. `docs-build` is the only job with the mkdocs
   toolchain installed (mkdocs is NOT a project dependency, so `uv sync` does not provide
   it): it runs `tests/test_mkdocs_exclude.py` with `TAOS_DOCS_BUILD_TESTS=1`, which turns
   off the `importorskip` the ordinary shards rely on — put any test that has to build the
