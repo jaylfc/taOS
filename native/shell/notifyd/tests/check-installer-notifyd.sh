@@ -16,7 +16,7 @@ bad() { echo "FAIL: $*"; fails=$((fails + 1)); }
 tmp=$(mktemp -d "${TMPDIR:-/tmp}/taos-installer-test.XXXXXX")
 trap 'rm -rf "$tmp"' EXIT
 mkdir -p "$tmp/shell" "$tmp/apps" "$tmp/root/etc/taos/sway"
-for p in taos-bar taos-overview taos-dock taos-window taos-display taos-theme taos-launcher taos-search taos-frame taos-notifyd; do
+for p in taos-bar taos-overview taos-dock taos-window taos-display taos-theme taos-launcher taos-search taos-frame taos-notifyd taos-appgroups; do
     printf '#!/bin/sh\nexit 0\n' >"$tmp/shell/$p"; chmod 755 "$tmp/shell/$p"
 done
 for a in taos-dashboard taos-notifications taos-decisions taos-settings taos-agents taos-messages taos-store; do
