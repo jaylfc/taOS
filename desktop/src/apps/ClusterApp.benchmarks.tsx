@@ -120,7 +120,7 @@ export function WorkerBenchmarksSection({ workerName }: { workerName: string }) 
         }),
       );
       if (res.status === 202) {
-        setNotice("Benchmark queued \u2014 the worker starts it on its next heartbeat.");
+        setNotice("Benchmark queued: the worker starts it on its next heartbeat.");
       } else if (res.status === 409) {
         const body = await res.json().catch(() => null);
         setError(String(body?.error ?? "A benchmark run is already queued for this worker."));
@@ -175,7 +175,7 @@ export function WorkerBenchmarksSection({ workerName }: { workerName: string }) 
         {pending && (
           <p className="text-[11px] text-amber-300/90 mb-2" role="status">
             {pendingStale
-              ? `A run was queued ${formatRelativeSeconds(pending.requested_at)} and the worker has not picked it up \u2014 click Re-run benchmarks to replace it.`
+              ? `A run was queued ${formatRelativeSeconds(pending.requested_at)} and the worker has not picked it up: click Re-run benchmarks to replace it.`
               : `A run was queued ${formatRelativeSeconds(pending.requested_at)}; it starts on this worker's next heartbeat.`}
           </p>
         )}
