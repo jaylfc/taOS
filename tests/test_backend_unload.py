@@ -6,6 +6,9 @@ Replies mirror llama-swap v261 as observed 2026-10-02 against a source build
 """
 from __future__ import annotations
 
+import json
+import logging
+
 import httpx
 import pytest
 
@@ -32,6 +35,29 @@ def _llama_swap(seen: list, known=("qwen-chat", "qwen", "org/embed-model")):
 
 async def _unload(client, model, backend_type="llama-swap", base_url="http://127.0.0.1:8080/"):
     return await unload_model(client, backend_type=backend_type, base_url=base_url, model=model)
+
+
+def _ollama(seen: list, known=("qwen2.5:7b",)):
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content) if request.content else {}
+        seen.append((request.method, request.url.path, body))
+        if request.method == "POST" and request.url.path == "/api/generate" and body.get("model") in known:
+            return httpx.Response(200, json={"model": body["model"], "done": True,
+                                             "done_reason": "unload"})
+        return httpx.Response(404, json={"error": "model not found"})
+
+    return httpx.AsyncClient(transport=httpx.MockTransport(handler))
+
+
+def _rkllama(seen: list, known=("qwen-rk",)):
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content) if request.content else {}
+        seen.append((request.method, request.url.path, body))
+        if request.method == "POST" and request.url.path == "/unload_model" and body.get("model") in known:
+            return httpx.Response(200, json={"status": "unloaded"})
+        return httpx.Response(404, json={"error": "model not loaded"})
+
+    return httpx.AsyncClient(transport=httpx.MockTransport(handler))
 
 
 @pytest.mark.asyncio
@@ -88,10 +114,75 @@ async def test_dot_and_empty_names_refused_without_request(model):
     assert seen == []
 
 
+@pytest.mark.asyncio
+async def test_ollama_unloads_with_keep_alive_zero_and_no_prompt():
+    seen: list = []
+    async with _ollama(seen) as client:
+        assert await _unload(client, "qwen2.5:7b", backend_type="ollama",
+                             base_url="http://127.0.0.1:11434") is True
+    # keep_alive 0 with no prompt is Ollama's immediate-unload idiom: the
+    # model is unloaded, never generated from.
+    assert seen == [("POST", "/api/generate", {"model": "qwen2.5:7b", "keep_alive": 0})]
+
+
+@pytest.mark.asyncio
+async def test_ollama_unknown_model_is_a_failed_unload():
+    seen: list = []
+    async with _ollama(seen) as client:
+        assert await _unload(client, "nope", backend_type="ollama",
+                             base_url="http://127.0.0.1:11434") is False
+    assert seen == [("POST", "/api/generate", {"model": "nope", "keep_alive": 0})]
+
+
+@pytest.mark.asyncio
+async def test_rkllama_unloads_via_explicit_route():
+    seen: list = []
+    async with _rkllama(seen) as client:
+        assert await _unload(client, "qwen-rk", backend_type="rkllama",
+                             base_url="http://127.0.0.1:7833") is True
+    assert seen == [("POST", "/unload_model", {"model": "qwen-rk"})]
+
+
+@pytest.mark.asyncio
+async def test_rkllama_unknown_model_is_a_failed_unload():
+    seen: list = []
+    async with _rkllama(seen) as client:
+        assert await _unload(client, "nope", backend_type="rkllama",
+                             base_url="http://127.0.0.1:7833") is False
+    assert seen == [("POST", "/unload_model", {"model": "nope"})]
+
+
+@pytest.mark.asyncio
+async def test_ollama_server_error_is_a_failed_unload():
+    def boom(request):
+        return httpx.Response(500, text="boom")
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(boom)) as client:
+        assert await _unload(client, "qwen2.5:7b", backend_type="ollama",
+                             base_url="http://127.0.0.1:11434") is False
+
+
+@pytest.mark.asyncio
+async def test_unsupported_type_logs_why_and_sends_nothing(caplog):
+    # "Cannot unload" (no unloader for the type) must be distinguishable
+    # from "unload failed": no request is sent, and the log says why.
+    seen: list = []
+    async with _ollama(seen) as client:
+        with caplog.at_level(logging.WARNING, logger="tinyagentos.backend_unload"):
+            assert await _unload(client, "qwen2.5:7b", backend_type="llama-cpp",
+                                 base_url="http://127.0.0.1:11434") is False
+    assert seen == []
+    assert any("no unloader" in r.message and "llama-cpp" in r.message
+               for r in caplog.records)
+
+
 def test_unload_capable_registry():
-    assert UNLOAD_CAPABLE_TYPES == frozenset({"llama-swap"})
+    assert UNLOAD_CAPABLE_TYPES == frozenset({"llama-swap", "ollama", "rkllama"})
     assert unload_capable("llama-swap")
+    assert unload_capable("ollama") and unload_capable("rkllama")
     assert not unload_capable("llama-cpp") and not unload_capable("vllm")
+    # hailo-ollama is a deliberate follow-up, not silently included (plan B1).
+    assert not unload_capable("hailo-ollama")
 
 
 def test_no_http_route_reaches_unload():
