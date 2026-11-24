@@ -477,14 +477,89 @@ def test_gpgv_exit_1_with_perfect_status_refused(tmp_path, monkeypatch):
     assert updates._verify(b"m", b"s", str(ring)) is True  # control: exit 0 accepted
 
 
-def test_bad_primary_signature_does_not_fall_back_to_mirror(tmp_path, keys, feeds):
+def test_bad_primary_signature_falls_back_to_good_mirror(tmp_path, keys, feeds):
     m = _manifest()
     primary = feeds(m.replace(b'"seq": 7', b'"seq": 8'), _sign(keys["good_home"], m))
     mirror = feeds(m, _sign(keys["good_home"], m))
-    # control: the mirror alone is good
-    assert updates.check(_cfg(tmp_path, keys, "http://127.0.0.1:1/", mirror.url))["ok"] is True
     r = updates.check(_cfg(tmp_path, keys, primary.url, mirror.url))
-    assert r["ok"] is False and r["reason"] == "signature" and r["source"] == "primary", r
+    assert r["ok"] is True and r["source"] == "mirror", r
+    assert r["primary_reason"] == "signature" and r["seq"] == 7
+
+
+def test_expired_primary_falls_back_to_good_mirror(tmp_path, keys, feeds):
+    now = datetime.now(timezone.utc)
+    old = _manifest(published=now - timedelta(days=10), expires=now - timedelta(days=1))
+    primary = feeds(old, _sign(keys["good_home"], old))
+    m = _manifest()
+    mirror = feeds(m, _sign(keys["good_home"], m))
+    r = updates.check(_cfg(tmp_path, keys, primary.url, mirror.url))
+    assert r["ok"] is True and r["source"] == "mirror" and r["primary_reason"] == "expired", r
+
+
+def test_both_bad_reports_both_reasons(tmp_path, keys, feeds):
+    m = _manifest()
+    bad = m.replace(b'"seq": 7', b'"seq": 8')
+    primary = feeds(bad, _sign(keys["good_home"], m))
+    now = datetime.now(timezone.utc)
+    old = _manifest(published=now - timedelta(days=10), expires=now - timedelta(days=1))
+    mirror = feeds(old, _sign(keys["good_home"], old))
+    r = updates.check(_cfg(tmp_path, keys, primary.url, mirror.url))
+    assert r["ok"] is False and r["reason"] == "signature", r
+    assert r["primary_reason"] == "signature" and r["mirror_reason"] == "expired"
+
+
+def _state_for(tmp_path, keys, feeds, installed, newest):
+    m = _manifest(steps=(f"release-{newest}",))
+    f = feeds(m, _sign(keys["good_home"], m))
+    st = tmp_path / "status.json"
+    st.write_text(json.dumps({"steps": [{"id": f"release-{installed}", "result": "applied"}]}))
+    cfg = _cfg(tmp_path, keys, f.url)
+    cfg.status_file = str(st)
+    cache = tmp_path / "cache"
+    r = updates.check(cfg, cache_dir=cache)
+    return r, updates.summary(cfg, cache)
+
+
+def test_manifest_older_than_installed_not_offered(tmp_path, keys, feeds):
+    r, s = _state_for(tmp_path, keys, feeds, 12, 11)
+    assert r["ok"] is True and r["state"] == "older-than-installed"
+    assert s["state"] == "older-than-installed" and s["available_release"] is None
+
+
+def test_manifest_equal_is_up_to_date(tmp_path, keys, feeds):
+    r, s = _state_for(tmp_path, keys, feeds, 12, 12)
+    assert r["state"] == "up-to-date" and s["available_release"] is None
+
+
+def test_manifest_newer_is_available(tmp_path, keys, feeds):
+    r, s = _state_for(tmp_path, keys, feeds, 12, 13)
+    assert r["state"] == "available" and s["available_release"] == 13
+
+
+def test_lower_seq_than_last_accepted_not_offered(tmp_path, keys, feeds):
+    cache = tmp_path / "cache"
+    hi = _manifest(seq=9, steps=("release-20",))
+    f1 = feeds(hi, _sign(keys["good_home"], hi))
+    cfg = _cfg(tmp_path, keys, f1.url)
+    assert updates.check(cfg, cache_dir=cache)["state"] == "available"
+    lo = _manifest(seq=5, steps=("release-21",))
+    f2 = feeds(lo, _sign(keys["good_home"], lo))
+    cfg2 = _cfg(tmp_path, keys, f2.url)
+    r = updates.check(cfg2, cache_dir=cache)
+    assert r["state"] == "older-than-installed" and r["seq_regressed"] is True
+    assert updates.summary(cfg2, cache)["available_release"] is None
+
+
+def test_summary_reports_exact_reasons(tmp_path, keys, feeds):
+    m = _manifest()
+    bad = m.replace(b'"seq": 7', b'"seq": 8')
+    primary = feeds(bad, _sign(keys["good_home"], m))
+    cfg = _cfg(tmp_path, keys, primary.url, "http://127.0.0.1:1/")
+    cache = tmp_path / "cache"
+    updates.check(cfg, cache_dir=cache)
+    s = updates.summary(cfg, cache)
+    assert s["reasons"] == {"reason": "signature", "primary_reason": "signature",
+                            "mirror_reason": "unreachable"}
 
 
 @pytest.mark.parametrize("body", [b"[1,2]", b'"str"', b"null", b"7"])
@@ -573,6 +648,8 @@ async def test_routes_owner_succeeds_control(route_env):
     assert body["installed_release"] == 10
     assert body["available_release"] == 12
     assert body["last_check"]["ok"] is True
+    assert body["state"] == "available"
+    assert body["reasons"] == {}
     assert body["helper"]["helper"] == "present"
 
 

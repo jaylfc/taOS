@@ -283,28 +283,82 @@ def _try_source(base: str, source: str, cfg: UpdateConfig) -> dict | None:
     return _evaluate(manifest, source)
 
 
+ACCEPTED_NAME = "accepted_seq.json"
+
+
+def release_state(release: int | None, installed: int | None, regressed: bool = False) -> str:
+    """available | up-to-date | older-than-installed | unknown, for a signed manifest."""
+    if release is None:
+        return "unknown"
+    if regressed:
+        return "older-than-installed"
+    if installed is None or release > installed:
+        return "available"
+    return "up-to-date" if release == installed else "older-than-installed"
+
+
+def _accepted_seq(cache_dir: Path | None) -> int | None:
+    if cache_dir is None:
+        return None
+    try:
+        doc = json.loads((cache_dir / ACCEPTED_NAME).read_text())
+    except (OSError, ValueError, RecursionError):
+        return None
+    seq = doc.get("seq") if isinstance(doc, dict) else None
+    return seq if _is_int(seq) else None
+
+
 def check(cfg: UpdateConfig | None = None, cache_dir: Path | str | None = None) -> dict:
     """Fetch the signed manifest (primary, then mirror) and pre-check it.
 
     PRE-check for the UI only: the privileged helper verifies the manifest
     again on its own before acting. Never raises; returns
-    {ok, source, seq, release, published, expires, reason}.
+    {ok, source, seq, release, published, expires, reason, state}. The mirror
+    is tried whenever the primary does not yield an accepted manifest
+    (unreachable, bad signature, expired, out of window, malformed, oversize).
+    When the mirror is used after a primary failure, `primary_reason` says
+    why; when both fail, `reason` is the primary's and `primary_reason` and
+    `mirror_reason` carry both.
     """
     cfg = cfg or UpdateConfig.from_env()
+    cdir = Path(cache_dir) if cache_dir is not None else None
     try:
-        result = None
-        for base, source in ((cfg.feed_url, "primary"), (cfg.mirror_url, "mirror")):
-            result = _try_source(base, source, cfg)
-            if result is not None:
-                break
-        if result is None:
-            result = _result(False, "unreachable")
+        primary = _try_source(cfg.feed_url, "primary", cfg)
+        if primary is not None and primary["ok"]:
+            result = primary
+        else:
+            primary_reason = primary["reason"] if primary else "unreachable"
+            mirror = _try_source(cfg.mirror_url, "mirror", cfg)
+            if mirror is not None and mirror["ok"]:
+                result = mirror
+                result["primary_reason"] = primary_reason
+            else:
+                result = _result(False, primary_reason)
+                result["source"] = primary["source"] if primary else None
+                result["primary_reason"] = primary_reason
+                result["mirror_reason"] = mirror["reason"] if mirror else "unreachable"
+        if result["ok"]:
+            installed = installed_release(status(cfg))
+            prev = _accepted_seq(cdir)
+            regressed = prev is not None and result["seq"] < prev
+            result["seq_regressed"] = regressed
+            result["state"] = release_state(result["release"], installed, regressed)
+            if cdir is not None and not regressed and (prev is None or result["seq"] > prev):
+                _save_json(cdir, ACCEPTED_NAME, {"seq": result["seq"]})
     except Exception as exc:  # never raise to the caller
         result = _result(False, f"error: {type(exc).__name__}")
     result["checked_at"] = datetime.now(timezone.utc).isoformat()
-    if cache_dir is not None:
-        _save_last_check(Path(cache_dir), result)
+    if cdir is not None:
+        _save_last_check(cdir, result)
     return result
+
+
+def _save_json(cache_dir: Path, name: str, doc: dict) -> None:
+    try:
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        atomic_write_text(cache_dir / name, json.dumps(doc))
+    except OSError:
+        pass
 
 
 def _save_last_check(cache_dir: Path, result: dict) -> None:
@@ -361,10 +415,19 @@ def summary(cfg: UpdateConfig, cache_dir: Path | str | None) -> dict:
     installed = installed_release(st)
     lc = last_check(cache_dir)
     available = None
+    state = None
     if lc and lc.get("ok") and isinstance(lc.get("release"), int):
-        if lc["release"] > (installed or 0):
+        state = release_state(lc["release"], installed, bool(lc.get("seq_regressed")))
+        if state == "available":
             available = lc["release"]
+    reasons = {}
+    if lc:
+        for k in ("reason", "primary_reason", "mirror_reason"):
+            if lc.get(k) is not None:
+                reasons[k] = lc[k]
     return {
+        "state": state,
+        "reasons": reasons,
         "channel": cfg.channel,
         "installed_release": installed,
         "last_check": lc,
