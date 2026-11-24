@@ -466,7 +466,8 @@ async def chat_completion_anthropic(
     api_key: str | None,
     principal: str,
     state: Any,
-) -> dict:
+    request: Any | None = None,
+) -> tuple[dict, str | None]:
     """Translate OpenAI request to Anthropic and back (non-streaming) with failover."""
     from tinyagentos.llm_gateway.forward import (
         _call_with_retry,
@@ -477,17 +478,48 @@ async def chat_completion_anthropic(
     )
     from tinyagentos.llm_usage.pricing import Cost, cost_of
     from tinyagentos.llm_usage.usage import from_anthropic
+    from tinyagentos.model_settings import resolve_settings, apply_settings
 
     anthropic_routes = [r for r in routes if getattr(r, "provider", None) == "anthropic"]
     if not anthropic_routes:
         raise upstream_error("no Anthropic backends available")
 
-    async def _call_one(route: Any) -> dict:
+    last_dropped_header: str | None = None
+
+    async def _call_one(route: Any) -> tuple[dict, str | None]:
+        nonlocal last_dropped_header
+        # Apply model settings per attempt
+        model_settings_store = getattr(state, "model_settings_store", None)
+        current_body = body
+        if model_settings_store is not None:
+            chat_id = None
+            if request is not None:
+                headers = getattr(request, "headers", None)
+                if headers:
+                    chat_id = headers.get("x-taos-chat-id")
+            if not chat_id and principal.startswith("agent:"):
+                from tinyagentos.model_settings.turn_registry import get_turn_registry
+                turn_registry = get_turn_registry()
+                channel = await turn_registry.get_channel_for_agent(principal)
+                if channel and channel != "ambiguous":
+                    chat_id = channel
+            
+            resolved = await resolve_settings(
+                store=model_settings_store,
+                caller_id=principal,
+                model_name=route.model_name,
+                chat_id=chat_id,
+                request_body=current_body,
+                route=route,
+            )
+            current_body, dropped = apply_settings(current_body, resolved, route)
+            last_dropped_header = dropped
+        
         api_key = await resolve_api_key(state, route.api_key_ref)
-        anthropic_request = await _openai_to_anthropic(body, principal, state, api_key, route=route, stream=False)
+        anthropic_request = await _openai_to_anthropic(current_body, principal, state, api_key, route=route, stream=False)
         response = await _call_anthropic(anthropic_request, api_key, route=route)
 
-        request_text = json.dumps(body)
+        request_text = json.dumps(current_body)
         response_text = json.dumps(response)
         usage_obj = from_anthropic(response)
 
@@ -517,11 +549,11 @@ async def chat_completion_anthropic(
                 _record_spend(state, principal, cost.usd)
 
         _notify_lifecycle(state, route.backend_name)
-        return response
+        return response, last_dropped_header
 
-    response = await _call_with_retry(anthropic_routes, _call_one)
+    response, dropped_header = await _call_with_retry(anthropic_routes, _call_one)
     result = await _anthropic_to_openai(response, body)
-    return result
+    return result, dropped_header
 
 
 async def chat_completion_stream_anthropic(
@@ -529,6 +561,7 @@ async def chat_completion_stream_anthropic(
     body: dict,
     principal: str,
     state: Any,
+    request: Any | None = None,
 ) -> AsyncGenerator[bytes, None]:
     """Translate OpenAI streaming request to Anthropic and stream back with failover."""
     from tinyagentos.llm_gateway.forward import (
@@ -540,17 +573,44 @@ async def chat_completion_stream_anthropic(
     )
     from tinyagentos.llm_usage.pricing import Cost, cost_of
     from tinyagentos.llm_usage.usage import Usage
+    from tinyagentos.model_settings import resolve_settings, apply_settings
 
     anthropic_routes = [r for r in routes if getattr(r, "provider", None) == "anthropic"]
     if not anthropic_routes:
         raise upstream_error("no Anthropic backends available for streaming")
 
     async def _stream_one(route: Any) -> AsyncGenerator[bytes, None]:
+        # Apply model settings per attempt
+        model_settings_store = getattr(state, "model_settings_store", None)
+        current_body = body
+        if model_settings_store is not None:
+            chat_id = None
+            if request is not None:
+                headers = getattr(request, "headers", None)
+                if headers:
+                    chat_id = headers.get("x-taos-chat-id")
+            if not chat_id and principal.startswith("agent:"):
+                from tinyagentos.model_settings.turn_registry import get_turn_registry
+                turn_registry = get_turn_registry()
+                channel = await turn_registry.get_channel_for_agent(principal)
+                if channel and channel != "ambiguous":
+                    chat_id = channel
+            
+            resolved = await resolve_settings(
+                store=model_settings_store,
+                caller_id=principal,
+                model_name=route.model_name,
+                chat_id=chat_id,
+                request_body=current_body,
+                route=route,
+            )
+            current_body, _ = apply_settings(current_body, resolved, route)
+        
         api_key = await resolve_api_key(state, route.api_key_ref)
-        anthropic_request = await _openai_to_anthropic(body, principal, state, api_key, route=route, stream=True)
-        translator = _StreamTranslator(body.get("model", "unknown"))
+        anthropic_request = await _openai_to_anthropic(current_body, principal, state, api_key, route=route, stream=True)
+        translator = _StreamTranslator(current_body.get("model", "unknown"))
         completion_text: list[str] = []
-        request_text = json.dumps(body)
+        request_text = json.dumps(current_body)
         stream_done = False
         # Spend is settled exactly once, from a finally, on every way out of
         # the stream: normal end, client abort (GeneratorExit), cancellation
@@ -579,22 +639,22 @@ async def chat_completion_stream_anthropic(
             if not real_usage:
                 cost = Cost(None, False, "usage not reported by the backend")
                 await _record_trace(
-                    state, principal, body.get("model", ""), usage_obj, cost,
+                    state, principal, current_body.get("model", ""), usage_obj, cost,
                     route.backend_name,
                     request_text, response_text, 0, status, estimated=True,
                 )
                 estimate = _conservative_budget_estimate(
                     route.backend_type or route.backend_name,
-                    body.get("model", ""),
+                    current_body.get("model", ""),
                     request_text, response_text,
                 )
                 if estimate > 0:
                     _record_spend(state, principal, estimate)
             else:
                 cost = cost_of(route.backend_type or route.backend_name,
-                               body.get("model", ""), usage_obj)
+                               current_body.get("model", ""), usage_obj)
                 await _record_trace(
-                    state, principal, body.get("model", ""), usage_obj, cost,
+                    state, principal, current_body.get("model", ""), usage_obj, cost,
                     route.backend_name,
                     request_text, response_text, 0, status, estimated=False,
                 )

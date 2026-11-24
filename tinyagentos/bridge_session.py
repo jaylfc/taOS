@@ -29,6 +29,7 @@ from types import SimpleNamespace
 from typing import Any, AsyncIterator
 
 from tinyagentos.prompt_assembly import assemble_system_prompt
+from tinyagentos.model_settings.turn_registry import get_turn_registry
 
 logger = logging.getLogger(__name__)
 
@@ -207,6 +208,12 @@ class BridgeSessionRegistry:
             except Exception:
                 logger.exception("bridge_session: guest outbox append failed for %s", slug)
         await session.queue.put(event)
+
+        # Record turn for model settings chat-level resolution
+        channel_id = msg.get("channel_id")
+        if channel_id:
+            turn_registry = get_turn_registry()
+            await turn_registry.start_turn(slug, channel_id)
 
         # Record a message_in trace event so the transcript captures both
         # sides in order. Envelope payload follows ENVELOPE_V1_SCHEMA's
@@ -455,6 +462,11 @@ class BridgeSessionRegistry:
             final_content = content or accumulated
             pending_msg_id = session.pop_pending_msg(trace_id)
             channel_id = body.get("channel_id") or await self._resolve_channel(slug)
+
+            # End the turn for model settings chat-level resolution
+            if channel_id:
+                turn_registry = get_turn_registry()
+                await turn_registry.end_turn(slug, channel_id)
 
             # --- Begin: content_blocks handling ---
             raw_blocks = body.get("content_blocks")

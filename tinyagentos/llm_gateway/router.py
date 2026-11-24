@@ -114,7 +114,7 @@ async def chat_completions(request: Request, caller: GatewayCaller = Depends(gat
             from fastapi.responses import StreamingResponse
 
             from tinyagentos.llm_gateway.anthropic import chat_completion_stream_anthropic
-            gen = chat_completion_stream_anthropic(routes, body, principal, state)
+            gen = chat_completion_stream_anthropic(routes, body, principal, state, request)
             try:
                 first = await gen.__anext__()
             except StopAsyncIteration:
@@ -129,7 +129,11 @@ async def chat_completions(request: Request, caller: GatewayCaller = Depends(gat
 
             return StreamingResponse(_full(), media_type="text/event-stream", headers={"cache-control": "no-cache"})
         api_key = await resolve_api_key(state, route.api_key_ref)
-        return JSONResponse(await chat_completion_anthropic(routes, body, api_key, principal, state))
+        result, dropped_header = await chat_completion_anthropic(routes, body, api_key, principal, state, request)
+        headers = {}
+        if dropped_header:
+            headers["x-taos-settings-dropped"] = dropped_header
+        return JSONResponse(result, headers=headers)
 
     # Default to OpenAI-compatible handler
     if not _forwardable(route):
@@ -144,8 +148,13 @@ async def chat_completions(request: Request, caller: GatewayCaller = Depends(gat
     routes = [r for r in routes if _forwardable(r)]
     principal = caller.caller_id
     if body.get("stream"):
-        return await chat_completion_stream(routes, body, principal, state)
-    return JSONResponse(await chat_completion(routes, body, principal, state))
+        response = await chat_completion_stream(routes, body, principal, state, request)
+        return response
+    result, dropped_header = await chat_completion(routes, body, principal, state, request)
+    headers = {}
+    if dropped_header:
+        headers["x-taos-settings-dropped"] = dropped_header
+    return JSONResponse(result, headers=headers)
 
 
 @router.post("/embeddings")

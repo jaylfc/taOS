@@ -790,6 +790,11 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
         await expert_agents.init()
         await chat_messages.init()
         await chat_channels.init()
+        # Model settings store
+        from tinyagentos.model_settings.store import ModelSettingsStore
+        model_settings_store = ModelSettingsStore(data_dir / "model_settings.db")
+        await model_settings_store.init()
+        app.state.model_settings_store = model_settings_store
         await peer_outbox_store.init()
         await guest_outbox.init()
         await guest_outbox.prune()
@@ -1552,6 +1557,10 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
         app.state.system_events = _system_events
         app.state.event_bus = EventBus()
 
+        # Wire model settings store to event bus for audit events
+        if hasattr(app.state, "model_settings_store"):
+            app.state.model_settings_store.set_event_bus(app.state.event_bus)
+
         # Model Activity feed (#208): bounded in-process ring buffer that the
         # scheduler and LLM gateway record into; the Activity app reads it via
         # GET /api/activity/models and the SSE stream. No init()/close(): it is
@@ -1791,6 +1800,7 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
         await project_store.close()
         await chat_channels.close()
         await chat_messages.close()
+        await app.state.model_settings_store.close()
         await peer_outbox_store.close()
         await guest_outbox.close()
         await expert_agents.close()

@@ -492,13 +492,86 @@ def _status_error(resp: httpx.Response, route: Route, api_key: str | None) -> Ga
     return None
 
 
+async def _apply_model_settings(
+    body: dict,
+    principal: str,
+    route: Route,
+    state: Any,
+    chat_id: str | None = None,
+) -> tuple[dict, str | None]:
+    """Resolve and apply model settings for a request.
+    
+    Returns (modified_body, dropped_header_value).
+    """
+    from tinyagentos.model_settings import resolve_settings, apply_settings
+    
+    model_settings_store = getattr(state, "model_settings_store", None)
+    if model_settings_store is None:
+        return body, None
+    
+    try:
+        resolved = await resolve_settings(
+            store=model_settings_store,
+            caller_id=principal,
+            model_name=route.model_name,
+            chat_id=chat_id,
+            request_body=body,
+            route=route,
+        )
+        return apply_settings(body, resolved, route)
+    except ValueError as e:
+        # Setting value out of range - raise as gateway error
+        from tinyagentos.llm_gateway.errors import bad_request
+        raise bad_request(str(e))
+
+
+async def _get_chat_id_for_request(state: Any, principal: str, request: Any | None) -> str | None:
+    """Get the chat_id for a request from header or turn registry.
+    
+    Priority:
+    1. x-taos-chat-id header (if caller is member of that channel)
+    2. Turn registry (if exactly one active turn for this agent)
+    """
+    from tinyagentos.model_settings.turn_registry import get_turn_registry
+    # Try header first
+    if request is not None:
+        headers = getattr(request, "headers", None)
+        if headers:
+            chat_id = headers.get("x-taos-chat-id")
+            if chat_id:
+                # Verify caller is member of this channel
+                channel_store = getattr(state, "chat_channels", None)
+                if channel_store:
+                    channel = await channel_store.get_channel(chat_id)
+                    if channel and principal in (channel.get("members") or []):
+                        return chat_id
+                # Not a member - ignore header with note (logged elsewhere)
+    
+    # Try turn registry for agent callers
+    if principal.startswith("agent:"):
+        turn_registry = get_turn_registry()
+        channel = await turn_registry.get_channel_for_agent(principal)
+        if channel and channel != "ambiguous":
+            return channel
+    
+    return None
+
+
 async def _chat_completion_one(
     route: Route,
     body: dict,
     principal: str,
     state: Any,
-) -> dict:
-    """Single non-streaming attempt against one backend, with ITS OWN key."""
+    request: Any | None = None,
+) -> tuple[dict, str | None]:
+    """Single non-streaming attempt against one backend, with ITS OWN key.
+    
+    Returns (response_data, dropped_header_value).
+    """
+    # Apply model settings
+    chat_id = await _get_chat_id_for_request(state, principal, request)
+    body, dropped_header = await _apply_model_settings(body, principal, route, state, chat_id)
+    
     # Handle offline model: ensure it's running and add enable_thinking=false
     metadata = getattr(route, "metadata", {}) or {}
     if metadata.get("offline"):
@@ -554,7 +627,7 @@ async def _chat_completion_one(
             _record_spend(state, principal, cost.usd)
     _record_request_finish(state, route, principal, started, usage=usage)
     _notify_lifecycle(state, route.backend_name)
-    return data
+    return data, dropped_header
 
 
 def _event_stream_for_route(
@@ -563,7 +636,11 @@ def _event_stream_for_route(
     principal: str,
     state: Any,
 ) -> AsyncGenerator[bytes, None]:
-    """Single streaming attempt against one backend, with ITS OWN key."""
+    """Single streaming attempt against one backend, with ITS OWN key.
+    
+    NOTE: Model settings must be applied BEFORE calling this function.
+    Use `_event_stream_for_route_with_settings` for the wrapped version.
+    """
     url = _build_url(route)
     payload = dict(body)
     payload["model"] = route.upstream_model
@@ -585,6 +662,7 @@ def _event_stream_for_route(
         payload["chat_template_kwargs"] = {"enable_thinking": False}
 
     request_text = json.dumps(body)
+
 
     async def _gen():
         started = _record_request_start(state, route, principal)
@@ -712,6 +790,23 @@ def _event_stream_for_route(
     return _gen()
 
 
+async def _event_stream_for_route_with_settings(
+    route: Route,
+    body: dict,
+    principal: str,
+    state: Any,
+    request: Any | None = None,
+) -> AsyncGenerator[bytes, None]:
+    """Wrapper that applies model settings then delegates to _event_stream_for_route."""
+    chat_id = await _get_chat_id_for_request(state, principal, request)
+    body, dropped_header = await _apply_model_settings(body, principal, route, state, chat_id)
+    
+    # Delegate to the original implementation
+    gen = _event_stream_for_route(route, body, principal, state)
+    async for chunk in gen:
+        yield chunk
+
+
 _NDJSON_FINISH = {"stop": "stop", "length": "length"}
 
 
@@ -811,12 +906,13 @@ async def _ndjson_to_sse(
 
 async def _call_with_retry(
     routes: list[Route],
-    call_one: Callable[[Route], Awaitable[dict]],
+    call_one: Callable[[Route], Awaitable[tuple[dict, str | None]]],
     state: Any = None,
     principal: str = "",
-) -> dict:
+) -> tuple[dict, str | None]:
     deadline = time.monotonic() + _DEADLINE_SECONDS
     last_exc: GatewayError | None = None
+    last_dropped_header: str | None = None
 
     healthy = [r for r in routes if not _is_in_cooldown(r.backend_name)]
     cooled = [r for r in routes if _is_in_cooldown(r.backend_name)]
@@ -831,7 +927,9 @@ async def _call_with_retry(
         if attempt > 0:
             _record_route_change(state, route, ordered[attempt - 1], attempt, principal)
         try:
-            return await call_one(route)
+            result, dropped = await call_one(route)
+            last_dropped_header = dropped
+            return result, dropped
         except GatewayError as exc:
             if exc.status >= 500:
                 logger.warning("llm_gateway: backend %r failed (%s) for model %r, trying next",
@@ -942,7 +1040,7 @@ def _caller_error(resp: httpx.Response, route: Route, api_key: str | None) -> Ga
     return GatewayError(status, _redact(message, api_key, route.api_base), type=type_, code=code)
 
 
-async def chat_completion(routes: list[Route], body: dict, principal: str, state: Any) -> dict:
+async def chat_completion(routes: list[Route], body: dict, principal: str, state: Any, request: Any | None = None) -> tuple[dict, str | None]:
     """One non-streaming POST with retry/failover across backends.
 
     Tries each candidate in order on connect error, timeout, or upstream 5xx.
@@ -952,7 +1050,7 @@ async def chat_completion(routes: list[Route], body: dict, principal: str, state
     """
     return await _call_with_retry(
         routes,
-        lambda route: _chat_completion_one(route, body, principal, state),
+        lambda route: _chat_completion_one(route, body, principal, state, request),
         state,
         principal,
     )
@@ -963,6 +1061,7 @@ async def chat_completion_stream(
     body: dict,
     principal: str,
     state: Any,
+    request: Any | None = None,
 ) -> Any:
     """One SSE stream with retry/failover across backends.
 
@@ -973,7 +1072,7 @@ async def chat_completion_stream(
 
     gen = _stream_with_retry(
         routes,
-        lambda route: _event_stream_for_route(route, body, principal, state),
+        lambda route: _event_stream_for_route_with_settings(route, body, principal, state, request),
         state,
         principal,
     )
