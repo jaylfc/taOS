@@ -1280,8 +1280,10 @@ async def apply_update(request: Request):
 
     # ── GPG signature verification (defence-in-depth) ──────────────────
     from tinyagentos.gpg_verify import resolve_gpg_prefs, verify_remote_commit
+    import re
     gpg_prefs = await resolve_gpg_prefs(request.app.state.desktop_settings)
-    remote_sha = tip
+    _SHA_RE = re.compile(r"^(?:[0-9a-fA-F]{40}|[0-9a-fA-F]{64})$")
+    remote_sha = tip if _SHA_RE.fullmatch(tip) else ""
     if gpg_prefs.enabled:
         try:
             if remote_sha:
