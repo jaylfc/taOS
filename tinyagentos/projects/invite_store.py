@@ -326,6 +326,31 @@ class ProjectInviteStore(BaseStore):
             result.append(d)
         return result
 
+    async def list_pending_agent_invites(self) -> list[dict]:
+        """List pending agent-kind invites across every project plus the
+        OS-level group, newest first, without the pin hash.
+
+        "Pending" matches the mint cap's definition: status 'pending' and
+        still within TTL (expires_ts > now) — expiry is lazy, so a row can
+        sit at status 'pending' past its expiry until someone reads it.
+        Collab invites are excluded: they are human invitations, not agents
+        in the process of joining."""
+        if self._db is None:
+            raise RuntimeError("ProjectInviteStore not initialised")
+        cursor = await self._db.execute(
+            "SELECT * FROM project_invites "
+            "WHERE kind IN ('agent', 'cloud_agent') AND status = 'pending' "
+            "AND expires_ts > ? ORDER BY created_ts DESC",
+            (_now(),),
+        )
+        rows = await cursor.fetchall()
+        result = []
+        for row in rows:
+            d = self._row_to_dict(row)
+            d.pop("pin_hash", None)
+            result.append(d)
+        return result
+
     async def list_pending_collab_for_contact(
         self, contact_id: str
     ) -> list[dict]:
