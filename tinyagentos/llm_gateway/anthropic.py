@@ -476,6 +476,16 @@ async def chat_completion_anthropic(
     if not anthropic_routes:
         raise upstream_error("no Anthropic backends available")
 
+    # Mark model as in-use in the scheduler (best-effort, never fails the request)
+    scheduler = getattr(state, "model_scheduler", None)
+    model_name = body.get("model", "")
+    backend_name = anthropic_routes[0].backend_name if anthropic_routes else ""
+    if scheduler is not None and model_name and backend_name:
+        try:
+            scheduler.begin_use(model_name, backend_name)
+        except Exception:  # noqa: BLE001 - scheduler must never break a request
+            logger.warning("llm_gateway: scheduler begin_use failed", exc_info=True)
+
     async def _call_one(route: Any) -> dict:
         api_key = await resolve_api_key(state, route.api_key_ref)
         anthropic_request = await _openai_to_anthropic(body, principal, state, api_key, route=route, stream=False)
@@ -513,9 +523,16 @@ async def chat_completion_anthropic(
         _notify_lifecycle(state, route.backend_name)
         return response
 
-    response = await _call_with_retry(anthropic_routes, _call_one)
-    result = await _anthropic_to_openai(response, body)
-    return result
+    try:
+        response = await _call_with_retry(anthropic_routes, _call_one)
+        result = await _anthropic_to_openai(response, body)
+        return result
+    finally:
+        if scheduler is not None and model_name:
+            try:
+                scheduler.end_use(model_name)
+            except Exception:  # noqa: BLE001
+                logger.warning("llm_gateway: scheduler end_use failed", exc_info=True)
 
 
 async def chat_completion_stream_anthropic(
@@ -532,6 +549,16 @@ async def chat_completion_stream_anthropic(
     anthropic_routes = [r for r in routes if getattr(r, "provider", None) == "anthropic"]
     if not anthropic_routes:
         raise upstream_error("no Anthropic backends available for streaming")
+
+    # Mark model as in-use in the scheduler (best-effort, never fails the request)
+    scheduler = getattr(state, "model_scheduler", None)
+    model_name = body.get("model", "")
+    backend_name = anthropic_routes[0].backend_name if anthropic_routes else ""
+    if scheduler is not None and model_name and backend_name:
+        try:
+            scheduler.begin_use(model_name, backend_name)
+        except Exception:  # noqa: BLE001 - scheduler must never break a request
+            logger.warning("llm_gateway: scheduler begin_use failed", exc_info=True)
 
     async def _stream_one(route: Any) -> AsyncGenerator[bytes, None]:
         api_key = await resolve_api_key(state, route.api_key_ref)
@@ -663,3 +690,8 @@ async def chat_completion_stream_anthropic(
         # A client abort closes THIS generator: close the retry loop with it so
         # the attempt's accounting runs before aclose() returns, not at gc.
         await outer.aclose()
+        if scheduler is not None and model_name:
+            try:
+                scheduler.end_use(model_name)
+            except Exception:  # noqa: BLE001
+                logger.warning("llm_gateway: scheduler end_use failed", exc_info=True)

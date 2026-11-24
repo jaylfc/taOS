@@ -514,20 +514,44 @@ async def _chat_completion_one(
     if api_key:
         headers["authorization"] = f"Bearer {api_key}"
     what = f"the backend for model {route.model_name!r}"
+
+    # Mark model as in-use in the scheduler (best-effort, never fails the request)
+    scheduler = getattr(state, "model_scheduler", None)
+    if scheduler is not None:
+        try:
+            scheduler.begin_use(route.model_name, route.backend_name)
+        except Exception:  # noqa: BLE001 - scheduler must never break a request
+            logger.warning("llm_gateway: scheduler begin_use failed", exc_info=True)
+
     started = _record_request_start(state, route, principal)
     try:
         async with httpx.AsyncClient(timeout=TIMEOUT, follow_redirects=False) as client:
             resp = await client.post(url, json=payload, headers=headers)
     except httpx.TimeoutException as exc:
         _record_request_finish(state, route, principal, started, reason="timeout")
+        if scheduler is not None:
+            try:
+                scheduler.end_use(route.model_name)
+            except Exception:  # noqa: BLE001
+                logger.warning("llm_gateway: scheduler end_use failed", exc_info=True)
         raise upstream_error(f"{what} timed out") from None
     except httpx.HTTPError as exc:
         _record_request_finish(state, route, principal, started, reason="unreachable")
+        if scheduler is not None:
+            try:
+                scheduler.end_use(route.model_name)
+            except Exception:  # noqa: BLE001
+                logger.warning("llm_gateway: scheduler end_use failed", exc_info=True)
         raise upstream_error(f"{what} could not be reached") from None
 
     err = _status_error(resp, route, api_key)
     if err is not None:
         _record_request_finish(state, route, principal, started, reason=f"http_{resp.status_code}")
+        if scheduler is not None:
+            try:
+                scheduler.end_use(route.model_name)
+            except Exception:  # noqa: BLE001
+                logger.warning("llm_gateway: scheduler end_use failed", exc_info=True)
         raise err
     try:
         data = resp.json()
@@ -535,6 +559,11 @@ async def _chat_completion_one(
         data = None
     if not isinstance(data, dict):
         _record_request_finish(state, route, principal, started, reason="bad_response")
+        if scheduler is not None:
+            try:
+                scheduler.end_use(route.model_name)
+            except Exception:  # noqa: BLE001
+                logger.warning("llm_gateway: scheduler end_use failed", exc_info=True)
         raise upstream_error(f"{what} returned a response that is not a JSON object")
     _mirror_choices(data, "message")
 
@@ -554,6 +583,11 @@ async def _chat_completion_one(
             _record_spend(state, principal, cost.usd)
     _record_request_finish(state, route, principal, started, usage=usage)
     _notify_lifecycle(state, route.backend_name)
+    if scheduler is not None:
+        try:
+            scheduler.end_use(route.model_name)
+        except Exception:  # noqa: BLE001
+            logger.warning("llm_gateway: scheduler end_use failed", exc_info=True)
     return data
 
 
@@ -586,6 +620,14 @@ def _event_stream_for_route(
 
     request_text = json.dumps(body)
 
+    # Mark model as in-use in the scheduler (best-effort, never fails the request)
+    scheduler = getattr(state, "model_scheduler", None)
+    if scheduler is not None:
+        try:
+            scheduler.begin_use(route.model_name, route.backend_name)
+        except Exception:  # noqa: BLE001 - scheduler must never break a request
+            logger.warning("llm_gateway: scheduler begin_use failed", exc_info=True)
+
     async def _gen():
         started = _record_request_start(state, route, principal)
         finished = False
@@ -597,6 +639,11 @@ def _event_stream_for_route(
                 return
             finished = True
             _record_request_finish(state, route, principal, started, usage=usage, reason=reason)
+            if scheduler is not None:
+                try:
+                    scheduler.end_use(route.model_name)
+                except Exception:  # noqa: BLE001
+                    logger.warning("llm_gateway: scheduler end_use failed", exc_info=True)
 
         async def _pump():
             if offline:
