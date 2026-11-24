@@ -47,6 +47,20 @@ WantedBy=multi-user.target
 """
 
 
+@pytest.fixture(autouse=True)
+def _isolate_graceful_stop_install(tmp_path, monkeypatch):
+    """The update path refreshes the installed graceful-stop script and
+    systemd drop-in: point it at an empty temp tree so a test never reads or
+    writes the machine's real /etc, /usr/local/bin or home."""
+    import tinyagentos.routes.settings as settings_mod
+
+    root = tmp_path / "isolated-install"
+    monkeypatch.setattr(settings_mod, "_SYSTEM_UNIT", root / "etc" / "systemd" / "system" / "tinyagentos.service")
+    monkeypatch.setattr(settings_mod, "_SYSTEM_STOP_SCRIPT", root / "usr" / "local" / "bin" / "taos-graceful-stop")
+    monkeypatch.setattr(settings_mod, "_user_unit", lambda: root / "home" / ".config" / "systemd" / "user" / "tinyagentos.service")
+    monkeypatch.setattr(settings_mod, "_user_stop_script", lambda: root / "home" / ".local" / "bin" / "taos-graceful-stop")
+
+
 class Systemctl:
     """Records every systemctl call the update path makes."""
 
@@ -459,28 +473,28 @@ async def test_update_then_stop_skips_the_drain_end_to_end(
 
 @pytest.mark.asyncio
 async def test_the_mark_is_cleared_when_the_restart_does_not_happen(monkeypatch):
+    """The real _do_restart with no service manager and an execv that fails:
+    the controller keeps running, so it must drain on its next real stop."""
+    import os as _os
     from types import SimpleNamespace
 
     from tinyagentos.routes import system
 
-    state = SimpleNamespace()
-    system.mark_restarting_for_update(state)
-
-    async def restart_that_returns(app_state):  # every real success path exits the process
+    async def no_sleep(_s):
         return None
 
-    monkeypatch.setattr(system, "_restart_controller", restart_that_returns)
-    await system._do_restart(state)
-    assert state._restarting_for_update is False
+    def failing_execv(*_a):
+        raise OSError("exec failed")
 
+    monkeypatch.setattr(system.asyncio, "sleep", no_sleep)
+    monkeypatch.setattr(system.os.path, "exists", lambda _p: False)
+    monkeypatch.delenv("INVOCATION_ID", raising=False)
+    monkeypatch.setattr(system.sys, "platform", "linux")
+    monkeypatch.setattr(_os, "execv", failing_execv)
+
+    state = SimpleNamespace()
     system.mark_restarting_for_update(state)
-
-    async def restart_that_raises(app_state):
-        raise RuntimeError("systemctl exploded")
-
-    monkeypatch.setattr(system, "_restart_controller", restart_that_raises)
-    with pytest.raises(RuntimeError):
-        await system._do_restart(state)
+    await system._do_restart(state)
     assert state._restarting_for_update is False
 
 

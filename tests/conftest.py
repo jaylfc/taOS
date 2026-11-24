@@ -219,21 +219,6 @@ from taos_test_csrf import (  # noqa: E402
 
 
 @pytest.fixture(autouse=True)
-def _isolate_graceful_stop_install(tmp_path, monkeypatch):
-    """The update and start-up paths refresh the installed graceful-stop
-    script and systemd drop-in. Point them at an empty temp tree so no test
-    can ever read or write the machine's real /etc, /usr/local/bin or home.
-    Tests of the refresh itself lay a fake install out in this tree."""
-    import tinyagentos.routes.settings as settings_mod
-
-    root = tmp_path / "isolated-install"
-    monkeypatch.setattr(settings_mod, "_SYSTEM_UNIT", root / "etc" / "systemd" / "system" / "tinyagentos.service")
-    monkeypatch.setattr(settings_mod, "_SYSTEM_STOP_SCRIPT", root / "usr" / "local" / "bin" / "taos-graceful-stop")
-    monkeypatch.setattr(settings_mod, "_user_unit", lambda: root / "home" / ".config" / "systemd" / "user" / "tinyagentos.service")
-    monkeypatch.setattr(settings_mod, "_user_stop_script", lambda: root / "home" / ".local" / "bin" / "taos-graceful-stop")
-
-
-@pytest.fixture(autouse=True)
 def _bypass_csrf_in_tests(request):
     """Run against the REAL verify_csrf unless the test opts out.
 
