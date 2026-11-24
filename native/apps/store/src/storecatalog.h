@@ -24,6 +24,8 @@ QVariantMap normalizeServerEntry(const QJsonObject &o);
 
 /// An entry of catalog/webapps.json (or a server entry of type webapp).
 QVariantMap normalizeWebappEntry(const QJsonObject &o);
+/// An entry of `taos-appgroups catalog --json` (a container desktop app).
+QVariantMap normalizeContainerAppEntry(const QJsonObject &o);
 
 /// "1.2 GB", "350 MB", "" for 0.
 QString sizeText(double mb);
@@ -44,6 +46,8 @@ class Catalog {
 public:
     void setServer(const QJsonArray &entries);
     void setBuiltinWebapps(const QJsonArray &apps);
+    /// Container desktop apps from the taos-appgroups catalogue (type containerapp).
+    void setContainerApps(const QJsonArray &apps);
     void setProfile(const QString &profileId);
     /// `/api/models` rows: sets `fit` of model entries from the controller's own compatibility.
     void setModelFit(const QJsonArray &models);
@@ -92,7 +96,7 @@ public:
 
 private:
     void rebuild();
-    QJsonArray m_serverArr, m_webArr, m_snapArr;
+    QJsonArray m_serverArr, m_webArr, m_snapArr, m_capArr;
     QHash<QString, QJsonObject> m_snapById;
     QJsonObject m_curated;
     QHash<QString, QString> m_iconOf;       ///< app id -> icon file stem

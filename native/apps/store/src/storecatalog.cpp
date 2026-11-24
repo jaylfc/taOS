@@ -210,6 +210,23 @@ QVariantMap normalizeWebappEntry(const QJsonObject &o)
     return e;
 }
 
+QVariantMap normalizeContainerAppEntry(const QJsonObject &o)
+{
+    QJsonObject s = o;
+    s[u"type"_s] = u"app"_s;
+    if (!s.contains(u"category"_s))
+        s[u"category"_s] = u"apps"_s;
+    QVariantMap e = normalizeServerEntry(s);
+    e[u"kind"_s] = u"containerapp"_s;
+    e[u"source"_s] = u"builtin"_s;
+    e[u"license"_s] = o.value(u"licence"_s).toString();
+    e[u"termsNote"_s] = o.value(u"terms_note"_s).toString();
+    e[u"windowAppId"_s] = o.value(u"window_app_id"_s).toString();
+    e[u"grants"_s] = o.value(u"grants"_s).toVariant();
+    e[u"runtimeText"_s] = QObject::tr("Runs in your apps container");
+    return e;
+}
+
 // ---------------------------------------------------------------- Catalog
 
 void Catalog::setServer(const QJsonArray &entries)
@@ -290,6 +307,12 @@ QString Catalog::coverUrl(const QString &id) const
     return m_covers.contains(name) ? u"%1/covers/%2.jpg"_s.arg(m_assetBase, name) : QString();
 }
 
+void Catalog::setContainerApps(const QJsonArray &apps)
+{
+    m_capArr = apps;
+    rebuild();
+}
+
 void Catalog::setProfile(const QString &profileId)
 {
     m_profile = profileId;
@@ -368,6 +391,8 @@ void Catalog::rebuild()
     }
     for (const QJsonValue &v : std::as_const(m_webArr))
         add(normalizeWebappEntry(v.toObject()));
+    for (const QJsonValue &v : std::as_const(m_capArr))
+        add(normalizeContainerAppEntry(v.toObject()));
     for (QVariantMap &e : m_entries) {
         const QString id = e.value(u"id"_s).toString();
         const QString kind = e.value(u"kind"_s).toString();

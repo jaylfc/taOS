@@ -86,6 +86,34 @@ StoreEngine::StoreEngine(QObject *parent) : QObject(parent)
             bump();
     });
     connect(m_themes.get(), &ThemesService::changed, this, [this] { bump(); });
+    m_capps = new ContainerAppsService(this);
+    connect(m_capps, &ContainerAppsService::progress, this, [this](const QString &id, int n, int of, const QString &text) {
+        Inst &s = m_inst[id];
+        s.text = text;
+        s.percent = of > 0 ? 100.0 * n / of : -1;
+        bump();
+    });
+    connect(m_capps, &ContainerAppsService::finished, this, [this](const QString &id, bool ok, const QString &text) {
+        if (!m_inst.contains(id))
+            return;
+        const bool removing = m_inst[id].state == u"removing"_s;
+        if (removing && ok) {
+            m_cat.markInstalled(id, false);
+            m_inst.remove(id);
+            bump();
+            Q_EMIT installFinished(id, true, tr("Removed. Its data was kept."));
+            Q_EMIT toast(tr("%1 is removed. Its data was kept.").arg(m_cat.entry(id).value(u"name"_s).toString()));
+        } else if (ok) {
+            finishInstall(id, true, tr("%1 is installed.").arg(m_cat.entry(id).value(u"name"_s).toString()));
+        } else {
+            Inst &s = m_inst[id];
+            s.state = u"failed"_s;
+            s.text = tr("Failed");
+            s.error = text;
+            bump();
+            Q_EMIT installFinished(id, false, text);
+        }
+    });
     m_poll.setInterval(1500);
     connect(&m_poll, &QTimer::timeout, this, &StoreEngine::pollProgress);
 }
@@ -226,6 +254,7 @@ void StoreEngine::setRunning(bool on)
     if (on) {
         loadBuiltinWebapps();
         loadBundledCatalog();
+        loadContainerApps();
         refresh();
     } else {
         m_poll.stop();
@@ -445,7 +474,7 @@ QVariantList StoreEngine::asks(const QString &id) const
 QVariantList StoreEngine::installedRows() const
 {
     QVariantList out;
-    static const QHash<QString, QString> kindLabel = {{u"app"_s, tr("App")}, {u"agent"_s, tr("Agent framework")}, {u"model"_s, tr("Model")},
+    static const QHash<QString, QString> kindLabel = {{u"app"_s, tr("App")}, {u"containerapp"_s, tr("App")}, {u"agent"_s, tr("Agent framework")}, {u"model"_s, tr("Model")},
                                                       {u"plugin"_s, tr("Plugin")}, {u"mcp"_s, tr("Tool server")}};
     for (const QVariant &v : m_cat.section(u"installed"_s)) {
         const QVariantMap e = v.toMap();
@@ -516,6 +545,10 @@ void StoreEngine::install(const QString &id, const QString &variantId)
         installWebapp(id);
         return;
     }
+    if (e.value(u"kind"_s).toString() == u"containerapp"_s) {
+        installContainerApp(id);
+        return;
+    }
     Inst &s = m_inst[id];
     if (s.state == u"installing"_s || s.state == u"removing"_s)
         return;
@@ -531,6 +564,28 @@ void StoreEngine::install(const QString &id, const QString &variantId)
         return;
     }
     postInstall(id);
+}
+
+// Container desktop apps go through the taos-appgroups engine into the default app group ("My apps"). The target
+// choice (another group, an agent's container, host, a worker) is a later Store dialog: it calls the same engine with
+// --target; see native/shell/appgroups/README.md.
+void StoreEngine::installContainerApp(const QString &id)
+{
+    Inst &s = m_inst[id];
+    if (s.state == u"installing"_s || s.state == u"removing"_s)
+        return;
+    s = Inst();
+    s.state = u"installing"_s;
+    s.text = tr("Starting");
+    bump();
+    m_capps->install(id);
+}
+
+void StoreEngine::loadContainerApps()
+{
+    m_cat.setContainerApps(m_capps->catalog());
+    for (const QString &id : m_capps->installedIds())
+        m_cat.markInstalled(id, true);
 }
 
 void StoreEngine::acceptConsent(const QString &id)
@@ -682,6 +737,10 @@ void StoreEngine::remove(const QString &id)
     s.state = u"removing"_s;
     s.text = tr("Removing");
     bump();
+    if (e.value(u"kind"_s).toString() == u"containerapp"_s) {
+        m_capps->remove(id);   // its data is kept; "also delete its data" is a separate, later choice
+        return;
+    }
     client()->http(u"POST"_s, u"/api/store/uninstall"_s, {}, QJsonObject{{u"app_id"_s, id}})->then(this, [this, id](const Taos::Result &r) {
         Inst &s = m_inst[id];
         if (r.ok()) {
@@ -706,6 +765,12 @@ bool StoreEngine::open(const QString &id)
     const QVariantMap e = app(id);
     if (e.isEmpty())
         return false;
+    if (e.value(u"kind"_s).toString() == u"containerapp"_s) {
+        if (m_capps->open(id))
+            return true;
+        Q_EMIT toast(tr("Could not open %1.").arg(e.value(u"name"_s).toString()));
+        return false;
+    }
     if (e.value(u"kind"_s).toString() == u"agent"_s) {
         if (QProcess::startDetached(u"taos-agents"_s, {}))
             return true;

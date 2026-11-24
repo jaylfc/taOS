@@ -1,0 +1,30 @@
+{
+  "schema": 1,
+  "kind": "container-desktop-app",
+  "id": "firefox",
+  "name": "Firefox",
+  "version": "mozilla-apt",
+  "description": "Mozilla Firefox from Mozilla's own software repository, so it stays current. It runs in your apps container, away from your files, with its own profile there.",
+  "publisher": "Mozilla",
+  "homepage": "https://www.mozilla.org/firefox/",
+  "licence": "MPL-2.0",
+  "terms": {
+    "note": "Open source (MPL 2.0). The Firefox name and logo are Mozilla trademarks and are not reused here: the icon shown is a generic taOS icon. Installed from Mozilla's apt repository with its signing key pinned by fingerprint.",
+    "url": "https://www.mozilla.org/about/legal/terms/firefox/"
+  },
+  "icon": {"glyph": "browser"},
+  "categories": ["Network", "WebBrowser"],
+  "arch": ["amd64"],
+  "recipe": [
+    {"op": "apt-source", "name": "mozilla", "uri": "https://packages.mozilla.org/apt", "suite": "mozilla", "components": ["main"], "key_url": "https://packages.mozilla.org/apt/repo-signing-key.gpg", "key_fingerprint": "35BAA0B33E9EB396F59CA838C0BA5CE6DC6315A3"},
+    {"op": "apt-install", "packages": ["firefox"]}
+  ],
+  "binary": "/usr/bin/firefox",
+  "launch": {
+    "argv": ["/usr/bin/firefox"],
+    "env": {"MOZ_ENABLE_WAYLAND": "1", "MOZ_DBUS_REMOTE": "1"}
+  },
+  "window": {"app_id": "firefox"},
+  "mime_types": ["text/html", "x-scheme-handler/http", "x-scheme-handler/https"],
+  "grants": {"network": true, "gpu": true, "audio": true, "downloads": true}
+}

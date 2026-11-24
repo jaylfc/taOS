@@ -13,6 +13,7 @@
 #include "storecatalog.h"
 #include "taosqt/client.h"
 #include "taosqt/session.h"
+#include "containerappsservice.h"
 #include "webappsservice.h"
 
 class ThemeManager;
@@ -160,6 +161,8 @@ private:
     void fetchModels();
     void fetchHardware();
     void postInstall(const QString &id);
+    void loadContainerApps();
+    void installContainerApp(const QString &id);
     void pollProgress();
     void finishInstall(const QString &id, bool ok, const QString &text);
     QString refusal(const Taos::Error &e, const QString &verb) const;
@@ -169,6 +172,7 @@ private:
     QPointer<Taos::Session> m_session;
     Catalog m_cat;
     WebAppsService *m_web;
+    ContainerAppsService *m_capps = nullptr;
     std::unique_ptr<ThemesService> m_themes;
     QHash<QString, Inst> m_inst;
     QSet<QString> m_detailWanted;

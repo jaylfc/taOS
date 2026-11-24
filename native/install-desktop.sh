@@ -86,7 +86,7 @@ if [ "$with_notifyd" -eq 0 ] && [ -r "$shell_env" ] &&
     with_notifyd=1
 fi
 [ "$with_notifyd" -ne 1 ] || components="$components taos-notifyd"
-pieces="taos-bar taos-overview taos-dock taos-window taos-display taos-theme taos-launcher taos-search taos-frame taos-notifyd"
+pieces="taos-bar taos-overview taos-dock taos-window taos-display taos-theme taos-launcher taos-search taos-frame taos-notifyd taos-appgroups"
 
 stage=$(mktemp -d "${TMPDIR:-/tmp}/taos-install-stage.XXXXXX")
 trap 'rm -rf "$stage"' EXIT

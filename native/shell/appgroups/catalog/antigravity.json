@@ -1,0 +1,31 @@
+{
+  "schema": 1,
+  "kind": "container-desktop-app",
+  "id": "antigravity",
+  "name": "Antigravity",
+  "version": "2.8.0",
+  "description": "Google's agent-first development environment (a Code OSS based IDE). Installed from Google into your apps container; sign in with a Google account.",
+  "publisher": "Google",
+  "homepage": "https://antigravity.google/",
+  "licence": "proprietary-freeware",
+  "terms": {
+    "note": "Proprietary software under the Google Antigravity Additional Terms of Service and Google's Terms of Service. taOS downloads it from Google when you install it and never redistributes it. The icon shown here is a generic taOS icon, because Google's brand terms do not allow reusing its icons without approval.",
+    "url": "https://policies.google.com/terms"
+  },
+  "icon": {"glyph": "code"},
+  "categories": ["Development", "IDE"],
+  "arch": ["amd64"],
+  "recipe": [
+    {"op": "apt-install", "packages": ["libgtk-3-0", "libnss3", "libnspr4", "libasound2", "libatk-bridge2.0-0", "libcups2", "libxkbfile1", "libxkbcommon0", "libxss1", "libsecret-1-0", "libdrm2", "libx11-xcb1", "libxcb-dri3-0", "libgbm1", "xdg-utils", "git", "ripgrep"]},
+    {"op": "download-tar", "url": "https://edgedl.me.gvt1.com/edgedl/release2/j0qc3/antigravity/stable/2.8.0-6733682917113856/linux-x64/Antigravity%20IDE.tar.gz", "sha256": "7baa36baab285cb46101af958b8f7be6305458db9a44d8b3d0938d61f38597d7", "dest": "/opt/antigravity", "strip": 1},
+    {"op": "symlink", "target": "/opt/antigravity/bin/antigravity-ide", "link": "/usr/local/bin/antigravity-ide"}
+  ],
+  "binary": "/opt/antigravity/antigravity-ide",
+  "launch": {
+    "argv": ["/opt/antigravity/antigravity-ide", "--ozone-platform=wayland", "--enable-features=UseOzonePlatform,WaylandWindowDecorations", "--password-store=basic"],
+    "env": {}
+  },
+  "window": {"app_id": "antigravity-ide"},
+  "mime_types": ["x-scheme-handler/antigravity"],
+  "grants": {"network": true, "gpu": true, "audio": true, "documents": true}
+}
