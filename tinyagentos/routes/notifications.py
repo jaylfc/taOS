@@ -9,7 +9,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 
-from tinyagentos.notifications import VALID_LEVELS
+from tinyagentos.notifications import VALID_LEVELS, OsIdConflict
 
 from tinyagentos.auth import get_current_user
 from tinyagentos.agent_token_auth import check_agent_scope_for_project, registry_agent_caller
@@ -305,17 +305,26 @@ async def post_os_notification(request: Request):
         "expire_timeout_ms": req.expire_timeout_ms,
     }}
     store = request.app.state.notifications
-    row_id, created = await store.add_os(
-        user_id=str(user_id),
-        client_id=req.id,
-        title=req.summary or req.app_name,
-        message=req.body,
-        level=_OS_LEVELS[req.urgency],
-        source=_os_source(req),
-        data=data,
-        timestamp=posted,
-        replaces=req.replaces,
-    )
+    # The fields that matter for a replay; posted_at and the id itself are not part of it.
+    import hashlib
+    digest = hashlib.sha256(json.dumps(
+        req.model_dump(exclude={"id", "posted_at"}), sort_keys=True, separators=(",", ":")
+    ).encode()).hexdigest()
+    try:
+        row_id, created = await store.add_os(
+            user_id=str(user_id),
+            client_id=req.id,
+            title=req.summary or req.app_name,
+            message=req.body,
+            level=_OS_LEVELS[req.urgency],
+            source=_os_source(req),
+            data=data,
+            timestamp=posted,
+            replaces=req.replaces,
+            digest=digest,
+        )
+    except OsIdConflict:
+        return JSONResponse({"error": "id_reused_with_different_content"}, status_code=409)
     if row_id is None:
         return {"id": None, "duplicate": False, "stored": False, "reason": "muted"}
     return {"id": row_id, "duplicate": not created}

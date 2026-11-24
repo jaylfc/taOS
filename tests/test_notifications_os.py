@@ -330,3 +330,56 @@ async def test_old_database_without_the_id_table_upgrades(tmp_path):
         assert {r["title"] for r in await store.list(user_id="u1")} == {"old", "t"}
     finally:
         await store.close()
+
+
+@pytest.mark.asyncio
+async def test_replace_of_a_removed_row_is_stored_not_lost(world):
+    async with _client(world["app"], world["alice_tok"]) as c:
+        a = (await c.post(URL, json=_body(id="p1", summary="Downloading 10%"))).json()
+        store = world["app"].state.notifications
+        # retention removed the row but its id record is still there
+        await store._db.execute("DELETE FROM notifications WHERE id = ?", (a["id"],))
+        await store._db.commit()
+        b = (await c.post(URL, json=_body(id="p2", summary="Downloading 90%", replaces="p1"))).json()
+        assert b["id"] is not None and b["duplicate"] is False
+        rows = await _rows(c)
+        assert [r["title"] for r in rows] == ["Downloading 90%"] and rows[0]["id"] == b["id"]
+        # the chain keeps working: the next replace updates that new row in place
+        n = (await c.post(URL, json=_body(id="p3", summary="Done", replaces="p1"))).json()
+        assert n["id"] == b["id"]
+        assert [r["title"] for r in await _rows(c)] == ["Done"]
+
+
+@pytest.mark.asyncio
+async def test_cleanup_prunes_id_records_with_their_rows(world):
+    store = world["app"].state.notifications
+    async with _client(world["app"], world["alice_tok"]) as c:
+        await c.post(URL, json=_body(id="a1"))
+        await c.post(URL, json=_body(id="a2"))
+        await c.post(f"/api/notifications/1/archive")  # archived rows are kept by retention
+    assert await store.cleanup(max_age_days=-1) == 1
+    async with store._db.execute("SELECT client_id FROM os_notification_ids") as cur:
+        left = [r[0] for r in await cur.fetchall()]
+    assert left == ["a1"]
+
+
+@pytest.mark.asyncio
+async def test_replace_respects_a_muted_source(world):
+    async with _client(world["app"], world["alice_tok"]) as c:
+        a = (await c.post(URL, json=_body(id="m1", summary="before"))).json()
+        await world["app"].state.notifications.set_event_muted("os:thunderbird", True)
+        r = (await c.post(URL, json=_body(id="m2", summary="after", replaces="m1"))).json()
+        assert r == {"id": None, "duplicate": False, "stored": False, "reason": "muted"}
+        assert [x["title"] for x in await _rows(c)] == ["before"] and a["id"]
+
+
+@pytest.mark.asyncio
+async def test_same_id_with_different_content_is_409(world):
+    async with _client(world["app"], world["alice_tok"]) as c:
+        first = (await c.post(URL, json=_body(id="z1", summary="one"))).json()
+        r = await c.post(URL, json=_body(id="z1", summary="two"))
+        assert r.status_code == 409 and r.json()["error"] == "id_reused_with_different_content"
+        assert [x["title"] for x in await _rows(c)] == ["one"]
+        # a true replay (even with a later posted_at) is still a duplicate
+        again = await c.post(URL, json=_body(id="z1", summary="one", posted_at=int(time.time()) - 5))
+        assert again.status_code == 200 and again.json() == {"id": first["id"], "duplicate": True}
