@@ -42,8 +42,13 @@ _SKIP_PREFIXES = (
 
 
 # CSS url() rewriter — captures url(), url(""), url('').
+# Linear-time by construction: whitespace runs are possessive (no give-back),
+# the value is EITHER a quoted string OR an unquoted token that excludes
+# whitespace, quotes and parens (the CSS url-token grammar), so no two
+# adjacent parts can ever match the same characters. Quote stripping happens
+# in the replace callback, not here.
 _CSS_URL_RE = re.compile(
-    r"""url\(\s*(['"]?)([^)'"]+)\1\s*\)""",
+    r"""url\([ \t\r\n]*+("[^"]*"|'[^']*'|[^)"'( \t\r\n]*+)[ \t\r\n]*+\)""",
     re.IGNORECASE,
 )
 
@@ -222,8 +227,12 @@ def _rewrite_css_text(
     text: str, *, base_url: str, proxy: Callable[[str], str],
 ) -> str:
     def replace(match: re.Match) -> str:
-        quote = match.group(1)
-        url = match.group(2).strip()
+        value = match.group(1)
+        quote = ""
+        if len(value) >= 2 and value[0] in "\"'" and value[-1] == value[0]:
+            quote = value[0]
+            value = value[1:-1]
+        url = value.strip()
         new_url = _rewrite_one(url, base_url=base_url, proxy=proxy)
         return f"url({quote}{new_url}{quote})"
 
