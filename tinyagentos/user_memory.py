@@ -34,6 +34,10 @@ class UserMemoryStore(BaseStore):
         """``fn()`` returns the install owner's user id, or None."""
         self._owner_lookup = fn
 
+    def can_read_legacy(self, user_id: str) -> bool:
+        """True when *user_id* is the install owner (reads the legacy partition)."""
+        return LEGACY_USER_ID in self._scope(user_id) and user_id != LEGACY_USER_ID
+
     def _scope(self, user_id: str) -> tuple[str, ...]:
         """User ids whose rows *user_id* may read."""
         if user_id == LEGACY_USER_ID or self._owner_lookup is None:

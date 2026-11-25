@@ -1,25 +1,42 @@
 from __future__ import annotations
 
+import hashlib
 import logging
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse
 
-from tinyagentos.auth_context import require_admin
+from tinyagentos.auth_context import agent_bound_name, require_admin, resolve_agent_owner
 from tinyagentos.session_turns import stamp_event
-from tinyagentos.user_memory import LEGACY_USER_ID
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
-# Pre per-user partition; only the install owner still reads it (see
-# UserMemoryStore).  Used here only for agent search when no owner exists.
-USER_ID = LEGACY_USER_ID
 
-# Fixed agent namespace for user memory in taosmd.
+# taosmd namespace that held every person's chunks before memory was per
+# person.  It is only ever read, and only for the install owner.
 _TAOSMD_AGENT = "user-memory"
+
+
+def user_namespace(user_id: str) -> str:
+    """The taosmd agent namespace holding one person's chunks.
+
+    taosmd agent names must match ``[a-z][a-z0-9_-]*``, and user ids are mixed
+    case, so the namespace is derived from a hash of the id: stable, valid, and
+    not guessable from another person's id.
+    """
+    return "user-memory-" + hashlib.sha256(user_id.encode()).hexdigest()[:24]
+
+
+def _search_namespaces(request: Request, user_id: str) -> list[str]:
+    """Namespaces *user_id* may search: their own, plus the legacy shared one
+    for the install owner only."""
+    namespaces = [user_namespace(user_id)]
+    if _store(request).can_read_legacy(user_id):
+        namespaces.append(_TAOSMD_AGENT)
+    return namespaces
 
 
 def _uid(request: Request) -> str:
@@ -99,17 +116,27 @@ async def search(request: Request, q: str, collection: str | None = None, limit:
     local SQLite FTS5 store if taosmd is unreachable or returns an error.
     """
     base = _taosmd_base(request)
+    uid = _uid(request)
     try:
         client = request.app.state.http_client
-        params: dict = {"q": q, "agent": _TAOSMD_AGENT, "limit": limit, "mode": "bm25"}
-        if collection:
-            params["collection"] = collection
-        resp = await client.get(f"{base}/search", params=params, timeout=5.0)
-        if resp.status_code == 200:
-            data = resp.json()
-            hits = data.get("hits", [])
-            results = [_hit_to_chunk(h) for h in hits]
-            return JSONResponse({"results": results, "query": q, "backend": "taosmd"})
+        results: list[dict] = []
+        seen: set[str] = set()
+        for namespace in _search_namespaces(request, uid):
+            params: dict = {"q": q, "agent": namespace, "limit": limit, "mode": "bm25"}
+            if collection:
+                params["collection"] = collection
+            resp = await client.get(f"{base}/search", params=params, timeout=5.0)
+            if resp.status_code != 200:
+                raise RuntimeError(f"taosmd search returned {resp.status_code}")
+            for h in resp.json().get("hits", []):
+                chunk = _hit_to_chunk(h)
+                if chunk["hash"] and chunk["hash"] in seen:
+                    continue
+                seen.add(chunk["hash"])
+                results.append(chunk)
+        return JSONResponse({
+            "results": results[:limit], "query": q, "backend": "taosmd",
+        })
     except Exception:
         logger.debug("taosmd search unavailable, falling back to SQLite")
 
@@ -119,22 +146,37 @@ async def search(request: Request, q: str, collection: str | None = None, limit:
 
 @router.get("/api/user-memory/agent-search")
 async def agent_search(request: Request, q: str, agent_name: str, limit: int = 10):
-    """Read-only search endpoint for agents with user memory permission."""
+    """Read-only search endpoint for agents with user memory permission.
+
+    The caller must be an agent presenting its own bound token; ``agent_name``
+    has to be that agent.  It searches its registered owner's memory only, and
+    is refused when the registry cannot say who the owner is.
+    """
+    bound = agent_bound_name(request)
+    if not bound:
+        return JSONResponse({"error": "agent token required"}, status_code=403)
+    if agent_name != bound:
+        return JSONResponse(
+            {"error": "agent_name does not match the authenticated agent"},
+            status_code=403,
+        )
     config = request.app.state.config
     agents = getattr(config, "agents", None)
     if agents is None and isinstance(config, dict):
         agents = config.get("agents", [])
     agents = agents or []
-    agent = next((a for a in agents if a.get("name") == agent_name), None)
+    agent = next((a for a in agents if a.get("name") == bound), None)
     if not agent or not agent.get("can_read_user_memory"):
         return JSONResponse(
             {"error": "Agent does not have user memory access"},
             status_code=403,
         )
-    primary = request.app.state.auth.get_primary_user()
-    owner_id = primary["id"] if primary else USER_ID
+    owner_id = await resolve_agent_owner(request, bound)
+    if not owner_id:
+        logger.warning("agent-search refused: no registered owner for agent %s", bound)
+        return JSONResponse({"error": "agent has no registered owner"}, status_code=403)
     results = await _store(request).search(owner_id, q, limit=limit)
-    return JSONResponse({"results": results, "query": q, "agent": agent_name})
+    return JSONResponse({"results": results, "query": q, "agent": bound})
 
 
 @router.get("/api/user-memory/browse")
@@ -178,7 +220,7 @@ async def save(request: Request):
             f"{base}/ingest",
             json={
                 "text": content,
-                "agent": _TAOSMD_AGENT,
+                "agent": user_namespace(_uid(request)),
                 # Caller metadata first so the server-owned keys win —
                 # source_id is taosmd's dedup key and must not be
                 # overridable from the request body.
@@ -261,7 +303,7 @@ async def migrate_to_taosmd(request: Request):
         client = request.app.state.http_client
         resp = await client.post(
             f"{base}/ingest/batch",
-            json={"agent": _TAOSMD_AGENT, "items": items},
+            json={"agent": user_namespace(_uid(request)), "items": items},
             timeout=30.0,
         )
         resp.raise_for_status()
@@ -275,7 +317,8 @@ async def migrate_to_taosmd(request: Request):
                 try:
                     one = await client.post(
                         f"{base}/ingest",
-                        json={"text": item["text"], "agent": _TAOSMD_AGENT,
+                        json={"text": item["text"],
+                              "agent": user_namespace(_uid(request)),
                               "metadata": item["metadata"]},
                         timeout=30.0,
                     )

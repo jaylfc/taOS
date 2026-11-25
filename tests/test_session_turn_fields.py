@@ -547,3 +547,136 @@ async def test_owner_browses_legacy_and_new_member_sees_only_own(client):
     assert {x["title"] for x in member} == {"bobs"}
     assert stats["total"] == 1
     await store.close()
+
+
+# ------------------------------------- taosmd namespaces and agent search
+
+class _InProcessTaosmd:
+    """http_client stand-in that serves /ingest and /search from taosmd's real
+    in-process API and store, so namespace isolation is taosmd's own."""
+
+    def __init__(self, data_dir):
+        self.data_dir = data_dir
+
+    class _Resp:
+        def __init__(self, body, status=200):
+            self._b, self.status_code = body, status
+
+        def json(self):
+            return self._b
+
+        def raise_for_status(self):
+            pass
+
+    async def get(self, url, params=None, timeout=None):
+        import taosmd.api as tm
+        assert url.endswith("/search")
+        hits = await tm.search(params["q"], agent=params["agent"], mode="bm25",
+                               limit=int(params["limit"]), data_dir=self.data_dir)
+        return self._Resp({"hits": hits})
+
+    async def aclose(self):
+        pass
+
+    async def post(self, url, json=None, timeout=None):
+        import taosmd.api as tm
+        assert url.endswith("/ingest")
+        md = json.get("metadata") or {}
+        await tm.ingest_batch(
+            [{"text": json["text"], "id": md.get("source_id"), "metadata": md}],
+            agent=json["agent"], data_dir=self.data_dir)
+        return self._Resp({"ok": True})
+
+
+@pytest.mark.asyncio
+async def test_taosmd_search_is_per_person_owner_also_reads_legacy(client, tmp_path, monkeypatch):
+    import taosmd.api as tm
+    from taosmd.vector_memory import VectorMemory
+
+    async def _embed(self, text, task=None):  # no embedding model in CI; BM25 does the ranking
+        return [0.1, 0.2, 0.3]
+
+    monkeypatch.setattr(VectorMemory, "embed", _embed)
+    from taos_test_csrf import csrf_event_hooks
+    app = client._transport.app
+    store = app.state.user_memory
+    if store._db is None:
+        await store.init()
+    dd = tmp_path / "taosmd"
+    app.state.http_client = _InProcessTaosmd(dd)
+    bob = _add_user(app, "bob")
+    # written before memory was per person: the shared namespace, read in place
+    await tm.ingest_batch([{"text": "legacy gold nugget", "id": "legacy1"}],
+                          agent="user-memory", data_dir=dd)
+    await client.post("/api/user-memory/save", json={"content": "owner gold note"})
+    token = app.state.auth.create_session(user_id=bob, long_lived=True)
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test",
+                           cookies={"taos_session": token},
+                           event_hooks=csrf_event_hooks()) as c:
+        await c.post("/api/user-memory/save", json={"content": "bob gold secret"})
+        mine = (await c.get("/api/user-memory/search", params={"q": "gold"})).json()
+    owner = (await client.get("/api/user-memory/search", params={"q": "gold"})).json()
+    assert owner["backend"] == mine["backend"] == "taosmd"
+    texts = lambda r: {x["content"] for x in r["results"]}  # noqa: E731
+    assert texts(owner) == {"legacy gold nugget", "owner gold note"}
+    assert texts(mine) == {"bob gold secret"}
+    await store.close()
+
+
+async def _agent_setup(app, tmp_path):
+    from tinyagentos.agent_registry_store import AgentRegistryStore
+    reg = AgentRegistryStore(tmp_path / "registry.db")
+    await reg.init()
+    app.state.agent_registry = reg
+    store = app.state.user_memory
+    if store._db is None:
+        await store.init()
+    admin, bob = _admin_id(app), _add_user(app, "bob")
+    rec = await reg.register(framework="claude-code", display_name="Bobs Agent", user_id=bob)
+    app.state.config.agents.append({
+        "name": "bobs-agent", "host": "127.0.0.1", "can_read_user_memory": True,
+        "registry_canonical_id": rec["canonical_id"]})
+    app.state.config.agents.append({
+        "name": "orphan", "host": "127.0.0.1", "can_read_user_memory": True})
+    await store.save_chunk(admin, "owner secret plan", "o", "notes", {})
+    await store.save_chunk("user", "legacy secret plan", "l", "notes", {})
+    await store.save_chunk(bob, "bob secret plan", "b", "notes", {})
+    return reg, store
+
+
+def _agent_client(app, name):
+    tok = app.state.auth.mint_agent_local_token(name)
+    return AsyncClient(transport=ASGITransport(app=app), base_url="http://test",
+                       headers={"Authorization": f"Bearer {tok}"})
+
+
+@pytest.mark.asyncio
+async def test_agent_search_reads_only_its_owners_memory(client, tmp_path):
+    app = client._transport.app
+    reg, store = await _agent_setup(app, tmp_path)
+    async with _agent_client(app, "bobs-agent") as c:
+        r = await c.get("/api/user-memory/agent-search",
+                        params={"q": "secret", "agent_name": "bobs-agent"})
+    assert r.status_code == 200, r.text
+    assert {x["content"] for x in r.json()["results"]} == {"bob secret plan"}
+    await reg.close()
+    await store.close()
+
+
+@pytest.mark.asyncio
+async def test_agent_search_refuses_mismatch_unowned_and_non_agent(client, tmp_path):
+    app = client._transport.app
+    reg, store = await _agent_setup(app, tmp_path)
+    async with _agent_client(app, "bobs-agent") as c:
+        r = await c.get("/api/user-memory/agent-search",
+                        params={"q": "secret", "agent_name": "orphan"})
+        assert r.status_code == 403
+    async with _agent_client(app, "orphan") as c:  # no registry owner: fail closed
+        r = await c.get("/api/user-memory/agent-search",
+                        params={"q": "secret", "agent_name": "orphan"})
+        assert r.status_code == 403
+    r = await client.get("/api/user-memory/agent-search",  # a person, not an agent
+                         params={"q": "secret", "agent_name": "bobs-agent"})
+    assert r.status_code == 403
+    await reg.close()
+    await store.close()

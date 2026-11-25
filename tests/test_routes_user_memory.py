@@ -227,32 +227,55 @@ class TestSearch:
             assert "content" in chunk
 
 
+def _agent_client(app, name):
+    from httpx import ASGITransport, AsyncClient
+    tok = app.state.auth.mint_agent_local_token(name)
+    return AsyncClient(transport=ASGITransport(app=app), base_url="http://test",
+                       headers={"Authorization": f"Bearer {tok}"})
+
+
 @pytest.mark.asyncio
 class TestAgentSearch:
+    """Agents authenticate with their own bound token; see also
+    tests/test_session_turn_fields.py for owner isolation."""
+
     async def test_agent_search_requires_permission(self, client, user_memory):
-        resp = await client.get(
-            "/api/user-memory/agent-search?q=test&agent_name=unauthorized-agent",
-        )
+        app = client._transport.app
+        async with _agent_client(app, "unauthorized-agent") as c:
+            resp = await c.get(
+                "/api/user-memory/agent-search?q=test&agent_name=unauthorized-agent",
+            )
         assert resp.status_code == 403
         assert "error" in resp.json()
 
-    async def test_agent_search_with_permission(self, client, user_memory):
+    async def test_agent_search_with_permission(self, client, user_memory, tmp_path):
         """Grant an agent can_read_user_memory and verify 200."""
-        config = client._transport.app.state.config
-        new_agent = {"name": "memory-agent", "host": "127.0.0.1", "can_read_user_memory": True}
-        config.agents.append(new_agent)
-        resp = await client.get(
-            "/api/user-memory/agent-search?q=test&agent_name=memory-agent",
-        )
+        from tinyagentos.agent_registry_store import AgentRegistryStore
+        app = client._transport.app
+        reg = AgentRegistryStore(tmp_path / "registry.db")
+        await reg.init()
+        app.state.agent_registry = reg
+        rec = await reg.register(framework="claude-code", display_name="Memory Agent",
+                                 user_id=_me(client))
+        app.state.config.agents.append({
+            "name": "memory-agent", "host": "127.0.0.1", "can_read_user_memory": True,
+            "registry_canonical_id": rec["canonical_id"]})
+        async with _agent_client(app, "memory-agent") as c:
+            resp = await c.get(
+                "/api/user-memory/agent-search?q=test&agent_name=memory-agent",
+            )
+        await reg.close()
         assert resp.status_code == 200
         data = resp.json()
         assert "results" in data
         assert data["agent"] == "memory-agent"
 
     async def test_agent_search_missing_agent(self, client, user_memory):
-        resp = await client.get(
-            "/api/user-memory/agent-search?q=test&agent_name=no-such-agent",
-        )
+        app = client._transport.app
+        async with _agent_client(app, "no-such-agent") as c:
+            resp = await c.get(
+                "/api/user-memory/agent-search?q=test&agent_name=no-such-agent",
+            )
         assert resp.status_code == 403
 
 
