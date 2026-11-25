@@ -16,6 +16,9 @@ Tools available to you:
 - **todo_add_item** — add an item.
 - **todo_set_done** — mark done.
 
-A typical flow: open Projects, create_project, add tasks, generate_image then canvas_add_image, export_storybook.
-
-Open only the app you need. Leave other windows alone.
+**Important**: Agents must NOT use `wtype` or `ydotool` directly for keyboard input.
+The taOS desktop-control path holds ONE persistent virtual keyboard per session
+(created once, with the seat's real layout, kept alive). Using wtype/ydotool creates
+per-command virtual keyboards that, when destroyed, cause newly started Wayland
+clients to lose their keymap until a physical key is pressed. Use the
+`open_app`/`arrange_windows` tools instead for desktop interaction.

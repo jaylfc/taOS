@@ -5,6 +5,8 @@ import time
 from dataclasses import dataclass, field
 from typing import Any
 
+VIRTUAL_KEYBOARD_SEAT_LAYOUT = "seats.0.kb_layout"
+
 
 @dataclass
 class DesktopCommand:
@@ -52,6 +54,10 @@ class DesktopCommandBroker:
         # the user who initiated it (defence in depth on top of the unguessable
         # request_id, which is only ever delivered to that user's desktops).
         self._result_owner: dict[str, str] = {}
+        # Persistent virtual keyboard per session, created once with the seat's
+        # real layout and kept alive for the entire session. Never a per-command
+        # one; destroyed only when the session ends.
+        self._persistent_vk: Any = None
 
     def register_result(self, request_id: str, owner_user_id: str) -> asyncio.Future[Any]:
         """Register a pending result future for request_id and return it."""
@@ -74,6 +80,25 @@ class DesktopCommandBroker:
     def discard_result(self, request_id: str) -> None:
         self._results.pop(request_id, None)
         self._result_owner.pop(request_id, None)
+
+    def create_persistent_virtual_keyboard(self, seat_layout: str) -> None:
+        """Create ONE persistent virtual keyboard per session with the seat's
+        real layout. Kept alive for the entire session; never a per-command one.
+        This prevents newly started Wayland clients from losing their keymap
+        after a virtual keyboard is destroyed."""
+        from tinyagentos.routes.desktop import router
+        # Store the seat layout for the persistent virtual keyboard
+        self._persistent_vk = {
+            "seat_layout": seat_layout,
+            "created": time.time(),
+            "destroyed": False,
+        }
+
+    def destroy_persistent_virtual_keyboard(self) -> None:
+        """Destroy the persistent virtual keyboard when the session ends."""
+        if self._persistent_vk is not None:
+            self._persistent_vk["destroyed"] = True
+            self._persistent_vk = None
 
     async def subscribe(self, user_id: str) -> asyncio.Queue[DesktopCommand]:
         queue: asyncio.Queue[DesktopCommand] = asyncio.Queue(maxsize=self._MAX_QUEUE)
