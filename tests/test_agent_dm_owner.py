@@ -117,7 +117,9 @@ async def test_startup_upgrades_an_existing_install(tmp_path):
 
     registry = AgentRegistryStore(tmp_path / "agent_registry.db")
     await registry.init()
-    row = await registry.register(framework="none", display_name="Bot", user_id=owner_id)
+    # A deploy used to leave the registry owner empty.
+    row = await registry.register(framework="none", display_name="Bot", user_id="")
+    kept = await registry.register(framework="none", display_name="Kept", user_id="someone-else")
     await registry.close()
     channels = ChatChannelStore(tmp_path / "chat.db")
     await channels.init()
@@ -130,7 +132,10 @@ async def test_startup_upgrades_an_existing_install(tmp_path):
     (tmp_path / "config.yaml").write_text(yaml.dump({
         "server": {"host": "0.0.0.0", "port": 6969}, "backends": [],
         "qmd": {"url": "http://localhost:7832"},
-        "agents": [{"name": "bot", "registry_canonical_id": row["canonical_id"]}],
+        "agents": [
+            {"name": "bot", "registry_canonical_id": row["canonical_id"]},
+            {"name": "kept", "registry_canonical_id": kept["canonical_id"]},
+        ],
         "metrics": {"poll_interval": 30, "retention_days": 30},
     }))
     (tmp_path / ".setup_complete").touch()
@@ -139,6 +144,8 @@ async def test_startup_upgrades_an_existing_install(tmp_path):
 
     app = create_app(data_dir=tmp_path)
     async with app.router.lifespan_context(app):
+        assert (await app.state.agent_registry.get(row["canonical_id"]))["user_id"] == owner_id
+        assert (await app.state.agent_registry.get(kept["canonical_id"]))["user_id"] == "someone-else"
         ch = await app.state.chat_channels.get_channel(dm["id"])
         assert ch["settings"]["owner_user_id"] == owner_id
         assert len(await app.state.user_memory.browse(owner_id)) == 1

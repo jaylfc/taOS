@@ -7,8 +7,10 @@ as ``POST /api/chat/messages`` refuse it. This step assigns each such agent to
 the install owner (the primary user), creating its registry row and writing
 ``registry_canonical_id`` into the config entry.
 
-Idempotent: an agent whose registry row exists (whatever its owner or status)
-is never touched, so a second run changes nothing.
+Idempotent: an agent whose registry row exists with an owner (whatever its
+status) is never touched, so a second run changes nothing. A row with an empty
+owner, as deploys wrote before they recorded the deployer, is given the
+install owner.
 """
 
 from __future__ import annotations
@@ -30,7 +32,16 @@ async def assign_ownerless_agents(config, registry, auth_mgr) -> list[str]:
         if not isinstance(agent, dict) or not name:
             continue
         cid = agent.get("registry_canonical_id")
-        if cid and await registry.get(cid) is not None:
+        existing = await registry.get(cid) if cid else None
+        if existing is not None:
+            # A deploy used to leave the registry owner empty; adopt such a row
+            # for the install owner. A row with an owner is never touched.
+            if not existing.get("user_id") and await registry.adopt_ownerless(cid, owner["id"]):
+                assigned.append(name)
+                logger.warning(
+                    "agent_owner migration: agent %r had an empty registry owner; assigned to the install owner (%s)",
+                    name, cid,
+                )
             continue
         try:
             row = await registry.register(

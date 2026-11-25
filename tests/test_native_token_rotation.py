@@ -49,6 +49,8 @@ async def env(tmp_path):
     native = await ensure_native_agent_identity(
         registry=registry, grants=grants, data_dir=data, signing_key_pem=priv, user_id=owner,
     )
+    if app.state.skills._db is None:
+        await app.state.skills.init()
     emitted: list[str] = []
     broker = app.state.desktop_command_broker
     real_emit = broker.emit
@@ -66,6 +68,7 @@ async def env(tmp_path):
         yield client
     await registry.close()
     await grants.close()
+    await app.state.skills.close()
 
 
 BODY = {"kind": "open-app", "payload": {"app": "files"}}

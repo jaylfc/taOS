@@ -902,6 +902,9 @@ async def deploy_agent_endpoint(request: Request, body: DeployAgentRequest):
                 rec = await ar.register(
                     framework=body.framework,
                     display_name=display_name,
+                    # The deployer owns the agent: its per-agent token acts for
+                    # this user. (The host token maps to the install owner.)
+                    user_id=str(getattr(request.state, "user_id", None) or ""),
                 )
                 canonical_id = rec.get("canonical_id")
                 # The agent's own taOSmd shelf: the name it is registered with
