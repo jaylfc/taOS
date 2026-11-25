@@ -30,6 +30,10 @@ def _state(tmp_path, monkeypatch):
     secret_file.write_text(SECRET + "\n")
     os.chmod(secret_file, 0o600)
     monkeypatch.setenv("TAOS_CONSOLE_SECRET_FILE", str(secret_file))
+    # The test transport has no real socket; pretend the peer is uid 1000.
+    from tinyagentos import console_secret
+
+    monkeypatch.setattr(console_secret, "peer_uid", lambda host, port: 1000, raising=False)
     auth_routes._pin_limiter = type(auth_routes._pin_limiter)()
     auth_routes._CONSOLE_LOCKED = True
     yield
@@ -504,3 +508,43 @@ class TestKioskWithoutATicket:
         async with _client(app, host="192.168.1.10", header=None) as c:
             r = await c.get("/auth/login?console_missing=1")
         assert "not running as the device console" in r.text
+
+
+class TestTicketFailsClosedWithoutAUid:
+    @pytest.mark.asyncio
+    async def test_no_ticket_is_minted_when_the_uid_is_unknown(self, app, monkeypatch):
+        from tinyagentos import console_secret
+
+        monkeypatch.setattr(console_secret, "peer_uid", lambda h, p: None)
+        async with _client(app, header=None) as shell:
+            r = await shell.post("/auth/console-ticket", headers={"X-taOS-Console": SECRET})
+        assert r.status_code == 403, r.text
+        assert "ticket" not in r.text
+
+    @pytest.mark.asyncio
+    async def test_no_ticket_is_redeemed_when_the_uid_is_unknown(self, app, monkeypatch):
+        from tinyagentos import console_secret
+
+        async with _client(app, header=None) as shell:
+            t = await shell.post("/auth/console-ticket", headers={"X-taOS-Console": SECRET})
+            ticket = t.json()["ticket"]
+            monkeypatch.setattr(console_secret, "peer_uid", lambda h, p: None)
+            r = await shell.get("/?console_ticket=" + ticket, follow_redirects=False)
+        assert "taos_console" not in r.headers.get("set-cookie", "")
+
+    def test_the_library_refuses_unknown_uids(self):
+        from tinyagentos import console_secret
+
+        with pytest.raises(ValueError):
+            console_secret.mint_ticket(None)
+        t = console_secret.mint_ticket(1000)
+        assert console_secret.redeem_ticket(t, None) is False
+        assert console_secret.redeem_ticket(t, 1000) is True
+
+
+class TestScreenshotRefusalMessage:
+    @pytest.mark.asyncio
+    async def test_the_401_does_not_talk_about_stopping_agents(self, app, console):
+        r = await console.post("/auth/lock-power-action", json={"action": "screenshot"})
+        assert r.status_code == 401
+        assert "stop all agents" not in r.text

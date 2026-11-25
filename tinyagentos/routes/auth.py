@@ -13034,7 +13034,7 @@ async def lock_power_action(request: Request):
         auth_mgr = getattr(request.app.state, "auth", None)
         if auth_mgr is None or auth_mgr.validate_session_for_request(request) is None:
             return JSONResponse(
-                {"error": "sign in to stop all agents"}, status_code=401
+                {"error": "sign in first"}, status_code=401
             )
         # A swipe is not a credential. When the owner chose "swipe", a session
         # minted by a swipe must not be enough to change state from the lock
@@ -13304,9 +13304,13 @@ async def console_ticket(request: Request):
     secret = console_secret.get_secret(getattr(auth_mgr, "data_dir", None))
     if not console_secret.header_matches(secret, request.headers):
         return JSONResponse({"error": "console only"}, status_code=403)
+    uid = console_secret.peer_uid(*_peer(request))
+    if uid is None:
+        # Cannot tell who is asking: no ticket (the kiosk then shows the
+        # console-missing notice and offers password sign-in).
+        return JSONResponse({"error": "console only"}, status_code=403)
     return JSONResponse(
-        {"ticket": console_secret.mint_ticket(
-            console_secret.peer_uid(*_peer(request)))}, headers={"Cache-Control": "no-store"}
+        {"ticket": console_secret.mint_ticket(uid)}, headers={"Cache-Control": "no-store"}
     )
 
 
