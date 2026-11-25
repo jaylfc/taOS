@@ -5,6 +5,10 @@ version: 2.0.0
 description: "Google's lightweight vision-language model — strong at image captioning, OCR, segmentation, visual Q&A. 3B params; 224/448/896 input resolutions."
 homepage: https://huggingface.co/google/paligemma2-3b-mix-224
 license: Gemma
+weights_license: "Gemma"
+license_class: research-only
+license_version: "be42dc1077d2"
+license_url: "https://github.com/google/gemma/blob/main/LICENSE"
 capabilities:
 - chat
 - vision

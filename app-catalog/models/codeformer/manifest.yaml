@@ -6,6 +6,10 @@ description: Robust face restoration with codebook lookup — high fidelity, han
   severe degradation
 homepage: https://github.com/sczhou/CodeFormer
 license: S-Lab License 1.0
+weights_license: "S-Lab License 1.0"
+license_class: research-only
+license_version: "1.0"
+license_url: "https://github.com/sczhou/CodeFormer/blob/master/LICENSE"
 capabilities:
 - face-restoration
 variants:

@@ -502,3 +502,153 @@ def test_model_single_context_field_no_warning(capsys) -> None:
     warning_texts = [l.replace("  warn: ", "") for l in warn_lines]
     assert any("family" in w for w in warning_texts)
     assert not any("min_context" in w or "max_context" in w for w in warning_texts)
+
+
+# --- tsk-virtol: restrictive license_class gate ---
+
+# Known permissive licenses that do NOT require license_class to be set.
+# These are licenses that allow commercial use, modification, distribution
+# without significant restrictions.
+PERMISSIVE_LICENSES = {
+    "MIT",
+    "Apache-2.0",
+    "Apache 2.0",
+    "BSD-3-Clause",
+    "BSD-2-Clause",
+    "ISC",
+    "Unlicense",
+    "CC0-1.0",
+    "OpenRAIL",
+    "OpenRAIL-M",
+    "OpenRAIL++",
+    "openrail++",
+    "CreativeML OpenRAIL-M",
+    "MPL-2.0",
+    "CC-BY-4.0",
+    "OpenRAIL++ (commercial use allowed)",
+}
+
+COPYLEFT_LICENSES = {
+    "GPL-2.0",
+    "GPL-3.0",
+    "LGPL-2.1",
+    "LGPL-3.0",
+    "AGPL-3.0",
+}
+
+# Licenses known to be restrictive (require acceptance).
+# Maps license string -> expected license_class
+# This list must be kept in sync with actual catalog manifests.
+RESTRICTIVE_LICENSES: dict[str, str] = {
+    # Non-commercial licenses
+    "bria-rmbg-1.4 (non-commercial)": "non-commercial",
+    "flux-1-dev-non-commercial-license": "non-commercial",
+    "CC BY-NC-SA 4.0": "non-commercial",
+    "sai-nc-community (non-commercial)": "non-commercial",
+    "CC-BY-NC 4.0 (non-commercial)": "non-commercial",
+    "flux-1-dev-non-commercial": "non-commercial",
+    "CC-BY-NC-4.0": "non-commercial",
+    "CC-BY-NC 4.0": "non-commercial",
+    "Non-commercial": "non-commercial",
+    "non-commercial": "non-commercial",
+    "stable-cascade-nc-community (non-commercial)": "non-commercial",
+    "CC-BY-NC 4.0 (non-commercial)": "non-commercial",
+
+    # Revenue-capped licenses
+    "Stability AI Community License": "revenue-capped",
+    "Llama 3.1 Community License": "revenue-capped",
+    "Llama 3.2 Community License": "revenue-capped",
+    "Llama 3.3 Community License": "revenue-capped",
+    "Llama 3 Community License": "revenue-capped",
+    "llama3.2": "revenue-capped",
+    "NVIDIA Open Model License": "revenue-capped",
+    "Llama 3.2 Community License": "revenue-capped",
+
+    # Research-only licenses
+    "S-Lab License 1.0": "research-only",
+    "Gemma Terms of Use": "research-only",
+    "Apache-2.0 / MiniCPM Model License": "research-only",
+    "Qwen Research License": "research-only",
+    "Tongyi Qianwen License": "research-only",
+    "MiniCPM Model License": "research-only",
+    "S-Lab License": "research-only",
+    "Qwen License": "research-only",
+    "Gemma": "research-only",
+
+    # Proprietary licenses
+    "Proprietary": "proprietary",
+    "Commercial": "proprietary",
+    "Proprietary (Hailo EULA, accepted at install)": "proprietary",
+
+    # Gated licenses (require approval/agreement)
+    "Qwen License (commercial requires agreement)": "gated",
+    "Playground v2.5 Community License": "gated",
+
+    # Unlicensed / no license declared
+    "No license": "unlicensed",
+    "All rights reserved": "unlicensed",
+    "": "unlicensed",
+    "No license declared": "unlicensed",
+
+    # Territory-limited (add when manifests use this class)
+    # "Some Territory License": "territory-limited",
+
+    # Other restrictive licenses needing classification
+    "DeepSeek License": "research-only",  # DeepSeek models are research-focused
+    "Tencent HunyuanVideo Community License": "research-only",
+    "Sustainable Use License": "non-commercial",  # n8n's license restricts commercial use
+}
+
+
+def test_restrictive_manifests_have_license_class():
+    """Every manifest with a restrictive license must declare license_class.
+
+    This test scans the real app-catalog and asserts that any manifest whose
+    license string matches a known restrictive license has a non-empty
+    license_class field. Permissive and copyleft licenses are allowed to have
+    empty license_class (defaults to permissive semantics).
+
+    The check looks at both `weights_license` (preferred, for model weights)
+    and `license` (fallback, for code license) fields.
+    """
+    import yaml
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parent.parent / "app-catalog"
+    errors: list[str] = []
+
+    for type_dir in ("models", "services", "agents", "plugins"):
+        base = root / type_dir
+        if not base.exists():
+            continue
+        for manifest_path in sorted(base.glob("*/manifest.yaml")):
+            try:
+                data = yaml.safe_load(manifest_path.read_text(encoding="utf-8"))
+            except Exception:
+                continue
+            if not isinstance(data, dict):
+                continue
+
+            # Check weights_license first (explicit weights license), then license (code license)
+            license_str = data.get("weights_license", "") or data.get("license", "")
+            license_class = data.get("license_class", "")
+
+            # Skip if license is permissive or copyleft
+            if license_str in PERMISSIVE_LICENSES or license_str in COPYLEFT_LICENSES:
+                continue
+
+            # Check if it's a known restrictive license
+            expected_class = RESTRICTIVE_LICENSES.get(license_str)
+            if expected_class is not None:
+                if not license_class:
+                    errors.append(
+                        f"Manifest {data.get('id', manifest_path.parent.name)} has restrictive license "
+                        f"'{license_str}' but no license_class (expected '{expected_class}')"
+                    )
+                elif license_class != expected_class:
+                    errors.append(
+                        f"Manifest {data.get('id', manifest_path.parent.name)} has license_class "
+                        f"'{license_class}' but license '{license_str}' expects '{expected_class}'"
+                    )
+
+    assert not errors, "\n".join(errors)

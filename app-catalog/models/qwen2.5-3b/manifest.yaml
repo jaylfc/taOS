@@ -5,6 +5,10 @@ version: 2.5.0
 description: Compact 3B with tool calling — excellent edge model
 homepage: https://huggingface.co/Qwen/Qwen2.5-3B-Instruct
 license: Qwen Research License
+weights_license: "Qwen Research License"
+license_class: research-only
+license_version: "1.0"
+license_url: "https://github.com/QwenLM/Qwen/blob/main/LICENSE"
 capabilities:
 - chat
 - tool-calling

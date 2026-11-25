@@ -6,6 +6,10 @@ description: Meta's flagship 70B — matches Llama 3.1 405B on many benchmarks. 
   clusters or distributed inference.
 homepage: https://huggingface.co/meta-llama/Llama-3.3-70B-Instruct
 license: Llama 3.3 Community License
+weights_license: "Llama 3.3 Community License"
+license_class: revenue-capped
+license_version: "1.0"
+license_url: "https://github.com/meta-llama/llama3/blob/main/LICENSE"
 capabilities:
 - chat
 - tool-calling

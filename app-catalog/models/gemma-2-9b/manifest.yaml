@@ -5,6 +5,10 @@ version: 2.0.0
 description: Google's 9B — competitive with larger models, great general-purpose chat
 homepage: https://huggingface.co/google/gemma-2-9b-it
 license: Gemma Terms of Use
+weights_license: "Gemma Terms of Use"
+license_class: research-only
+license_version: "1.0"
+license_url: "https://ai.google.dev/gemma/terms"
 capabilities:
 - chat
 - code
