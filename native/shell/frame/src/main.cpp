@@ -23,7 +23,7 @@ int main(int argc, char **argv)
     const QString cmd = args.value(1);
     if (cmd == QLatin1String("--version")) { printf("taos-frame %s\n", TAOS_FRAME_VERSION); return 0; }
     if (cmd == QLatin1String("--help") || cmd == QLatin1String("-h")) {
-        printf("usage: taos-frame [run]\n       taos-frame menu | state | press <window-id> <close|minimise|full>   (to the running taos-frame)\n"
+        printf("usage: taos-frame [run]\n       taos-frame menu | state | press <window-id> <close|minimise|full|maximise|fullscreen>   (to the running taos-frame)\n"
                "Draws the window buttons for windows that cannot draw their own (web apps). Which windows: ~/.config/taos/frame.json\n"
                "  {\"include\": [\"^chrome-\"], \"exclude\": [], \"frameAllForeign\": false}\n");
         return 0;

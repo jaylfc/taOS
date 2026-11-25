@@ -36,6 +36,9 @@ private:
 struct Plan {
     QStringList commands;
     QString error;      // set: do nothing, report this
+    int settleId = 0;   // a floating window that must end up at `settle` (a client may undo the first resize)
+    QRect settle;
+    QString settleHidden;   // ... and, when its workspace is not shown, the name to send it back to after each move
     bool ok() const { return error.isEmpty(); }
 };
 namespace Plans {
@@ -50,7 +53,24 @@ Plan adoptMinimised(const Window &before, const Window &now, qint64 nowMs);
 // A window that came back on a workspace by other means: drop its stale minimise marks.
 Plan clearMinimiseMarks(const Window &w);
 Plan full(const Window &w, const Tree &t);      // toggle full size
-Plan fullscreen(const Window &w);               // sway's own fullscreen
+// Full size, and only that: a window that already has it gets the usable area again, one in sway's fullscreen leaves
+// it first. Never goes back (that is `full`, a toggle, or `unmaximise`).
+Plan maximise(const Window &w, const Tree &t);
+// What `restore` does to a window that is on screen: leave sway's fullscreen, then give up full size and go back to
+// the geometry (or the tiling) it had. Nothing to undo: no commands.
+Plan unmaximise(const Window &w, const Tree &t);
+enum class Fullscreen { Toggle, On, Off };
+Plan fullscreen(const Window &w, Fullscreen mode = Fullscreen::Toggle);   // sway's own fullscreen (the client gets set_fullscreen)
+// Onto the focused workspace (the screen the person is looking at), a floating window centred at a size that fits.
+Plan bringHere(const Window &w, const Tree &t);
+// A floating window back to the default size for its screen, centred on its own workspace.
+Plan resetSize(const Window &w, const Tree &t);
+// To the workspace `space` (made when it does not exist yet). Empty: the focused workspace.
+Plan moveToSpace(const Window &w, const Tree &t, const QString &space);
+// The name of a new, empty space: the next number after the highest in use (as the overview names it).
+QString newSpaceName(const Tree &t);
+// Where a floating window lands on a workspace area: full size fills it, else its own size when sensible, centred.
+QRect landingRect(const Window &w, const QRect &area);
 Plan close(const Window &w);
 Plan focus(const Window &w, const Tree &t);     // restores first when minimised
 }  // namespace Plans
@@ -66,12 +86,21 @@ public:
     bool toggleMinimise(const QString &ref, QString *error);
     bool focus(const QString &ref, QString *error);
     bool full(const QString &ref, QString *error);
-    bool fullscreen(const QString &ref, QString *error);
+    // `mode` On/Off are idempotent; Toggle is the key binding.
+    bool fullscreen(const QString &ref, QString *error, Plans::Fullscreen mode = Plans::Fullscreen::Toggle);
+    bool maximise(const QString &ref, QString *error);
+    bool bringHere(const QString &ref, QString *error);
+    bool resetSize(const QString &ref, QString *error);
+    bool moveToSpace(const QString &ref, const QString &space, QString *error);
+    // A new empty space; with a window ref, that window goes there and the space is shown. `created` gets its name.
+    bool newSpace(const QString &ref, QString *created, QString *error);
     bool close(const QString &ref, QString *error);
     // The container of this process, or 0.
     // Makes a floating window end up at `want` (a client may answer its first configure after our resize and
     // undo it): looks a few times and repeats resize and move. False when it never got there.
-    bool settleGeometry(int id, const QRect &want);
+    bool settleGeometry(int id, const QRect &want, const QString &hiddenWorkspace = QString());
+    // The same for "fill the usable area": a few px of border difference are asked for as well.
+    void settleFull(int id, const QRect &area, const QString &hiddenWorkspace = QString());
     // One raw sway command (used by the mode switch).
     bool runRaw(const QString &cmd, QString *error) { return m_t->runCommand(cmd, error); }
     int ownWindowId(int pid, const QString &appId, QString *error = nullptr);

@@ -12,6 +12,8 @@
 #include "cliengine.h"
 #include "swayengine.h"
 
+static QVariantList toVariant(const QVector<DockMenuRow> &rows);
+
 QStringList DockController::defaultPinned(const DesktopIndex &idx) {
     // Files, Terminal, Browser, Activity, Notifications, Decisions, Agents, Messages, Settings: first existing candidate of each slot.
     const QVector<QStringList> candidates = {
@@ -54,6 +56,13 @@ DockController::DockController(const Options &o, QObject *parent)
     connect(m_engine, &WindowEngine::focusedWorkspaceChanged, this, &DockController::relayout);
     connect(&m_settings, &DockSettings::pinnedChanged, this, &DockController::refreshModel);
     connect(&m_model, &DockModel::countChanged, this, &DockController::relayout);
+    connect(m_engine, &WindowEngine::spacesChanged, this, [this] {
+        m_model.setSpaces(m_engine->spaces());
+        if (!m_menuOpen || !m_menuBuild) return;          // an open menu follows: a space was made or went away
+        m_menu = m_menuBuild();
+        m_menuRows = toVariant(m_menu);
+        emit menuRowsChanged();
+    });
     connect(m_engine, &WindowEngine::windowsChanged, this, [this] { m_model.setWindows(m_engine->windows()); m_taskbar.setWindows(m_engine->windows()); relayout(); });
     m_index.scan(m_o.appDirs);
     if (m_o.watch) {
@@ -225,14 +234,26 @@ void DockController::perform(const DockAction &a) {
 void DockController::activate(int row) { perform(m_model.primaryAction(row)); }
 void DockController::middleClick(int row) { perform(m_model.middleAction(row)); }
 
-// window-min:<id> (restore when minimised), window-full:<id> (the engine toggles), window-close:<id>.
+// A window control row of a menu. Each one is a single engine command; the engine owns every geometry rule.
+//   window-min:<id>        Minimise, or Restore a minimised window
+//   window-full:<id>       Maximise, or (already maximised) Restore size
+//   window-fs:<id>         Full screen, or Exit full screen
+//   window-bring:<id>  window-reset:<id>  window-close:<id>  window-newspace:<id>
+//   window-space:<id>:<space>
 void DockController::windowAction(const QString &id) {
     const int colon = id.indexOf(QLatin1Char(':'));
-    const int win = id.mid(colon + 1).toInt();
     const QString verb = id.left(colon);
+    const QString rest = id.mid(colon + 1);
+    const int colon2 = rest.indexOf(QLatin1Char(':'));      // only window-space has a second one: the space name may hold any text
+    const int win = rest.left(colon2 < 0 ? rest.size() : colon2).toInt();
     const WindowInfo *w = m_model.window(win);
     if (verb == QLatin1String("window-min")) { if (w && w->minimised) m_engine->restore(win); else m_engine->minimise(win); }
-    else if (verb == QLatin1String("window-full")) { if (w && !w->minimised) m_engine->full(win); }
+    else if (verb == QLatin1String("window-full")) { if (w && !w->minimised) { if (w->fullSize) m_engine->restoreSize(win); else m_engine->maximise(win); } }
+    else if (verb == QLatin1String("window-fs")) { if (w && !w->minimised) m_engine->fullscreen(win, !w->fullscreen); }
+    else if (verb == QLatin1String("window-bring")) m_engine->bringHere(win);
+    else if (verb == QLatin1String("window-reset")) m_engine->resetSize(win);
+    else if (verb == QLatin1String("window-space") && colon2 >= 0) m_engine->moveToSpace(win, rest.mid(colon2 + 1));
+    else if (verb == QLatin1String("window-newspace")) m_engine->newSpace(win);
     else if (verb == QLatin1String("window-close")) m_engine->close(win);
 }
 
@@ -246,41 +267,35 @@ static QVariantList toVariant(const QVector<DockMenuRow> &rows) {
         m[QStringLiteral("enabled")] = r.enabled;
         m[QStringLiteral("danger")] = r.danger;
         m[QStringLiteral("minimised")] = r.minimised;
+        m[QStringLiteral("current")] = r.current;
         m[QStringLiteral("accessible")] = r.accessible.isEmpty() ? r.text : r.accessible;
-        QVariantList subs;
-        for (const DockMenuSub &x : r.subs) {
-            QVariantMap sm;
-            sm[QStringLiteral("id")] = x.id;
-            sm[QStringLiteral("glyph")] = x.glyph;
-            sm[QStringLiteral("accessible")] = x.accessible;
-            sm[QStringLiteral("enabled")] = x.enabled;
-            subs << sm;
-        }
-        m[QStringLiteral("subs")] = subs;
+        m[QStringLiteral("children")] = toVariant(r.children);
+        // Enter or a click on this row opens its submenu (the window rows of an app with several windows run: they focus it)
+        m[QStringLiteral("opens")] = !r.children.isEmpty() && !r.id.startsWith(QLatin1String("window:"));
         l << m;
     }
     return l;
 }
 
-void DockController::openMenu(int row, qreal x, qreal y) {
-    m_menu = m_model.menuFor(row);
+void DockController::showMenu(std::function<QVector<DockMenuRow>()> build, qreal x, qreal y, int row) {
+    m_menuBuild = std::move(build);
+    m_menu = m_menuBuild();
     m_menuRow = row;
     m_menuRows = toVariant(m_menu);
     m_menuOpen = true;
     updateReveal();
     emit menuRowsChanged();
     emit menuRequested(x, y, row);
+    m_engine->refreshSpaces();      // the list of spaces may have changed since the last look; the menu follows when it arrives
+}
+
+void DockController::openMenu(int row, qreal x, qreal y) {
+    showMenu([this, row] { return m_model.menuFor(row); }, x, y, row);
 }
 
 void DockController::openWindowList(int row, qreal x, qreal y) {
-    m_menu = m_model.windowListFor(row);
-    if (m_menu.isEmpty()) { openMenu(row, x, y); return; }
-    m_menuRow = row;
-    m_menuRows = toVariant(m_menu);
-    m_menuOpen = true;
-    updateReveal();
-    emit menuRowsChanged();
-    emit menuRequested(x, y, row);
+    if (m_model.windowListFor(row).isEmpty()) { openMenu(row, x, y); return; }
+    showMenu([this, row] { return m_model.windowListFor(row); }, x, y, row);
 }
 
 void DockController::openSettings() {
@@ -296,13 +311,28 @@ void DockController::closeMenu() {
     emit menuClosed();
 }
 
-void DockController::invokeMenu(int index) {
-    if (index < 0 || index >= m_menu.size()) return;
-    const DockMenuRow r = m_menu[index];
-    const int row = m_menuRow;
-    const DockItem *it = row >= 0 && row < m_model.items().size() ? &m_model.items()[row] : nullptr;
+void DockController::invokeMenu(int index) { invokePath({index}); }
+
+void DockController::invokePath(const QVariantList &path) {
+    const QVector<DockMenuRow> *level = &m_menu;
+    const DockMenuRow *r = nullptr;
+    for (const QVariant &p : path) {
+        const int i = p.toInt();
+        if (i < 0 || i >= level->size()) return;
+        r = &(*level)[i];
+        level = &r->children;
+    }
+    if (!r) return;
+    const DockMenuRow row = *r;          // closeMenu() and the engine may rebuild the menu
+    const int menuRow = m_menuRow;
     closeMenu();
+    invokeRow(row, menuRow);
+}
+
+void DockController::invokeRow(const DockMenuRow &r, int row) {
+    const DockItem *it = row >= 0 && row < m_model.items().size() ? &m_model.items()[row] : nullptr;
     if (!r.enabled || r.kind == DockMenuRow::Separator) return;
+    if (!r.children.isEmpty() && !r.id.startsWith(QLatin1String("window:"))) return;     // a submenu opens, it does not run
     if (r.id.startsWith(QLatin1String("window:"))) {
         const int id = r.windowId;
         const WindowInfo *w = m_model.window(id);
@@ -329,13 +359,6 @@ void DockController::invokeMenu(int index) {
     } else if (r.id == QLatin1String("settings")) {
         openSettings();
     }
-}
-
-void DockController::invokeSub(int index, int sub) {
-    if (index < 0 || index >= m_menu.size() || sub < 0 || sub >= m_menu[index].subs.size()) return;
-    const DockMenuSub x = m_menu[index].subs[sub];
-    closeMenu();
-    if (x.enabled) windowAction(x.id);
 }
 
 void DockController::movePinned(int from, int to) {
@@ -370,21 +393,18 @@ static DockMenuRow windowRow(const QString &id, const QString &text, int win, bo
 void DockController::taskbarMenu(int id, qreal x, qreal y) {
     const int p = m_taskbar.positionOf(id);
     if (p < 0) return;
-    const TaskbarButton &b = m_taskbar.buttons()[p];
-    m_menu.clear();
-    if (b.minimised) m_menu << windowRow(QStringLiteral("restore"), tr("Restore"), id);
-    else {
-        m_menu << windowRow(QStringLiteral("window:%1").arg(id), tr("Show"), id);
-        m_menu << windowRow(QStringLiteral("window-min:%1").arg(id), tr("Minimise"), id);
-    }
-    DockMenuRow sep;
-    sep.kind = DockMenuRow::Separator;
-    m_menu << sep << windowRow(QStringLiteral("close"), tr("Close"), id, true);
-    m_menuRow = -1;
-    m_menuRows = toVariant(m_menu);
-    m_menuOpen = true;
-    emit menuRowsChanged();
-    emit menuRequested(x, y, -1);
+    // The same window controls as the dock's menu (one builder), after a Show for a window that is up.
+    showMenu([this, id] {
+        QVector<DockMenuRow> rows;
+        const int p = m_taskbar.positionOf(id);
+        if (p >= 0 && !m_taskbar.buttons()[p].minimised) {
+            rows << windowRow(QStringLiteral("window:%1").arg(id), tr("Show"), id);
+            DockMenuRow sep;
+            sep.kind = DockMenuRow::Separator;
+            rows << sep;
+        }
+        return rows + m_model.windowControlRows(id);
+    }, x, y, -1);
 }
 
 void DockController::taskbarOverflowMenu(int first, int visible, qreal x, qreal y) {
@@ -397,6 +417,7 @@ void DockController::taskbarOverflowMenu(int first, int visible, qreal x, qreal 
         m_menu << r;
     }
     if (m_menu.isEmpty()) return;
+    m_menuBuild = nullptr;
     m_menuRow = -1;
     m_menuRows = toVariant(m_menu);
     m_menuOpen = true;

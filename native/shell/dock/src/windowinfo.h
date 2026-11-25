@@ -15,13 +15,24 @@ struct WindowInfo {
     bool minimised = false;   // lives in the compositor: the mark taos_min_<id>
     bool floating = false;
     bool fullscreen = false;
-    bool fullSize = false;    // "full size" (the window fills the usable area); the engine does not report it yet, see parseList
+    bool fullSize = false;    // maximised: the window fills the usable area (`full_size` in the engine's list)
     QString output;
     bool operator==(const WindowInfo &o) const;
     bool operator!=(const WindowInfo &o) const { return !(*this == o); }
 };
 
+// One space (sway workspace), as `taos-window spaces --json` lists it.
+struct SpaceInfo {
+    QString name;
+    bool focused = false;
+    bool visible = false;
+    int windows = 0;
+    bool operator==(const SpaceInfo &o) const { return name == o.name && focused == o.focused && visible == o.visible && windows == o.windows; }
+};
+
 namespace WindowJson {
+// Parses `taos-window spaces --json`.
+bool parseSpaces(const QByteArray &json, QVector<SpaceInfo> *out, QString *error = nullptr);
 // Parses the contract's `taos-window list --json`: an array of objects with
 // id, app_id, title, pid, workspace, focused, minimised, floating, fullscreen, output.
 bool parseList(const QByteArray &json, QVector<WindowInfo> *out, QString *error = nullptr);

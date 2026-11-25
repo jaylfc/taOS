@@ -22,8 +22,18 @@ public:
     void toggleMinimise(int id) override { verb(QStringLiteral("toggle-minimise"), id); }
     void focus(int id) override { verb(QStringLiteral("focus"), id); }
     void full(int id) override { verb(QStringLiteral("full"), id); }
+    void maximise(int id) override { verb(QStringLiteral("maximise"), id); }
+    void restoreSize(int id) override { verb(QStringLiteral("restore"), id); }
+    void fullscreen(int id, bool on) override { verb(QStringLiteral("fullscreen"), id, {on ? QStringLiteral("on") : QStringLiteral("off")}); }
+    void bringHere(int id) override { verb(QStringLiteral("bring-here"), id); }
+    void resetSize(int id) override { verb(QStringLiteral("reset-size"), id); }
+    void moveToSpace(int id, const QString &space) override { verb(QStringLiteral("move-to-space"), id, {space}, true); }
+    void newSpace(int id) override { verb(QStringLiteral("new-space"), id, {}, true); }
+    QVector<SpaceInfo> spaces() const override { return m_spaces; }
+    void refreshSpaces() override;
 private:
-    void verb(const QString &v, int id);
+    void verb(const QString &v, int id, const QStringList &more = {}, bool spacesChange = false);
+    QVector<SpaceInfo> m_spaces;
     void startSubscribe();
     QString m_prog;
     QVector<WindowInfo> m_windows;

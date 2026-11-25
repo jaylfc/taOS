@@ -534,6 +534,27 @@ engine behind it is `SwayEngine` (a fallback to be replaced by `taos_window_core
 installed with `native/apps/install-apps.sh <prefix>` (binaries, wrappers that source `/etc/taos/shell.env`,
 `.desktop` files and icons).
 
+**Window controls (right click on a running app, or on a Workbench taskbar button).** One list, built in one place
+(`DockModel::windowControlRows`), used by the menu of an app with one window, by the submenu of each window of an app with
+several (`Activity` > `Minimise`, `Maximise`, ...), and by the Workbench taskbar button's menu:
+
+| Row | Engine command | Notes |
+| --- | --- | --- |
+| Minimise / Restore | `taos-window minimise` / `restore <id>` | Restore for a minimised window |
+| Maximise / Restore size | `taos-window maximise <id>` / `restore <id>` | fills the usable area (bar and dock excluded), not fullscreen; waits for a window that is minimised |
+| Full screen / Exit full screen | `taos-window fullscreen <id> on` / `off` | sway's real fullscreen; the container is never resized by us |
+| Bring here | `taos-window bring-here <id>` | onto the focused workspace, centred, at a size that fits (comes back from minimised too) |
+| Reset size | `taos-window reset-size <id>` | default size for the screen, centred on its own workspace; off for tiled windows |
+| Move to space > | `taos-window move-to-space <id> <space>` / `new-space <id>` | the spaces come from `taos-window spaces --json`; the window's own space is ticked |
+| Close | `taos-window close <id>` | |
+
+The dock only calls the engine; every geometry rule lives in `native/shell/window`. An engine that cannot do a verb (the built-in
+`SwayEngine` fallback) says so on stderr and does nothing. Keyboard: Menu key (or Super+D, then the arrows and Menu) opens
+the menu of the focused item; Up and Down move, Right or Enter on a row with a chevron opens its submenu (Left or Escape
+closes it, Escape from the first panel closes the menu), Enter runs a row. Labels match the title bar buttons and the
+frame's window menu: Maximise, Full screen. `dockshot` (`--scene menu|taskbar-menu`, `--windows single|several`, `--sub`, `--light`)
+renders them offscreen.
+
 The dock follows the desktop/tiling mode: `~/.config/taos/desktop.json` (written by the window engine) and the
 focused sway workspace decide it. On a tiling workspace the dock behaves as auto-hide (no reserved space)
 whatever `autohide` says, unless `hideInTiling` is false; in desktop mode `autohide` from dock.json applies.

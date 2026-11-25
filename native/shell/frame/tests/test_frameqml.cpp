@@ -165,8 +165,39 @@ private slots:
             if (i && i->role() == QAccessible::Button)
                 names << i->text(QAccessible::Name);
         }
-        QVERIFY2(names.contains(QStringLiteral("Close Doc")) && names.contains(QStringLiteral("Minimise Doc")) && names.contains(QStringLiteral("Full size Doc")),
+        QVERIFY2(names.contains(QStringLiteral("Close Doc")) && names.contains(QStringLiteral("Minimise Doc")) && names.contains(QStringLiteral("Maximise Doc")),
                  qPrintable(names.join(QLatin1String(", "))));
+    }
+    // The window menu (right click on a title bar): the same verbs and words as the dock's menu and the strip's buttons.
+    void windowMenuNamesTheRealVerbs()
+    {
+        QQuickView v(m_engine, nullptr);
+        v.setResizeMode(QQuickView::SizeRootObjectToView);
+        v.setInitialProperties({{QStringLiteral("windowTitle"), QStringLiteral("Doc")}});
+        v.setSource(QUrl::fromLocalFile(QStringLiteral(TAOS_FRAME_QML_DIR "/FrameMenu.qml")));
+        QVERIFY(v.status() == QQuickView::Ready);
+        v.resize(400, 300);
+        v.show();
+        QVERIFY(QTest::qWaitForWindowExposed(&v));
+        QSignalSpy chosen(v.rootObject(), SIGNAL(chosen(QString)));
+        QAccessible::setActive(true);
+        QStringList names;
+        std::function<void(QQuickItem *)> walk = [&](QQuickItem *it) {
+            QAccessibleInterface *i = QAccessible::queryAccessibleInterface(it);
+            if (i && i->role() == QAccessible::MenuItem) names << i->text(QAccessible::Name);
+            for (QQuickItem *c : it->childItems()) walk(c);
+        };
+        walk(v.rootObject());
+        QCOMPARE(names, (QStringList{QStringLiteral("Minimise"), QStringLiteral("Maximise"), QStringLiteral("Full screen"), QStringLiteral("Close")}));
+        // keyboard: Down twice, Enter chooses "Full screen" (which is the fullscreen action, not the maximise one)
+        QTest::keyClick(&v, Qt::Key_Down);
+        QTest::keyClick(&v, Qt::Key_Down);
+        QTest::keyClick(&v, Qt::Key_Return);
+        QCOMPARE(chosen.count(), 1);
+        QCOMPARE(chosen.at(0).at(0).toString(), QStringLiteral("fullscreen"));
+        QTest::keyClick(&v, Qt::Key_Up);
+        QTest::keyClick(&v, Qt::Key_Return);
+        QCOMPARE(chosen.at(1).at(0).toString(), QStringLiteral("full"));
     }
     void followsThemeSwitchLive()
     {

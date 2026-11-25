@@ -5,6 +5,7 @@
 #include <QSize>
 #include <QTimer>
 #include <QVariantList>
+#include <functional>
 
 #include "desktopentry.h"
 #include "dockconfig.h"
@@ -97,7 +98,8 @@ public:
     Q_INVOKABLE void openMenu(int row, qreal x, qreal y);
     Q_INVOKABLE void openWindowList(int row, qreal x, qreal y);
     Q_INVOKABLE void invokeMenu(int index);
-    Q_INVOKABLE void invokeSub(int index, int sub);   // an inline button of a window row
+    // A row of a submenu: `path` is the index in the menu, then the index in its children, and so on.
+    Q_INVOKABLE void invokePath(const QVariantList &path);
     Q_INVOKABLE void closeMenu();
     Q_INVOKABLE void openSettings();        // the Dock settings popover
     Q_INVOKABLE void setPointerInside(bool inside);
@@ -136,6 +138,8 @@ private:
     void watchAppDirs();
     void updateReveal();
     void windowAction(const QString &id);
+    void invokeRow(const DockMenuRow &r, int menuRow);
+    void showMenu(std::function<QVector<DockMenuRow>()> build, qreal x, qreal y, int row);
     Options m_o;
     DockSettings m_settings;
     DesktopModeWatcher m_modes;
@@ -153,6 +157,7 @@ private:
     bool m_inside = false, m_menuOpen = false, m_revealed = true;
     QVariantList m_menuRows;
     QVector<DockMenuRow> m_menu;
+    std::function<QVector<DockMenuRow>()> m_menuBuild;     // rebuilds the open menu when the spaces arrive
     int m_menuRow = -1;
     std::function<void(const QString &, const QStringList &)> m_spawn;
 };

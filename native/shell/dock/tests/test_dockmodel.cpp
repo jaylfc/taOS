@@ -134,49 +134,97 @@ private slots:
         QCOMPARE(mp->menuFor(-1).size(), 1);
         QCOMPARE(mp->windowListFor(mp->rowForKey(QStringLiteral("browser"))).size(), 2);
     }
-    void singleWindowActionsAtTheTopOfTheMenu() {
-        mp->setWindows({win(5, "act.app", "Activity", true)});
+    // The window controls: one list, built in one place, for the single-window menu, the per-window submenu of an app
+    // with several windows, and the Workbench taskbar button's menu.
+    static QStringList ids(const QVector<DockMenuRow> &rows) { QStringList l; for (const DockMenuRow &r : rows) l << (r.kind == DockMenuRow::Separator ? QStringLiteral("-") : r.id); return l; }
+    static const DockMenuRow *find(const QVector<DockMenuRow> &rows, const QString &id) { for (const DockMenuRow &r : rows) if (r.id == id) return &r; return nullptr; }
+    void singleWindowControlsAtTheTopOfTheMenu() {
+        WindowInfo w = win(5, "act.app", "Activity", true);
+        w.floating = true;
+        mp->setWindows({w});
         auto rows = mp->menuFor(mp->rowForKey(QStringLiteral("act")));
-        QCOMPARE(rows[0].id, QStringLiteral("window-min:5"));
+        QCOMPARE(ids(rows).mid(0, 9), (QStringList{QStringLiteral("window-min:5"), QStringLiteral("window-full:5"), QStringLiteral("window-fs:5"), QStringLiteral("-"),
+                                                   QStringLiteral("window-bring:5"), QStringLiteral("window-reset:5"), QStringLiteral("window-spaces:5"), QStringLiteral("-"),
+                                                   QStringLiteral("window-close:5")}));
         QCOMPARE(rows[0].text, QStringLiteral("Minimise"));
         QCOMPARE(rows[0].accessible, QStringLiteral("Minimise Activity"));
-        QCOMPARE(rows[1].id, QStringLiteral("window-full:5"));
-        QCOMPARE(rows[1].text, QStringLiteral("Full size"));
-        QCOMPARE(rows[2].id, QStringLiteral("window-close:5"));
-        QCOMPARE(rows[2].accessible, QStringLiteral("Close Activity"));
+        QCOMPARE(rows[1].text, QStringLiteral("Maximise"));
+        QCOMPARE(rows[2].text, QStringLiteral("Full screen"));
+        QCOMPARE(rows[4].text, QStringLiteral("Bring here"));
+        QCOMPARE(rows[4].accessible, QStringLiteral("Bring Activity here"));
+        QCOMPARE(rows[5].text, QStringLiteral("Reset size"));
+        QCOMPARE(rows[6].text, QStringLiteral("Move to space"));
+        QVERIFY(!rows[6].children.isEmpty());
+        QCOMPARE(rows[8].text, QStringLiteral("Close"));
+        QVERIFY(rows[8].danger);
+        QCOMPARE(rows[8].accessible, QStringLiteral("Close Activity"));
         for (const DockMenuRow &r : rows) QVERIFY(r.id != QLatin1String("quit"));   // one window: Close is Quit
-        // minimised: Restore, and full size has to wait for the restore
-        mp->setWindows({win(5, "act.app", "Activity", false, true)});
+        for (const DockMenuRow &r : rows) QVERIFY(r.id != QLatin1String("restore") || r.kind == DockMenuRow::Entry);
+        // minimised: Restore; size and full screen wait for it; Bring here and Move to space work (they restore too)
+        w.minimised = true;
+        mp->setWindows({w});
         rows = mp->menuFor(mp->rowForKey(QStringLiteral("act")));
         QCOMPARE(rows[0].text, QStringLiteral("Restore"));
         QCOMPARE(rows[0].accessible, QStringLiteral("Restore Activity"));
-        QVERIFY(!rows[1].enabled);
-        // full size (or fullscreen): Restore size
-        WindowInfo big = win(5, "act.app", "Activity", true);
-        big.fullSize = true;
-        mp->setWindows({big});
-        QCOMPARE(mp->menuFor(mp->rowForKey(QStringLiteral("act")))[1].text, QStringLiteral("Restore size"));
-        big.fullSize = false; big.fullscreen = true;
-        mp->setWindows({big});
-        QCOMPARE(mp->menuFor(mp->rowForKey(QStringLiteral("act")))[1].text, QStringLiteral("Restore size"));
+        QVERIFY(!rows[1].enabled && !rows[2].enabled && !rows[5].enabled);
+        QVERIFY(rows[4].enabled && rows[6].enabled);
+        // maximised: Restore size; full screen: Exit full screen (and Maximise stays a Maximise)
+        w.minimised = false; w.fullSize = true;
+        mp->setWindows({w});
+        rows = mp->menuFor(mp->rowForKey(QStringLiteral("act")));
+        QCOMPARE(rows[1].text, QStringLiteral("Restore size"));
+        QCOMPARE(rows[1].accessible, QStringLiteral("Restore size of Activity"));
+        QCOMPARE(rows[2].text, QStringLiteral("Full screen"));
+        w.fullSize = false; w.fullscreen = true;
+        mp->setWindows({w});
+        rows = mp->menuFor(mp->rowForKey(QStringLiteral("act")));
+        QCOMPARE(rows[1].text, QStringLiteral("Maximise"));
+        QCOMPARE(rows[2].text, QStringLiteral("Exit full screen"));
+        QCOMPARE(rows[2].accessible, QStringLiteral("Exit full screen of Activity"));
+        // a tiled window is sized by the layout: nothing to reset
+        w.fullscreen = false; w.floating = false;
+        mp->setWindows({w});
+        QVERIFY(!mp->menuFor(mp->rowForKey(QStringLiteral("act")))[5].enabled);
     }
-    void severalWindowsGetInlineActions() {
+    void moveToSpaceListsTheSpacesAndANewOne() {
+        WindowInfo w = win(5, "act.app", "Activity", true);
+        w.floating = true;
+        mp->setWindows({w});
+        mp->setSpaces({{QStringLiteral("1"), true, true, 1}, {QStringLiteral("2"), false, false, 0}, {QStringLiteral("3: web"), false, false, 2}});
+        const auto rows = mp->menuFor(mp->rowForKey(QStringLiteral("act")));
+        const DockMenuRow *m = find(rows, QStringLiteral("window-spaces:5"));
+        QVERIFY(m);
+        QCOMPARE(ids(m->children), (QStringList{QStringLiteral("window-space:5:1"), QStringLiteral("window-space:5:2"), QStringLiteral("window-space:5:3: web"),
+                                                QStringLiteral("-"), QStringLiteral("window-newspace:5")}));
+        QCOMPARE(m->children[0].text, QStringLiteral("Space 1"));
+        QVERIFY(m->children[0].current && !m->children[0].enabled);            // where it is now
+        QVERIFY(m->children[1].enabled && !m->children[1].current);
+        QCOMPARE(m->children[2].text, QStringLiteral("3: web"));               // a named space keeps its name
+        QCOMPARE(m->children[4].text, QStringLiteral("New space"));
+        QVERIFY(m->children[4].enabled);
+        QCOMPARE(m->children[1].accessible, QStringLiteral("Move Activity to space 2"));
+        // an engine that cannot list spaces still offers a new one
+        mp->setSpaces({});
+        const DockMenuRow *m2 = find(mp->menuFor(mp->rowForKey(QStringLiteral("act"))), QStringLiteral("window-spaces:5"));
+        QCOMPARE(ids(m2->children), (QStringList{QStringLiteral("window-newspace:5")}));
+    }
+    void severalWindowsGetASubmenuEach() {
         WindowInfo b = win(6, "foot", "build", false, true);
         WindowInfo a = win(5, "foot", "shell", true);
-        a.fullSize = true;
+        a.fullSize = true; a.floating = true;
         mp->setWindows({a, b});
         const auto rows = mp->menuFor(mp->rowForKey(QStringLiteral("foot")));
         QCOMPARE(rows[0].id, QStringLiteral("window:5"));
-        QCOMPARE(rows[0].subs.size(), 3);
-        QCOMPARE(rows[0].subs[0].glyph, QStringLiteral("min"));
-        QCOMPARE(rows[0].subs[0].accessible, QStringLiteral("Minimise shell"));
-        QCOMPARE(rows[0].subs[1].glyph, QStringLiteral("unfull"));
-        QCOMPARE(rows[0].subs[1].accessible, QStringLiteral("Restore size of shell"));
-        QCOMPARE(rows[0].subs[2].id, QStringLiteral("window-close:5"));
-        QCOMPARE(rows[1].subs[0].glyph, QStringLiteral("restore"));          // the minimised one offers Restore
-        QCOMPARE(rows[1].subs[0].accessible, QStringLiteral("Restore build"));
-        QVERIFY(!rows[1].subs[1].enabled);
+        QVERIFY(!rows[0].children.isEmpty());
+        QCOMPARE(ids(rows[0].children), ids(mp->windowControlRows(5)));                      // the same list as everywhere else
+        QCOMPARE(rows[0].children[0].accessible, QStringLiteral("Minimise shell"));
+        QCOMPARE(rows[0].children[1].text, QStringLiteral("Restore size"));
+        QCOMPARE(rows[0].children[1].accessible, QStringLiteral("Restore size of shell"));
+        QCOMPARE(rows[1].children[0].text, QStringLiteral("Restore"));                     // the minimised one offers Restore
+        QCOMPARE(rows[1].children[0].accessible, QStringLiteral("Restore build"));
+        QVERIFY(!rows[1].children[1].enabled);
         QCOMPARE(rows[1].accessible, QStringLiteral("Restore build"));
+        QVERIFY(rows[0].children.last().id == QLatin1String("window-close:5"));
         bool all = false, closeAll = false;
         for (const DockMenuRow &r : rows) { all |= r.id == QLatin1String("minimise-all") && r.enabled; closeAll |= r.id == QLatin1String("quit"); }
         QVERIFY(all && closeAll);

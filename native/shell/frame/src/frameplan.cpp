@@ -153,7 +153,7 @@ QString StripLayout::buttonAt(bool right, const QPoint &p, const StripMetrics &m
 QString StripLayout::labelFor(const QString &button, const QString &t)
 {
     const QString what = button == QLatin1String("close") ? QStringLiteral("Close")
-                       : button == QLatin1String("minimise") ? QStringLiteral("Minimise") : QStringLiteral("Full size");
+                       : button == QLatin1String("minimise") ? QStringLiteral("Minimise") : QStringLiteral("Maximise");
     return t.isEmpty() ? what + QStringLiteral(" window") : what + QLatin1Char(' ') + t;
 }
 
@@ -163,7 +163,7 @@ QString StripLayout::tipFor(const QString &button, bool usable)
         return QString();
     if (button == QLatin1String("close")) return QStringLiteral("Close  \u2022  Super+Q");
     if (button == QLatin1String("minimise")) return QStringLiteral("Minimise  \u2022  Super+M");
-    return QStringLiteral("Full size or restore  \u2022  Super+Ctrl+Up");
+    return QStringLiteral("Maximise or restore  \u2022  Super+Ctrl+Up");
 }
 
 // ----------------------------------------------------------------------------------------------- planning

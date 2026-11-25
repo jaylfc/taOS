@@ -29,22 +29,16 @@ struct DockAction {
     bool operator==(const DockAction &o) const { return type == o.type && windowId == o.windowId && desktopId == o.desktopId; }
 };
 
-// A small button inside a window row (several windows): minimise or restore, full size, close.
-struct DockMenuSub {
-    QString id;               // window-min:<id> window-full:<id> window-close:<id>
-    QString glyph;            // min | restore | full | unfull | close (the QML draws these)
-    QString accessible;       // "Minimise Activity: Models"
-    bool enabled = true;
-};
-
 struct DockMenuRow {
     enum Kind { Entry, Separator } kind = Entry;
-    QString id;               // window:<id> window-min:<id> window-full:<id> window-close:<id> minimise-all new-window pin unpin quit settings restore close
+    QString id;               // window:<id> window-min:<id> window-full:<id> window-fs:<id> window-bring:<id> window-reset:<id> window-spaces:<id>
+                              // window-space:<id>:<space> window-newspace:<id> window-close:<id> minimise-all new-window pin unpin quit settings restore close
     QString text;
     QString accessible;       // the name a screen reader gets (defaults to text)
-    QVector<DockMenuSub> subs;
+    QVector<DockMenuRow> children;   // a submenu: a window's controls (several windows), the spaces to move it to
     int windowId = 0;
     bool enabled = true, danger = false, minimised = false;
+    bool current = false;     // a space: this is where the window is now (shown ticked)
 };
 
 // The dock's content, derived ONLY from three inputs: the pinned list, the installed applications
@@ -65,6 +59,9 @@ public:
     void setPinned(const QStringList &ids);
     void setWindows(const QVector<WindowInfo> &w);
     void setLaunching(const QString &key, bool on);
+    // The spaces the engine reports (for "Move to space"); the window's own space is ticked.
+    void setSpaces(const QVector<SpaceInfo> &spaces) { m_spaces = spaces; }
+    const QVector<SpaceInfo> &spaces() const { return m_spaces; }
     bool launching(const QString &key) const { return m_launching.contains(key); }
 
     int rowCount(const QModelIndex &p = {}) const override { return p.isValid() ? 0 : m_items.size(); }
@@ -83,6 +80,10 @@ public:
     DockAction middleAction(int row) const;
     QVector<DockMenuRow> menuFor(int row) const;        // right click; row -1 is the strip itself
     QVector<DockMenuRow> windowListFor(int row) const;  // long press
+    // The window controls, one list for every menu: the single-window menu, the submenu of each window of an app with
+    // several, and the Workbench taskbar button's menu. Minimise or Restore, Maximise or Restore size, Full screen or
+    // Exit full screen, Bring here, Reset size, Move to space (a submenu), Close.
+    QVector<DockMenuRow> windowControlRows(int windowId) const;
     // The pinned list after dragging row `from` to row `to` (both pinned rows); hidden ids keep their place at the end.
     QStringList pinnedAfterMove(int from, int to) const;
     // Pinned list with `id` added (end) or removed.
@@ -106,4 +107,5 @@ private:
     int m_lastPinned = -1;
     QVector<int> m_mru;                         // window ids, most recent first (cosmetic memory only)
     QSet<QString> m_launching;
+    QVector<SpaceInfo> m_spaces;
 };

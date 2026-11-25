@@ -107,6 +107,18 @@ QRect placeNewWindow(const Tree &t, const Window &w, const DesktopModes &modes, 
     return QRect(x, y, width, height);
 }
 
+QSize defaultWindowSize(const QRect &a) {
+    return QSize(std::clamp(a.width() * 6 / 10, std::min(480, a.width()), std::max(a.width() - 40, 1)),
+                 std::clamp(a.height() * 7 / 10, std::min(320, a.height()), std::max(a.height() - 40, 1)));
+}
+
+QRect centredIn(const QRect &a, const QSize &want) {
+    const bool sensible = want.isValid() && want.width() >= 240 && want.height() >= 160
+                          && want.width() <= a.width() - 32 && want.height() <= a.height() - 32;
+    const QSize s = sensible ? want : defaultWindowSize(a);
+    return QRect(a.x() + (a.width() - s.width()) / 2, a.y() + (a.height() - s.height()) / 2, s.width(), s.height());
+}
+
 QRect newWindowGeometry(const Tree &t, const Window &w, const DesktopModes &modes) {
     if (w.floating) return QRect();
     return placeNewWindow(t, w, modes, QSize());

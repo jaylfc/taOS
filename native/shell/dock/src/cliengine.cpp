@@ -42,9 +42,31 @@ void CliEngine::refresh() {
     p->start(m_prog, {QStringLiteral("list"), QStringLiteral("--json")});
 }
 
-void CliEngine::verb(const QString &v, int id) {
+void CliEngine::refreshSpaces() {
     auto *p = new QProcess(this);
-    connect(p, &QProcess::finished, this, [this, p] { p->deleteLater(); m_debounce.start(); });
+    connect(p, &QProcess::finished, this, [this, p] {
+        QVector<SpaceInfo> s;
+        QString err;
+        if (p->exitStatus() == QProcess::NormalExit && p->exitCode() == 0 && WindowJson::parseSpaces(p->readAllStandardOutput(), &s, &err)) {
+            if (s != m_spaces) { m_spaces = s; emit spacesChanged(); }
+        } else {
+            fprintf(stderr, "taos-dock: %s spaces failed\n", qPrintable(m_prog));
+        }
+        p->deleteLater();
+    });
     connect(p, &QProcess::errorOccurred, this, [p](QProcess::ProcessError) { p->deleteLater(); });
-    p->start(m_prog, {v, QString::number(id)});
+    p->start(m_prog, {QStringLiteral("spaces"), QStringLiteral("--json")});
+}
+
+void CliEngine::verb(const QString &v, int id, const QStringList &more, bool spacesChange) {
+    auto *p = new QProcess(this);
+    connect(p, &QProcess::finished, this, [this, p, v, spacesChange] {
+        if (p->exitCode() != 0)
+            fprintf(stderr, "taos-dock: taos-window %s: %s", qPrintable(v), p->readAllStandardError().constData());
+        p->deleteLater();
+        m_debounce.start();
+        if (spacesChange) refreshSpaces();
+    });
+    connect(p, &QProcess::errorOccurred, this, [p](QProcess::ProcessError) { p->deleteLater(); });
+    p->start(m_prog, QStringList{v, QString::number(id)} + more);
 }

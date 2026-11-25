@@ -3,7 +3,8 @@ import QtQuick
 import QtQuick.Controls.Basic as B
 import Taos.Frame
 
-// The window menu (right click on a title bar): minimise, full size, close. A full-output transparent surface so a
+// The window menu (right click on a title bar): minimise, maximise, full screen, close. The names are the taos-frame
+// actions: "full" is the maximise toggle (the middle button), "fullscreen" is sway's own fullscreen. A full-output transparent surface so a
 // click outside closes it; Escape too.
 Item {
     id: root
@@ -38,7 +39,7 @@ Item {
             y: 4
             width: parent.width - 8
             Repeater {
-                model: [{name: "minimise", text: qsTr("Minimise")}, {name: "full", text: qsTr("Full size")}, {name: "close", text: qsTr("Close")}]
+                model: [{name: "minimise", text: qsTr("Minimise")}, {name: "full", text: qsTr("Maximise")}, {name: "fullscreen", text: qsTr("Full screen")}, {name: "close", text: qsTr("Close")}]
                 Rectangle {
                     id: row
                     required property var modelData

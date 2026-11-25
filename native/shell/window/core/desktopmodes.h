@@ -39,6 +39,11 @@ QRect newWindowGeometry(const Tree &t, const Window &w, const DesktopModes &mode
 // The same placement for a window that already floats, at the size its application asked for (`preferred`, kept
 // unless it does not fit the free area). Invalid `preferred`: the default 60 % x 70 %.
 QRect placeNewWindow(const Tree &t, const Window &w, const DesktopModes &modes, const QSize &preferred);
+// The default size of a window on `area` (the usable area): 60 % x 70 %, never below 480x320 and never the whole area.
+QSize defaultWindowSize(const QRect &area);
+// Where a window of size `want` goes on `area`: its own size when that is a sensible one that fits, else the default
+// size; centred. This is what "bring here" and "reset size" use.
+QRect centredIn(const QRect &area, const QSize &want);
 QStringList newWindowCommands(const Tree &t, const Window &w, const DesktopModes &modes);
 
 }  // namespace TaosWin

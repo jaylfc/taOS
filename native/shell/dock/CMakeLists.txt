@@ -33,7 +33,8 @@ qt_add_resources(taos-dock dock_resources
         qml/DockMenu.qml
         qml/DockSettings.qml
         qml/Tip.qml
-        qml/MenuGlyph.qml)
+        qml/MenuGlyph.qml
+        qml/MenuPanel.qml)
 target_link_libraries(taos-dock PRIVATE taosdock_core LayerShellQt::Interface)
 install(TARGETS taos-dock RUNTIME DESTINATION bin)
 
@@ -67,3 +68,9 @@ target_compile_definitions(test_dockqml PRIVATE TAOS_DOCK_FIXTURES="${CMAKE_CURR
     TAOS_DOCK_QML_DIR="${CMAKE_CURRENT_SOURCE_DIR}/qml")
 add_test(NAME test_dockqml COMMAND test_dockqml)
 set_tests_properties(test_dockqml PROPERTIES ENVIRONMENT "LC_ALL=C" TIMEOUT 120)
+qt_add_executable(test_dockmenuqml tests/test_dockmenuqml.cpp)
+target_link_libraries(test_dockmenuqml PRIVATE taosdock_core Qt6::Test Qt6::Quick Qt6::Qml)
+target_compile_definitions(test_dockmenuqml PRIVATE TAOS_DOCK_FIXTURES="${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures"
+    TAOS_DOCK_QML_DIR="${CMAKE_CURRENT_SOURCE_DIR}/qml")
+add_test(NAME test_dockmenuqml COMMAND test_dockmenuqml)
+set_tests_properties(test_dockmenuqml PROPERTIES ENVIRONMENT "LC_ALL=C" TIMEOUT 120)

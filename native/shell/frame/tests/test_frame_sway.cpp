@@ -317,6 +317,64 @@ private slots:
         QVERIFY(waitFor([&] { return strip(b).value(QLatin1String("reason")).toString() != QLatin1String("minimised"); }));
     }
 
+
+    // "Full screen" in the window menu must be sway's own fullscreen: fullscreen_mode 1 and the container exactly the
+    // output (the client is told set_fullscreen). It once resized the container to the workspace and left
+    // fullscreen_mode 0, so a client that drew itself to the output ran past the bottom. Maximise stays inside the usable
+    // area, title bar included, and restore gives the old geometry back.
+    void fullScreenIsRealFullscreenAndMaximiseStaysInside()
+    {
+        const int id = idOf(QStringLiteral("Web app"));
+        QVERIFY(id);
+        swaymsg({QStringLiteral("[con_id=%1] floating enable, resize set 500 300, move absolute position 240 160").arg(id)});
+        QTest::qWait(400);
+        auto node = [&] { return swayWindow(QStringLiteral("Web app")); };
+        auto rectOf = [](const QJsonValue &v) { const QJsonObject r = v.toObject();
+                                                return QRect(r.value(QLatin1String("x")).toInt(), r.value(QLatin1String("y")).toInt(), r.value(QLatin1String("width")).toInt(), r.value(QLatin1String("height")).toInt()); };
+        // the container: the content plus its title bar
+        auto container = [&] { const QJsonObject n = node(); QRect c = rectOf(n.value(QLatin1String("rect")));
+                               if (n.value(QLatin1String("fullscreen_mode")).toInt() == 0) c.setTop(c.top() - n.value(QLatin1String("deco_rect")).toObject().value(QLatin1String("height")).toInt());
+                               return c; };
+        auto press = [&](const QString &what, int *code = nullptr) {
+            QProcess p; p.setProcessEnvironment(m_env);
+            p.start(QStringLiteral(TAOS_FRAME_BIN), {QStringLiteral("press"), QString::number(id), what});
+            QVERIFY(p.waitForFinished(8000));
+            if (code) *code = p.exitCode();
+            else QCOMPARE(p.exitCode(), 0);
+        };
+        auto windowCli = [&](const QString &verb) {
+            QProcess p; p.setProcessEnvironment(m_env);
+            p.start(QStringLiteral(TAOS_WINDOW_BIN), {verb, QString::number(id)});
+            QVERIFY(p.waitForFinished(8000));
+            QCOMPARE(p.exitCode(), 0);
+        };
+        const QRect output(0, 0, 1280, 720);
+        const QRect before = container();
+        // maximise: inside the usable area, not fullscreen
+        press(QStringLiteral("full"));
+        QVERIFY2(waitFor([&] { return container().width() == output.width(); }), "maximise did not fill the width");
+        QTest::qWait(300);
+        QCOMPARE(node().value(QLatin1String("fullscreen_mode")).toInt(), 0);
+        QVERIFY2(output.contains(container()), qPrintable(QStringLiteral("container runs outside the area: %1,%2 %3x%4").arg(container().x()).arg(container().y()).arg(container().width()).arg(container().height())));
+        // full screen: sway's state, the container is the output
+        press(QStringLiteral("fullscreen"));
+        QVERIFY2(waitFor([&] { return node().value(QLatin1String("fullscreen_mode")).toInt() == 1; }), "not sway's fullscreen");
+        QVERIFY(waitFor([&] { return rectOf(node().value(QLatin1String("rect"))) == output; }));
+        // restore: leaves full screen AND maximise, back to the geometry before
+        windowCli(QStringLiteral("restore"));
+        QVERIFY(waitFor([&] { return node().value(QLatin1String("fullscreen_mode")).toInt() == 0 && container().width() == before.width(); }));
+        QTest::qWait(300);
+        QCOMPARE(container().topLeft(), before.topLeft());
+        QVERIFY2(qAbs(container().height() - before.height()) <= 16, qPrintable(QStringLiteral("height %1 vs %2").arg(container().height()).arg(before.height())));
+        // a second Full screen from the menu on a window that is not maximised
+        press(QStringLiteral("fullscreen"));
+        QVERIFY(waitFor([&] { return node().value(QLatin1String("fullscreen_mode")).toInt() == 1 && rectOf(node().value(QLatin1String("rect"))) == output; }));
+        windowCli(QStringLiteral("restore"));
+        QVERIFY(waitFor([&] { return node().value(QLatin1String("fullscreen_mode")).toInt() == 0 && container().width() == before.width(); }));
+        QTest::qWait(300);
+        QCOMPARE(container().topLeft(), before.topLeft());
+    }
+
     // The window core saves and replays `rect`; with a sway title bar rect is the content below the bar, and
     // `move`/`resize` talk about the container. A round trip must not walk the window.
     void fullSizeAndMinimiseRoundTripKeepTheGeometry()

@@ -75,8 +75,8 @@ Item {
                 danger: modelData === "close"
                 groupHovered: groupHover.hovered
                 windowActive: bar.active
-                tip: modelData === "close" ? qsTr("Close  \u2022  Super+Q") : (modelData === "minimise" ? qsTr("Minimise  \u2022  Super+M") : qsTr("Full size or restore  \u2022  Super+Ctrl+Up"))
-                label: modelData === "close" ? qsTr("Close window") : (modelData === "minimise" ? qsTr("Minimise window") : qsTr("Full size"))
+                tip: modelData === "close" ? qsTr("Close  \u2022  Super+Q") : (modelData === "minimise" ? qsTr("Minimise  \u2022  Super+M") : qsTr("Maximise or restore  \u2022  Super+Ctrl+Up"))
+                label: modelData === "close" ? qsTr("Close window") : (modelData === "minimise" ? qsTr("Minimise window") : qsTr("Maximise"))
                 onActivated: {
                     if (modelData === "close") control.close()
                     else if (modelData === "minimise") control.minimise()
@@ -114,7 +114,7 @@ Item {
             }
         }
         Entry { text: qsTr("Minimise"); onTriggered: control.minimise() }
-        Entry { text: qsTr("Full size"); onTriggered: control.toggleFull() }
+        Entry { text: qsTr("Maximise"); onTriggered: control.toggleFull() }
         Entry { text: qsTr("Close"); danger: true; onTriggered: control.close() }
     }
 }
