@@ -349,3 +349,76 @@ def test_taosmd_base_state_override_wins(mem_client):
         assert url == "http://test-override:9999"
     finally:
         application.state.taosmd_url = None
+
+
+@pytest.mark.asyncio
+async def test_dm_recall_isolation_two_users(store):
+    """Two different users DM the same agent private facts; each should only
+    recall their own facts, never the other user's."""
+    # User A stores a private fact
+    await store.save_chunk("user_a", "secret only A knows", "A's secret", "snippets",
+                           turn_owner="user_a", channel_type="dm", channel_id="dm_a")
+    # User B stores a different private fact
+    await store.save_chunk("user_b", "secret only B knows", "B's secret", "snippets",
+                           turn_owner="user_b", channel_type="dm", channel_id="dm_b")
+
+    # User B searches — should find only their own fact, NOT user A's
+    results = await store.search("user_b", "secret")
+    assert len(results) == 1
+    assert results[0]["content"] == "secret only B knows", (
+        f"User B should find their own fact, not user A's, got {results}"
+    )
+
+    # Verify user A's fact is NOT in user B's results
+    assert not any(r["content"] == "secret only A knows" for r in results), (
+        "User B should NOT retrieve user A's DM fact"
+    )
+
+    # User A searches — should find only their own fact
+    results = await store.search("user_a", "secret")
+    assert len(results) == 1
+    assert results[0]["content"] == "secret only A knows", (
+        f"User A should find their own fact, got {results}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_channel_recall_isolation(store):
+    """Two different users in different channels should not see each other's
+    memories, even with the same channel_type."""
+    # User A stores a fact in channel "general"
+    await store.save_chunk("user_a", "general channel fact", "General fact", "snippets",
+                           turn_owner="user_a", channel_type="channel", channel_id="channel_general")
+    # User B stores a fact in channel "announce"
+    await store.save_chunk("user_b", "announce channel fact", "Announce fact", "snippets",
+                           turn_owner="user_b", channel_type="channel", channel_id="channel_announce")
+
+    # User B searches in "announce" channel — should find only their own fact
+    results = await store.search("user_b", "announce", channel_type="channel", channel_id="channel_announce")
+    assert len(results) == 1
+    assert results[0]["content"] == "announce channel fact"
+
+    # User B searches in "general" channel — should find nothing
+    results = await store.search("user_b", "general", channel_type="channel", channel_id="channel_general")
+    assert len(results) == 0, (
+        f"User B should not see user A's channel fact, got {len(results)} results"
+    )
+
+
+@pytest.mark.asyncio
+async def test_dm_recall_includes_agent_knowledge(store):
+    """In a DM, recall should include the agent's non-personal knowledge
+    (turn_owner IS NULL) alongside the user's own memories."""
+    # Agent stores some non-personal knowledge (turn_owner IS NULL)
+    await store.save_chunk("user", "general knowledge about the agent", "Agent fact", "snippets",
+                           turn_owner=None, channel_type="dm", channel_id=None)
+    # User stores their own DM fact with "knowledge" in content
+    await store.save_chunk("user", "my personal knowledge here", "Personal fact", "snippets",
+                           turn_owner="user", channel_type="dm", channel_id="dm_1")
+
+    # User searches in DM — should find both their own fact AND agent knowledge
+    results = await store.search("user", "knowledge")
+    assert len(results) >= 1, "Should find agent's non-personal knowledge in DM"
+    contents = [r["content"] for r in results]
+    assert "general knowledge about the agent" in contents
+    assert "my personal knowledge here" in contents

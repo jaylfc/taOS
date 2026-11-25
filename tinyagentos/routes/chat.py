@@ -100,6 +100,7 @@ async def _capture_user_memory(
             metadata=metadata,
             turn_owner=turn_owner,
             channel_type=metadata.get("channel_type", "channel"),
+            channel_id=metadata.get("channel_id"),
         )
     except Exception as e:  # pragma: no cover - capture is best-effort
         logger.debug(f"user memory capture failed: {e}")
