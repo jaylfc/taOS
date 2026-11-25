@@ -22,88 +22,72 @@ const MOCK_ITEMS = [
     created_at: 1700000000,
     updated_at: 1700000000,
   },
-  {
-    id: "lib-item-2",
-    title: "Reddit Post",
-    source_type: "reddit",
-    source_url: "https://reddit.com/r/test",
-    source_id: "rp-1",
-    author: "Redditor",
-    summary: "Summary 2",
-    content: "Content 2",
-    media_path: null,
-    thumbnail: null,
-    categories: [],
-    tags: [],
-    metadata: {},
-    status: "ready",
-    monitor: { current_interval: 0, frequency: 0, decay_rate: 0, pinned: false, last_poll: null, last_hash: "" },
-    created_at: 1700003600,
-    updated_at: 1700003600,
-  },
-  {
-    id: "lib-item-3",
-    title: "GitHub Repo",
-    source_type: "github",
-    source_url: "https://github.com/test/repo",
-    source_id: "gh-1",
-    author: "Dev",
-    summary: "Summary 3",
-    content: "Content 3",
-    media_path: null,
-    thumbnail: null,
-    categories: [],
-    tags: [],
-    metadata: {},
-    status: "processing",
-    monitor: { current_interval: 0, frequency: 0, decay_rate: 0, pinned: false, last_poll: null, last_hash: "" },
-    created_at: 1700007200,
-    updated_at: 1700007200,
-  },
 ];
 
-const MOCK_AGENTS = [
-  { name: "Agent 1", color: "#ff0000" },
-  { name: "Agent 2", color: "#00ff00" },
-];
+const MOCK_USAGE = {
+  total_count: 3,
+  total_bytes: 6000,
+  by_kind: {},
+  by_source: {
+    youtube: { count: 1, bytes: 3000 },
+    reddit: { count: 1, bytes: 2000 },
+    github: { count: 1, bytes: 1000 },
+  },
+  sources: [
+    { source_type: "youtube", bytes: 3000, item_count: 1 },
+    { source_type: "reddit", bytes: 2000, item_count: 1 },
+    { source_type: "github", bytes: 1000, item_count: 1 },
+  ],
+  items: [
+    { id: "lib-item-1", title: "YouTube Video", source_type: "youtube", bytes: 3000 },
+    { id: "lib-item-2", title: "Reddit Post", source_type: "reddit", bytes: 2000 },
+    { id: "lib-item-3", title: "GitHub Repo", source_type: "github", bytes: 1000 },
+  ],
+  cap_bytes: 50 * 1024 * 1024 * 1024,
+  paused_at_cap: false,
+};
 
-function createFetchMock(overrides: Record<string, Promise<Response>> = {}) {
+function jsonResponse(body: unknown, status = 200) {
+  return Promise.resolve({
+    ok: status >= 200 && status < 300,
+    status,
+    headers: new Map([["content-type", "application/json"]]),
+    json: () => Promise.resolve(body),
+  } as Response);
+}
+
+function createFetchMock(usage: Record<string, unknown> = MOCK_USAGE) {
   return vi.fn((input: RequestInfo | URL) => {
     const url = String(input);
     if (url.startsWith("/api/knowledge/items")) {
-      for (const [prefix, response] of Object.entries(overrides)) {
-        if (url.startsWith(prefix)) return response;
-      }
-      return Promise.resolve({
-        ok: true,
-        status: 200,
-        headers: new Map([["content-type", "application/json"]]),
-        json: () => Promise.resolve({ items: MOCK_ITEMS, count: MOCK_ITEMS.length }),
-      } as Response);
+      return jsonResponse({ items: MOCK_ITEMS, count: MOCK_ITEMS.length });
     }
     if (url === "/api/agents") {
-      return Promise.resolve({
-        ok: true,
-        status: 200,
-        headers: new Map([["content-type", "application/json"]]),
-        json: () => Promise.resolve(MOCK_AGENTS),
-      } as Response);
+      return jsonResponse([{ name: "Agent 1", color: "#ff0000" }]);
     }
     if (url === "/api/knowledge/subscriptions") {
-      return Promise.resolve({
-        ok: true,
-        status: 200,
-        headers: new Map([["content-type", "application/json"]]),
-        json: () => Promise.resolve({ subscriptions: [] }),
-      } as Response);
+      return jsonResponse({ subscriptions: [] });
     }
-    return Promise.resolve({
-      ok: false,
-      status: 404,
-      headers: new Map([["content-type", "application/json"]]),
-      json: () => Promise.resolve({}),
-    } as Response);
+    if (url === "/api/library/usage") {
+      return jsonResponse(usage);
+    }
+    if (url === "/api/library/settings") {
+      return jsonResponse({
+        preferred_quality: "720",
+        storage_cap_bytes: 50 * 1024 * 1024 * 1024,
+      });
+    }
+    if (url === "/api/library/rules") {
+      return jsonResponse({ rules: [], count: 0 });
+    }
+    return jsonResponse({}, 404);
   });
+}
+
+async function openStorage() {
+  await waitFor(() => screen.getByRole("radio", { name: "storage" }));
+  fireEvent.click(screen.getByRole("radio", { name: "storage" }));
+  await waitFor(() => screen.getByText("Storage Accounting"), { timeout: 5000 });
 }
 
 describe("LibraryApp storage view", () => {
@@ -115,76 +99,41 @@ describe("LibraryApp storage view", () => {
   it("renders the view mode toggle and switches to storage view", async () => {
     vi.stubGlobal("fetch", createFetchMock() as unknown as typeof fetch);
     render(<LibraryApp windowId="test-win" />);
-
-    await waitFor(() => screen.getByRole("radio", { name: "storage" }));
-    fireEvent.click(screen.getByRole("radio", { name: "storage" }));
-
-    await waitFor(() => screen.getByText("Storage Accounting"), { timeout: 5000 });
+    await openStorage();
   });
 
-  it("shows per-source totals sorted by bytes descending", async () => {
+  it("shows per-source totals from the usage API", async () => {
     vi.stubGlobal("fetch", createFetchMock() as unknown as typeof fetch);
     render(<LibraryApp windowId="test-win" />);
-
-    await waitFor(() => screen.getByRole("radio", { name: "storage" }));
-    fireEvent.click(screen.getByRole("radio", { name: "storage" }));
-
-    await waitFor(() => screen.getByText("Storage Accounting"), { timeout: 5000 });
+    await openStorage();
+    await waitFor(() => screen.getAllByText("YouTube"), { timeout: 5000 });
     expect(screen.getAllByText("YouTube").length).toBeGreaterThanOrEqual(1);
     expect(screen.getAllByText("Reddit").length).toBeGreaterThanOrEqual(1);
     expect(screen.getAllByText("GitHub").length).toBeGreaterThanOrEqual(1);
   });
 
-  it("shows per-item rows sorted by bytes descending", async () => {
+  it("shows per-item rows from the usage API", async () => {
     vi.stubGlobal("fetch", createFetchMock() as unknown as typeof fetch);
     render(<LibraryApp windowId="test-win" />);
-
-    await waitFor(() => screen.getByRole("radio", { name: "storage" }));
-    fireEvent.click(screen.getByRole("radio", { name: "storage" }));
-
-    await waitFor(() => screen.getByText("Storage Accounting"), { timeout: 5000 });
+    await openStorage();
+    await waitFor(() => screen.getByText("Reddit Post"), { timeout: 5000 });
     expect(screen.getByText("YouTube Video")).toBeInTheDocument();
-    expect(screen.getByText("Reddit Post")).toBeInTheDocument();
     expect(screen.getByText("GitHub Repo")).toBeInTheDocument();
   });
 
-  it("does not show paused-at-cap when total is under cap", async () => {
+  it("does not show paused-at-cap when the usage API says not paused", async () => {
     vi.stubGlobal("fetch", createFetchMock() as unknown as typeof fetch);
     render(<LibraryApp windowId="test-win" />);
-
-    await waitFor(() => screen.getByRole("radio", { name: "storage" }));
-    fireEvent.click(screen.getByRole("radio", { name: "storage" }));
-
-    await waitFor(() => screen.getByText("Storage Accounting"), { timeout: 5000 });
+    await openStorage();
+    await waitFor(() => screen.getByText("Reddit Post"), { timeout: 5000 });
     expect(screen.queryByText(/Paused at cap/)).toBeNull();
   });
 
-  it("shows paused-at-cap warning when total exceeds cap", async () => {
-    const manyItems = Array.from({ length: 60 }, (_, i) => ({
-      ...MOCK_ITEMS[0],
-      id: `overflow-${i}`,
-      title: `Overflow Item ${i}`,
-      source_type: "youtube",
-      created_at: 1700000000 + i,
-      updated_at: 1700000000 + i,
-    }));
-
-    const overrides: Record<string, Promise<Response>> = {
-      "/api/knowledge/items": Promise.resolve({
-        ok: true,
-        status: 200,
-        headers: new Map([["content-type", "application/json"]]),
-        json: () => Promise.resolve({ items: manyItems, count: manyItems.length }),
-      } as Response),
-    };
-
-    vi.stubGlobal("fetch", createFetchMock(overrides) as unknown as typeof fetch);
+  it("shows paused-at-cap warning when the usage API reports paused", async () => {
+    const usage = { ...MOCK_USAGE, cap_bytes: 5000, paused_at_cap: true };
+    vi.stubGlobal("fetch", createFetchMock(usage) as unknown as typeof fetch);
     render(<LibraryApp windowId="test-win" />);
-
-    await waitFor(() => screen.getByRole("radio", { name: "storage" }));
-    fireEvent.click(screen.getByRole("radio", { name: "storage" }));
-
-    await waitFor(() => screen.getByText("Storage Accounting"), { timeout: 5000 });
-    expect(screen.getByText(/Paused at cap/)).toBeInTheDocument();
+    await openStorage();
+    await waitFor(() => screen.getByText(/Paused at cap/), { timeout: 5000 });
   });
 });

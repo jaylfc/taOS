@@ -1514,6 +1514,16 @@ class TestLibraryStoreRules:
 # P3: HeavyDownloadProcessor
 # ---------------------------------------------------------------------------
 
+    @pytest.mark.asyncio
+    async def test_create_rule_duplicate_pattern_rejected(self, lib_store):
+        """Rule patterns are unique case-insensitively, enforced by the
+        store insert itself, not just a route pre-check."""
+        await lib_store.create_rule(source_pattern="*youtube.com/*")
+        with pytest.raises(ValueError):
+            await lib_store.create_rule(source_pattern="*YouTube.com/*")
+        rules = await lib_store.list_rules()
+        assert len(rules) == 1
+
 
 class TestHeavyDownloadProcessor:
     @pytest.mark.asyncio
@@ -1704,6 +1714,42 @@ class TestRunHeavyPipeline:
         jobs = await lib_store.get_item_jobs(item_id)
         heavy_jobs = [j for j in jobs if j["stage"] == "heavy_download"]
         assert len(heavy_jobs) >= 1
+
+    @pytest.mark.asyncio
+    async def test_run_heavy_pipeline_updates_own_job(self, lib_store, storage_dir):
+        """The pipeline completes the job IT created, even when a newer
+        job for the same item appears while the download runs."""
+        item_id = await lib_store.create_item(
+            kind="url:youtube",
+            source_url="https://youtube.com/watch?v=own-job",
+        )
+        storage_dir.joinpath("downloads").mkdir(parents=True, exist_ok=True)
+        mock_path = str(storage_dir / "downloads" / "test.mp4")
+        storage_dir.joinpath("downloads", "test.mp4").write_text("fake data")
+
+        async def _download_with_interloper(*args, **kwargs):
+            # A second trigger lands while this download is running.
+            await lib_store.create_job(item_id, "heavy_download")
+            return mock_path
+
+        from unittest.mock import patch
+
+        from tinyagentos.library_pipeline import run_heavy_pipeline
+
+        with patch(
+            "tinyagentos.knowledge_fetchers.youtube.download_video",
+            _download_with_interloper,
+        ):
+            result = await run_heavy_pipeline(
+                lib_store, item_id, storage_dir, quality="720",
+            )
+
+        assert result is not None
+        jobs = await lib_store.get_item_jobs(item_id)
+        heavy = [j for j in jobs if j["stage"] == "heavy_download"]
+        assert len(heavy) == 2
+        assert heavy[0]["state"] == "done"    # the pipeline's own job
+        assert heavy[1]["state"] == "queued"  # the interloper, untouched
 
 
 # ---------------------------------------------------------------------------
@@ -3059,3 +3105,403 @@ class TestYouTubeProcessorP2Reprocess:
         assert meta["transcript_status"] == "unavailable"
         assert "transcript_languages" not in meta
         assert meta["transcript_note"]
+
+
+# ---------------------------------------------------------------------------
+# P3 settings: persisted library settings + storage-cap enforcement (#2060)
+# ---------------------------------------------------------------------------
+
+
+class TestLibrarySettingsStore:
+    @pytest.mark.asyncio
+    async def test_settings_defaults(self, lib_store):
+        """Unset settings return the documented defaults."""
+        settings = await lib_store.get_settings()
+        assert settings["preferred_quality"] == "720"
+        assert settings["storage_cap_bytes"] == 50 * 1024 * 1024 * 1024
+
+    @pytest.mark.asyncio
+    async def test_settings_round_trip(self, lib_store):
+        await lib_store.update_settings(
+            preferred_quality="1080", storage_cap_bytes=12345,
+        )
+        settings = await lib_store.get_settings()
+        assert settings["preferred_quality"] == "1080"
+        assert settings["storage_cap_bytes"] == 12345
+
+    @pytest.mark.asyncio
+    async def test_settings_partial_update_keeps_other_fields(self, lib_store):
+        await lib_store.update_settings(preferred_quality="480")
+        await lib_store.update_settings(storage_cap_bytes=999)
+        settings = await lib_store.get_settings()
+        assert settings["preferred_quality"] == "480"
+        assert settings["storage_cap_bytes"] == 999
+
+    @pytest.mark.asyncio
+    async def test_settings_invalid_quality_rejected(self, lib_store):
+        """Qualities are stored in the backend vocabulary only — the old
+        pane labels (low/medium/high) are not valid stored values."""
+        with pytest.raises(ValueError):
+            await lib_store.update_settings(preferred_quality="high")
+
+    @pytest.mark.asyncio
+    async def test_settings_negative_cap_rejected(self, lib_store):
+        with pytest.raises(ValueError):
+            await lib_store.update_settings(storage_cap_bytes=-1)
+
+    @pytest.mark.asyncio
+    async def test_settings_persist_in_db(self, lib_store):
+        """Settings live in the library DB, not in process memory."""
+        await lib_store.update_settings(preferred_quality="360")
+        other = LibraryStore(lib_store.db_path)
+        await other.init()
+        try:
+            settings = await other.get_settings()
+            assert settings["preferred_quality"] == "360"
+        finally:
+            await other.close()
+
+    @pytest.mark.asyncio
+    async def test_storage_cap_status(self, lib_store):
+        await lib_store.create_item(kind="file", title="a", size_bytes=300)
+        await lib_store.update_settings(storage_cap_bytes=200)
+        status = await lib_store.storage_cap_status()
+        assert status["cap_bytes"] == 200
+        assert status["total_bytes"] == 300
+        assert status["paused_at_cap"] is True
+
+    @pytest.mark.asyncio
+    async def test_storage_cap_status_zero_cap_never_pauses(self, lib_store):
+        """A cap of 0 disables the cap entirely."""
+        await lib_store.create_item(kind="file", title="a", size_bytes=300)
+        await lib_store.update_settings(storage_cap_bytes=0)
+        status = await lib_store.storage_cap_status()
+        assert status["paused_at_cap"] is False
+
+    @pytest.mark.asyncio
+    async def test_update_settings_rejected_update_writes_nothing(self, lib_store):
+        """Validation runs before any write: a combined update with a
+        valid quality and an invalid cap persists neither field."""
+        with pytest.raises(ValueError):
+            await lib_store.update_settings(
+                preferred_quality="1080", storage_cap_bytes=-1
+            )
+        settings = await lib_store.get_settings()
+        assert settings["preferred_quality"] == "720"
+
+
+class TestHeavyDownloadStorageCap:
+    @pytest.mark.asyncio
+    async def test_download_paused_at_cap(self, lib_store, storage_dir):
+        """At cap: a paused job is recorded and yt-dlp is never invoked."""
+        await lib_store.update_settings(storage_cap_bytes=100)
+        await lib_store.create_item(kind="file", title="big", size_bytes=200)
+        item_id = await lib_store.create_item(
+            kind="url:youtube",
+            source_url="https://youtube.com/watch?v=cap-test",
+        )
+
+        calls: list = []
+
+        async def _spy(*args, **kwargs):
+            calls.append((args, kwargs))
+            return None
+
+        from unittest.mock import patch
+
+        from tinyagentos.library_pipeline import run_heavy_pipeline
+
+        with patch("tinyagentos.knowledge_fetchers.youtube.download_video", _spy):
+            result = await run_heavy_pipeline(
+                lib_store, item_id, storage_dir, quality="720",
+            )
+
+        assert calls == []
+        assert result is not None
+        assert result.get("status") == "paused"
+        assert result.get("reason") == "storage_cap"
+        jobs = await lib_store.get_item_jobs(item_id)
+        heavy = [j for j in jobs if j["stage"] == "heavy_download"]
+        assert heavy and heavy[-1]["state"] == "paused"
+        assert "cap" in heavy[-1]["error"].lower()
+
+    @pytest.mark.asyncio
+    async def test_download_proceeds_below_cap(self, lib_store, storage_dir):
+        await lib_store.update_settings(storage_cap_bytes=10_000)
+        item_id = await lib_store.create_item(
+            kind="url:youtube",
+            source_url="https://youtube.com/watch?v=below-cap",
+        )
+        storage_dir.joinpath("downloads").mkdir(parents=True, exist_ok=True)
+        mock_path = str(storage_dir / "downloads" / "test.mp4")
+        storage_dir.joinpath("downloads", "test.mp4").write_text("fake data")
+
+        from unittest.mock import patch
+
+        from tinyagentos.library_pipeline import run_heavy_pipeline
+
+        with patch(
+            "tinyagentos.knowledge_fetchers.youtube.download_video",
+            _async_return(mock_path),
+        ):
+            result = await run_heavy_pipeline(
+                lib_store, item_id, storage_dir, quality="720",
+            )
+        assert result is not None
+        assert result.get("quality") == "720"
+
+    @pytest.mark.asyncio
+    async def test_preferred_quality_is_default(self, lib_store, storage_dir):
+        """With no explicit/rule/item quality, the settings preference wins
+        over the hard-coded 720 fallback."""
+        await lib_store.update_settings(preferred_quality="480")
+        item_id = await lib_store.create_item(
+            kind="url:youtube",
+            source_url="https://youtube.com/watch?v=pref-test",
+        )
+        storage_dir.joinpath("downloads").mkdir(parents=True, exist_ok=True)
+        mock_path = str(storage_dir / "downloads" / "test.mp4")
+        storage_dir.joinpath("downloads", "test.mp4").write_text("fake data")
+
+        from unittest.mock import patch
+
+        from tinyagentos.library_pipeline import run_heavy_pipeline
+
+        with patch(
+            "tinyagentos.knowledge_fetchers.youtube.download_video",
+            _async_return(mock_path),
+        ):
+            result = await run_heavy_pipeline(lib_store, item_id, storage_dir)
+        assert result is not None
+        assert result["quality"] == "480"
+
+
+class TestLibrarySettingsRoutes:
+    @pytest.mark.asyncio
+    async def test_get_settings_defaults(self, client):
+        resp = await client.get("/api/library/settings")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["preferred_quality"] == "720"
+        assert data["storage_cap_bytes"] == 50 * 1024 * 1024 * 1024
+
+    @pytest.mark.asyncio
+    async def test_put_settings_round_trip(self, client):
+        resp = await client.put(
+            "/api/library/settings",
+            json={"preferred_quality": "1080", "storage_cap_bytes": 4096},
+        )
+        assert resp.status_code == 200
+        resp = await client.get("/api/library/settings")
+        data = resp.json()
+        assert data["preferred_quality"] == "1080"
+        assert data["storage_cap_bytes"] == 4096
+
+    @pytest.mark.asyncio
+    async def test_put_settings_partial(self, client):
+        resp = await client.put(
+            "/api/library/settings", json={"storage_cap_bytes": 777},
+        )
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["storage_cap_bytes"] == 777
+        assert data["preferred_quality"] == "720"
+
+    @pytest.mark.asyncio
+    async def test_put_settings_invalid_quality(self, client):
+        resp = await client.put(
+            "/api/library/settings", json={"preferred_quality": "high"},
+        )
+        assert resp.status_code == 400
+
+    @pytest.mark.asyncio
+    async def test_put_settings_negative_cap(self, client):
+        resp = await client.put(
+            "/api/library/settings", json={"storage_cap_bytes": -5},
+        )
+        assert resp.status_code == 400
+
+    @pytest.mark.asyncio
+    async def test_put_settings_empty_body(self, client):
+        resp = await client.put("/api/library/settings", json={})
+        assert resp.status_code == 400
+
+    @pytest.mark.asyncio
+    async def test_trigger_download_paused_at_cap(self, client, tmp_path):
+        """Route-level: at cap the trigger surfaces a paused state (202)
+        and records a paused heavy_download job instead of downloading."""
+        resp = await client.put(
+            "/api/library/settings", json={"storage_cap_bytes": 100},
+        )
+        assert resp.status_code == 200
+
+        big = tmp_path / "big.txt"
+        big.write_bytes(b"x" * 200)
+        with open(big, "rb") as f:
+            resp = await client.post(
+                "/api/library/ingest",
+                files={"file": ("big.txt", f, "text/plain")},
+            )
+        assert resp.status_code == 202
+
+        resp = await client.post(
+            "/api/library/ingest",
+            data={"url": "https://youtube.com/watch?v=route-cap"},
+        )
+        assert resp.status_code == 202
+        item_id = resp.json()["item_id"]
+
+        resp = await client.post(f"/api/library/items/{item_id}/download")
+        assert resp.status_code == 202
+        data = resp.json()
+        assert data["status"] == "paused"
+        assert data["reason"] == "storage_cap"
+
+        resp = await client.get(f"/api/library/items/{item_id}/download/status")
+        assert resp.status_code == 200
+        jobs = resp.json()["jobs"]
+        assert jobs and jobs[-1]["state"] == "paused"
+
+    @pytest.mark.asyncio
+    async def test_usage_includes_cap_and_source_breakdown(self, client, tmp_path):
+        resp = await client.put(
+            "/api/library/settings", json={"storage_cap_bytes": 1000},
+        )
+        assert resp.status_code == 200
+
+        small = tmp_path / "small.txt"
+        small.write_bytes(b"y" * 50)
+        with open(small, "rb") as f:
+            resp = await client.post(
+                "/api/library/ingest",
+                files={"file": ("small.txt", f, "text/plain")},
+            )
+        assert resp.status_code == 202
+
+        resp = await client.get("/api/library/usage")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["cap_bytes"] == 1000
+        assert data["paused_at_cap"] is False
+        assert data["total_bytes"] >= 50
+        assert "by_source" in data
+        assert isinstance(data["sources"], list)
+        assert isinstance(data["items"], list)
+
+    @pytest.mark.asyncio
+    async def test_create_duplicate_rule_conflict(self, client):
+        resp = await client.post(
+            "/api/library/rules", data={"source_pattern": "*.dup.com/*"},
+        )
+        assert resp.status_code == 201
+        resp = await client.post(
+            "/api/library/rules", data={"source_pattern": "*.dup.com/*"},
+        )
+        assert resp.status_code == 409
+
+    @pytest.mark.asyncio
+    async def test_trigger_download_rule_quality_beats_settings(self, client):
+        """Manual-trigger quality precedence: a matching rule beats the
+        settings preferred quality; the setting is only the fallback
+        the pipeline applies last."""
+        resp = await client.put(
+            "/api/library/settings", json={"preferred_quality": "1080"}
+        )
+        assert resp.status_code == 200
+        resp = await client.post(
+            "/api/library/rules",
+            data={"source_pattern": "*youtube.com/*", "quality": "480"},
+        )
+        assert resp.status_code == 201
+
+        resp = await client.post(
+            "/api/library/ingest",
+            data={"url": "https://youtube.com/watch?v=rule-prec"},
+        )
+        assert resp.status_code == 202
+        item_id = resp.json()["item_id"]
+
+        import asyncio as _asyncio
+        await _asyncio.sleep(0.5)
+
+        resp = await client.post(f"/api/library/items/{item_id}/download")
+        assert resp.status_code == 202
+        assert resp.json()["quality"] == "480"
+
+
+async def _library_member_client(app) -> AsyncClient:
+    """Cookie'd client for a non-admin member session on *app*.
+
+    Mirrors tests/test_settings_authz.py::_member_client: the ``client``
+    fixture's admin invites a plain member, who gets a session cookie.
+    Callers must depend on ``client`` (or otherwise set up the admin)
+    before calling this.
+    """
+    from taos_test_csrf import csrf_event_hooks
+
+    auth_mgr = app.state.auth
+    invite_code = auth_mgr.add_user_invite("member", "admin")
+    auth_mgr.complete_invite(
+        "member", invite_code, "Test Member", "", "memberlibrarypass123"
+    )
+    member = auth_mgr.find_user("member")
+    token = auth_mgr.create_session(member["username"])
+    return AsyncClient(
+        transport=ASGITransport(app=app),
+        base_url="http://test",
+        cookies={"taos_session": token},
+        # Behave like the SPA for CSRF (echo the bound token into the
+        # header); without this every mutating request 403s on CSRF
+        # before the route's own authorization ever runs.
+        event_hooks=csrf_event_hooks(),
+    )
+
+
+class TestLibrarySettingsAdminOnly:
+    """#2060 review (jaylfc): the library settings are library-wide, so a
+    plain member must not be able to change them for everyone. Writes are
+    admin-only (tinyagentos.auth_context.require_admin); reads stay open
+    to any signed-in user, matching the mixed-router pattern and the
+    desktop pane, which loads the settings for every user."""
+
+    @pytest.mark.asyncio
+    async def test_member_put_settings_refused_and_unchanged(self, client, app):
+        member_client = await _library_member_client(app)
+        try:
+            resp = await member_client.put(
+                "/api/library/settings",
+                json={"preferred_quality": "1080", "storage_cap_bytes": 1},
+            )
+        finally:
+            await member_client.aclose()
+        assert resp.status_code == 403
+        # The refusal happens before any state changes: the admin's view
+        # still shows the untouched defaults.
+        resp = await client.get("/api/library/settings")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["preferred_quality"] == "720"
+        assert data["storage_cap_bytes"] == 50 * 1024 * 1024 * 1024
+
+    @pytest.mark.asyncio
+    async def test_member_get_settings_allowed(self, client, app):
+        member_client = await _library_member_client(app)
+        try:
+            resp = await member_client.get("/api/library/settings")
+        finally:
+            await member_client.aclose()
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["preferred_quality"] == "720"
+        assert data["storage_cap_bytes"] == 50 * 1024 * 1024 * 1024
+
+    @pytest.mark.asyncio
+    async def test_admin_put_settings_still_works(self, client):
+        resp = await client.put(
+            "/api/library/settings",
+            json={"preferred_quality": "1080", "storage_cap_bytes": 4096},
+        )
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["preferred_quality"] == "1080"
+        assert data["storage_cap_bytes"] == 4096
