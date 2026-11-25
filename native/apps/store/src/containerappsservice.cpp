@@ -110,18 +110,22 @@ static void runStreaming(QObject *owner, ContainerAppsService *svc, const QStrin
 {
     auto *p = new QProcess(owner);
     auto buf = std::make_shared<QByteArray>();
+    auto doneLine = std::make_shared<QJsonObject>();   // the engine's closing line, even when it was read with the progress lines
     QObject::connect(p, &QProcess::readyReadStandardOutput, owner, [=] {
         buf->append(p->readAllStandardOutput());
         int nl;
         while ((nl = buf->indexOf('\n')) >= 0) {
             const QJsonObject o = QJsonDocument::fromJson(buf->left(nl)).object();
             buf->remove(0, nl + 1);
+            if (o.value(u"event"_s).toString() == u"done"_s)
+                *doneLine = o;
             if (o.value(u"event"_s).toString() == u"step"_s)
                 Q_EMIT svc->progress(id, o.value(u"n"_s).toInt(), o.value(u"of"_s).toInt(), o.value(u"text"_s).toString());
         }
     });
     QObject::connect(p, &QProcess::finished, owner, [=](int code) {
-        const QJsonObject done = lastJson(*buf + p->readAllStandardOutput());
+        const QJsonObject rest = lastJson(*buf + p->readAllStandardOutput());
+        const QJsonObject done = rest.isEmpty() ? *doneLine : rest;
         const bool ok = code == 0;
         // On failure the engine's own sentence is shown; nothing is guessed here.
         Q_EMIT svc->finished(id, ok, ok ? okText : (done.value(u"error"_s).toString().isEmpty() ? failPrefix : done.value(u"error"_s).toString()));

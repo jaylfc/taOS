@@ -21,7 +21,7 @@ C.Popup {
     anchors.centerIn: C.Overlay.overlay
     width: Math.min(460, (parent ? parent.width : 460) - 32)
     height: Math.min(contentItem.implicitHeight, (parent ? parent.height : 640) - 32)
-    function openFor(id, name, group) { appId = id; appName = name; fromGroup = group; target = ""; open() }
+    function openFor(id, name, group) { appId = id; appName = name; fromGroup = group; target = ""; picker.reset(); open() }
     enter: Transition { NumberAnimation { property: "opacity"; from: 0; to: 1; duration: Look.base } }
     exit: Transition { NumberAnimation { property: "opacity"; from: 1; to: 0; duration: Look.fast } }
     C.Overlay.modal: Rectangle { color: Look.tint(Look.ground, 0.55) }

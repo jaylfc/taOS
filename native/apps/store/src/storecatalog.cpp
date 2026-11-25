@@ -227,7 +227,7 @@ QVariantMap normalizeContainerAppEntry(const QJsonObject &o)
     e[u"canUpdate"_s] = o.value(u"can_update"_s).toBool();
     e[u"windowAppId"_s] = o.value(u"window_app_id"_s).toString();
     e[u"grants"_s] = o.value(u"grants"_s).toVariant();
-    e[u"runtimeText"_s] = QObject::tr("Runs in your apps container");
+    e[u"runtimeText"_s] = QObject::tr("Runs in an app group, apart from your files");
     return e;
 }
 

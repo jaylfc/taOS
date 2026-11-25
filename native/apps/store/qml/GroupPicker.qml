@@ -17,7 +17,15 @@ ColumnLayout {
     readonly property var groups: engine && engine.revision >= 0 ? engine.appGroups().filter(g => g.name !== root.exclude) : []
     readonly property var work: engine && engine.revision >= 0 ? engine.groupWork : ({ state: "idle" })
     property bool naming: false
+    property string lastCreated: ""   // a group made here is chosen once; later changes of the list must not undo the person's choice
     Component.onCompleted: { engine.refreshGroups(); pickFirst() }
+    // Called each time the picker is shown again (the dialog keeps its content between uses).
+    function reset() {
+        selected = ""
+        naming = false
+        engine.refreshGroups()
+        pickFirst()
+    }
     function pickFirst() {
         if (selected === "" && groups.length > 0) { selected = groups[0].name; picked(selected) }
     }
@@ -26,7 +34,8 @@ ColumnLayout {
     Connections {
         target: root.engine
         function onRevisionChanged() {
-            if (root.work.created === true && root.work.name && root.selected !== root.work.name) {
+            if (root.work.created === true && root.work.name && root.lastCreated !== root.work.name) {
+                root.lastCreated = root.work.name
                 root.selected = root.work.name
                 root.naming = false
                 root.picked(root.selected)
@@ -34,7 +43,7 @@ ColumnLayout {
         }
     }
 
-    TaosText { text: qsTr("App group"); font.pixelSize: Look.small; color: Look.textSecondary
+    TaosText { Layout.topMargin: Look.space1; text: qsTr("App group"); font.pixelSize: Look.small; color: Look.textSecondary
                Accessible.ignored: false; Accessible.role: Accessible.Heading; Accessible.name: text }
     Repeater {
         model: root.groups
@@ -48,7 +57,7 @@ ColumnLayout {
             objectName: "group-" + modelData.name
             readonly property bool on: root.selected === modelData.name
             Accessible.role: Accessible.RadioButton
-            Accessible.name: modelData.displayName + ", " + qsTr("%n app(s)", "", modelData.apps)
+            Accessible.name: modelData.displayName + ", " + (modelData.apps === 1 ? qsTr("1 app") : qsTr("%1 apps").arg(modelData.apps))
             Accessible.checked: on
             onClicked: { root.selected = modelData.name; root.picked(modelData.name) }
             background: Rectangle {
@@ -63,7 +72,7 @@ ColumnLayout {
                 Glyph { Layout.leftMargin: Look.space3; name: row.on ? "check-circle" : "circle-dashed"; size: 16
                         color: row.on ? Look.accent : Look.textTertiary }
                 TaosText { Layout.fillWidth: true; text: row.modelData.displayName; elide: Text.ElideRight; font.weight: Font.DemiBold }
-                TaosText { Layout.rightMargin: Look.space3; text: qsTr("%n app(s)", "", row.modelData.apps); color: Look.textSecondary; font.pixelSize: Look.small }
+                TaosText { Layout.rightMargin: Look.space3; text: (row.modelData.apps === 1 ? qsTr("1 app") : qsTr("%1 apps").arg(row.modelData.apps)); color: Look.textSecondary; font.pixelSize: Look.small }
             }
         }
     }

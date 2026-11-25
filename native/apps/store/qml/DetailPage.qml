@@ -57,7 +57,7 @@ Item {
                 subtitle: [page.e.kind === "webapp" ? qsTr("Web app") : page.e.kind === "model" ? qsTr("Model") : page.e.kind === "agent" ? qsTr("Agent framework")
                            : page.e.kind === "plugin" ? qsTr("Plugin") : page.e.kind === "mcp" ? qsTr("Tool server") : qsTr("App"),
                            page.e.categoryLabel, page.e.version ? "v" + page.e.version : "", page.e.sizeText].filter(s => s).join("  ·  ")
-                actions: Component { GetButton { engine: page.engine; entry: page.e; compact: false; showRemove: true; pick: page.variant; onReview: {} } }
+                actions: Component { GetButton { engine: page.engine; entry: page.e; compact: false; showRemove: true; pick: page.variant; hideReview: true; onReview: {} } }
                 Chip { visible: page.e.needsDocker === true; text: qsTr("Needs Docker"); tone: "warning"; glyph: "alert" }
                 Chip { visible: !!page.e.fit; text: page.e.fitText ? page.e.fitText : ""
                        tone: page.e.fit === "green" ? "success" : page.e.fit === "yellow" ? "warning" : "danger" }

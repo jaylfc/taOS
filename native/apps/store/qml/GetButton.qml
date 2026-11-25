@@ -12,6 +12,7 @@ RowLayout {
     property bool compact: true
     property bool showRemove: false
     property string pick: ""
+    property bool hideReview: false   // the detail page shows the review card itself
     signal review()
     readonly property var st: engine && entry.id ? (engine.revision >= 0 ? engine.installState(entry.id) : ({})) : ({})
     readonly property string state: st.state ? st.state : "idle"
@@ -31,7 +32,7 @@ RowLayout {
         accessibleName: (root.st.text ? root.st.text : qsTr("Working")) + (root.st.percent >= 0 ? ", " + Math.round(root.st.percent) + "%" : "")
     }
     PillButton {
-        visible: root.state === "consent"
+        visible: root.state === "consent" && !root.hideReview
         text: qsTr("Review"); variant: "primary"; compact: root.compact
         accessibleName: qsTr("Review what %1 needs before installing").arg(root.nm)
         onClicked: root.review()

@@ -125,6 +125,7 @@ StoreEngine::StoreEngine(QObject *parent) : QObject(parent)
             Q_EMIT installFinished(id, true, tr("Removed. Its data was kept."));
             Q_EMIT toast(tr("%1 is removed. Its data was kept.").arg(m_cat.entry(id).value(u"name"_s).toString()));
         } else if (ok) {
+            refreshContainerInfo();
             finishInstall(id, true, tr("%1 is installed.").arg(m_cat.entry(id).value(u"name"_s).toString()));
         } else {
             Inst &s = m_inst[id];
@@ -360,6 +361,9 @@ void StoreEngine::fetchInstalled()
             m_runtime.insert(id, o.toVariantMap());
         }
         m_cat.setInstalled(ids);
+        // the controller knows nothing of container apps: setInstalled would forget the ones taos-appgroups lists
+        for (auto it = m_capInfo.begin(); it != m_capInfo.end(); ++it)
+            m_cat.markInstalled(it.key(), true);
         bump();
     });
 }
