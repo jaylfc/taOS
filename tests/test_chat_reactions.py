@@ -42,10 +42,21 @@ async def test_regenerate_triggered_for_thumbs_down_on_agent_reply():
     }
     channel = {"id": "c1", "members": ["user", "tom"], "type": "dm",
                "settings": {}}
-    await maybe_trigger_semantic(
-        emoji="👎", message=message, reactor_id="user", reactor_type="user",
-        channel=channel, state=state,
-    )
+    with patch("tinyagentos.taosmd_client.get_taosmd_client") as mock_get_client:
+        mock_taosmd = AsyncMock()
+        mock_get_client.return_value = mock_taosmd
+        mock_taosmd.answer_context = AsyncMock(return_value=MagicMock(
+            context="Assembled context",
+            dropped=0,
+            layers={},
+            total_tokens=100,
+            intent="question",
+            latency_ms=5.0,
+        ))
+        await maybe_trigger_semantic(
+            emoji="👎", message=message, reactor_id="user", reactor_type="user",
+            channel=channel, state=state,
+        )
     bridge.enqueue_user_message.assert_awaited_once()
     call = bridge.enqueue_user_message.await_args
     assert call.args[0] == "tom"
@@ -54,6 +65,8 @@ async def test_regenerate_triggered_for_thumbs_down_on_agent_reply():
     assert call.args[1]["text"] == "what's 2+2?"
     assert call.args[1]["trace_id"] == "user-msg-1"
     assert len(call.args[1]["context"]) > 0
+    assert call.args[1]["context"][0]["role"] == "system"
+    assert "Assembled context" in call.args[1]["context"][0]["content"]
 
 
 @pytest.mark.asyncio
@@ -86,16 +99,24 @@ async def test_regenerate_uses_agent_model_history_budget():
     }
     channel = {"id": "c1", "members": ["user", "tom"], "type": "dm", "settings": {}}
 
-    with patch(
-        "tinyagentos.chat.context_window.build_context_window",
-        return_value=[{"author_id": "user", "author_type": "user", "content": "hi"}],
-    ) as build:
+    with patch("tinyagentos.taosmd_client.get_taosmd_client") as mock_get_client:
+        mock_taosmd = AsyncMock()
+        mock_get_client.return_value = mock_taosmd
+        mock_taosmd.answer_context = AsyncMock(return_value=MagicMock(
+            context="Assembled context",
+            dropped=0,
+            layers={},
+            total_tokens=100,
+            intent="question",
+            latency_ms=5.0,
+        ))
         await maybe_trigger_semantic(
             emoji="👎", message=message, reactor_id="user", reactor_type="user",
             channel=channel, state=state,
         )
-    build.assert_called_once()
-    assert build.call_args.kwargs["max_tokens"] == 512
+    mock_taosmd.answer_context.assert_awaited_once()
+    call_args = mock_taosmd.answer_context.call_args
+    assert call_args[1]["budget_tokens"] == 512
 
 
 @pytest.mark.asyncio

@@ -56,35 +56,29 @@ async def maybe_trigger_semantic(
         context = []
         if msg_store is not None:
             try:
-                from tinyagentos.chat.context_window import (
-                    build_context_window,
-                    history_token_budget,
-                )
-                from tinyagentos.cluster.model_resolver import _find_model_manifest
+                from tinyagentos.taosmd_client import get_taosmd_client, calculate_agent_budget
+                from tinyagentos.agent_db import find_agent
+                from datetime import datetime, timezone
 
                 # Budget from the regenerating agent's model context window.
-                ctx_window = 0
                 config = getattr(state, "config", None)
                 author_id = message.get("author_id")
                 if config is not None and author_id:
-                    from tinyagentos.agent_db import find_agent
-
                     agent = find_agent(config, author_id)
-                    model_id = (agent or {}).get("model") or ""
-                    if model_id:
-                        try:
-                            registry = getattr(state, "registry", None)
-                            manifest = _find_model_manifest(registry, model_id)
-                            ctx_window = (
-                                int(getattr(manifest, "context_window", 0) or 0)
-                                if manifest
-                                else 0
-                            )
-                        except Exception:  # noqa: BLE001 - advisory lookup only
-                            ctx_window = 0
-                max_tokens = history_token_budget(ctx_window)
-                recent = await msg_store.get_messages(channel_id=message.get("channel_id"), limit=30)
-                context = build_context_window(recent, limit=20, max_tokens=max_tokens)
+                    registry = getattr(state, "registry", None)
+                    budget_tokens = calculate_agent_budget(agent, registry) if agent and registry else 4000
+
+                    taosmd_client = get_taosmd_client(state)
+                    result = await taosmd_client.answer_context(
+                        query=original_text,
+                        agent=author_id,
+                        budget_tokens=budget_tokens,
+                        now=datetime.now(timezone.utc),
+                        reasoning_reserve=1024,
+                    )
+                    # Convert answer_context result to bridge context format
+                    if result.context:
+                        context = [{"role": "system", "content": result.context}]
             except Exception:
                 context = []
 

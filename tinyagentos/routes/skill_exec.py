@@ -101,12 +101,16 @@ async def _skill_memory_search(args: dict, request: Request) -> dict:
 
     return {
         "status": "ok",
+        # New answer_context fields
         "context": result.context,
         "dropped": result.dropped,
         "layers": result.layers,
         "total_tokens": result.total_tokens,
         "intent": result.intent,
         "latency_ms": result.latency_ms,
+        # Backward compatibility: old format expected by existing skill consumers
+        "results": [],  # answer_context returns assembled context, not raw hits
+        "note": f"Memory context assembled via answer_context (dropped={result.dropped}, tokens={result.total_tokens})",
     }
 
 

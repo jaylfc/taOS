@@ -210,10 +210,17 @@ async def test_thumbs_down_user_on_agent_enqueues_exact_payload():
         wants_reply=WantsReplyRegistry(),
     )
 
-    with patch(
-        "tinyagentos.chat.context_window.build_context_window",
-        return_value=["__CONTEXT_SENTINEL__"],
-    ) as build:
+    with patch("tinyagentos.taosmd_client.get_taosmd_client") as mock_get_client:
+        mock_taosmd = AsyncMock()
+        mock_get_client.return_value = mock_taosmd
+        mock_taosmd.answer_context = AsyncMock(return_value=MagicMock(
+            context="Assembled context",
+            dropped=0,
+            layers={},
+            total_tokens=100,
+            intent="question",
+            latency_ms=5.0,
+        ))
         ret = await maybe_trigger_semantic(
             emoji="👎",
             message=dict(_BASE_MESSAGE),
@@ -224,21 +231,25 @@ async def test_thumbs_down_user_on_agent_enqueues_exact_payload():
         )
 
     assert ret is None
-    build.assert_called_once_with([], limit=20, max_tokens=4000)
+    mock_taosmd.answer_context.assert_awaited_once()
+    call_args = mock_taosmd.answer_context.call_args
+    assert call_args[1]["budget_tokens"] == 4000
     bridge.enqueue_user_message.assert_awaited_once()
     call = bridge.enqueue_user_message.await_args
     assert call.args[0] == "tom"
-    assert call.args[1] == {
-        "id": "u1",
-        "trace_id": "u1",
-        "channel_id": "c1",
-        "from": "user",
-        "text": "what is 2+2?",
-        "hops_since_user": 0,
-        "force_respond": True,
-        "regenerate": True,
-        "context": ["__CONTEXT_SENTINEL__"],
-    }
+    enqueued = call.args[1]
+    assert enqueued["id"] == "u1"
+    assert enqueued["trace_id"] == "u1"
+    assert enqueued["channel_id"] == "c1"
+    assert enqueued["from"] == "user"
+    assert enqueued["text"] == "what is 2+2?"
+    assert enqueued["hops_since_user"] == 0
+    assert enqueued["force_respond"] is True
+    assert enqueued["regenerate"] is True
+    # Context should be a system message with the answer_context result
+    assert len(enqueued["context"]) == 1
+    assert enqueued["context"][0]["role"] == "system"
+    assert "Assembled context" in enqueued["context"][0]["content"]
 
 
 @pytest.mark.asyncio
@@ -386,12 +397,15 @@ async def test_thumbs_down_missing_msg_store_enqueues_empty_text():
 
 @pytest.mark.asyncio
 async def test_thumbs_down_get_messages_raises_gives_empty_context():
+    """get_messages exception is caught; answer_context still called with original text."""
     bridge = MagicMock()
     bridge.enqueue_user_message = AsyncMock()
     msg_store = MagicMock()
     msg_store.get_message = AsyncMock(
         return_value={"id": "u1", "content": "ok"}
     )
+    # get_messages is not called in the new code path, but we keep the mock
+    # to ensure it doesn't affect the behavior
     msg_store.get_messages = AsyncMock(side_effect=ValueError("nope"))
     state = _state(
         bridge_sessions=bridge,
@@ -399,23 +413,34 @@ async def test_thumbs_down_get_messages_raises_gives_empty_context():
         wants_reply=WantsReplyRegistry(),
     )
 
-    with patch(
-        "tinyagentos.chat.context_window.build_context_window",
-        return_value=["should-not-arrive"],
-    ):
+    with patch("tinyagentos.taosmd_client.get_taosmd_client") as mock_get_client:
+        mock_taosmd = AsyncMock()
+        mock_get_client.return_value = mock_taosmd
+        mock_taosmd.answer_context = AsyncMock(return_value=MagicMock(
+            context="Context",
+            dropped=0,
+            layers={},
+            total_tokens=100,
+            intent="question",
+            latency_ms=5.0,
+        ))
         await maybe_trigger_semantic(
             emoji="👎", message=dict(_BASE_MESSAGE), reactor_id="user",
             reactor_type="user", channel={"id": "c1"}, state=state,
         )
 
+    mock_taosmd.answer_context.assert_awaited_once()
     payload = bridge.enqueue_user_message.await_args.args[1]
     assert payload["text"] == "ok"
-    assert payload["context"] == []
+    # Context should be populated from answer_context result
+    assert len(payload["context"]) == 1
+    assert payload["context"][0]["role"] == "system"
+    assert "Context" in payload["context"][0]["content"]
 
 
 @pytest.mark.asyncio
 async def test_thumbs_down_config_none_uses_default_budget():
-    """No agent config -> ctx_window 0 -> default history budget (4000)."""
+    """No agent config -> answer_context not called, context is empty."""
     bridge = MagicMock()
     bridge.enqueue_user_message = AsyncMock()
     msg_store = MagicMock()
@@ -428,15 +453,26 @@ async def test_thumbs_down_config_none_uses_default_budget():
         wants_reply=WantsReplyRegistry(),
     )
 
-    with patch(
-        "tinyagentos.chat.context_window.build_context_window", return_value=[]
-    ) as build:
+    with patch("tinyagentos.taosmd_client.get_taosmd_client") as mock_get_client:
+        mock_taosmd = AsyncMock()
+        mock_get_client.return_value = mock_taosmd
+        mock_taosmd.answer_context = AsyncMock(return_value=MagicMock(
+            context="Context",
+            dropped=0,
+            layers={},
+            total_tokens=100,
+            intent="question",
+            latency_ms=5.0,
+        ))
         await maybe_trigger_semantic(
             emoji="👎", message=dict(_BASE_MESSAGE), reactor_id="user",
             reactor_type="user", channel={"id": "c1"}, state=state,
         )
 
-    assert build.call_args.kwargs["max_tokens"] == 4000
+    # When config is None, answer_context should NOT be called
+    mock_taosmd.answer_context.assert_not_awaited()
+    payload = bridge.enqueue_user_message.await_args.args[1]
+    assert payload["context"] == []
 
 
 @pytest.mark.asyncio
@@ -458,15 +494,25 @@ async def test_thumbs_down_unknown_model_defaults_budget():
         wants_reply=WantsReplyRegistry(),
     )
 
-    with patch(
-        "tinyagentos.chat.context_window.build_context_window", return_value=[]
-    ) as build:
+    with patch("tinyagentos.taosmd_client.get_taosmd_client") as mock_get_client:
+        mock_taosmd = AsyncMock()
+        mock_get_client.return_value = mock_taosmd
+        mock_taosmd.answer_context = AsyncMock(return_value=MagicMock(
+            context="Context",
+            dropped=0,
+            layers={},
+            total_tokens=100,
+            intent="question",
+            latency_ms=5.0,
+        ))
         await maybe_trigger_semantic(
             emoji="👎", message=dict(_BASE_MESSAGE), reactor_id="user",
             reactor_type="user", channel={"id": "c1"}, state=state,
         )
 
-    assert build.call_args.kwargs["max_tokens"] == 4000
+    mock_taosmd.answer_context.assert_awaited_once()
+    call_args = mock_taosmd.answer_context.call_args
+    assert call_args[1]["budget_tokens"] == 4000
 
 
 @pytest.mark.asyncio
@@ -488,15 +534,25 @@ async def test_thumbs_down_registry_none_defaults_budget():
         wants_reply=WantsReplyRegistry(),
     )
 
-    with patch(
-        "tinyagentos.chat.context_window.build_context_window", return_value=[]
-    ) as build:
+    with patch("tinyagentos.taosmd_client.get_taosmd_client") as mock_get_client:
+        mock_taosmd = AsyncMock()
+        mock_get_client.return_value = mock_taosmd
+        mock_taosmd.answer_context = AsyncMock(return_value=MagicMock(
+            context="Context",
+            dropped=0,
+            layers={},
+            total_tokens=100,
+            intent="question",
+            latency_ms=5.0,
+        ))
         await maybe_trigger_semantic(
             emoji="👎", message=dict(_BASE_MESSAGE), reactor_id="user",
             reactor_type="user", channel={"id": "c1"}, state=state,
         )
 
-    assert build.call_args.kwargs["max_tokens"] == 4000
+    mock_taosmd.answer_context.assert_awaited_once()
+    call_args = mock_taosmd.answer_context.call_args
+    assert call_args[1]["budget_tokens"] == 4000
 
 
 @pytest.mark.asyncio
@@ -518,16 +574,27 @@ async def test_thumbs_down_real_model_budget_is_computed():
         wants_reply=WantsReplyRegistry(),
     )
 
-    with patch(
-        "tinyagentos.chat.context_window.build_context_window", return_value=[]
-    ) as build:
+    with patch("tinyagentos.taosmd_client.get_taosmd_client") as mock_get_client:
+        mock_taosmd = AsyncMock()
+        mock_get_client.return_value = mock_taosmd
+        mock_taosmd.answer_context = AsyncMock(return_value=MagicMock(
+            context="Context",
+            dropped=0,
+            layers={},
+            total_tokens=100,
+            intent="question",
+            latency_ms=5.0,
+        ))
         await maybe_trigger_semantic(
             emoji="👎", message=dict(_BASE_MESSAGE), reactor_id="user",
             reactor_type="user", channel={"id": "c1"}, state=state,
         )
 
-    assert build.call_args.kwargs["max_tokens"] == 5360
+    mock_taosmd.answer_context.assert_awaited_once()
+    call_args = mock_taosmd.answer_context.call_args
+    assert call_args[1]["budget_tokens"] == 5360
     # Anchor the literal against the real pure helper so it is not a magic number.
+    from tinyagentos.chat.context_window import history_token_budget
     assert history_token_budget(16384) == 5360
 
 
@@ -549,15 +616,26 @@ async def test_thumbs_down_small_context_model_floors_budget_at_512():
         wants_reply=WantsReplyRegistry(),
     )
 
-    with patch(
-        "tinyagentos.chat.context_window.build_context_window", return_value=[]
-    ) as build:
+    with patch("tinyagentos.taosmd_client.get_taosmd_client") as mock_get_client:
+        mock_taosmd = AsyncMock()
+        mock_get_client.return_value = mock_taosmd
+        mock_taosmd.answer_context = AsyncMock(return_value=MagicMock(
+            context="Context",
+            dropped=0,
+            layers={},
+            total_tokens=100,
+            intent="question",
+            latency_ms=5.0,
+        ))
         await maybe_trigger_semantic(
             emoji="👎", message=dict(_BASE_MESSAGE), reactor_id="user",
             reactor_type="user", channel={"id": "c1"}, state=state,
         )
 
-    assert build.call_args.kwargs["max_tokens"] == 512
+    mock_taosmd.answer_context.assert_awaited_once()
+    call_args = mock_taosmd.answer_context.call_args
+    assert call_args[1]["budget_tokens"] == 512
+    from tinyagentos.chat.context_window import history_token_budget
     assert history_token_budget(4096) == 512
 
 

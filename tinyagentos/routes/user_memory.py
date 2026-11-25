@@ -143,6 +143,7 @@ async def agent_search(request: Request, q: str, agent_name: str, limit: int = 1
     )
 
     return JSONResponse({
+        # New answer_context fields
         "context": result.context,
         "dropped": result.dropped,
         "layers": result.layers,
@@ -151,6 +152,8 @@ async def agent_search(request: Request, q: str, agent_name: str, limit: int = 1
         "latency_ms": result.latency_ms,
         "query": q,
         "agent": agent_name,
+        # Backward compatibility: old format expected by existing consumers
+        "results": [],  # answer_context returns assembled context, not raw hits
     })
 
 

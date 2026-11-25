@@ -72,8 +72,10 @@ class TaOSmdClient:
             logger.debug("taOSmd not available for in-process calls")
             return False
         except Exception as e:
-            logger.warning("Failed to initialize taOSmd in-process client: %s", e)
-            return False
+            # Log as error (not warning) so config issues are visible.
+            # Re-raise to avoid silently falling back to HTTP with a broken in-process client.
+            logger.error("Failed to initialize taOSmd in-process client: %s", e)
+            raise
 
     async def answer_context(
         self,
@@ -98,7 +100,14 @@ class TaOSmdClient:
         now = now or datetime.now(timezone.utc)
 
         # Try in-process first
-        if self._ensure_in_process() and self._context_assembler:
+        in_process_ok = False
+        try:
+            in_process_ok = self._ensure_in_process() and self._context_assembler
+        except Exception as e:
+            # Config error in in-process init - log and fall back to HTTP
+            logger.error("taOSmd in-process init failed, falling back to HTTP: %s", e)
+
+        if in_process_ok:
             try:
                 return await self._answer_context_in_process(
                     query, agent, budget_tokens, now, reasoning_reserve
@@ -135,32 +144,23 @@ class TaOSmdClient:
         reasoning_reserve: int,
     ) -> AnswerContextResult:
         """Call taOSmd ContextAssembler.assemble in-process."""
-        from taosmd.context_assembler import estimate_tokens
-
         start = time.time()
 
-        # Reserve tokens for reasoning
-        effective_budget = max(512, budget_tokens - reasoning_reserve)
-
-        # Call the ContextAssembler
+        # Call the ContextAssembler with the full budget.
+        # The ContextAssembler handles reasoning_reserve internally (same as HTTP path).
         result = await self._context_assembler.assemble(
             query=query,
             agent_name=agent,
-            max_total_tokens=effective_budget,
+            max_total_tokens=budget_tokens,
             depth="standard",
+            reasoning_reserve=reasoning_reserve,
         )
 
         latency_ms = (time.time() - start) * 1000
 
-        # Calculate dropped count (items that would have been included but exceeded budget)
-        # The ContextAssembler doesn't directly return dropped count, so we estimate
-        # from the difference between available and used tokens in each layer.
-        dropped = 0
-        for layer_name, layer_tokens in result.get("layers", {}).items():
-            # This is an approximation; real dropped count would come from taOSmd
-            if layer_tokens > 0:
-                # Assume ~50 tokens per memory item on average
-                dropped += max(0, (layer_tokens - effective_budget // 4) // 50)
+        # Get dropped count from ContextAssembler result if available.
+        # The ContextAssembler returns the actual number of items dropped due to budget.
+        dropped = result.get("dropped", 0)
 
         return AnswerContextResult(
             context=result.get("context", ""),
