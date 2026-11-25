@@ -23,7 +23,7 @@ StagePage {
     tall: view !== ""
     function focusSearch() { stage.focusSearch() }
     function open(v, arg) { viewArg = arg; view = v; sheetOpen = true; stage.selectedPerson = v === "person" ? arg : "" }
-    function back() { view = ""; viewArg = ""; stage.selectedPerson = "" }
+    function back() { view = ""; viewArg = ""; stage.selectedPerson = ""; demo = ({}) }
     readonly property string viewTitle: {
         if (view === "person") { tak.people; return tak.displayName(viewArg) }
         if (view === "thread") { tak.people; const t = tak.thread(viewArg); return t.title || viewArg }

@@ -165,6 +165,84 @@ private Q_SLOTS:
         for (const QVariant &r : radios)
             QVERIFY(r.toMap().value(u"protocol"_s).toString().isEmpty());
     }
+    void demo_launch_flags_never_plan_or_flash_unless_the_demo_switch_is_set()
+    {
+        section("taostak");
+        auto *page = byName(m_win, u"page-taostak"_s);
+        auto *tak = m_backend->tak();
+        QVERIFY(waitFor([&] { return tak->property("available").toBool(); }, 8000));
+        QMetaObject::invokeMethod(page, "back");
+        qunsetenv("TAOS_SURVIVAL_DEMO");
+        const int plans = m_fw->count(u"POST"_s, u"/v1/flash/plan"_s), runs = m_fw->count(u"POST"_s, u"/v1/flash/run"_s);
+        const QStringList args{u"--section"_s, u"taostak"_s, u"--tak-view"_s, u"firmware"_s, u"--demo"_s, u"fwstep=result;typed=Heltec V3"_s};
+        QMetaObject::invokeMethod(m_win, "applyArgs", Q_ARG(QVariant, args));
+        QTest::qWait(1500);
+        QCOMPARE(m_fw->count(u"POST"_s, u"/v1/flash/plan"_s), plans);   // not even a plan
+        QCOMPARE(m_fw->count(u"POST"_s, u"/v1/flash/run"_s), runs);
+        QMetaObject::invokeMethod(page, "back");
+        // with the switch the screens can be scripted for pictures, but a result still needs the plan first
+        qputenv("TAOS_SURVIVAL_DEMO", "1");
+        const QStringList planArgs{u"--section"_s, u"taostak"_s, u"--tak-view"_s, u"firmware"_s, u"--demo"_s, u"fwstep=plan"_s};
+        QMetaObject::invokeMethod(m_win, "applyArgs", Q_ARG(QVariant, planArgs));
+        QTRY_VERIFY_WITH_TIMEOUT(m_fw->count(u"POST"_s, u"/v1/flash/plan"_s) == plans + 1, 5000);
+        QCOMPARE(m_fw->count(u"POST"_s, u"/v1/flash/run"_s), runs);
+        qunsetenv("TAOS_SURVIVAL_DEMO");
+        QMetaObject::invokeMethod(page, "back");
+        QTest::qWait(100);
+    }
+    void sending_can_be_turned_off_from_the_banner_and_gates_the_compose_box()
+    {
+        section("taostak");
+        auto *page = byName(m_win, u"page-taostak"_s);
+        auto *tak = m_backend->tak();
+        QVERIFY(waitFor([&] { return tak->property("available").toBool(); }, 8000));
+        m_mesh->receiveOnly = false;
+        QMetaObject::invokeMethod(tak, "refresh");
+        QVERIFY(waitFor([&] { return !tak->property("receiveOnly").toBool(); }, 5000));
+        QVERIFY(!tak->property("sendingOn").toBool());                 // off until the owner turns it on
+        QMetaObject::invokeMethod(page, "open", Q_ARG(QVariant, u"thread"_s), Q_ARG(QVariant, u"!7ed23c00"_s));
+        QTest::qWait(300);
+        QVERIFY(!visibleByName(m_win, u"composeField"_s)->isEnabled());
+        QVERIFY(!visibleByName(m_win, u"sendingOffButton"_s));
+        QMetaObject::invokeMethod(visibleByName(m_win, u"sendingOnButton"_s), "clicked");
+        QTest::qWait(300);
+        QVERIFY(tak->property("sendingOn").toBool());
+        QVERIFY(visibleByName(m_win, u"composeField"_s)->isEnabled());
+        QMetaObject::invokeMethod(visibleByName(m_win, u"sendingOffButton"_s), "clicked");
+        QTest::qWait(300);
+        QVERIFY(!tak->property("sendingOn").toBool());
+        QVERIFY(!visibleByName(m_win, u"composeField"_s)->isEnabled());
+        QVERIFY(m_mesh->forbiddenSeen().isEmpty());
+        m_mesh->receiveOnly = true;
+        QMetaObject::invokeMethod(tak, "refresh");
+        QMetaObject::invokeMethod(page, "back");
+        QTest::qWait(300);
+    }
+    void tapping_a_person_on_the_map_opens_them_and_not_the_marker_card()
+    {
+        section("taostak");
+        auto *page = byName(m_win, u"page-taostak"_s);
+        auto *tak = m_backend->tak();
+        QVERIFY(waitFor([&] { return tak->property("available").toBool() && !tak->property("places").toList().isEmpty(); }, 8000));
+        QMetaObject::invokeMethod(page, "back");
+        QVERIFY(waitFor([&] { return m_backend->map()->property("loaded").toBool(); }));
+        QTest::qWait(300);
+        auto *view = visibleByName(m_win, u"mapView"_s);
+        QVERIFY(view);
+        const QVariantMap p = tak->property("places").toList().first().toMap();
+        QMetaObject::invokeMethod(view, "setView", Q_ARG(double, p.value(u"lon"_s).toDouble()), Q_ARG(double, p.value(u"lat"_s).toDouble()), Q_ARG(double, 9.0));
+        QTest::qWait(400);
+        auto *tag = visibleByName(m_win, u"mapPerson-"_s + p.value(u"node"_s).toString());
+        QVERIFY(tag);
+        const QPoint at = tag->mapToScene(QPointF(tag->width() / 2, tag->height() / 2)).toPoint();
+        QTest::mouseClick(m_win, Qt::LeftButton, Qt::NoModifier, at);
+        QTest::qWait(300);
+        QCOMPARE(page->property("view").toString(), u"person"_s);
+        QCOMPARE(page->property("viewArg").toString(), p.value(u"node"_s).toString());
+        QVERIFY(!visibleByName(m_win, u"pickCard"_s));                // the tap did not also ask what to drop on the map
+        QMetaObject::invokeMethod(page, "back");
+        QTest::qWait(100);
+    }
     void taostak_every_view_loads_against_the_engines_and_the_guards_hold()
     {
         section("taostak");

@@ -39,7 +39,7 @@ TaosWindow {
     function applyArgs(args) {
         const s = argValue(args, "--section")
         const dm = argValue(args, "--demo")
-        if (dm !== "") { const o = {}; for (const kv of dm.split(";")) { const j = kv.indexOf("="); if (j > 0) o[kv.substring(0, j)] = kv.substring(j + 1) } takPage.demo = o }
+        if (dm !== "" && Survival.tak.demoEnabled) { const o = {}; for (const kv of dm.split(";")) { const j = kv.indexOf("="); if (j > 0) o[kv.substring(0, j)] = kv.substring(j + 1) } takPage.demo = o }
         if (s !== "") section = s
         if (args.indexOf("--no-agent") >= 0) agentOpen = false
         const q = argValue(args, "--search")

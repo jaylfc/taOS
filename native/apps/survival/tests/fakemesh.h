@@ -65,6 +65,7 @@ public:
     QString path() const { return m_path; }
     bool receiveOnly = true;
     bool configReadable = false;
+    bool refuseMessages = false;
     int delayMs = 0;
     QList<QJsonObject> requests;
     int count(const QString &method) const { int n = 0; for (const auto &r : requests) n += r.value(QStringLiteral("method")).toString() == method; return n; }
@@ -124,6 +125,8 @@ private:
             h.insert(QStringLiteral("device_config"), configReadable);
             return ok(h);
         }
+        if (m == QLatin1String("messages") && refuseMessages)
+            return err(QStringLiteral("invalid"), QStringLiteral("bad filter: unknown field"));
         if (m == QLatin1String("messages"))
             return ok(fixture(m_fx, p.value(QStringLiteral("filter")).toObject().value(QStringLiteral("kind")).toString() == QLatin1String("position") ? QStringLiteral("messages.position") : QStringLiteral("messages.text")));
         if (m == QLatin1String("contacts.create"))

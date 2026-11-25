@@ -255,6 +255,7 @@ FocusScope {
     // tap on empty map: what can be done here
     GlassPanel {
         id: pickCard
+        objectName: "pickCard"
         visible: stage.pick !== null && !stage.pickingMe
         strong: true
         radius: Look.radiusCard - 2

@@ -176,6 +176,35 @@ private Q_SLOTS:
         QCOMPARE(r->eng->count(u"health"_s), before + 1);
     }
 
+    void a_refused_list_request_is_a_failure_not_an_empty_list()
+    {
+        auto r = rig();
+        QVERIFY(r);
+        r->eng->refuseMessages = true;
+        QTRY_VERIFY_WITH_TIMEOUT(r->backend->state() == u"failed"_s, 5000);
+        QVERIFY(!r->backend->available());
+        QVERIFY(r->backend->unavailableReason().contains(u"bad filter"_s));
+        QVERIFY(!r->tak->canSend());
+        // and it recovers when the engine stops refusing
+        r->eng->refuseMessages = false;
+        r->backend->refresh();
+        QTRY_VERIFY_WITH_TIMEOUT(r->backend->available(), 5000);
+    }
+    void sending_can_be_turned_off_again_and_the_choice_is_remembered()
+    {
+        QTemporaryDir d;
+        auto r = rig(true, false);
+        QVERIFY(r);
+        QTRY_VERIFY_WITH_TIMEOUT(r->backend->available(), 5000);
+        r->tak.reset(new TakEngine(r->backend.get(), d.path()));
+        r->tak->setSendingOn(true);
+        QVERIFY(r->tak->canSend());
+        r->tak->setSendingOn(false);
+        QVERIFY(!r->tak->canSend());
+        TakEngine again(r->backend.get(), d.path());
+        QVERIFY(!again.sendingOn());
+    }
+
     // ---- identities: assign, create a contact, told, link ----------------------------------------------------------
     void assigning_a_radio_sends_the_assignment_and_refreshes()
     {

@@ -17,8 +17,8 @@ struct FetchAcc
 {
     QJsonValue radios, ids, texts, pos, last, idl;
     QString healthError;
-    bool healthOk = true, ro = true, cr = false, cw = false, transport = false;
-    QString transportMsg;
+    bool healthOk = true, ro = true, cr = false, cw = false, transport = false, refused = false;
+    QString transportMsg, refusedMsg;
 };
 
 SocketMeshBackend::SocketMeshBackend(MeshClient *client, QObject *parent) : MeshBackend(parent), m_client(client)
@@ -159,6 +159,10 @@ void SocketMeshBackend::fetchAll()
         if (r.code == u"transport"_s) {
             acc->transport = true;
             acc->transportMsg = r.message;
+        } else if (!r.ok && !acc->refused) {
+            // the engine answered and said no: that is not "nothing there", it is a problem to show
+            acc->refused = true;
+            acc->refusedMsg = r.message;
         }
     };
     m_client->request(u"health"_s, {}, this, [this, acc, gen, landed](const MeshReply &r) {
@@ -300,6 +304,9 @@ void SocketMeshBackend::apply(const std::shared_ptr<FetchAcc> &accp)
         } else if (acc->transport) {
             m_state = u"failed"_s;
             m_error = acc->transportMsg;
+        } else if (acc->refused) {
+            m_state = u"failed"_s;
+            m_error = tr("The mesh engine refused a request: %1").arg(acc->refusedMsg);
         } else {
             m_state = u"connected"_s;
             m_error.clear();

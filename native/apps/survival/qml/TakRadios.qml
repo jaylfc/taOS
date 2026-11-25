@@ -28,7 +28,7 @@ C.ScrollView {
             Layout.fillWidth: true; Layout.topMargin: Look.space3
             glyph: "radio"
             title: root.tak.available ? qsTr("The engine has no radio open") : qsTr("No mesh engine")
-            detail: root.tak.available ? qsTr("Start the engine with a radio named on its command line. The app never opens a radio on its own.") : qsTr("Radios the engine has open are listed here once it runs.")
+            detail: root.tak.available ? qsTr("Name a radio in the engine's settings file (TAOS_MESH_ARGS in ~/.config/taos-mesh/mesh.env), then restart the engine. The app never opens a radio on its own.") : qsTr("Radios the engine has open are listed here once it runs.")
         }
         Repeater {
             model: root.tak.radios

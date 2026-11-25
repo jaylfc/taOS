@@ -41,6 +41,7 @@ ColumnLayout {
         Chip { text: qsTr("Engine connected"); tone: "success"; glyph: "check" }
         Chip { visible: root.tak.receiveOnly; text: qsTr("Receive only"); tone: "warning"; glyph: "shield" }
         Chip { visible: !root.tak.receiveOnly; text: root.tak.sendingOn ? qsTr("Sending on") : qsTr("Sending off"); tone: root.tak.sendingOn ? "accent" : "neutral" }
+        PillButton { visible: !root.tak.receiveOnly && root.tak.sendingOn; objectName: "sendingOffButton"; compact: true; text: qsTr("Turn sending off"); onClicked: root.tak.sendingOn = false }
     }
     TaosText {
         visible: root.tak.notice !== ""

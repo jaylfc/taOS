@@ -236,3 +236,39 @@ fn dump_app_fixtures_when_asked() {
     put("identities.list", call(&u.sock, "identities.list", "owner", json!({})).unwrap());
     put("no_config", call(&u.sock, "device.config", "owner", json!({"radio": node})).unwrap());
 }
+
+/// The exact requests the Survival Studio app sends on every refresh. The app's own fixtures were captured without
+/// the `limit` and `newest_first` fields, so this is the test that the daemon accepts what the app really asks.
+#[test]
+fn the_daemon_accepts_every_request_the_app_sends_and_honours_limit_and_order() {
+    let u = up(true);
+    wait_for(&u.sock, 4);
+    let text = json!({"filter": {"kind": "text", "limit": 2000, "newest_first": true}});
+    let position = json!({"filter": {"kind": "position", "limit": 4000, "newest_first": true}});
+    for (m, p) in [
+        ("health", json!({})),
+        ("app.radios", json!({})),
+        ("app.identities", json!({})),
+        ("last_positions", json!({})),
+        ("identities.list", json!({})),
+        ("messages", text),
+        ("messages", position),
+    ] {
+        let r = call(&u.sock, m, "owner", p).unwrap();
+        assert_eq!(r["ok"], true, "{m}: {r}");
+    }
+    let all = call(&u.sock, "messages", "owner", json!({"filter": {}})).unwrap();
+    let all = all["result"].as_array().unwrap();
+    assert!(all.len() >= 2);
+    let newest = call(
+        &u.sock,
+        "messages",
+        "owner",
+        json!({"filter": {"limit": 1, "newest_first": true}}),
+    )
+    .unwrap();
+    let newest = newest["result"].as_array().unwrap();
+    assert_eq!(newest.len(), 1, "limit is honoured");
+    let max = all.iter().map(|r| r["host_ts_ms"].as_u64().unwrap()).max();
+    assert_eq!(newest[0]["host_ts_ms"].as_u64(), max, "newest_first returns the newest");
+}

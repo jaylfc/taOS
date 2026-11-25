@@ -19,19 +19,18 @@ C.ScrollView {
     contentWidth: availableWidth
     clip: true
     Component.onCompleted: { fw.reload(); fw.detect() }
-    // scripted states for screenshots: --demo fwstep=choose|plan|result;typed=<text>;flash=1
-    onNavChanged: if (nav && nav.demo.fwstep !== undefined) Qt.callLater(demoStep)
-    function demoStep() {
-        const d = nav.demo
-        if (!fw.devices.length) { Qt.callLater(demoStep); return }
+    // scripted states for pictures: --demo fwstep=choose|plan|result;typed=<text> (only with TAOS_SURVIVAL_DEMO set, see Main.qml).
+    // Driven by the engine's own signals, never by a timer, and gone for good once it has run.
+    property string demoWant: ""
+    onNavChanged: if (nav && nav.demo.fwstep !== undefined) { demoWant = nav.demo.fwstep; demoAdvance() }
+    Connections { target: root.fw; function onChanged() { root.demoAdvance() } function onPlanChanged() { root.demoAdvance() } }
+    function demoAdvance() {
+        if (demoWant === "" || fw.devices.length === 0) return
         deviceId = fw.devices[0].id
-        if (d.fwstep === "choose") step = "choose"
-        else { entryId = "meshtastic:heltec-v3:2.7.26.54e0d8d"; fw.planFlash(deviceId, entryId); step = "plan"
-               if (d.fwstep === "result") Qt.callLater(demoRun) }
-    }
-    function demoRun() {
-        if (!fw.plan.confirm_phrase) { Qt.callLater(demoRun); return }
-        fw.runFlash(deviceId, entryId, fw.plan.confirm_phrase, false); step = "result"
+        if (demoWant === "choose") { step = "choose"; demoWant = ""; return }
+        if (entryId === "") { entryId = "meshtastic:heltec-v3:2.7.26.54e0d8d"; fw.planFlash(deviceId, entryId); step = "plan"; return }
+        if (demoWant === "plan") { demoWant = ""; return }
+        if (demoWant === "result" && fw.plan.confirm_phrase) { demoWant = ""; step = "result"; fw.runFlash(deviceId, entryId, fw.plan.confirm_phrase, false) }
     }
     function networkName(n) { return n === "meshtastic" ? "Meshtastic" : n === "meshcore" ? "MeshCore" : n === "rnode" ? "RNode (Reticulum)" : n }
     function boardName(id) { for (const b of (fw.boards.boards || [])) if (b.id === id) return b.name; return id }

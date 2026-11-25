@@ -35,6 +35,9 @@ class TakEngine : public QObject
     Q_PROPERTY(QString notice READ notice NOTIFY noticeChanged)       // the last action's outcome in words
     Q_PROPERTY(bool noticeIsError READ noticeIsError NOTIFY noticeChanged)
     Q_PROPERTY(bool canStartEngine READ canStartEngine CONSTANT)
+    /// The scripted --demo launch states (they drive the screens for pictures, including a flash plan) work only when
+    /// TAOS_SURVIVAL_DEMO is set in the environment. A person launching the app never has it set.
+    Q_PROPERTY(bool demoEnabled READ demoEnabled CONSTANT)
 public:
     TakEngine(MeshBackend *backend, const QString &dataDir, QObject *parent = nullptr);
     void setBackend(MeshBackend *b);
@@ -58,6 +61,7 @@ public:
     QString notice() const { return m_notice; }
     bool noticeIsError() const { return m_noticeError; }
     bool canStartEngine() const;
+    bool demoEnabled() const { return qEnvironmentVariableIsSet("TAOS_SURVIVAL_DEMO"); }
 
     /// A thread's messages in time order, each with who is behind it, the position and signal in words.
     Q_INVOKABLE QVariantList messages(const QString &threadId) const;
