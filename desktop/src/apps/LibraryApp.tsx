@@ -286,8 +286,16 @@ export function LibraryApp({ windowId: _windowId }: { windowId: string }) {
   const [usage, setUsage] = useState<LibraryUsage | null>(null);
   /* Guards for the mount load below: if the user edits settings or
      rules before the initial GETs resolve, the stale initial response
-     must not overwrite the completed edit. */
+     must not overwrite the completed edit. The settings guard is
+     per-field: a quality edit blocks the wholesale setSettings (its
+     save response carries the full state), but it must not block the
+     cap draft from initializing -- capDraft is separate state that
+     nothing else re-syncs, so a skipped initialization would leave
+     the input showing the default while the server holds the
+     persisted cap. Only an actual cap edit (capEditedRef) may block
+     the cap draft's initialization. */
   const settingsEditedRef = useRef(false);
+  const capEditedRef = useRef(false);
   const rulesEditedRef = useRef(false);
   /* Settings saves are serialized through this chain (see saveSettings). */
   const settingsSaveChainRef = useRef<Promise<void>>(Promise.resolve());
@@ -304,6 +312,8 @@ export function LibraryApp({ windowId: _windowId }: { windowId: string }) {
       if (cancelled) return;
       if (!settingsEditedRef.current) {
         setSettings(loadedSettings);
+      }
+      if (!capEditedRef.current) {
         setCapDraft(String(loadedSettings.storage_cap_bytes));
       }
       if (!rulesEditedRef.current) {
@@ -841,6 +851,7 @@ export function LibraryApp({ windowId: _windowId }: { windowId: string }) {
 
   const handleCapChange = useCallback(
     (raw: string) => {
+      capEditedRef.current = true;
       setCapDraft(raw);
       const parsed = Number(raw);
       if (raw.trim() === "" || !Number.isInteger(parsed) || parsed < 0) {

@@ -271,4 +271,53 @@ describe("LibraryApp settings view", () => {
       state.puts.some((u) => "storage_cap_bytes" in u),
     ).toBe(false);
   });
+
+  it("initializes the cap draft from the loaded settings even when a quality edit came first", async () => {
+    const { fetchMock, state } = createFetchMock();
+    const loadedCap = 25 * 1024 * 1024 * 1024;
+    let releaseSettings!: () => void;
+    const settingsGate = new Promise<void>((resolve) => {
+      releaseSettings = resolve;
+    });
+    let settingsGetHeld = false;
+    const gatedFetch = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      const method = (init?.method ?? "GET").toUpperCase();
+      if (url === "/api/library/settings" && method === "GET" && !settingsGetHeld) {
+        settingsGetHeld = true;
+        return settingsGate.then(() =>
+          jsonResponse({
+            preferred_quality: "720",
+            storage_cap_bytes: loadedCap,
+          }),
+        );
+      }
+      return fetchMock(input, init);
+    });
+    vi.stubGlobal("fetch", gatedFetch as unknown as typeof fetch);
+    render(<LibraryApp windowId="test-win" />);
+    await openSettings();
+
+    /* The quality edit lands (and its save completes) before the
+       initial settings GET resolves. */
+    const qualitySelect = screen.getByLabelText("Default download quality");
+    fireEvent.change(qualitySelect, { target: { value: "1080" } });
+    await waitFor(
+      () =>
+        expect(
+          state.puts.some((u) => u.preferred_quality === "1080"),
+        ).toBe(true),
+      { timeout: 5000 },
+    );
+
+    releaseSettings();
+
+    /* The loaded cap still initializes the cap draft... */
+    const capInput = screen.getByLabelText("Maximum storage (bytes)");
+    await waitFor(() => expect(capInput).toHaveValue(loadedCap), {
+      timeout: 5000,
+    });
+    /* ...and the pending quality edit is not overwritten by the load. */
+    expect(qualitySelect).toHaveValue("1080");
+  }, 15000);
 });
