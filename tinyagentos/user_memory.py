@@ -18,6 +18,16 @@ DEFAULT_SETTINGS = {
 LEGACY_USER_ID = "user"
 
 
+def user_namespace(user_id: str) -> str:
+    """The taosmd agent namespace (shelf) holding one person's memory.
+
+    taosmd agent names must match ``[a-z][a-z0-9_-]*``, and user ids are mixed
+    case, so the namespace is derived from a hash of the id: stable, valid, and
+    not guessable from another person's id.
+    """
+    return "user-memory-" + hashlib.sha256(user_id.encode()).hexdigest()[:24]
+
+
 class UserMemoryStore(BaseStore):
     """Per-user memory chunks.
 

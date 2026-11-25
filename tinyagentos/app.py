@@ -484,6 +484,9 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
     from tinyagentos.session_turns import SessionTurnStore
     session_turns = SessionTurnStore(data_dir / "session_turns.db")
     channel_hub_router.set_session_turns(session_turns)
+    from tinyagentos.turn_ingest import TurnIngestQueue
+    turn_ingest = TurnIngestQueue(data_dir / "turn_ingest.db")
+    channel_hub_router.set_turn_ingest(turn_ingest)
     peer_outbox_store = PeerOutboxStore(data_dir / "peer_outbox.db")
     from tinyagentos.chat.guest_outbox import GuestOutbox, prune_loop
     guest_outbox = GuestOutbox(data_dir / "guest_outbox.db")
@@ -812,6 +815,7 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
         await chat_messages.init()
         await chat_channels.init()
         await session_turns.init()
+        await turn_ingest.init()
         await peer_outbox_store.init()
         await guest_outbox.init()
         await guest_outbox.prune()
@@ -1102,6 +1106,14 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
         auth_manager.get_local_token()
         logger.info("local auth token path: %s", _local_token_path)
         channel_hub_router.set_archive(archive)  # Wire archive for zero-loss channel message capture
+        # Deliver queued conversation turns to taOSmd's ingest (session fields
+        # included) off the chat path; see tinyagentos/turn_ingest.py.
+        from tinyagentos.turn_ingest import TurnIngestWorker, http_sender, taosmd_base_url
+        app.state.turn_ingest_worker = TurnIngestWorker(
+            turn_ingest,
+            http_sender(lambda: app.state.http_client, lambda: taosmd_base_url(app.state)),
+        )
+        app.state.turn_ingest_worker.start()
         # channel_hub_connectors, deploy_tasks, and idempotency_cache are
         # already set by the eager section; do not create new instances here.
         app.state.todo_store = todo_store
@@ -1360,6 +1372,7 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
             chat_hub=chat_hub,
             archive=getattr(app.state, "archive", None),
             session_turns=session_turns,
+            turn_ingest=turn_ingest,
         )
         app.state.bridge_sessions._router = app.state.agent_chat_router
         app.state.bridge_sessions._guest_outbox = guest_outbox
@@ -1806,6 +1819,9 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
         # not unwind promptly on cancel, the context manager blocked until systemd
         # SIGKILLed the process at TimeoutStopUSec (~45s). cancel_and_wait caps the
         # wait and logs any straggler by name instead of blocking forever.
+        _tiw = getattr(app.state, "turn_ingest_worker", None)
+        if _tiw is not None:
+            await _tiw.stop()
         _bg = set(getattr(app.state, "_background_tasks", set()))
         _hb_task = getattr(app.state, "local_heartbeat_task", None)
         if _hb_task is not None:
@@ -1949,6 +1965,7 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
         await chat_channels.close()
         await chat_messages.close()
         await session_turns.close()
+        await turn_ingest.close()
         await peer_outbox_store.close()
         await guest_outbox.close()
         await expert_agents.close()
@@ -2156,6 +2173,7 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
     app.state.chat_messages = chat_messages
     app.state.chat_channels = chat_channels
     app.state.session_turns = session_turns
+    app.state.turn_ingest = turn_ingest
     app.state.project_store = project_store
     app.state.dispatcher_store = dispatcher_store
     app.state.project_invites = project_invite_store

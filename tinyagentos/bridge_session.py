@@ -30,6 +30,7 @@ from typing import Any, AsyncIterator
 
 from tinyagentos.prompt_assembly import assemble_system_prompt
 from tinyagentos.session_turns import stamp_event, stamp_turn
+from tinyagentos.turn_ingest import enqueue_turn
 
 logger = logging.getLogger(__name__)
 
@@ -163,8 +164,10 @@ class BridgeSessionRegistry:
         chat_hub=None,
         archive=None,
         session_turns=None,
+        turn_ingest=None,
     ) -> None:
         self._session_turns = session_turns
+        self._turn_ingest = turn_ingest
         self._trace_registry = trace_registry
         self._chat_messages = chat_messages
         self._chat_channels = chat_channels
@@ -492,7 +495,7 @@ class BridgeSessionRegistry:
                     )
             # --- End: content_blocks handling ---
 
-            if self._archive is not None:
+            if self._archive is not None or self._turn_ingest is not None:
                 # Skip archive write if reply_id already archived (idempotency dedup).
                 # Replies without an id are not deduplicated.
                 if reply_id is not None and session.is_archive_id_seen(reply_id):
@@ -508,25 +511,40 @@ class BridgeSessionRegistry:
                         self._session_turns, channel_id, owner=slug,
                         seed=self._chat_seed(channel_id),
                     )
-                    try:
-                        await self._archive.record(
-                            event_type="final",
-                            data={
-                                "content": final_content,
-                                "trace_id": trace_id,
-                                "reply_id": reply_id,
-                                "channel_id": channel_id,
-                                **_fields,
-                            },
-                            agent_name=slug,
-                            summary=final_content[:120] if final_content else "",
-                        )
-                        # Mark as archived only after successful write (not on failure),
-                        # so a failed archive write is retried.
-                        if reply_id is not None:
-                            session.mark_archive_id_seen(reply_id)
-                    except Exception:
-                        logger.exception("archive dual-write failed (final)")
+                    # The reply is a turn of the agent's own shelf: queued for
+                    # taOSmd's ingest, off this path, keyed by the reply id.
+                    await enqueue_turn(
+                        self._turn_ingest,
+                        turn_id=(f"bridge:{slug}:{reply_id}" if reply_id else
+                                 f"bridge:{slug}:{_fields['session_id']}#{_fields['turn_index']}"
+                                 if isinstance(_fields["turn_index"], int) else None),
+                        shelves=[slug], role="assistant",
+                        text=final_content or "", fields=_fields,
+                    )
+                    if self._archive is not None:
+                        try:
+                            await self._archive.record(
+                                event_type="final",
+                                data={
+                                    "content": final_content,
+                                    "trace_id": trace_id,
+                                    "reply_id": reply_id,
+                                    "channel_id": channel_id,
+                                    **_fields,
+                                },
+                                agent_name=slug,
+                                summary=final_content[:120] if final_content else "",
+                            )
+                            # Mark as archived only after successful write (not on failure),
+                            # so a failed archive write is retried.
+                            if reply_id is not None:
+                                session.mark_archive_id_seen(reply_id)
+                        except Exception:
+                            logger.exception("archive dual-write failed (final)")
+                    elif reply_id is not None:
+                        # No archive: the queued turn is the write, so a repeat
+                        # of this reply id must not allocate another turn.
+                        session.mark_archive_id_seen(reply_id)
 
             # Chat persistence guard: if this reply_id was already seen, skip chat
             # write entirely (but archive write above still ran / was attempted).

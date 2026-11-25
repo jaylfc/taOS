@@ -8,6 +8,7 @@ import httpx
 from tinyagentos.adapters.retry_policy import ROUTER_TIMEOUT_SECONDS
 from tinyagentos.channel_hub.message import IncomingMessage, OutgoingMessage, parse_inline_hints
 from tinyagentos.session_turns import stamp_turn
+from tinyagentos.turn_ingest import enqueue_turn
 
 logger = logging.getLogger(__name__)
 
@@ -18,6 +19,7 @@ class MessageRouter:
         self._channel_assignments: dict[str, str] = {}  # "platform:bot_id" -> agent_name
         self._next_port = 9001
         self._session_turns = None
+        self._turn_ingest = None
 
     def assign_channel(self, platform: str, bot_id: str, agent_name: str):
         key = f"{platform}:{bot_id}"
@@ -41,6 +43,10 @@ class MessageRouter:
     def set_session_turns(self, session_turns) -> None:
         """Set the per-session turn counter that stamps archived messages."""
         self._session_turns = session_turns
+
+    def set_turn_ingest(self, queue) -> None:
+        """Set the queue that delivers turns to taOSmd's ingest."""
+        self._turn_ingest = queue
 
     def set_archive(self, archive) -> None:
         """Set the archive store for zero-loss message capture."""
@@ -106,7 +112,7 @@ class MessageRouter:
                                 platform: str = "", channel_id: str = "") -> None:
         """Archive a channel message to the zero-loss layer. Never blocks routing."""
         archive = getattr(self, "_archive", None)
-        if not archive:
+        if not archive and self._turn_ingest is None:
             return
         # One session per platform conversation.  The turn is allocated here,
         # before the write and outside the try below, so a counter failure is
@@ -126,6 +132,23 @@ class MessageRouter:
                 timestamp=time.time(),
             )
         else:
+            return
+        # The turn also goes to the agent's own taOSmd shelf through ingest,
+        # queued off the routing path (see tinyagentos/turn_ingest.py).
+        if isinstance(message, IncomingMessage):
+            await enqueue_turn(
+                self._turn_ingest,
+                turn_id=f"hub:{message.platform}:{message.id}" if message.id else None,
+                shelves=[agent_name], role="user", text=message.text, fields=fields,
+            )
+        else:
+            await enqueue_turn(
+                self._turn_ingest,
+                turn_id=(f"hub:{fields['session_id']}#{fields['turn_index']}"
+                         if isinstance(fields["turn_index"], int) else None),
+                shelves=[agent_name], role="assistant", text=message.content, fields=fields,
+            )
+        if not archive:
             return
         try:
             if isinstance(message, IncomingMessage):
