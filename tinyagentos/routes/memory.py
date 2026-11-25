@@ -24,6 +24,7 @@ The headers are built by ``build_trace_context_headers()``.
 from __future__ import annotations
 
 import logging
+import re
 import uuid
 from datetime import UTC, datetime
 from pathlib import Path
@@ -34,8 +35,15 @@ from pydantic import BaseModel, field_validator
 
 from tinyagentos.agent_db import find_agent
 from tinyagentos.agent_token_auth import check_agent_scope
-from tinyagentos.auth_context import current_user, require_agent_owner_or_admin
+from tinyagentos.auth_context import (
+    agent_bound_name,
+    current_user,
+    is_host_caller,
+    is_legacy_owner,
+    require_agent_owner_or_admin,
+)
 from tinyagentos.otel.trace_context import build_trace_context_headers
+from tinyagentos.qmd_service import make_index_dir, qmd_honours_dbpath
 from tinyagentos.routes.delegation import _resolve_agent_name
 
 logger = logging.getLogger(__name__)
@@ -73,6 +81,25 @@ def _local_token_caller(request: Request) -> tuple[bool, str | None]:
     return False, None
 
 
+async def _require_session_agent_access(request: Request, agent: str | None) -> None:
+    """Gate a human session's access to *agent*'s memory: owner or admin only.
+
+    Runs BEFORE ``_agent_db_path`` (which creates the agent's directory), so a
+    refused request touches nothing on disk. Agent-bound local tokens and
+    registry JWTs are fenced by their own branches in each route; this covers
+    the remaining caller, a signed-in session, which would otherwise reach any
+    agent's index by naming it. The unbound host token is admin-equivalent and
+    keeps working. Without ``agent`` the request targets the shared user index
+    and no per-agent ownership applies.
+    """
+    if not agent:
+        return
+    if getattr(request.state, "via", None) == "local_token" or is_legacy_owner(request):
+        return
+    # Authorise the exact component _agent_db_path will use.
+    await require_agent_owner_or_admin(request, current_user(request), agent.strip())
+
+
 class SearchRequest(BaseModel):
     query: str
     mode: str = "keyword"
@@ -84,9 +111,63 @@ class SearchRequest(BaseModel):
     conversation_id: str | None = None
 
 
+async def _require_qmd_dbpath(request: Request) -> None:
+    """503 when qmd cannot honour ``dbPath``: it would answer from ONE shared index.
+
+    Called after authorisation and BEFORE ``_agent_db_path`` so a refusal
+    creates nothing on disk. An unreachable qmd (probe result unknown) falls
+    through to the route's normal 502 handling.
+    """
+    if await qmd_honours_dbpath(request.app.state) is False:
+        raise HTTPException(
+            status_code=503,
+            detail="memory service needs updating: qmd cannot keep agent and personal memory apart",
+        )
+
+
 def _qmd_base(request: Request) -> str:
     """URL of the shared host qmd serve process."""
     return request.app.state.qmd_client.base_url
+
+
+_USER_ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
+
+
+def _user_index_path(request: Request) -> Path:
+    """The index for a request that names no agent (the single no-agent resolver).
+
+    Keyed ONLY on the authenticated caller, never on a request parameter:
+
+    - an admin session and the unbound host token keep the install-wide
+      ``user-qmd-index/index.sqlite`` (no data migration);
+    - any other signed-in person gets ``user-qmd-index/<user_id>/index.sqlite``,
+      so one member can never see or delete another member's entries, nor the
+      admin's;
+    - no identity at all is refused (there is no anonymous index).
+
+    The root sits beside, not inside, ``agent_memory_dir``, and agent names are
+    single path components under ``agent_memory_dir``, so no agent name can
+    address a person's index and no person's index is an agent's.
+    """
+    root = request.app.state.agent_memory_dir.parent / "user-qmd-index"
+    if agent_bound_name(request):
+        # A bound agent token defaults to its own agent before reaching here.
+        raise HTTPException(status_code=403, detail="forbidden")
+    if (
+        is_host_caller(request)
+        or getattr(request.state, "is_admin", False)
+        or is_legacy_owner(request)
+    ):
+        return root / "index.sqlite"
+    uid = getattr(request.state, "user_id", None)
+    if not uid:
+        raise HTTPException(status_code=401, detail="authentication required")
+    if not isinstance(uid, str) or not _USER_ID_RE.match(uid):
+        raise HTTPException(status_code=403, detail="forbidden")
+    target = root / uid / "index.sqlite"
+    if not target.resolve().is_relative_to(root.resolve()):
+        raise HTTPException(status_code=403, detail="forbidden")
+    return target
 
 
 def _agent_db_path(request: Request, agent: str | None) -> str:
@@ -109,7 +190,7 @@ def _agent_db_path(request: Request, agent: str | None) -> str:
     """
     base: Path = request.app.state.agent_memory_dir
     if not agent:
-        target = base.parent / "user-qmd-index" / "index.sqlite"
+        target = _user_index_path(request)
     else:
         agent = agent.strip()
         if (
@@ -125,7 +206,7 @@ def _agent_db_path(request: Request, agent: str | None) -> str:
         # entry under agent_memory_dir): the resolved path must stay inside it.
         if not target.resolve().is_relative_to(base.resolve()):
             raise HTTPException(status_code=400, detail="invalid agent name")
-    target.parent.mkdir(parents=True, exist_ok=True)
+    make_index_dir(target.parent, base if agent else base.parent / "user-qmd-index")
     return str(target)
 
 
@@ -162,11 +243,15 @@ async def memory_browse(
                 raise HTTPException(status_code=403, detail="Agent can only browse its own memory")
             # Use the resolved config agent name for the agent namespace
             agent = agent_config_name
-    
+        else:
+            # Signed-in session: owner or admin only
+            await _require_session_agent_access(request, agent)
+
     http_client = request.app.state.http_client
     params: dict = {"limit": limit, "offset": offset}
     if collection:
         params["collection"] = collection
+    await _require_qmd_dbpath(request)
     params["dbPath"] = _agent_db_path(request, agent)
     headers = build_trace_context_headers(conversation_id=conversation_id)
     try:
@@ -257,7 +342,11 @@ async def memory_search(request: Request, body: SearchRequest):
                 raise HTTPException(status_code=403, detail="Agent can only search its own memory")
             # Use the resolved config agent name for the agent namespace
             body.agent = agent_config_name
-    
+        else:
+            # Signed-in session: owner or admin only
+            await _require_session_agent_access(request, body.agent)
+
+    await _require_qmd_dbpath(request)
     db_path = _agent_db_path(request, body.agent)
     search_fn = _qmd_vsearch if body.mode == "semantic" else _qmd_search
 
@@ -304,8 +393,12 @@ async def memory_collections(
                 raise HTTPException(status_code=403, detail="Agent can only access its own collections")
             # Use the resolved config agent name
             agent_name = agent_config_name
-    
+        else:
+            # Signed-in session: owner or admin only
+            await _require_session_agent_access(request, agent_name)
+
     http_client = request.app.state.http_client
+    await _require_qmd_dbpath(request)
     params: dict = {"dbPath": _agent_db_path(request, agent_name)}
     headers = build_trace_context_headers(conversation_id=conversation_id)
     try:
@@ -341,8 +434,11 @@ async def memory_delete_chunk(
         agent_canonical_id = await check_agent_scope(request, "memory_read")
         if agent_canonical_id is not None:
             raise HTTPException(status_code=403, detail="Memory deletion is human-only")
-    
+        # Signed-in session: owner or admin only
+        await _require_session_agent_access(request, agent)
+
     http_client = request.app.state.http_client
+    await _require_qmd_dbpath(request)
     payload: dict = {"hash": content_hash, "dbPath": _agent_db_path(request, agent)}
     headers = build_trace_context_headers(conversation_id=conversation_id)
     try:

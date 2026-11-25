@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
+import os
 import pytest
 import pytest_asyncio
 import yaml
@@ -475,3 +476,38 @@ async def test_unauthenticated_request_returns_401(tmp_path):
         assert resp.status_code == 401
     finally:
         await _teardown_app_stores(app)
+
+
+# ---------------------------------------------------------------------------
+# Real qmd: set TAOS_TEST_REAL_QMD_URL to a running `qmd serve` (2.8.3-taos.2) to run these.
+# The mocked tests above return an ``id`` key that the real service does not send, so they
+# cannot show what a member really receives.
+# ---------------------------------------------------------------------------
+
+_REAL_QMD = os.environ.get("TAOS_TEST_REAL_QMD_URL", "")
+
+
+@pytest.mark.skipif(not _REAL_QMD, reason="needs a real qmd serve in TAOS_TEST_REAL_QMD_URL")
+@pytest.mark.asyncio
+async def test_member_semantic_search_never_returns_other_peoples_content_real_qmd(two_user_app):
+    import httpx
+
+    app, admin_uid, admin_token, member_uid, member_token = two_user_app
+    store = app.state.knowledge_store
+    other_id = await _add(store, "Other person article", user_id="user-someone-else")
+    own_id = await _add(store, "Own article", user_id=member_uid)
+
+    async with httpx.AsyncClient(timeout=120) as direct:
+        for item_id, text in ((other_id, "OTHERSECRET plutonium orchard schedule"),
+                              (own_id, "MEMBEROWN plutonium orchard notes")):
+            r = await direct.post(f"{_REAL_QMD}/ingest", json={
+                "collection": "knowledge", "path": f"knowledge/{item_id}/chunk_0",
+                "title": item_id, "body": text})
+            r.raise_for_status()
+
+    app.state.qmd_client.base_url = _REAL_QMD
+    async with _make_client(app, member_token) as client:
+        resp = await client.get("/api/knowledge/search?q=plutonium+orchard&mode=semantic")
+    assert resp.status_code == 200
+    assert resp.json()["mode"] == "semantic"
+    assert "OTHERSECRET" not in resp.text and other_id not in resp.text

@@ -1,0 +1,544 @@
+#!/usr/bin/python3 -I
+"""taos-maint: root-owned runner for fixed, signed taOS maintenance steps.
+
+Installed root-owned at /usr/local/sbin/taos-maint by scripts/install-maint.sh
+and run by systemd (taos-maint.service, started by taos-maint.path) or by the
+machine owner. It is NOT run from the git tree: the tree is writable by the
+unprivileged controller account, this file is not.
+
+What it does, and only this:
+
+  1. Read the maintenance manifest, its detached signature and the step scripts
+     from the tree into memory, without following symlinks.
+  2. Verify the signature with gpgv against the root-owned release keyring
+     (/etc/taos/maint/release.gpg) and the root-owned fingerprint allow-list
+     (/etc/taos/maint/release.fpr). Anything else is refused.
+  3. Refuse a manifest older than the highest one seen (replay), a step older
+     than the one already recorded (downgrade), and any step whose sha256 is
+     not the signed one.
+  4. Write the verified bytes to a root-only staging directory and run THAT
+     copy (check, then apply, then verify, rollback on failure) with a clean
+     environment. The tree is never executed.
+
+The caller supplies nothing: no step id, no path, no environment, no argument
+beyond a fixed verb. The controller can only make this runner look at the tree
+again (create a file in the trigger directory); what runs is decided by the
+signed manifest and the root-owned state.
+
+Verbs:  run-pending | init | verify | status | run <step-id>   (run is for the owner)
+Exit:   0 ok / nothing to do, 1 a step failed, 2 refused (nothing ran), 3 usage or setup error
+"""
+from __future__ import annotations
+
+import fcntl
+import hashlib
+import json
+import os
+import re
+import shutil
+import stat
+import subprocess
+import sys
+import tempfile
+import time
+from pathlib import Path
+
+RUNNER_VERSION = 1
+MANIFEST_FORMAT = 1
+MAX_FILE = 1 << 20
+RETRY_SECONDS = 600
+CHECK_TIMEOUT = 120
+APPLY_TIMEOUT = 1200
+TAIL = 4000
+STEP_ID_RE = re.compile(r"^[a-z0-9][a-z0-9.-]{0,63}$")
+SHA_RE = re.compile(r"^[0-9a-f]{64}$")
+FPR_RE = re.compile(r"^[0-9A-F]{40,64}$")
+CONF_KEYS = {"TREE", "DATA_DIR", "SERVICE_USER", "QMD_PORT"}
+GPGV_CANDIDATES = ("/usr/bin/gpgv", "/usr/bin/gpgv2", "/usr/local/bin/gpgv")
+STD_PATH = ("/usr/local/sbin", "/usr/local/bin", "/usr/sbin", "/usr/bin", "/sbin", "/bin")
+
+
+class Refused(Exception):
+    """Verification failed: nothing from the tree may run."""
+
+
+class Paths:
+    """Every filesystem location, derived from one prefix.
+
+    Production uses prefix "/". The prefix is a constructor argument, never read
+    from the environment or the command line, so only code that imports this
+    module (the tests) can move it.
+    """
+
+    def __init__(self, prefix: str = "/") -> None:
+        self.prefix = prefix.rstrip("/") if prefix != "/" else ""
+        p = self.prefix
+        self.conf_dir = Path(p + "/etc/taos/maint")
+        self.conf = self.conf_dir / "maint.conf"
+        self.keyring = self.conf_dir / "release.gpg"
+        self.fprs = self.conf_dir / "release.fpr"
+        self.state_dir = Path(p + "/var/lib/taos-maint")
+        self.state = self.state_dir / "state.json"
+        self.status = self.state_dir / "status.json"
+        self.lock = self.state_dir / "lock"
+        self.trigger_dir = self.state_dir / "trigger"
+        self.stage_root = self.state_dir / "stage"
+        self.log = self.state_dir / "maint.log"
+
+    def exec_path(self) -> str:
+        real = list(STD_PATH)
+        return ":".join([self.prefix + d for d in STD_PATH] + real) if self.prefix else ":".join(real)
+
+
+def _now() -> int:
+    return int(time.time())
+
+
+def read_conf(paths: Paths) -> dict[str, str]:
+    """maint.conf is root-owned and written by the installer. Strict parse."""
+    st = os.lstat(paths.conf)
+    if not stat.S_ISREG(st.st_mode) or st.st_mode & 0o022:
+        raise Refused("maint.conf is not a regular file closed to group/other writes")
+    if paths.prefix == "" and st.st_uid != 0:
+        raise Refused("maint.conf is not owned by root")
+    conf: dict[str, str] = {}
+    for raw in paths.conf.read_text().splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+        key, sep, value = line.partition("=")
+        if not sep or key not in CONF_KEYS:
+            raise Refused(f"maint.conf: unexpected line {raw[:40]!r}")
+        if any(ord(c) < 32 for c in value):
+            raise Refused("maint.conf: control character in value")
+        conf[key] = value
+    for key in ("TREE", "DATA_DIR"):
+        v = conf.get(key, "")
+        if not v.startswith("/") or "/../" in v + "/" or v.endswith("/.."):
+            raise Refused(f"maint.conf: {key} must be an absolute path")
+    if "QMD_PORT" in conf and not re.fullmatch(r"[0-9]{1,5}", conf["QMD_PORT"]):
+        raise Refused("maint.conf: QMD_PORT must be a port number")
+    return conf
+
+
+def read_nofollow(root: str, rel: str) -> bytes:
+    """Read root/rel without following any symlink along the way, size-capped."""
+    if not re.fullmatch(r"[A-Za-z0-9._-]+(/[A-Za-z0-9._-]+)*", rel) or ".." in rel.split("/"):
+        raise Refused(f"unsafe path {rel!r}")
+    flags = os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC | os.O_NOCTTY
+    fd = os.open(root, flags | os.O_DIRECTORY)
+    try:
+        parts = rel.split("/")
+        for part in parts[:-1]:
+            nxt = os.open(part, flags | os.O_DIRECTORY, dir_fd=fd)
+            os.close(fd)
+            fd = nxt
+        ffd = os.open(parts[-1], flags | os.O_NONBLOCK, dir_fd=fd)
+    except OSError as exc:
+        raise Refused(f"cannot open {rel}: {exc.strerror}") from exc
+    finally:
+        os.close(fd)
+    try:
+        st = os.fstat(ffd)
+        if not stat.S_ISREG(st.st_mode) or st.st_size > MAX_FILE:
+            raise Refused(f"{rel} is not a regular file of acceptable size")
+        with os.fdopen(ffd, "rb", closefd=False) as fh:
+            return fh.read(MAX_FILE + 1)
+    finally:
+        os.close(ffd)
+
+
+def _gpgv() -> str:
+    for cand in GPGV_CANDIDATES:
+        if os.access(cand, os.X_OK):
+            return cand
+    raise Refused("gpgv is not installed: refusing (fail closed)")
+
+
+def verify_signature(paths: Paths, manifest: bytes, sig: bytes) -> str:
+    """Return the signing key's primary fingerprint, or raise Refused."""
+    if not paths.keyring.is_file() or not paths.fprs.is_file():
+        raise Refused("release key is not installed")
+    allowed = {ln.strip().upper() for ln in paths.fprs.read_text().splitlines()
+               if ln.strip() and not ln.startswith("#")}
+    if not allowed or not all(FPR_RE.match(f) for f in allowed):
+        raise Refused("release.fpr has no valid fingerprint (placeholder key?)")
+    tmp = Path(tempfile.mkdtemp(prefix="verify.", dir=paths.stage_root))
+    try:
+        os.chmod(tmp, 0o700)
+        (tmp / "gnupg").mkdir(mode=0o700)
+        (tmp / "m").write_bytes(manifest)
+        (tmp / "m.sig").write_bytes(sig)
+        proc = subprocess.run(
+            [_gpgv(), "--homedir", str(tmp / "gnupg"),
+             "--keyring", str(paths.keyring), "--status-fd", "1",
+             str(tmp / "m.sig"), str(tmp / "m")],
+            env={"PATH": paths.exec_path(), "LC_ALL": "C"}, stdin=subprocess.DEVNULL,
+            capture_output=True, timeout=60, check=False,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise Refused("gpgv timed out") from exc
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+    lines = proc.stdout.decode("utf-8", "replace").splitlines()
+    bad = [ln for ln in lines if re.match(r"\[GNUPG:\] (BADSIG|ERRSIG|EXPSIG|EXPKEYSIG|REVKEYSIG|NO_PUBKEY)", ln)]
+    good = [ln for ln in lines if ln.startswith("[GNUPG:] GOODSIG ")]
+    valid = [ln.split() for ln in lines if ln.startswith("[GNUPG:] VALIDSIG ")]
+    if proc.returncode != 0 or bad or len(good) != 1 or len(valid) != 1:
+        raise Refused("manifest signature is not valid")
+    fields = valid[0]
+    primary = fields[-1].upper() if len(fields) >= 12 else fields[2].upper()
+    if primary not in allowed:
+        raise Refused("manifest is signed by a key that is not on the allow-list")
+    return primary
+
+
+def parse_manifest(raw: bytes) -> dict:
+    try:
+        man = json.loads(raw)
+    except ValueError as exc:
+        raise Refused("manifest is not valid JSON") from exc
+    if not isinstance(man, dict) or man.get("format") != MANIFEST_FORMAT:
+        raise Refused("unsupported manifest format")
+    seq = man.get("seq")
+    if not isinstance(seq, int) or isinstance(seq, bool) or seq < 1:
+        raise Refused("manifest seq must be a positive integer")
+    need = man.get("min_runner", 1)
+    if not isinstance(need, int) or isinstance(need, bool):
+        raise Refused("manifest min_runner must be an integer")
+    if need > RUNNER_VERSION:
+        raise Refused(f"manifest needs runner {need}, installed {RUNNER_VERSION}: re-run the taOS installer")
+    steps = man.get("steps")
+    if not isinstance(steps, list):
+        raise Refused("manifest has no steps list")
+    seen = set()
+    for step in steps:
+        if not isinstance(step, dict):
+            raise Refused("malformed step entry")
+        sid = step.get("id")
+        if not isinstance(sid, str) or not STEP_ID_RE.match(sid) or sid in seen:
+            raise Refused("step id missing, malformed or duplicated")
+        seen.add(sid)
+        ver = step.get("version")
+        if not isinstance(ver, int) or isinstance(ver, bool) or ver < 1:
+            raise Refused(f"step {sid}: version must be a positive integer")
+        if step.get("file") != f"maint/steps/{sid}.sh":
+            raise Refused(f"step {sid}: file must be maint/steps/{sid}.sh")
+        if not isinstance(step.get("sha256"), str) or not SHA_RE.match(step["sha256"]):
+            raise Refused(f"step {sid}: sha256 malformed")
+    return man
+
+
+def load_state(paths: Paths) -> dict:
+    try:
+        st = json.loads(paths.state.read_text())
+        if isinstance(st, dict) and isinstance(st.get("steps"), dict):
+            st.setdefault("seq_high", 0)
+            return st
+    except (OSError, ValueError):
+        pass
+    return {"seq_high": 0, "steps": {}}
+
+
+def _atomic_write(path: Path, text: str, mode: int = 0o644) -> None:
+    tmp = path.with_name(path.name + ".tmp")
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, mode)
+    with os.fdopen(fd, "w") as fh:
+        fh.write(text)
+        fh.flush()
+        os.fsync(fh.fileno())
+    os.chmod(tmp, mode)
+    os.replace(tmp, path)
+
+
+def save_state(paths: Paths, state: dict) -> None:
+    _atomic_write(paths.state, json.dumps(state, indent=1, sort_keys=True))
+
+
+def log(paths: Paths, msg: str) -> None:
+    line = f"{time.strftime('%Y-%m-%dT%H:%M:%S')} {msg}"
+    print(line, flush=True)
+    try:
+        if paths.log.exists() and paths.log.stat().st_size > MAX_FILE:
+            paths.log.replace(paths.log.with_name("maint.log.1"))
+        fd = os.open(paths.log, os.O_WRONLY | os.O_CREAT | os.O_APPEND | os.O_NOFOLLOW, 0o640)
+        with os.fdopen(fd, "a") as fh:
+            fh.write(line + "\n")
+    except OSError:
+        pass
+
+
+def write_status(paths: Paths, status: dict) -> None:
+    _atomic_write(paths.status, json.dumps(status, indent=1, sort_keys=True))
+
+
+def load_verified(paths: Paths, conf: dict) -> tuple[dict, dict[str, bytes], str]:
+    """Read, verify and return (manifest, {step_id: script bytes}, signer)."""
+    tree = conf["TREE"]
+    raw = read_nofollow(tree, "maint/manifest.json")
+    sig = read_nofollow(tree, "maint/manifest.json.sig")
+    signer = verify_signature(paths, raw, sig)
+    man = parse_manifest(raw)
+    scripts: dict[str, bytes] = {}
+    for step in man["steps"]:
+        try:
+            body = read_nofollow(tree, step["file"])
+        except Refused:
+            scripts[step["id"]] = b""
+            continue
+        scripts[step["id"]] = body if hashlib.sha256(body).hexdigest() == step["sha256"] else b""
+    return man, scripts, signer
+
+
+def _tail(data: bytes) -> str:
+    return data.decode("utf-8", "replace")[-TAIL:]
+
+
+def run_script(paths: Paths, conf: dict, script: Path, verb: str, timeout: int) -> tuple[int, str]:
+    env = {
+        "PATH": paths.exec_path(),
+        "HOME": str(paths.prefix + "/root") if paths.prefix else "/root",
+        "LC_ALL": "C",
+        "TAOS_ROOT_PREFIX": paths.prefix,
+        "TAOS_DATA_DIR": conf["DATA_DIR"],
+        "TAOS_QMD_PORT": conf.get("QMD_PORT", "7832"),
+        "TAOS_SERVICE_USER": conf.get("SERVICE_USER", "taos"),
+        "TAOS_STATE_DIR": str(paths.state_dir),
+        "TAOS_CONF_DIR": str(paths.conf_dir),
+    }
+    try:
+        proc = subprocess.run(
+            ["/bin/bash", str(script), verb], env=env, cwd="/", stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=timeout,
+            start_new_session=True, check=False,
+        )
+        return proc.returncode, _tail(proc.stdout)
+    except subprocess.TimeoutExpired as exc:
+        return 124, f"timed out after {timeout}s: " + _tail(exc.stdout or b"")
+
+
+def execute_step(paths: Paths, conf: dict, step: dict, body: bytes, rec: dict | None) -> dict:
+    """check -> apply -> verify, rollback on failure. Returns the new state record."""
+    sid = step["id"]
+    attempts = (rec or {}).get("attempts", 0) + 1
+    stage = Path(tempfile.mkdtemp(prefix=f"{sid}.", dir=paths.stage_root))
+    os.chmod(stage, 0o700)
+    script = stage / "step.sh"
+    fd = os.open(script, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o500)
+    with os.fdopen(fd, "wb") as fh:
+        fh.write(body)
+    out_rec = {"version": step["version"], "sha256": step["sha256"], "attempts": attempts, "last_attempt": _now()}
+    try:
+        rc, out = run_script(paths, conf, script, "check", CHECK_TIMEOUT)
+        if rc == 0:
+            log(paths, f"step {sid}: already applied")
+            return {**out_rec, "status": "applied", "applied_at": _now(), "note": "already satisfied"}
+        log(paths, f"step {sid}: applying v{step['version']}")
+        rc, out = run_script(paths, conf, script, "apply", APPLY_TIMEOUT)
+        if rc == 0:
+            rc, out2 = run_script(paths, conf, script, "verify", CHECK_TIMEOUT)
+            out = out + "\n" + out2 if rc != 0 else out
+        if rc == 0:
+            log(paths, f"step {sid}: applied and verified")
+            return {**out_rec, "status": "applied", "applied_at": _now(), "note": ""}
+        log(paths, f"step {sid}: FAILED (rc {rc}), rolling back")
+        rrc, rout = run_script(paths, conf, script, "rollback", APPLY_TIMEOUT)
+        log(paths, f"step {sid}: rollback rc {rrc}")
+        return {**out_rec, "status": "failed", "error": _tail(out.encode())[-1500:],
+                "rollback_rc": rrc}
+    finally:
+        shutil.rmtree(stage, ignore_errors=True)
+
+
+def consume_triggers(paths: Paths) -> int:
+    """Delete request files by name; never opens, reads or follows them."""
+    n = 0
+    try:
+        dfd = os.open(paths.trigger_dir, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    except OSError:
+        return 0
+    try:
+        for name in os.listdir(dfd):
+            if name.endswith(".req"):
+                try:
+                    os.unlink(name, dir_fd=dfd)
+                    n += 1
+                except OSError:
+                    pass
+    finally:
+        os.close(dfd)
+    return n
+
+
+def _prepare(paths: Paths) -> None:
+    paths.state_dir.mkdir(parents=True, exist_ok=True)
+    paths.stage_root.mkdir(mode=0o700, exist_ok=True)
+    os.chmod(paths.stage_root, 0o700)
+    for old in paths.stage_root.iterdir():  # leftovers from a killed run
+        shutil.rmtree(old, ignore_errors=True)
+
+
+def cmd_verify(paths: Paths, conf: dict) -> tuple[dict, dict[str, bytes], str]:
+    man, scripts, signer = load_verified(paths, conf)
+    state = load_state(paths)
+    if man["seq"] < state["seq_high"]:
+        raise Refused(f"manifest seq {man['seq']} is older than the recorded {state['seq_high']} (replay refused)")
+    return man, scripts, signer
+
+
+def run_pending(paths: Paths, conf: dict, only: str | None = None) -> int:
+    state = load_state(paths)
+    prev = {}
+    try:
+        prev = json.loads(paths.status.read_text())
+    except (OSError, ValueError):
+        pass
+    run_seq = int(prev.get("run_seq", 0)) + 1
+    status = {"run_seq": run_seq, "state": "running", "started": _now(), "steps": []}
+    write_status(paths, status)
+    results = []
+    code = 0
+    try:
+        man, scripts, signer = cmd_verify(paths, conf)
+        log(paths, f"manifest seq {man['seq']} verified, signer {signer[-16:]}")
+        state["seq_high"] = max(state["seq_high"], man["seq"])
+        found = False
+        for step in man["steps"]:
+            sid = step["id"]
+            if only is not None and sid != only:
+                continue
+            found = True
+            rec = state["steps"].get(sid)
+            body = scripts[sid]
+            if not body:
+                log(paths, f"step {sid}: REFUSED (step file missing or not the signed bytes)")
+                results.append({"id": sid, "result": "refused", "detail": "step file missing or not the signed bytes"})
+                code = max(code, 2)
+                continue
+            if rec and rec.get("version", 0) > step["version"]:
+                log(paths, f"step {sid}: REFUSED (older than the recorded version, downgrade)")
+                results.append({"id": sid, "result": "refused", "detail": "older than the recorded version (downgrade)"})
+                code = max(code, 2)
+                continue
+            if rec and rec.get("status") == "applied" and rec.get("version", 0) >= step["version"]:
+                results.append({"id": sid, "result": "already-applied"})
+                continue
+            if (rec and rec.get("status") == "failed" and rec.get("version") == step["version"]
+                    and rec.get("sha256") == step["sha256"] and only is None and _now() - rec.get("last_attempt", 0) < RETRY_SECONDS):
+                results.append({"id": sid, "result": "failed", "detail": rec.get("error", ""), "cooldown": True})
+                code = max(code, 1)
+                continue
+            new = execute_step(paths, conf, step, body, rec)
+            state["steps"][sid] = new
+            if new["status"] == "applied":
+                results.append({"id": sid, "result": "applied", "version": step["version"]})
+            else:
+                results.append({"id": sid, "result": "failed", "detail": new.get("error", "")})
+                code = max(code, 1)
+            save_state(paths, state)
+        if only is not None and not found:
+            raise Refused(f"step {only!r} is not in the signed manifest")
+        save_state(paths, state)
+        status.update(result="failed" if code == 1 else ("refused" if code == 2 else
+                      ("applied" if any(r["result"] == "applied" for r in results) else "nothing")))
+    except Refused as exc:
+        log(paths, f"REFUSED: {exc}")
+        status.update(result="refused", detail=str(exc))
+        code = 2
+    except Exception as exc:  # never leave status stuck on "running"
+        log(paths, f"ERROR: {exc!r}")
+        status.update(result="error", detail=repr(exc))
+        code = 3
+    status.update(state="idle", finished=_now(), steps=results)
+    write_status(paths, status)
+    return code
+
+
+def cmd_init(paths: Paths, conf: dict) -> int:
+    """Verify the shipped manifest and record its seq as the replay floor."""
+    man, _, signer = cmd_verify(paths, conf)
+    state = load_state(paths)
+    state["seq_high"] = max(state["seq_high"], man["seq"])
+    state["runner"] = RUNNER_VERSION
+    save_state(paths, state)
+    log(paths, f"init: replay floor seq {state['seq_high']}, signer {signer[-16:]}")
+    return 0
+
+
+def _report_setup_error(paths: Paths, detail: str) -> None:
+    """Let a waiting controller see that this run ended, instead of timing out."""
+    try:
+        prev = json.loads(paths.status.read_text())
+    except (OSError, ValueError):
+        prev = {}
+    try:
+        write_status(paths, {"run_seq": int(prev.get("run_seq", 0)) + 1, "state": "idle", "result": "error",
+                             "detail": f"setup error: {detail}"[:500], "finished": _now(), "steps": []})
+    except OSError:
+        pass
+
+
+def main(argv: list[str], prefix: str = "/") -> int:
+    paths = Paths(prefix)
+    verb = argv[0] if argv else ""
+    only = argv[1] if verb == "run" and len(argv) == 2 else None
+    ok = (verb in ("run-pending", "init", "verify", "status") and len(argv) == 1) or (verb == "run" and only)
+    if not ok:
+        print(__doc__.split("Verbs:")[0].strip().splitlines()[0] + "\nusage: taos-maint run-pending|init|verify|status|run <step-id>",
+              file=sys.stderr)
+        return 3
+    if verb == "status":
+        for p in (paths.state, paths.status):
+            print(p.read_text() if p.exists() else "{}")
+        return 0
+    if prefix == "/" and os.geteuid() != 0:
+        print("taos-maint must run as root", file=sys.stderr)
+        return 3
+    if only is not None and not STEP_ID_RE.match(only):
+        print("bad step id", file=sys.stderr)
+        return 3
+    try:
+        paths.state_dir.mkdir(parents=True, exist_ok=True)
+        lock_fd = os.open(paths.lock, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
+    except OSError as exc:
+        print(f"taos-maint: setup error: {exc}", file=sys.stderr)
+        return 3
+    fcntl.flock(lock_fd, fcntl.LOCK_EX)  # wait for a run in progress; never overlap it
+    # Only the lock holder may touch staging: a second invocation clearing it
+    # would delete the script the first one is about to run.
+    try:
+        _prepare(paths)
+        conf = read_conf(paths)
+    except (Refused, OSError) as exc:
+        print(f"taos-maint: setup error: {exc}", file=sys.stderr)
+        _report_setup_error(paths, str(exc))
+        os.close(lock_fd)
+        return 3
+    try:
+        return _dispatch(paths, conf, verb, only)
+    finally:
+        os.close(lock_fd)
+
+
+def _dispatch(paths: Paths, conf: dict, verb: str, only: str | None) -> int:
+    consume_triggers(paths)
+    if verb == "verify":
+        try:
+            man, scripts, signer = cmd_verify(paths, conf)
+        except Refused as exc:
+            print(f"REFUSED: {exc}", file=sys.stderr)
+            return 2
+        bad = [sid for sid, body in scripts.items() if not body]
+        print(f"manifest seq {man['seq']} signer {signer}; steps: {[s['id'] for s in man['steps']]}; bad: {bad}")
+        return 2 if bad else 0
+    if verb == "init":
+        try:
+            return cmd_init(paths, conf)
+        except Refused as exc:
+            print(f"REFUSED: {exc}", file=sys.stderr)
+            return 2
+    return run_pending(paths, conf, only)
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

@@ -110,6 +110,10 @@ async def test_registry_jwt_with_colliding_name_cannot_read_another_agents_memor
 
     http = _CapturingHttp()
     app.state.http_client = http
+    # The memory routes refuse while qmd cannot keep indexes apart (beta.59 safety
+    # net); this test is about name collisions, so stand in a recognised new qmd.
+    import time as _time
+    app.state._qmd_dbpath_probe = (_time.monotonic() + 600, True)
     try:
         async with AsyncClient(
             transport=ASGITransport(app=app),

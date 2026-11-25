@@ -7,6 +7,26 @@ Versions follow semver beta: `1.0.0-beta.N`, bumped on each dev->master promotio
 
 ## [Unreleased]
 
+## [1.0.0-beta.59] - 2026-11-24
+
+Security hotfix cut from beta.58.
+
+### Security
+
+- Memory belonging to an agent can now only be shown, searched or deleted by the agent's owner or an admin, and an agent's own token reaches only its own agent. The same ownership check now covers the other per-agent screens: channels, the agent debugger, traces, the recycle bin, skills, framework updates, provider access requests and library import.
+- Memory you save without naming an agent now goes to your own private index, one per person. The install owner keeps the existing one.
+- Approving or denying an agent's access to a provider key is now limited to the install owner. The agent's owner can still revoke a grant.
+- taOS refuses memory requests ("memory service needs updating") while the memory search service (qmd, port 7832) is too old to keep people apart. New installs set it up to listen on this machine only.
+- Existing installs: after updating, run the one-time command shown in the "Memory service needs updating" notification (it asks for your machine password once). Until you run it, the memory search service keeps listening on the network as before; updating taOS alone does not close it. If your machine is on a shared or untrusted network, run it now or block port 7832 with your firewall. The command is pinned to this release and to the release signing key, and the installer checks both before installing anything.
+- To keep the memory search service reachable from another machine on purpose, set `QMD_BIND` in `/etc/default/qmd` before running the command, and firewall port 7832 to machines you trust.
+- Your older memory is not touched. It stays where it is; a viewer for it follows in a later release.
+- Reported by golam71, with analysis from i-vt.
+
+### Added
+
+- Updates can now apply fixed maintenance steps that need administrator rights. A small root-owned helper (`taos-maint`, set up by the installer or by the one-time command) applies only steps the project has signed, after each update and at start-up, and refuses anything else, including older or altered steps. The first step upgrades the memory search service and limits it to this machine. If a step fails the update still completes, taOS says why, and memory requests stay refused until it is fixed.
+- The memory search service can open its index files when it runs as a different account than taOS: the step lets it join taOS's group for the data directory only.
+
 ## [1.0.0-beta.58] - 2026-11-12
 
 Security hotfix cut from beta.57.

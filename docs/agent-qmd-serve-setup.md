@@ -14,7 +14,7 @@ Host (Orange Pi / x86)
 │   ├── data/agent-memory/agent-alpha/index.sqlite
 │   ├── data/agent-memory/agent-beta/index.sqlite
 │   ├── data/agent-memory/agent-gamma/index.sqlite
-│   └── data/user-qmd-index/index.sqlite   (taOS user memory)
+│   └── data/user-qmd-index/index.sqlite   (install owner/admin user memory; each other person: data/user-qmd-index/<user_id>/index.sqlite)
 ├── taOS (port 6969) — web app, routes memory ops through qmd serve
 │
 ├── LXC: agent-alpha
@@ -56,7 +56,7 @@ export QMD_SERVER=http://localhost:7833  # for CLI operations
 A single `qmd serve` runs on the host:
 
 ```bash
-qmd serve --port 7832 --bind 0.0.0.0 --backend rkllama --rkllama-url http://localhost:7833
+qmd serve --port 7832 --bind 127.0.0.1 --backend rkllama --rkllama-url http://localhost:7833
 ```
 
 ## Systemd Service (Host)
@@ -70,7 +70,7 @@ After=network.target
 
 [Service]
 Type=simple
-ExecStart=/usr/local/bin/qmd serve --port 7832 --bind 0.0.0.0 --backend rkllama --rkllama-url http://localhost:7833
+ExecStart=/usr/local/bin/qmd serve --port 7832 --bind 127.0.0.1 --backend rkllama --rkllama-url http://localhost:7833
 Restart=on-failure
 RestartSec=5
 Environment=NODE_ENV=production
@@ -167,3 +167,44 @@ curl -X POST http://localhost:7832/ingest \
   -H "Content-Type: application/json" \
   -d '{"body": "content to embed", "title": "note", "collection": "knowledge", "dbPath": "data/agent-memory/agent-alpha/index.sqlite"}'
 ```
+
+## Upgrading an existing install
+
+New installs get `@jaylfc/qmd@2.8.3-taos.2`, listening on `127.0.0.1` only, with
+`QMD_SERVE_DB_ROOT` set to the taOS data directory. Older qmd releases ignore
+`dbPath` and answer every request from one shared index, so taOS refuses
+per-agent and per-person memory calls (HTTP 503, "memory service needs updating")
+until qmd is upgraded.
+
+**Automatic.** The taOS updater runs as an unprivileged account, so it cannot
+upgrade the root-installed qmd itself. Installs set up by the current installer
+carry a small root-owned runner (`/usr/local/sbin/taos-maint`) that applies the
+maintenance steps the project signed, this qmd upgrade among them, after each
+update and at controller start. Nothing needs to be typed. The runner refuses
+anything not signed by the release key; see `maint/` and `scripts/install-maint.sh`.
+An existing install that predates the runner needs ONE owner action, shown in
+Settings and in a notification, after which updates take care of this by
+themselves:
+
+```bash
+curl -fsSL --proto '=https' --tlsv1.2 https://raw.githubusercontent.com/jaylfc/taOS/v<version>/scripts/install-maint.sh | sudo bash -s -- --fetch v<version> --fpr <release key fingerprint>
+```
+
+Copy the command from the notification: it names the release you are running and the
+release key's fingerprint. The installer refuses unless the key it fetched has exactly
+that fingerprint and has signed that release's maintenance manifest, and it checks this
+before it installs anything.
+
+The step leaves any `QMD_BIND` you set in `/etc/default/qmd` alone; to keep qmd
+reachable from other machines set `QMD_BIND` in `/etc/default/qmd` (a `QMD_BIND` set only in a systemd drop-in is not read by the step; or, once the runner is
+installed, create the empty file `/etc/taos/maint/qmd-keep-open` as root) before the step runs. Without the runner (macOS, containers, a
+user-level service) the machine owner runs once:
+
+```bash
+sudo bash scripts/upgrade-qmd.sh --local-only
+```
+
+`--local-only` also limits qmd to this machine; leave it off if another machine
+must reach qmd (then firewall port 7832 to the hosts you trust). To change the
+bind later, set `QMD_BIND` in `/etc/default/qmd` (it overrides the unit) and run
+`sudo systemctl restart qmd`. Existing index files are kept as they are.

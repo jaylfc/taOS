@@ -1699,6 +1699,9 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
         from tinyagentos.agent_controller_listener import run_startup_reconcile as _agent_ctl_reconcile
         _create_supervised_task(_agent_ctl_reconcile(app.state), app.state._background_tasks)
 
+        from tinyagentos.qmd_service import run_qmd_service_check
+        _create_supervised_task(run_qmd_service_check(app.state), app.state._background_tasks)
+
         app.state._startup_complete = True
         # Repair the installed graceful-stop script and drop-in on start-up:
         # a machine that updated onto this code before the in-app refresh

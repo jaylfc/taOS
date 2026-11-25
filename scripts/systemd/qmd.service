@@ -30,7 +30,13 @@ User=__TAOS_USER__
 Group=__TAOS_GROUP__
 EnvironmentFile=-/etc/default/qmd
 Environment=QMD_PORT=7832
-Environment=QMD_BIND=0.0.0.0
+# Listen on this machine only. qmd has no authentication of its own and takes the
+# index file from the caller (dbPath), so it must not be reachable from the
+# network. To serve other machines set QMD_BIND in /etc/default/qmd (it overrides
+# this line) and firewall port 7832 to the hosts you trust.
+Environment=QMD_BIND=127.0.0.1
+# Confine every dbPath a caller sends to the taOS data directory.
+Environment=QMD_SERVE_DB_ROOT=__TAOS_DATA_DIR__
 # Backend defaults: empty for CPU-only fallback (node-llama-cpp). Edit
 # /etc/default/qmd to point at a remote backend like rkllama on a Pi NPU
 # or an Ollama server elsewhere on the LAN.

@@ -33,6 +33,12 @@ def _stub_http(client_with_qmd, responses: dict[str, dict]):
         raise AssertionError(f"unexpected GET {url}")
 
     async def _post(url: str, *, json=None, timeout=None, **kw):
+        if url.endswith("/delete-chunk") and json == {}:
+            # the memory routes' qmd capability probe: a qmd that honours dbPath rejects it
+            probe = MagicMock()
+            probe.status_code = 400
+            probe.json = MagicMock(return_value={"error": "hash is required"})
+            return probe
         for suffix, body in responses.items():
             if url.endswith(suffix):
                 return _response_for(suffix)
@@ -99,6 +105,9 @@ class TestAgentDbPath:
         from tinyagentos.routes.memory import _agent_db_path
         req = MagicMock()
         req.app.state.agent_memory_dir = tmp_path / "agent-memory"
+        req.state.agent_name = None
+        req.state.via = "session"
+        req.state.is_admin = True  # the install owner keeps the existing index
         p = _agent_db_path(req, None)
         assert p is not None  # never None / never omits dbPath
         assert p.endswith("user-qmd-index/index.sqlite")

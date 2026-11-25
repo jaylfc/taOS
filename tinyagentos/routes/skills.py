@@ -3,6 +3,8 @@ from __future__ import annotations
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
 
+from tinyagentos.auth_context import require_agent_access
+
 router = APIRouter()
 
 
@@ -32,12 +34,14 @@ async def compatible(request: Request, framework: str):
 
 @router.get("/api/agents/{agent_id}/skills")
 async def get_agent_skills(request: Request, agent_id: str):
+    await require_agent_access(request, agent_id)
     skills = await _store(request).get_agent_skills(agent_id)
     return JSONResponse({"skills": skills})
 
 
 @router.post("/api/agents/{agent_id}/skills")
 async def assign_skill(request: Request, agent_id: str):
+    await require_agent_access(request, agent_id)
     body = await request.json()
     skill_id = body.get("skill_id")
     if not skill_id:
@@ -51,5 +55,6 @@ async def assign_skill(request: Request, agent_id: str):
 
 @router.delete("/api/agents/{agent_id}/skills/{skill_id}")
 async def unassign_skill(request: Request, agent_id: str, skill_id: str):
+    await require_agent_access(request, agent_id)
     await _store(request).unassign_skill(agent_id, skill_id)
     return JSONResponse({"ok": True})

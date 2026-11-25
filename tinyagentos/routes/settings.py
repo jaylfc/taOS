@@ -1179,6 +1179,34 @@ async def _update_local_taosmd(request: Request) -> dict:
     }
 
 
+async def _run_maintenance_after_update(request: Request) -> dict:
+    from tinyagentos import maint
+    report = await maint.run_pending()
+    text = maint.failure_text(report)
+    notif = getattr(request.app.state, "notifications", None)
+    if notif is not None and report.get("result") in ("applied", "nothing"):
+        try:  # a clean run retires an earlier failure notice
+            await notif.archive_by_source_ref("system.maintenance", "maintenance")
+        except Exception:
+            logger.exception("could not retire the maintenance notification")
+    if text and notif is not None:
+        try:
+            await notif.archive_by_source_ref("system.maintenance", "maintenance")
+            await notif.add(title="Maintenance step needs attention", message=text,
+                            level="warning", source="system.maintenance",
+                            data={"request_id": "maintenance"})
+        except Exception:
+            logger.exception("could not record the maintenance notification")
+    return report
+
+
+@router.get("/api/settings/maintenance")
+async def maintenance_status():
+    """Is the root maintenance runner set up, and what did its last run do?"""
+    from tinyagentos import maint
+    return maint.summary()
+
+
 # --- graceful-stop refresh on update ------------------------------------
 #
 # Installs made before the no-drain fix carry `ExecStop=<stop script>` in their
@@ -1586,6 +1614,10 @@ async def apply_update(request: Request):
                 status_code=500,
             )
 
+    # Apply any signed maintenance steps this update ships (qmd upgrade, ...) through
+    # the root runner. A failure never fails the update: it is reported and
+    # notified, and the memory safety net keeps refusing until it is fixed.
+    maintenance = await _run_maintenance_after_update(request)
     # Refresh the installed stop script and the no-drain drop-in so existing
     # installs stop draining agents on every restart. A problem is reported in
     # the result below, never hidden. This only writes files and reloads
@@ -1609,6 +1641,7 @@ async def apply_update(request: Request):
         "output": output.strip(),
         "stashed_local_changes": stashed_local,
         "taosmd": taosmd_report,
+        "maintenance": maintenance,
         "graceful_stop_refresh": stop_refresh.as_dict(),
         "message": (
             (

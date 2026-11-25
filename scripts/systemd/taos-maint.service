@@ -1,0 +1,20 @@
+[Unit]
+Description=taOS signed maintenance steps (root, fixed, verified)
+StartLimitIntervalSec=0
+Documentation=file:///usr/local/sbin/taos-maint
+After=local-fs.target
+
+[Service]
+Type=oneshot
+# Root-owned runner copied here by install-maint.sh. It reads the maintenance
+# manifest from the install tree, refuses anything not signed by the release key
+# and runs verified copies only. It takes no input from whoever started it.
+ExecStart=/usr/local/sbin/taos-maint run-pending
+TimeoutStartSec=1800
+PrivateTmp=yes
+# No ProtectHome/ProtectSystem: the install tree and data directory may live under
+# /home or /root, and steps write to /etc, /usr and /var.
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes

@@ -9,10 +9,16 @@ no per-route guard of their own.
 """
 import time
 
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
+from tinyagentos.auth_context import (
+    agent_bound_name,
+    can_access_agent,
+    is_human_admin,
+    require_agent_access,
+)
 from tinyagentos.broker.clients.keenable import (
     keenable_fetch,
     keenable_search,
@@ -47,6 +53,18 @@ class ApproveRequest(BaseModel):
     window_seconds: float
 
 
+def _require_consent_authority(request: Request) -> None:
+    """Approve / deny: the install owner (an admin session or the host token).
+
+    Every provider's real key lives in the install-wide secrets keystore, so
+    the person whose secret it is, is the install owner. A member who owns an
+    agent may ask for access for it but cannot grant it, and an agent's own
+    token (which maps to the admin user) can never approve a grant for itself.
+    """
+    if not is_human_admin(request):
+        raise HTTPException(status_code=403, detail="forbidden")
+
+
 @router.get("/api/broker/providers")
 async def list_providers(request: Request):
     return [
@@ -66,6 +84,7 @@ async def request_access(request: Request, body: AccessRequest):
         return JSONResponse(
             {"error": "agent_identity is required"}, status_code=400
         )
+    await require_agent_access(request, body.agent_identity)
     broker = request.app.state.broker
     try:
         grant_id = await broker.request_access(
@@ -95,14 +114,28 @@ async def list_grants(
     agent_identity: str | None = None,
     status: str | None = None,
 ):
+    if agent_identity:
+        await require_agent_access(request, agent_identity)
     broker = request.app.state.broker
-    return await broker.store.list_grants(
+    grants = await broker.store.list_grants(
         agent_identity=agent_identity, status=status
     )
+    if agent_identity or is_human_admin(request):
+        return grants
+    allowed: dict[str, bool] = {}
+    visible = []
+    for g in grants:
+        who = g["agent_identity"]
+        if who not in allowed:
+            allowed[who] = await can_access_agent(request, who)
+        if allowed[who]:
+            visible.append(g)
+    return visible
 
 
 @router.post("/api/broker/grants/{grant_id}/approve")
 async def approve_grant(request: Request, grant_id: str, body: ApproveRequest):
+    _require_consent_authority(request)
     broker = request.app.state.broker
     try:
         grant = await broker.approve(grant_id, body.window_seconds)
@@ -113,6 +146,7 @@ async def approve_grant(request: Request, grant_id: str, body: ApproveRequest):
 
 @router.post("/api/broker/grants/{grant_id}/deny")
 async def deny_grant(request: Request, grant_id: str):
+    _require_consent_authority(request)
     broker = request.app.state.broker
     ok = await broker.deny(grant_id)
     # ok is False only when no grant matched the id; return 404 for consistency
@@ -125,6 +159,13 @@ async def deny_grant(request: Request, grant_id: str):
 @router.post("/api/broker/grants/{grant_id}/revoke")
 async def revoke_grant(request: Request, grant_id: str):
     broker = request.app.state.broker
+    # Taking access away is allowed to the install owner and to the owner of
+    # the agent that holds the grant; an agent token never revokes.
+    if not is_human_admin(request):
+        grant = await broker.store.get_grant(grant_id)
+        if grant is None or agent_bound_name(request):
+            raise HTTPException(status_code=403, detail="forbidden")
+        await require_agent_access(request, grant["agent_identity"])
     ok = await broker.revoke(grant_id)
     if not ok:
         return JSONResponse({"error": f"unknown grant_id: {grant_id!r}"}, status_code=404)

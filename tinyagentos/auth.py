@@ -564,6 +564,19 @@ class AuthManager:
             return True
         return bool(users) or self._password_file.exists()
 
+    def is_legacy_single_password(self) -> bool:
+        """True only when this is positively a legacy single-password install.
+
+        The account store must be readable and hold an empty ``users`` list, and
+        the legacy password file must exist. An unreadable, corrupt or partial
+        store, any account at all, or no password, all answer False.
+        """
+        try:
+            users = self._read_users().get("users")
+            return users == [] and self._password_file.exists()
+        except Exception:
+            return False
+
     def needs_onboarding(self) -> bool:
         return not self.is_configured()
 
