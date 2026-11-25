@@ -502,3 +502,40 @@ def test_model_single_context_field_no_warning(capsys) -> None:
     warning_texts = [l.replace("  warn: ", "") for l in warn_lines]
     assert any("family" in w for w in warning_texts)
     assert not any("min_context" in w or "max_context" in w for w in warning_texts)
+
+
+# --- licence allowlist ------------------------------------------------------
+
+def _lic_manifest(root: Path, mid: str, **fields) -> None:
+    d = root / "services" / mid
+    d.mkdir(parents=True, exist_ok=True)
+    (d / "manifest.yaml").write_text(yaml.safe_dump({"id": mid, "name": mid, "type": "service",
+                                                     "version": "1", **fields}))
+
+
+def test_unknown_licence_string_fails_lint(tmp_path: Path) -> None:
+    _lic_manifest(tmp_path, "a", license="Totally Made Up License 9")
+    errs = check_manifests.lint_licenses(tmp_path)
+    assert len(errs) == 1 and "Totally Made Up License 9" in errs[0]
+
+
+def test_unknown_weights_and_model_licence_fail_lint(tmp_path: Path) -> None:
+    _lic_manifest(tmp_path, "b", license="MIT", weights_license="Nope 1", model_license="Nope 2")
+    assert len(check_manifests.lint_licenses(tmp_path)) == 2
+
+
+def test_known_licences_pass_lint(tmp_path: Path) -> None:
+    _lic_manifest(tmp_path, "c", license="MIT", weights_license="CC-BY-NC 4.0")
+    _lic_manifest(tmp_path, "d", license="Gemma Terms of Use")
+    assert check_manifests.lint_licenses(tmp_path) == []
+
+
+def test_shipped_catalog_has_no_unknown_licence_strings() -> None:
+    root = Path(__file__).resolve().parent.parent / "app-catalog"
+    assert check_manifests.lint_licenses(root) == []
+
+
+def test_main_exits_nonzero_on_unknown_licence(tmp_path: Path, capsys) -> None:
+    _lic_manifest(tmp_path, "e", license="Totally Made Up License 9")
+    assert check_manifests.main(["managed-lint", "--root", str(tmp_path)]) == 1
+    assert "Totally Made Up License 9" in capsys.readouterr().err

@@ -616,6 +616,8 @@ class AuthManager:
             "username": record.get("username", ""),
             "full_name": record.get("full_name", ""),
             "email": record.get("email", ""),
+            # ISO 3166-1 alpha-2, set by the person; "" when never set.
+            "country": record.get("country", ""),
             "is_admin": bool(record.get("is_admin", False)),
             "pending": "pending_invite" in record,
             "last_login_at": record.get("last_login_at"),
@@ -1151,8 +1153,12 @@ class AuthManager:
         return False
 
     @_serialized
-    def update_profile(self, username: str, full_name: str | None, email: str | None) -> dict:
-        """Update own profile fields."""
+    def update_profile(
+        self, username: str, full_name: str | None, email: str | None,
+        country: str | None = None,
+    ) -> dict:
+        """Update own profile fields. ``country`` is an ISO 3166-1 alpha-2 code
+        ("" clears it); the caller validates it."""
         data = self._read_users()
         users = data.get("users", [])
         for i, u in enumerate(users):
@@ -1161,11 +1167,17 @@ class AuthManager:
                     u["full_name"] = full_name
                 if email is not None:
                     u["email"] = email
+                if country is not None:
+                    u["country"] = country
                 users[i] = u
                 data["users"] = users
                 self._write_users(data)
                 return self._public_user(u)
         raise ValueError(f"user '{username}' not found")
+
+    def set_country(self, username: str, country: str) -> dict:
+        """Set the person's country (ISO 3166-1 alpha-2)."""
+        return self.update_profile(username, None, None, country=country)
 
     @_serialized
     def delete_user(self, username: str, by_admin_username: str) -> None:

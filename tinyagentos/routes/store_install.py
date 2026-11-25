@@ -25,6 +25,7 @@ from tinyagentos.agent_image import (
     base_image_url_for_alias,
     ensure_image_present,
 )
+from tinyagentos import license_policy
 from tinyagentos.auth_context import require_admin
 from tinyagentos.catalog.resolver import (
     DeviceCapability,
@@ -244,6 +245,12 @@ async def forget_install_location(request: Request, app_id: str, location_kind: 
                 await store.delete(row["id"])
     except Exception:  # noqa: BLE001
         logger.warning("install_registry delete failed for %s", app_id, exc_info=True)
+
+
+def _request_via(request: Request) -> str | None:
+    """Which credential authenticated this request (set by the auth middleware)."""
+    via = getattr(request.state, "via", None)
+    return via if isinstance(via, str) else None
 
 
 def _get_current_user(request: Request) -> dict | None:
@@ -1011,43 +1018,131 @@ async def install_app(request: Request):
                 status_code=403,
             )
 
-    # Non-commercial weights gate (#169): a manifest's code license (MIT etc.)
+    # Restrictive-licence gate (#169): a manifest's code license (MIT etc.)
     # can be permissive while the model weights it downloads are not (e.g.
-    # musicgen pulls Meta's CC-BY-NC 4.0 weights). Block the install until the
-    # user has explicitly accepted the weights license -- either previously
-    # (recorded in license_acceptances) or on this very request (accepted:
-    # true, sent by the frontend after the user clicks Agree in the license
-    # dialog). Applies uniformly, including to admins: license acceptance is
-    # a legal fact about the user, not a permission an admin role bypasses.
-    if getattr(manifest, "license_class", "") == "non-commercial":
+    # musicgen pulls Meta's CC-BY-NC 4.0 weights). The gate looks at EVERY
+    # licence field (license_class, weights_license, model_license, license),
+    # not only a listed class: see tinyagentos/license_policy.py. The install
+    # is blocked until a person has accepted the licence, either earlier
+    # (recorded in license_acceptances) or on this request (accepted: true,
+    # sent by the UI after the person clicks Agree). Applies to admins too: a
+    # licence acceptance is a legal fact about the person, not a permission.
+    #
+    # Only a person's own session may accept. Agent tokens, service tokens and
+    # every registry JWT are refused (allow-list, see via_may_accept).
+    restriction = license_policy.evaluate(manifest, manifest.id)
+    if restriction.restrictive:
         license_store = getattr(request.app.state, "license_acceptances", None)
-        license_id = getattr(manifest, "weights_license", "") or manifest.id
-        user = _get_current_user(request)
-        user_id = (user or {}).get("id") or "anonymous"
+        via = _request_via(request)
+        person_session = license_policy.via_may_accept(via)
+        session_user = _get_current_user(request) if person_session else None
+        acting = session_user
+        if acting is None:
+            uid = getattr(request.state, "user_id", None)
+            auth_mgr = getattr(request.app.state, "auth", None)
+            if isinstance(uid, str) and uid and auth_mgr is not None:
+                acting = auth_mgr.get_user_by_id(uid)
+        user_id = (acting or {}).get("id") or "anonymous"
+        username = (acting or {}).get("username") or ""
+        accepted_now = bool(body.get("accepted", False))
+        country_in = body.get("country")
+
+        def _refuse(error: str, detail: str, status: int, **extra):
+            progress.finish(install_id, success=False, error=error)
+            return JSONResponse(
+                {"error": error, "detail": detail, "license_class": restriction.cls,
+                 "license_id": restriction.acceptance_key, "install_id": install_id, **extra},
+                status_code=status,
+            )
+
+        if accepted_now and (not person_session or session_user is None):
+            return _refuse(
+                "agent_cannot_accept_license",
+                "Only a person signed in to their own session can accept a licence. "
+                "Ask the person to accept it in the Store app.",
+                403,
+            )
+        if country_in is not None:
+            if not person_session or session_user is None:
+                return _refuse(
+                    "agent_cannot_set_country",
+                    "Only a person signed in to their own session can set their country.",
+                    403,
+                )
+            code = license_policy.valid_country(country_in)
+            if code is None:
+                return _refuse(
+                    "invalid_country",
+                    "Country must be a two-letter ISO 3166-1 code such as US or GB.",
+                    400,
+                )
+            request.app.state.auth.set_country(session_user["username"], code)
+            acting = {**(acting or {}), "country": code}
+
+        # Territory-limited licences: the person's own country decides. Unset
+        # fails closed here, and only here; acceptance never overrides an
+        # excluded country.
+        country = (acting or {}).get("country") or ""
+        territory = license_policy.territory_check(restriction, country)
+        if territory == "excluded":
+            return _refuse(
+                "territory_excluded",
+                f"{manifest.name} is under {restriction.name}, which does not apply in your "
+                f"country ({country.upper()}). Accepting the licence does not change that.",
+                403, user_country=country.upper(),
+            )
+        if territory == "needs_country":
+            progress.finish(install_id, success=False, error="needs_country")
+            return JSONResponse(
+                {
+                    "needs_country": True,
+                    "detail": (
+                        f"{manifest.name} is under {restriction.name}, which is limited by "
+                        "country, and your country is not set. Set it in Settings, Account, "
+                        "Country (on desktop or phone), or enter it here when asked, then "
+                        "install again."
+                    ),
+                    "license_class": restriction.cls,
+                    "license_id": restriction.acceptance_key,
+                    "name": manifest.name,
+                    "install_id": install_id,
+                },
+                status_code=412,
+            )
+
+        license_key = restriction.acceptance_key
         already_accepted = (
-            await license_store.has_accepted(user_id, manifest.id, license_id)
+            await license_store.has_accepted(user_id, manifest.id, license_key)
             if license_store is not None else False
         )
-        accepted_now = bool(body.get("accepted", False))
         if not already_accepted and not accepted_now:
             progress.finish(install_id, success=False, error="needs_license_acceptance")
             return JSONResponse(
                 {
                     "needs_license_acceptance": True,
-                    "license_id": license_id,
-                    "weights_license": manifest.weights_license,
+                    "license_id": license_key,
+                    "license_name": restriction.name,
+                    "license_version": restriction.version,
+                    "license_url": restriction.url,
+                    "license_class": restriction.cls,
+                    "weights_license": restriction.name,
                     "name": manifest.name,
-                    "text": (
-                        f"{manifest.name} downloads model weights licensed under "
-                        f"{manifest.weights_license}, for non-commercial use only. "
-                        "Continuing means you agree to that license for the "
-                        "weights this service uses."
-                    ),
+                    "text": license_policy.acceptance_text(manifest.name, restriction),
                 },
                 status_code=412,
             )
-        if accepted_now and not already_accepted and license_store is not None:
-            await license_store.record_acceptance(user_id, manifest.id, license_id)
+        if accepted_now and not already_accepted:
+            if license_store is None:
+                return _refuse(
+                    "license_store_unavailable",
+                    "The licence record could not be saved, so the install was not started.",
+                    503,
+                )
+            await license_store.record_acceptance(
+                user_id, manifest.id, license_key,
+                license_name=restriction.name, license_version=restriction.version,
+                license_url=restriction.url, username=username,
+            )
 
     # Non-model manifests use the legacy method-driven path.
     if getattr(manifest, "type", "model") != "model":

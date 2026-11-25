@@ -13741,7 +13741,7 @@ async def delete_user(username: str, request: Request):
 
 @router.post("/users/{username}/profile")
 async def update_profile(username: str, request: Request):
-    """Self: update full_name and/or email."""
+    """Self: update full_name, email and/or country."""
     ok, err = _require_self(request, username)
     if not ok:
         return err
@@ -13750,9 +13750,22 @@ async def update_profile(username: str, request: Request):
         return body_err
     full_name = body.get("full_name")
     email = body.get("email")
+    country = None
+    if "country" in body:
+        raw_country = body.get("country")
+        if raw_country in (None, ""):
+            country = ""
+        else:
+            from tinyagentos.license_policy import valid_country
+            country = valid_country(raw_country)
+            if country is None:
+                return JSONResponse(
+                    {"error": "country must be a two-letter ISO 3166-1 code such as US or GB"},
+                    status_code=400,
+                )
     auth_mgr = request.app.state.auth
     try:
-        user = auth_mgr.update_profile(username, full_name, email)
+        user = auth_mgr.update_profile(username, full_name, email, country)
     except ValueError as exc:
         return JSONResponse({"error": str(exc)}, status_code=400)
     return JSONResponse({"ok": True, "user": user})

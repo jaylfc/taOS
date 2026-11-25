@@ -971,3 +971,230 @@ class TestInstallV2AdminGuard:
         r = await client.post("/api/store/uninstall-v2", json={"app_id": "qwen2.5-3b"})
         assert r.status_code == 200
         assert r.json()["status"] == "not_installed"
+
+
+# ---------------------------------------------------------------------------
+# Restrictive-licence gate: any licence field, person-session-only acceptance,
+# person-level country for territory-limited licences.
+# ---------------------------------------------------------------------------
+
+def make_licensed_manifest(mid="lic-service", **fields):
+    m = MagicMock()
+    m.id = mid
+    m.name = "Lic Service"
+    m.type = "service"
+    m.license = ""
+    m.weights_license = ""
+    m.model_license = ""
+    m.license_class = ""
+    m.license_version = ""
+    m.license_url = ""
+    m.license_excluded_territories = []
+    for k, v in fields.items():
+        setattr(m, k, v)
+    m.install = {"method": "docker", "ports": [8080]}
+    m.requires = {}
+    m.hardware_tiers = {}
+    m.version = "1.0.0"
+    return m
+
+
+def _wire(client, manifest):
+    registry = MagicMock()
+    registry.get_app = MagicMock(return_value=manifest)
+    registry.get = MagicMock(return_value=manifest)
+    registry.mark_installed = MagicMock()
+    registry.list_available = MagicMock(return_value=[])
+    app = client._transport.app
+    app.state.registry = registry
+    inst = MagicMock()
+    inst.install = AsyncMock(return_value=None)
+    inst.update_runtime_location = AsyncMock(return_value=None)
+    app.state.installed_apps = inst
+    return app
+
+
+def _docker_patch():
+    installer = MagicMock()
+    installer.install = AsyncMock(return_value={"success": True, "host_port": 31240, "path": "/opt/apps/x"})
+    installer.start = AsyncMock(return_value={"success": True})
+    return patch("tinyagentos.installers.docker_installer.DockerInstaller", MagicMock(return_value=installer))
+
+
+def _token_client(app):
+    return AsyncClient(
+        transport=ASGITransport(app=app), base_url="http://test",
+        headers={"Authorization": f"Bearer {app.state.auth.get_local_token()}"},
+        event_hooks=csrf_event_hooks(),
+    )
+
+
+class TestRestrictiveLicenceGate:
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("fields", [
+        {"license": "Qwen Research License"},
+        {"weights_license": "CC-BY-NC 4.0"},
+        {"model_license": "Gemma Terms of Use"},
+        {"license_class": "revenue-capped"},
+        {"license": "Some Unlisted Licence 1"},
+    ])
+    async def test_any_restrictive_field_returns_412_without_license_class(self, client, fields):
+        _wire(client, make_licensed_manifest(**fields))
+        r = await client.post("/api/store/install-v2", json={"manifest_id": "lic-service"})
+        assert r.status_code == 412, fields
+        body = r.json()
+        assert body["needs_license_acceptance"] is True and body["text"]
+
+    @pytest.mark.asyncio
+    async def test_permissive_manifest_is_not_gated(self, client):
+        _wire(client, make_licensed_manifest(license="MIT", weights_license="Apache-2.0"))
+        with _docker_patch():
+            r = await client.post("/api/store/install-v2", json={"manifest_id": "lic-service"})
+        assert r.status_code == 200
+
+    @pytest.mark.asyncio
+    async def test_agent_cannot_accept_license_local_token(self, client):
+        app = _wire(client, make_licensed_manifest(weights_license="CC-BY-NC 4.0"))
+        async with _token_client(app) as agent:
+            r = await agent.post("/api/store/install-v2",
+                                 json={"manifest_id": "lic-service", "accepted": True})
+        assert r.status_code == 403
+        assert r.json()["error"] == "agent_cannot_accept_license"
+        admin = app.state.auth.find_user("admin")
+        assert not await app.state.license_acceptances.has_accepted(admin["id"], "lic-service", "CC-BY-NC 4.0")
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("via", [
+        "registry_jwt", "registry_jwt_candidate", "registry_jwt_deployed_agent",
+        "registry_jwt_native_agent", "local_token", "device_bearer",
+        "device_bearer_candidate", "loopback", "exempt", "service_token", "", None,
+    ])
+    async def test_agent_cannot_accept_license_any_non_session_credential(self, client, via):
+        app = _wire(client, make_licensed_manifest(weights_license="CC-BY-NC 4.0"))
+        with patch("tinyagentos.routes.store_install._request_via", return_value=via):
+            r = await client.post("/api/store/install-v2",
+                                  json={"manifest_id": "lic-service", "accepted": True})
+        assert r.status_code == 403, via
+        assert r.json()["error"] == "agent_cannot_accept_license"
+
+    @pytest.mark.asyncio
+    async def test_agent_gets_412_text_when_not_accepted_and_does_not_send_accepted(self, client):
+        app = _wire(client, make_licensed_manifest(weights_license="CC-BY-NC 4.0"))
+        async with _token_client(app) as agent:
+            r = await agent.post("/api/store/install-v2", json={"manifest_id": "lic-service"})
+        assert r.status_code == 412 and r.json()["needs_license_acceptance"] is True
+
+    @pytest.mark.asyncio
+    async def test_person_acceptance_records_name_version_url_person_timestamp(self, client):
+        app = _wire(client, make_licensed_manifest(
+            weights_license="Gemma Terms of Use", license_version="1.1",
+            license_url="https://ai.google.dev/gemma/terms"))
+        with _docker_patch():
+            r = await client.post("/api/store/install-v2",
+                                  json={"manifest_id": "lic-service", "accepted": True})
+        assert r.status_code == 200
+        admin = app.state.auth.find_user("admin")
+        db = app.state.license_acceptances._db
+        cur = await db.execute("SELECT * FROM license_acceptances WHERE app_id = 'lic-service'")
+        rows = [dict(x) for x in await cur.fetchall()]
+        assert len(rows) == 1
+        row = rows[0]
+        assert row["license_name"] == "Gemma Terms of Use"
+        assert row["license_version"] == "1.1"
+        assert row["license_url"] == "https://ai.google.dev/gemma/terms"
+        assert row["user_id"] == admin["id"] and row["username"] == "admin"
+        assert row["accepted_at"]
+
+    @pytest.mark.asyncio
+    async def test_new_licence_version_needs_reacceptance(self, client):
+        app = _wire(client, make_licensed_manifest(weights_license="Gemma Terms of Use", license_version="1.0"))
+        with _docker_patch():
+            assert (await client.post("/api/store/install-v2",
+                    json={"manifest_id": "lic-service", "accepted": True})).status_code == 200
+            app.state.registry.get_app.return_value.license_version = "2.0"
+            app.state.registry.get.return_value.license_version = "2.0"
+            r = await client.post("/api/store/install-v2", json={"manifest_id": "lic-service"})
+        assert r.status_code == 412
+
+    @pytest.mark.asyncio
+    async def test_acceptance_text_in_response_has_no_placeholders(self, client):
+        _wire(client, make_licensed_manifest(weights_license="CC-BY-NC 4.0"))
+        r = await client.post("/api/store/install-v2", json={"manifest_id": "lic-service"})
+        text = r.json()["text"]
+        assert "CC-BY-NC 4.0" in text
+        for bad in ("{", "}", "TODO", "...", "None"):
+            assert bad not in text
+
+
+class TestTerritoryLimitedLicence:
+    HUNYUAN = {"license": "Tencent HunyuanVideo Community License"}
+
+    @pytest.mark.asyncio
+    async def test_country_unset_fails_closed_and_says_how_to_set_it(self, client):
+        _wire(client, make_licensed_manifest(**self.HUNYUAN))
+        r = await client.post("/api/store/install-v2",
+                              json={"manifest_id": "lic-service", "accepted": True})
+        assert r.status_code == 412
+        body = r.json()
+        assert body["needs_country"] is True
+        assert "Settings" in body["detail"] and "country" in body["detail"].lower()
+
+    @pytest.mark.asyncio
+    async def test_country_unset_does_not_block_non_territory_licence(self, client):
+        _wire(client, make_licensed_manifest(weights_license="CC-BY-NC 4.0"))
+        with _docker_patch():
+            r = await client.post("/api/store/install-v2",
+                                  json={"manifest_id": "lic-service", "accepted": True})
+        assert r.status_code == 200
+
+    @pytest.mark.asyncio
+    async def test_country_given_at_install_time_is_saved_and_install_proceeds(self, client):
+        app = _wire(client, make_licensed_manifest(**self.HUNYUAN))
+        with _docker_patch():
+            r = await client.post("/api/store/install-v2", json={
+                "manifest_id": "lic-service", "accepted": True, "country": "us"})
+        assert r.status_code == 200
+        assert app.state.auth.find_user("admin")["country"] == "US"
+
+    @pytest.mark.asyncio
+    async def test_excluded_country_refused_even_with_acceptance(self, client):
+        app = _wire(client, make_licensed_manifest(**self.HUNYUAN))
+        app.state.auth.set_country("admin", "DE")
+        r = await client.post("/api/store/install-v2",
+                              json={"manifest_id": "lic-service", "accepted": True})
+        assert r.status_code == 403 and r.json()["error"] == "territory_excluded"
+
+    @pytest.mark.asyncio
+    async def test_agent_cannot_set_country_at_install(self, client):
+        app = _wire(client, make_licensed_manifest(**self.HUNYUAN))
+        async with _token_client(app) as agent:
+            r = await agent.post("/api/store/install-v2",
+                                 json={"manifest_id": "lic-service", "country": "US"})
+        assert r.status_code == 403
+        assert not app.state.auth.find_user("admin").get("country")
+
+    @pytest.mark.asyncio
+    async def test_invalid_country_rejected(self, client):
+        _wire(client, make_licensed_manifest(**self.HUNYUAN))
+        r = await client.post("/api/store/install-v2",
+                              json={"manifest_id": "lic-service", "country": "Narnia"})
+        assert r.status_code == 400
+
+
+class TestCountrySetting:
+    @pytest.mark.asyncio
+    async def test_profile_route_sets_and_exposes_country(self, client):
+        r = await client.post("/auth/users/admin/profile", json={"country": "gb"})
+        assert r.status_code == 200, r.text
+        assert r.json()["user"]["country"] == "GB"
+
+    @pytest.mark.asyncio
+    async def test_profile_route_rejects_bad_country(self, client):
+        r = await client.post("/auth/users/admin/profile", json={"country": "United Kingdom"})
+        assert r.status_code == 400
+
+    @pytest.mark.asyncio
+    async def test_profile_route_without_country_leaves_it_alone(self, client):
+        await client.post("/auth/users/admin/profile", json={"country": "FR"})
+        r = await client.post("/auth/users/admin/profile", json={"full_name": "Ada"})
+        assert r.json()["user"]["country"] == "FR"

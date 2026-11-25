@@ -204,6 +204,39 @@ def lint_model_fields(root: Path) -> tuple[list[str], list[str]]:
     return warnings, errors
 
 
+def lint_licenses(root: Path) -> list[str]:
+    """Every licence string in every manifest must be on the policy allowlist.
+
+    ``tinyagentos.license_policy`` knows which strings are permissive and which
+    are restrictive (and so need a person's acceptance). A string it does not
+    know is an error, never a skip: someone has to classify it first.
+    """
+    from tinyagentos import license_policy
+
+    errors: list[str] = []
+    for path in sorted(root.glob("**/manifest.yaml")):
+        try:
+            doc = yaml.safe_load(path.read_text()) or {}
+        except (yaml.YAMLError, OSError, UnicodeDecodeError) as exc:
+            errors.append(f"{path}: licence lint could not read manifest ({type(exc).__name__})")
+            continue
+        if not isinstance(doc, dict):
+            continue
+        for fld in license_policy.LICENCE_FIELDS:
+            value = doc.get(fld)
+            if value in (None, ""):
+                continue
+            if not isinstance(value, str) or license_policy.classify(value)[0] == "unknown":
+                errors.append(
+                    f"{path}: unknown licence string in {fld}: {value!r} "
+                    "(add it to tinyagentos/license_policy.py as permissive or restrictive)"
+                )
+        cls = doc.get("license_class")
+        if cls not in (None, "", "permissive") and cls not in license_policy.RESTRICTIVE_CLASSES:
+            errors.append(f"{path}: unknown license_class: {cls!r}")
+    return errors
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("command", choices=["managed-lint"])
@@ -215,6 +248,7 @@ def main(argv: list[str] | None = None) -> int:
     errors = lint_managed(root)
     warnings, model_errors = lint_model_fields(root)
     errors.extend(model_errors)
+    errors.extend(lint_licenses(root))
     if warnings:
         print(f"{len(warnings)} model capability field warnings", file=sys.stderr)
         if args.verbose:
