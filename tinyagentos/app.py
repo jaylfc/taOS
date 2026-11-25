@@ -781,6 +781,16 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
         except Exception:
             logger.exception("persona_v2 startup migration failed")
 
+        # Give every ownerless config/imported agent a registry owner (the
+        # install owner) so its per-agent token has a user. Idempotent.
+        try:
+            from tinyagentos.migrations.agent_owner import assign_ownerless_agents
+            _assigned = await assign_ownerless_agents(config, agent_registry_store, auth_manager)
+            if _assigned and config.config_path and config.config_path.exists():
+                await save_config_locked(config, config.config_path)
+        except Exception:
+            logger.exception("agent_owner startup migration failed")
+
         # Archive any agent DM channels left live by a removal path that
         # bypassed archive (a cleaned-up failed deploy, a hard-delete of a
         # never-used config row).  Idempotent -- safe on every startup.

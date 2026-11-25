@@ -1309,7 +1309,13 @@ async def _require_lease_access(request: Request) -> JSONResponse | None:
     auth_header = request.headers.get("authorization", "")
     if auth_header.lower().startswith("bearer "):
         presented = auth_header[7:].strip()
-        if presented and request.app.state.auth.validate_local_token(presented):
+        # Only the HOST local token is trusted; a per-agent token is refused so
+        # an agent cannot list, claim or release other agents' leases.
+        if (
+            presented
+            and request.app.state.auth.validate_local_token(presented)
+            and not request.app.state.auth.get_local_token_agent(presented)
+        ):
             return None
     try:
         await require_worker_hmac(request)
