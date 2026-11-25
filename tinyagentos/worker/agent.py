@@ -126,9 +126,11 @@ def _enumerated_gpu_resources(hardware: dict | None) -> list[str]:
     order, so indices are stable across restarts); the singular
     ``hardware["gpu"]`` is just the first entry. Indices count within
     each class in that detection order: the second NVIDIA card is
-    ``gpu-cuda-1`` whatever else is installed. Each entry must carry
-    its own ``cuda``/``rocm`` usability flag (#3242) -- a PCI-visible
-    card with no loaded driver is not leasable.
+    ``gpu-cuda-1`` whatever else is installed. Indices are positional:
+    an unusable card still consumes its index, so a usable card's
+    resource name never shifts when a sibling's driver state changes.
+    Each entry must carry its own ``cuda``/``rocm`` usability flag
+    (#3242) -- a PCI-visible card with no loaded driver is not leasable.
 
     Returns an empty list when the profile carries no usable enumerated
     GPU; the caller then falls back to the singular derivation, so
@@ -144,14 +146,16 @@ def _enumerated_gpu_resources(hardware: dict | None) -> list[str]:
         if not isinstance(entry, dict):
             continue
         entry_type = entry.get("type")
-        if entry_type in ("nvidia", "cuda") and entry.get("cuda"):
-            resource_class = "gpu-cuda"
-        elif entry_type in ("amd", "rocm") and entry.get("rocm"):
-            resource_class = "gpu-rocm"
+        if entry_type in ("nvidia", "cuda"):
+            resource_class, usable_flag = "gpu-cuda", "cuda"
+        elif entry_type in ("amd", "rocm"):
+            resource_class, usable_flag = "gpu-rocm", "rocm"
         else:
             continue
-        resources.append(f"{resource_class}-{counters[resource_class]}")
+        index = counters[resource_class]
         counters[resource_class] += 1
+        if entry.get(usable_flag):
+            resources.append(f"{resource_class}-{index}")
     return resources
 
 
@@ -200,10 +204,16 @@ def _collect_resources(
     (``gpu-cuda-0``, ``gpu-cuda-1``, ...), enumerated from the profile's
     ``gpus`` list (#3228 follow-up; the design doc's table always
     specified 1 per GPU). Lease claims are per-resource, so each card is
-    leasable independently. VRAM is still reported worker-wide (first
-    GPU only), so the manager's VRAM check stays conservative on
-    multi-GPU hosts -- it can refuse a claim the second card could have
-    served, but never over-grants.
+    leasable independently.
+
+    VRAM is still reported worker-wide (first GPU only), and the
+    manager checks every VRAM-qualified claim against that one figure:
+    exact for single-GPU and homogeneous hosts, but on a heterogeneous
+    multi-GPU host a claim against a later card can be refused when
+    that card could have served it, or granted beyond that card's own
+    free VRAM. Binding the check to the leased card needs per-resource
+    VRAM in the heartbeat -- a protocol change, parked for the
+    maintainer's call rather than folded into this change.
     """
     gpu_type = _gpu_type(hardware) if hardware else None
     gpu_flags = hardware.get("gpu") if isinstance(hardware, dict) else None

@@ -302,6 +302,20 @@ def test_gpu_without_usable_driver_not_counted(monkeypatch: pytest.MonkeyPatch) 
     assert resources == ["cpu-inference", "gpu-cuda-0"]
 
 
+def test_unusable_first_card_keeps_positional_index(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Indices are positional within the class: when the first card has
+    no usable driver, the second (usable) card is gpu-cuda-1, not
+    gpu-cuda-0 -- a resource name stays bound to the same physical card
+    across driver-state changes."""
+    monkeypatch.delenv("TAOS_WORKER_RESOURCES", raising=False)
+    no_driver = {"type": "nvidia", "model": "RTX 4090", "vram_mb": 24576, "cuda": False}
+    resources = _collect_resources([], _hw_multi([no_driver, _nvidia()]))
+    assert resources == ["cpu-inference", "gpu-cuda-1"]
+    no_rocm = {"type": "amd", "model": "RX 7900 XTX", "vram_mb": 24576, "rocm": False}
+    resources = _collect_resources([], _hw_multi([no_rocm, _amd()]))
+    assert resources == ["cpu-inference", "gpu-rocm-1"]
+
+
 def test_enumerated_none_gpu_reports_no_resource(monkeypatch: pytest.MonkeyPatch) -> None:
     """_detect_gpus() returns a single type="none" entry on GPU-less
     hosts; that entry must not produce a GPU resource."""
