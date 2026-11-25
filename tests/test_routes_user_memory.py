@@ -9,6 +9,11 @@ import pytest
 import pytest_asyncio
 
 
+def _me(client) -> str:
+    """Id of the signed-in test user (the install owner)."""
+    return client._transport.app.state.auth.find_user("admin")["id"]
+
+
 @pytest_asyncio.fixture
 async def user_memory(client, tmp_path):
     """Ensure user_memory store is initialized on the test app."""
@@ -75,7 +80,7 @@ class TestUpdateSettings:
             "/api/user-memory/settings",
             json={"capture_searches": True},
         )
-        settings = await user_memory.get_settings("user")
+        settings = await user_memory.get_settings(_me(client))
         assert settings["capture_searches"] is True
 
     async def test_update_defaults_preserved(self, client, user_memory):
@@ -83,7 +88,7 @@ class TestUpdateSettings:
             "/api/user-memory/settings",
             json={"capture_notes": False},
         )
-        settings = await user_memory.get_settings("user")
+        settings = await user_memory.get_settings(_me(client))
         # Defaults not in the update payload should remain
         assert settings["capture_conversations"] is True
 
@@ -142,7 +147,7 @@ class TestSave:
             json={"content": "test content"},
         )
         assert resp.status_code == 200
-        chunks = await user_memory.browse("user")
+        chunks = await user_memory.browse(_me(client))
         assert len(chunks) == 1
         assert chunks[0]["collection"] == "snippets"
 
@@ -152,7 +157,7 @@ class TestSave:
             json={"content": "test", "collection": "journal"},
         )
         assert resp.status_code == 200
-        chunks = await user_memory.browse("user", collection="journal")
+        chunks = await user_memory.browse(_me(client), collection="journal")
         assert len(chunks) == 1
 
     async def test_save_taosmd_ingest_failure_is_nonfatal(self, client, user_memory):
@@ -186,7 +191,7 @@ class TestDeleteChunk:
     async def test_delete_actually_removes(self, client, user_memory):
         h = await user_memory.save_chunk("user", "temp", "t", "snippets")
         await client.delete(f"/api/user-memory/chunk/{h}")
-        chunks = await user_memory.browse("user")
+        chunks = await user_memory.browse(_me(client))
         assert len(chunks) == 0
 
 
@@ -222,32 +227,55 @@ class TestSearch:
             assert "content" in chunk
 
 
+def _agent_client(app, name):
+    from httpx import ASGITransport, AsyncClient
+    tok = app.state.auth.mint_agent_local_token(name)
+    return AsyncClient(transport=ASGITransport(app=app), base_url="http://test",
+                       headers={"Authorization": f"Bearer {tok}"})
+
+
 @pytest.mark.asyncio
 class TestAgentSearch:
+    """Agents authenticate with their own bound token; see also
+    tests/test_session_turn_fields.py for owner isolation."""
+
     async def test_agent_search_requires_permission(self, client, user_memory):
-        resp = await client.get(
-            "/api/user-memory/agent-search?q=test&agent_name=unauthorized-agent",
-        )
+        app = client._transport.app
+        async with _agent_client(app, "unauthorized-agent") as c:
+            resp = await c.get(
+                "/api/user-memory/agent-search?q=test&agent_name=unauthorized-agent",
+            )
         assert resp.status_code == 403
         assert "error" in resp.json()
 
-    async def test_agent_search_with_permission(self, client, user_memory):
+    async def test_agent_search_with_permission(self, client, user_memory, tmp_path):
         """Grant an agent can_read_user_memory and verify 200."""
-        config = client._transport.app.state.config
-        new_agent = {"name": "memory-agent", "host": "127.0.0.1", "can_read_user_memory": True}
-        config.agents.append(new_agent)
-        resp = await client.get(
-            "/api/user-memory/agent-search?q=test&agent_name=memory-agent",
-        )
+        from tinyagentos.agent_registry_store import AgentRegistryStore
+        app = client._transport.app
+        reg = AgentRegistryStore(tmp_path / "registry.db")
+        await reg.init()
+        app.state.agent_registry = reg
+        rec = await reg.register(framework="claude-code", display_name="Memory Agent",
+                                 user_id=_me(client))
+        app.state.config.agents.append({
+            "name": "memory-agent", "host": "127.0.0.1", "can_read_user_memory": True,
+            "registry_canonical_id": rec["canonical_id"]})
+        async with _agent_client(app, "memory-agent") as c:
+            resp = await c.get(
+                "/api/user-memory/agent-search?q=test&agent_name=memory-agent",
+            )
+        await reg.close()
         assert resp.status_code == 200
         data = resp.json()
         assert "results" in data
         assert data["agent"] == "memory-agent"
 
     async def test_agent_search_missing_agent(self, client, user_memory):
-        resp = await client.get(
-            "/api/user-memory/agent-search?q=test&agent_name=no-such-agent",
-        )
+        app = client._transport.app
+        async with _agent_client(app, "no-such-agent") as c:
+            resp = await c.get(
+                "/api/user-memory/agent-search?q=test&agent_name=no-such-agent",
+            )
         assert resp.status_code == 403
 
 

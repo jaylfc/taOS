@@ -89,6 +89,13 @@ class ChatMessageStore(BaseStore):
         self._reaction_lock = asyncio.Lock()
         # Serialises concurrent content_blocks read-modify-write operations
         self._content_lock = asyncio.Lock()
+        # Serialises send_message so a burst of concurrent posts never has one
+        # post's read cursor open (a held WAL snapshot) while another post's
+        # INSERT upgrades to a write: with the channel store committing on its
+        # own connection in between, SQLite refuses that upgrade at once with
+        # "database is locked" (busy_timeout does not apply), which 500'd the
+        # post.
+        self._send_lock = asyncio.Lock()
 
     async def init(self) -> None:
         await super().init()
@@ -147,28 +154,29 @@ class ChatMessageStore(BaseStore):
     ) -> dict:
         msg_id = uuid.uuid4().hex[:12]
         now = time.time()
-        await self._db.execute(
-            """INSERT INTO chat_messages
-               (id, channel_id, thread_id, author_id, author_type, content,
-                content_type, content_blocks, embeds, components, attachments,
-                reactions, state, pinned, ephemeral, metadata, created_at, expires_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, ?, ?, ?)""",
-            (
-                msg_id, channel_id, thread_id, author_id, author_type, content,
-                content_type,
-                json.dumps(content_blocks or []),
-                json.dumps(embeds or []),
-                json.dumps(components or []),
-                json.dumps(attachments or []),
-                json.dumps({}),
-                state,
-                json.dumps(metadata or {}),
-                now,
-                expires_at,
-            ),
-        )
-        await self._db.commit()
-        return await self.get_message(msg_id)
+        async with self._send_lock:
+            await self._db.execute(
+                """INSERT INTO chat_messages
+                   (id, channel_id, thread_id, author_id, author_type, content,
+                    content_type, content_blocks, embeds, components, attachments,
+                    reactions, state, pinned, ephemeral, metadata, created_at, expires_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, ?, ?, ?)""",
+                (
+                    msg_id, channel_id, thread_id, author_id, author_type, content,
+                    content_type,
+                    json.dumps(content_blocks or []),
+                    json.dumps(embeds or []),
+                    json.dumps(components or []),
+                    json.dumps(attachments or []),
+                    json.dumps({}),
+                    state,
+                    json.dumps(metadata or {}),
+                    now,
+                    expires_at,
+                ),
+            )
+            await self._db.commit()
+            return await self.get_message(msg_id)
 
     async def send_remote_message(
         self,
@@ -241,6 +249,18 @@ class ChatMessageStore(BaseStore):
             # caught a replay.  Treat as successful delivery.
             await self._db.rollback()
             return None
+
+    async def count_messages(self, channel_id: str) -> int:
+        """Number of messages ever stored in a channel (deleted ones included).
+
+        Seeds the per-session turn counter for a channel that has history from
+        before the counter existed.
+        """
+        async with self._db.execute(
+            "SELECT COUNT(*) FROM chat_messages WHERE channel_id = ?", (channel_id,)
+        ) as cursor:
+            row = await cursor.fetchone()
+        return int(row[0])
 
     async def get_message(self, message_id: str) -> dict | None:
         async with self._db.execute(

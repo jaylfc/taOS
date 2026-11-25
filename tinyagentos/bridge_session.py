@@ -29,6 +29,7 @@ from types import SimpleNamespace
 from typing import Any, AsyncIterator
 
 from tinyagentos.prompt_assembly import assemble_system_prompt
+from tinyagentos.session_turns import stamp_event, stamp_turn
 
 logger = logging.getLogger(__name__)
 
@@ -161,7 +162,9 @@ class BridgeSessionRegistry:
         chat_channels=None,
         chat_hub=None,
         archive=None,
+        session_turns=None,
     ) -> None:
+        self._session_turns = session_turns
         self._trace_registry = trace_registry
         self._chat_messages = chat_messages
         self._chat_channels = chat_channels
@@ -498,6 +501,13 @@ class BridgeSessionRegistry:
                         reply_id, slug,
                     )
                 else:
+                    # Allocate the turn before the write, outside the
+                    # try below: a counter failure is logged and written as
+                    # unknown by stamp_turn, never swallowed.
+                    _fields = await stamp_turn(
+                        self._session_turns, channel_id, owner=slug,
+                        seed=self._chat_seed(channel_id),
+                    )
                     try:
                         await self._archive.record(
                             event_type="final",
@@ -506,6 +516,7 @@ class BridgeSessionRegistry:
                                 "trace_id": trace_id,
                                 "reply_id": reply_id,
                                 "channel_id": channel_id,
+                                **_fields,
                             },
                             agent_name=slug,
                             summary=final_content[:120] if final_content else "",
@@ -614,6 +625,9 @@ class BridgeSessionRegistry:
                     },
                 )
             if self._archive is not None:
+                _fields = await stamp_event(
+                    self._session_turns, channel_id, owner=slug,
+                )
                 try:
                     await self._archive.record(
                         event_type="tool_call",
@@ -621,6 +635,7 @@ class BridgeSessionRegistry:
                             "tool": tool_name,
                             "args": body.get("args") or {},
                             "trace_id": trace_id,
+                            **_fields,
                         },
                         agent_name=slug,
                         summary=tool_name,
@@ -644,6 +659,9 @@ class BridgeSessionRegistry:
                     },
                 )
             if self._archive is not None:
+                _fields = await stamp_event(
+                    self._session_turns, channel_id, owner=slug,
+                )
                 try:
                     await self._archive.record(
                         event_type="tool_result",
@@ -652,6 +670,7 @@ class BridgeSessionRegistry:
                             "result": body.get("result"),
                             "success": body.get("success", True),
                             "trace_id": trace_id,
+                            **_fields,
                         },
                         agent_name=slug,
                         summary=tool_name,
@@ -699,12 +718,16 @@ class BridgeSessionRegistry:
                     payload={"stage": "openclaw", "message": error_text},
                 )
             if self._archive is not None:
+                _fields = await stamp_event(
+                    self._session_turns, channel_id, owner=slug,
+                )
                 try:
                     await self._archive.record(
                         event_type="error",
                         data={
                             "error": error_text,
                             "trace_id": trace_id,
+                            **_fields,
                         },
                         agent_name=slug,
                         summary=error_text,
@@ -734,12 +757,16 @@ class BridgeSessionRegistry:
                     payload={"text": content},
                 )
             if self._archive is not None:
+                _fields = await stamp_event(
+                    self._session_turns, channel_id, owner=slug,
+                )
                 try:
                     await self._archive.record(
                         event_type="reasoning",
                         data={
                             "text": content,
                             "trace_id": trace_id,
+                            **_fields,
                         },
                         agent_name=slug,
                         summary=content[:120] if content else "",
@@ -747,6 +774,15 @@ class BridgeSessionRegistry:
                 except Exception:
                     logger.exception("archive dual-write failed (reasoning)")
         # "delta" without a matching kind is silently ignored.
+
+    def _chat_seed(self, channel_id):
+        """Seed for a channel's turn counter: messages already stored."""
+        if not channel_id or self._chat_messages is None:
+            return None
+        count = getattr(self._chat_messages, "count_messages", None)
+        if count is None:
+            return None
+        return lambda: count(channel_id)
 
     async def _resolve_channel(self, slug: str) -> str | None:
         """Return the DM channel id for the agent, or None if unavailable."""

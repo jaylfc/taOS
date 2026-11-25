@@ -18,6 +18,7 @@ from tinyagentos.auth_context import (
 )
 from tinyagentos.chat.reactions import maybe_trigger_semantic
 from tinyagentos.device_auth import current_user_or_device
+from tinyagentos.session_turns import session_date, stamp_turn
 
 router = APIRouter()
 
@@ -30,6 +31,21 @@ def _resolve_chat_data_dir() -> Path:
 def _bound_agent(request: Request) -> str | None:
     """Return the agent name bound to the presented local token, or None."""
     return getattr(request.state, "agent_name", None)
+
+
+def _turn_owner(request: Request, user) -> str | None:
+    """The authenticated principal behind a request, never the body.
+
+    A bound agent token or registry agent identity is that agent; every other
+    credential (browser session, device bearer, local token) is the user it
+    resolves to.  ``author_id`` in the request body is not consulted, so a
+    caller cannot claim another principal's turns.
+    """
+    agent = _bound_agent(request) or getattr(request.state, "agent_canonical_id", None)
+    if agent:
+        return str(agent)
+    uid = getattr(user, "user_id", None)
+    return str(uid) if uid else None
 
 
 _SLASH_GROUP_GUARD_ERROR = (
@@ -82,9 +98,15 @@ async def _capture_user_memory(
     collection: str,
     metadata: dict,
     setting_key: str,
-    user_id: str = "user",
+    user_id: str,
+    session_fields: dict | None = None,
 ) -> None:
-    """Fire-and-forget user memory capture. Never raises."""
+    """Fire-and-forget user memory capture. Never raises.
+
+    ``session_fields`` (session_id, turn_index, session_date, turn_owner) are
+    merged into the chunk metadata so the capture carries the same turn as the
+    archive record of the same message.
+    """
     if not user_memory or not content:
         return
     try:
@@ -96,7 +118,7 @@ async def _capture_user_memory(
             content=content,
             title=title,
             collection=collection,
-            metadata=metadata,
+            metadata={**metadata, **(session_fields or {})},
         )
     except Exception as e:  # pragma: no cover - capture is best-effort
         logger.debug(f"user memory capture failed: {e}")
@@ -171,6 +193,13 @@ async def chat_ws(websocket: WebSocket):
                     _ws_ttl = _ws_channel["settings"].get("ephemeral_ttl_seconds")
                 import time as _time
                 _ws_expires_at = (_time.time() + _ws_ttl) if isinstance(_ws_ttl, (int, float)) and _ws_ttl > 0 else None
+                # Allocate the turn before the write; the date is the message's
+                # own created_at, set once it exists.
+                _ws_turn = await stamp_turn(
+                    websocket.app.state.session_turns, data["channel_id"],
+                    owner=user_id,
+                    seed=lambda: msg_store.count_messages(data["channel_id"]),
+                )
                 message = await msg_store.send_message(
                     channel_id=data["channel_id"],
                     author_id=user_id,
@@ -185,6 +214,7 @@ async def chat_ws(websocket: WebSocket):
                     metadata=data.get("metadata"),
                     expires_at=_ws_expires_at,
                 )
+                _ws_turn["session_date"] = session_date(message.get("created_at"))
                 await ch_store.update_last_message_at(data["channel_id"])
                 await hub.broadcast(data["channel_id"], {"type": "message", "seq": hub.next_seq(), **message})
 
@@ -211,6 +241,7 @@ async def chat_ws(websocket: WebSocket):
                         },
                         setting_key="capture_conversations",
                         user_id=user_id,
+                        session_fields=_ws_turn,
                     ))
 
             elif msg_type == "typing":
@@ -434,6 +465,13 @@ async def post_message(request: Request, user: CurrentUser = Depends(current_use
     import time as _time
     _http_expires_at = (_time.time() + _http_ttl) if isinstance(_http_ttl, (int, float)) and _http_ttl > 0 else None
 
+    # Allocate the turn once, before the write; the user-memory capture and the
+    # archive record below both carry it.
+    _http_turn = await stamp_turn(
+        request.app.state.session_turns, channel_id,
+        owner=_turn_owner(request, user),
+        seed=lambda: msg_store.count_messages(channel_id),
+    )
     message = await msg_store.send_message(
         channel_id=channel_id,
         author_id=body["author_id"],
@@ -449,6 +487,7 @@ async def post_message(request: Request, user: CurrentUser = Depends(current_use
         state=body.get("state", "complete"),
         expires_at=_http_expires_at,
     )
+    _http_turn["session_date"] = session_date(message.get("created_at"))
     await ch_store.update_last_message_at(channel_id)
     await hub.broadcast(channel_id, {"type": "message", "seq": hub.next_seq(), **message})
 
@@ -467,6 +506,8 @@ async def post_message(request: Request, user: CurrentUser = Depends(current_use
                     "timestamp": message.get("created_at"),
                 },
                 setting_key="capture_conversations",
+                user_id=str(user.user_id),
+                session_fields=_http_turn,
             ))
 
     # Auto-archive every message for the zero-loss layer
@@ -481,6 +522,7 @@ async def post_message(request: Request, user: CurrentUser = Depends(current_use
                     "message_id": message.get("id"),
                     "author_id": body["author_id"],
                     "author_type": body.get("author_type", "agent"),
+                    **_http_turn,
                 },
                 agent_name=body["author_id"] if body.get("author_type") == "agent" else None,
                 summary=content[:100],

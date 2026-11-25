@@ -472,6 +472,9 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
     adapter_manager = AdapterManager(channel_hub_router)
     chat_messages = ChatMessageStore(data_dir / "chat.db")
     chat_channels = ChatChannelStore(data_dir / "chat.db")
+    from tinyagentos.session_turns import SessionTurnStore
+    session_turns = SessionTurnStore(data_dir / "session_turns.db")
+    channel_hub_router.set_session_turns(session_turns)
     peer_outbox_store = PeerOutboxStore(data_dir / "peer_outbox.db")
     from tinyagentos.chat.guest_outbox import GuestOutbox, prune_loop
     guest_outbox = GuestOutbox(data_dir / "guest_outbox.db")
@@ -543,6 +546,7 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
     from tinyagentos.push.unifiedpush import NullUnifiedPushSender
     unifiedpush_sender = NullUnifiedPushSender()
     user_memory = UserMemoryStore(data_dir / "user_memory.db")
+    user_memory.set_owner_lookup(lambda: (auth_manager.get_primary_user() or {}).get("id"))
     user_personas = UserPersonaStore(data_dir / "user_personas.db")
     installed_apps = InstalledAppsStore(data_dir / "installed_apps.db")
     feedback_store = FeedbackStore(data_dir / "feedback.db")
@@ -798,6 +802,7 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
         await expert_agents.init()
         await chat_messages.init()
         await chat_channels.init()
+        await session_turns.init()
         await peer_outbox_store.init()
         await guest_outbox.init()
         await guest_outbox.prune()
@@ -1345,6 +1350,7 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
             chat_channels=chat_channels,
             chat_hub=chat_hub,
             archive=getattr(app.state, "archive", None),
+            session_turns=session_turns,
         )
         app.state.bridge_sessions._router = app.state.agent_chat_router
         app.state.bridge_sessions._guest_outbox = guest_outbox
@@ -1917,6 +1923,7 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
         await project_store.close()
         await chat_channels.close()
         await chat_messages.close()
+        await session_turns.close()
         await peer_outbox_store.close()
         await guest_outbox.close()
         await expert_agents.close()
@@ -2123,6 +2130,7 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
     app.state.idempotency_cache = IdempotencyCache()
     app.state.chat_messages = chat_messages
     app.state.chat_channels = chat_channels
+    app.state.session_turns = session_turns
     app.state.project_store = project_store
     app.state.dispatcher_store = dispatcher_store
     app.state.project_invites = project_invite_store

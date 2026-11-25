@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import logging
+import time
 
 import httpx
 
 from tinyagentos.adapters.retry_policy import ROUTER_TIMEOUT_SECONDS
 from tinyagentos.channel_hub.message import IncomingMessage, OutgoingMessage, parse_inline_hints
+from tinyagentos.session_turns import stamp_turn
 
 logger = logging.getLogger(__name__)
 
@@ -15,6 +17,7 @@ class MessageRouter:
         self._agent_ports: dict[str, int] = {}  # agent_name -> adapter port
         self._channel_assignments: dict[str, str] = {}  # "platform:bot_id" -> agent_name
         self._next_port = 9001
+        self._session_turns = None
 
     def assign_channel(self, platform: str, bot_id: str, agent_name: str):
         key = f"{platform}:{bot_id}"
@@ -34,6 +37,10 @@ class MessageRouter:
         self._next_port += 1
         self._agent_ports[agent_name] = port
         return port
+
+    def set_session_turns(self, session_turns) -> None:
+        """Set the per-session turn counter that stamps archived messages."""
+        self._session_turns = session_turns
 
     def set_archive(self, archive) -> None:
         """Set the archive store for zero-loss message capture."""
@@ -101,6 +108,25 @@ class MessageRouter:
         archive = getattr(self, "_archive", None)
         if not archive:
             return
+        # One session per platform conversation.  The turn is allocated here,
+        # before the write and outside the try below, so a counter failure is
+        # logged and written as unknown rather than swallowed.
+        if isinstance(message, IncomingMessage):
+            fields = await stamp_turn(
+                self._session_turns,
+                f"{message.platform}:{message.channel_id}" if message.channel_id else None,
+                owner=message.from_id,
+                timestamp=message.timestamp,
+            )
+        elif isinstance(message, OutgoingMessage):
+            fields = await stamp_turn(
+                self._session_turns,
+                f"{platform}:{channel_id}" if channel_id else None,
+                owner=agent_name,
+                timestamp=time.time(),
+            )
+        else:
+            return
         try:
             if isinstance(message, IncomingMessage):
                 await archive.record(
@@ -113,11 +139,12 @@ class MessageRouter:
                         "channel_id": message.channel_id,
                         "direction": "inbound",
                         "message_id": message.id,
+                        **fields,
                     },
                     agent_name=agent_name,
                     summary=f"[{message.platform}] {message.from_name}: {message.text[:80]}",
                 )
-            elif isinstance(message, OutgoingMessage):
+            else:
                 await archive.record(
                     "conversation",
                     {
@@ -125,6 +152,7 @@ class MessageRouter:
                         "platform": platform,
                         "channel_id": channel_id,
                         "direction": "outbound",
+                        **fields,
                     },
                     agent_name=agent_name,
                     summary=f"[{platform}→] {message.content[:80]}",
