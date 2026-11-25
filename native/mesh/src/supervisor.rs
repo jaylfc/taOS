@@ -21,7 +21,11 @@ pub struct Backoff {
 
 impl Backoff {
     pub fn new(base: Duration, max: Duration) -> Self {
-        Backoff { base, max, attempt: 0 }
+        Backoff {
+            base,
+            max,
+            attempt: 0,
+        }
     }
     pub fn standard() -> Self {
         Self::new(Duration::from_secs(1), Duration::from_secs(60))
@@ -56,8 +60,12 @@ pub struct Supervised {
 /// tests pass a recorder that does not really wait.
 pub fn run(mut s: Supervised, sleep: &dyn Fn(Duration)) {
     let label = s.connector.describe();
-    s.engine
-        .register_radio(&label, &s.network, &label, super::engine::kind_name(s.connector.kind()));
+    s.engine.register_radio(
+        &label,
+        &s.network,
+        &label,
+        super::engine::kind_name(s.connector.kind()),
+    );
     let mut radio_id = label.clone();
     while !s.stop.load(Ordering::Relaxed) {
         let attempt = match s.first.take() {

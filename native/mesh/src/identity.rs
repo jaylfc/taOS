@@ -254,7 +254,7 @@ fn new_contact_id(name: &str, ts: u64, n: usize) -> String {
     h.update(name.as_bytes());
     h.update(ts.to_be_bytes());
     h.update((n as u64).to_be_bytes());
-    format!("c{}", &crate::model::to_hex(&h.finalize()[..5]))
+    format!("c{}", crate::model::to_hex(&h.finalize()[..5]))
 }
 
 impl IdentityStore {

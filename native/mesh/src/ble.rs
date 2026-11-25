@@ -286,10 +286,12 @@ fn managed(conn: &zbus::blocking::Connection) -> io::Result<Managed> {
 }
 
 fn prop_str(p: &Props, k: &str) -> Option<String> {
-    p.get(k).and_then(|v| String::try_from(v.try_clone().ok()?).ok())
+    p.get(k)
+        .and_then(|v| String::try_from(v.try_clone().ok()?).ok())
 }
 fn prop_bool(p: &Props, k: &str) -> Option<bool> {
-    p.get(k).and_then(|v| bool::try_from(v.try_clone().ok()?).ok())
+    p.get(k)
+        .and_then(|v| bool::try_from(v.try_clone().ok()?).ok())
 }
 
 impl BluezGatt {
@@ -414,8 +416,12 @@ impl BluezGatt {
                 }
             }
         });
-        call(&chars[notify_uuid], "org.bluez.GattCharacteristic1", "StartNotify")
-            .map_err(io_err)?;
+        call(
+            &chars[notify_uuid],
+            "org.bluez.GattCharacteristic1",
+            "StartNotify",
+        )
+        .map_err(io_err)?;
         Ok(BluezGatt {
             conn,
             address: address.to_string(),

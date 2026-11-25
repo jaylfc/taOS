@@ -191,6 +191,7 @@ impl Inner {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn next_id(
         &mut self,
         dir: &str,
@@ -455,7 +456,11 @@ impl Engine {
                 decode_errors: r.decode_errors,
                 last_error: r.last_error.clone(),
                 state: if r.connected {
-                    if r.ready { "connected" } else { "connecting" }
+                    if r.ready {
+                        "connected"
+                    } else {
+                        "connecting"
+                    }
                 } else if r.reconnect.is_some() {
                     "reconnecting"
                 } else {

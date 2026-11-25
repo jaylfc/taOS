@@ -12,10 +12,10 @@
 //! Owner-only methods refuse any other principal.
 
 use crate::discovery;
-use crate::supervisor;
 use crate::engine::{Engine, EngineError, Filter, Session};
 use crate::grants::{Grant, OWNER};
 use crate::link::{Connector, Link, SerialConnector, TcpConnector};
+use crate::supervisor;
 use serde::Deserialize;
 use serde_json::{json, Value};
 use std::io::{BufRead, BufReader, Write};
@@ -124,7 +124,9 @@ impl Daemon {
                         .iter()
                         .find(|d| d.address.eq_ignore_ascii_case(addr))
                         .map(|d| d.network.clone())
-                        .ok_or_else(|| format!("{spec}: not seen advertising a mesh service; name the network"))?,
+                        .ok_or_else(|| {
+                            format!("{spec}: not seen advertising a mesh service; name the network")
+                        })?,
                     discovery::BleScan::NoAdapter { why } => return Err(format!("{spec}: {why}")),
                 },
             };

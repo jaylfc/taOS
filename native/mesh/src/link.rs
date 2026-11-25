@@ -178,10 +178,13 @@ impl Link for TcpLink {
 
 /// A scripted in-memory radio for tests. `script` holds the chunks the
 /// "radio" will deliver, one per `read`; everything written is captured.
+/// Scripted reads: a chunk of bytes or an error kind.
+pub type Inbox = Arc<Mutex<VecDeque<Result<Vec<u8>, io::ErrorKind>>>>;
+
 #[derive(Clone, Default)]
 pub struct FakeLink {
     pub name: String,
-    pub inbox: Arc<Mutex<VecDeque<Result<Vec<u8>, io::ErrorKind>>>>,
+    pub inbox: Inbox,
     pub written: Arc<Mutex<Vec<Vec<u8>>>>,
     /// Chunks released when the first write arrives (a radio that answers a
     /// handshake rather than speaking unprompted).

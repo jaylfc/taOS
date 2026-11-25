@@ -19,12 +19,11 @@ pub fn thread_of(r: &Record) -> Option<String> {
     if r.broadcast {
         return Some(format!("ch:{}:{}", r.network, r.channel.unwrap_or(0)));
     }
-    let peer = if r.dir == "out" {
+    if r.dir == "out" {
         r.to.clone()
     } else {
         r.from.clone()
-    };
-    peer
+    }
 }
 
 pub fn radios(e: &Engine) -> Result<Value, EngineError> {

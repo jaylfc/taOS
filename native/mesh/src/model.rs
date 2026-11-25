@@ -261,6 +261,7 @@ pub fn from_hex(s: &str) -> Option<Vec<u8>> {
 impl Record {
     /// Compute the stable id from the immutable core. The same frame stored
     /// twice (a replay) gets the same id, so replays are idempotent.
+    #[allow(clippy::too_many_arguments)]
     pub fn compute_id(
         dir: &str,
         network: &str,

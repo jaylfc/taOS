@@ -6,7 +6,7 @@ use common::*;
 use serde_json::{json, Value};
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::UnixStream;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
@@ -59,7 +59,7 @@ fn up(receive_only: bool) -> Up {
     }
 }
 
-fn wait_for(sock: &PathBuf, n: usize) -> Vec<Value> {
+fn wait_for(sock: &Path, n: usize) -> Vec<Value> {
     let end = Instant::now() + Duration::from_secs(5);
     loop {
         let r = call(sock, "messages", "owner", json!({"filter": {}})).unwrap();
@@ -76,7 +76,7 @@ fn wait_for(sock: &PathBuf, n: usize) -> Vec<Value> {
     }
 }
 
-fn cli(sock: &PathBuf, args: &[&str]) -> (i32, String, String) {
+fn cli(sock: &Path, args: &[&str]) -> (i32, String, String) {
     let o = Command::new(env!("CARGO_BIN_EXE_taos-mesh"))
         .arg("--socket")
         .arg(sock)

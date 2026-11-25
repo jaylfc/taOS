@@ -152,6 +152,19 @@ taos-mesh grants | grant AGENT --network N [--channel N] [--kind send|read] [--m
 
 Output is JSON. Exit status: 0 ok, 1 the engine refused (message on stderr), 2 could not reach it or bad usage.
 
+## Links, reconnect and link state
+
+`connect` takes a serial path, `tcp:host:port` or `ble:AA:BB:CC:DD:EE:FF`. Every radio runs under a supervisor:
+when the link drops (unplugged, out of range, reset) it reconnects with exponential back-off, 1 s doubling to 60 s,
+and the back-off restarts once a session has stored a frame. Each radio in `radios` carries `state`
+(`connected`, `connecting`, `reconnecting`, `offline`), `attempt` (consecutive failed tries), `next_retry_ms` and
+`last_error`. The radio keeps one entry (its own node id) across reconnects. The app view reports `reconnecting` as
+`connecting`.
+
+BLE: Meshtastic uses ToRadio/FromRadio/FromNum on service `6ba1b218-...`; MeshCore uses the Nordic UART service
+`6e400001-...`. Pairing is left to BlueZ: an unpaired radio is paired through BlueZ's agent, and a failure says to
+pair it in the system Bluetooth settings.
+
 ## Drivers
 
 * Meshtastic: framed protobuf stream (`0x94 0xC3` + big-endian length, over 512 means corruption and the reader
@@ -166,15 +179,16 @@ Output is JSON. Exit status: 0 ok, 1 the engine refused (message on stderr), 2 c
 
 ## Not done (blunt)
 
-* BLE transport: the BlueZ GATT link is not built. The BLE scan is a passive listing of devices BlueZ already knows
-  (through `busctl`), filtered by the documented service UUIDs; it does not start discovery.
-* No reconnect or back-off: a dropped link marks the radio offline and ends its session; reconnect is manual.
+* BLE transport (`ble.rs`): the BlueZ D-Bus code (`BluezGatt`: pair through BlueZ, connect, resolve services,
+  read/write/notify) compiles and the layers above it are tested against a fake GATT device, but it has never talked
+  to a real BlueZ device. Expect first-contact fixes. The BLE scan is a passive listing of devices BlueZ already
+  knows (through `busctl`); it does not start discovery.
 * Never exercised on a real radio. Frames in the tests: the Meshtastic `my_info` and `node_info` frames are real
   captures taken from the upstream project's own test files; every other frame (all MeshPackets, all MeshCore
   frames) was built with the upstream reference libraries and decoded by them, not recorded off the air.
   MeshCore layouts follow `MyMesh.cpp` and are untested against real firmware.
-* Serial open: the reference Meshtastic client clears HUPCL via termios before opening so a board that resets on
-  DTR is not rebooted; this engine does not (it would need `unsafe` or another dependency).
+* Serial open clears HUPCL before and after opening, as the reference Meshtastic client does (tested on a pty); the
+  open itself can still pulse DTR on some USB adapters.
 * Meshtastic/MeshCore configuration, firmware management, Reticulum, TAK: not part of this engine yet.
 * Meshtastic ack with no error from a neighbour is reported as `heard`, from the recipient as `acknowledged`; a
   relay's real implicit-ack semantics were not verified on hardware.
