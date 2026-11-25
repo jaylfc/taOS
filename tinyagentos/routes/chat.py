@@ -19,6 +19,8 @@ from tinyagentos.auth_context import (
 from tinyagentos.chat.reactions import maybe_trigger_semantic
 from tinyagentos.device_auth import current_user_or_device
 from tinyagentos.session_turns import session_date, stamp_turn
+from tinyagentos.turn_ingest import agent_shelves, enqueue_turn, role_for
+from tinyagentos.user_memory import user_namespace
 
 router = APIRouter()
 
@@ -124,6 +126,40 @@ async def _capture_user_memory(
         logger.debug(f"user memory capture failed: {e}")
 
 
+async def _ingest_chat_turn(app, channel: dict | None, message: dict, fields: dict) -> None:
+    """Queue one chat turn for taOSmd's ingest.  Never raises.
+
+    Shelves: the own shelf of every agent in the channel (an agent only ever
+    gets conversations it took part in), plus, for a person's own message, that
+    person's user-memory shelf when they capture conversations.
+    """
+    try:
+        shelves = agent_shelves(getattr(app.state, "config", None), channel)
+        author_type = message.get("author_type")
+        author_id = message.get("author_id")
+        user_memory = getattr(app.state, "user_memory", None)
+        if author_type == "user" and author_id and user_memory:
+            try:
+                settings = await user_memory.get_settings(str(author_id))
+            except Exception:
+                logger.warning(
+                    "person shelf skipped for turn %s: settings unreadable",
+                    message.get("id"), exc_info=True)
+                settings = {}
+            if settings.get("capture_conversations"):
+                shelves.append(user_namespace(str(author_id)))
+        await enqueue_turn(
+            getattr(app.state, "turn_ingest", None),
+            turn_id=f"chat:{message.get('id')}" if message.get("id") else None,
+            shelves=shelves,
+            role=role_for(author_type),
+            text=message.get("content") or "",
+            fields=fields,
+        )
+    except Exception:
+        logger.error("chat turn ingest queueing failed for %s", message.get("id"), exc_info=True)
+
+
 async def _beads_on_chat_message(app, channel: dict, message: dict) -> None:
     """Best-effort hand-off to the Beads bridge. Never raises."""
     bridge = getattr(app.state, "beads_bridge", None)
@@ -225,6 +261,9 @@ async def chat_ws(websocket: WebSocket):
                     _spawn_background(
                         _beads_on_chat_message(websocket.app, _ws_channel, message)
                     )
+
+                _spawn_background(_ingest_chat_turn(
+                    websocket.app, _ws_channel, message, dict(_ws_turn)))
 
                 # Capture user message into user memory (async, non-blocking)
                 user_memory = getattr(websocket.app.state, "user_memory", None)
@@ -490,6 +529,9 @@ async def post_message(request: Request, user: CurrentUser = Depends(current_use
     _http_turn["session_date"] = session_date(message.get("created_at"))
     await ch_store.update_last_message_at(channel_id)
     await hub.broadcast(channel_id, {"type": "message", "seq": hub.next_seq(), **message})
+
+    _spawn_background(_ingest_chat_turn(
+        request.app, _http_channel, message, dict(_http_turn)))
 
     # Capture user messages into user memory (skip agent messages)
     if body.get("author_type", "agent") == "user":

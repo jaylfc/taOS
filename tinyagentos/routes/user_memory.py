@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import hashlib
 import logging
 
 import httpx
@@ -9,6 +8,7 @@ from fastapi.responses import JSONResponse
 
 from tinyagentos.auth_context import agent_bound_name, require_admin, resolve_agent_owner
 from tinyagentos.session_turns import stamp_event
+from tinyagentos.user_memory import user_namespace
 
 logger = logging.getLogger(__name__)
 
@@ -18,16 +18,6 @@ router = APIRouter()
 # taosmd namespace that held every person's chunks before memory was per
 # person.  It is only ever read, and only for the install owner.
 _TAOSMD_AGENT = "user-memory"
-
-
-def user_namespace(user_id: str) -> str:
-    """The taosmd agent namespace holding one person's chunks.
-
-    taosmd agent names must match ``[a-z][a-z0-9_-]*``, and user ids are mixed
-    case, so the namespace is derived from a hash of the id: stable, valid, and
-    not guessable from another person's id.
-    """
-    return "user-memory-" + hashlib.sha256(user_id.encode()).hexdigest()[:24]
 
 
 def _search_namespaces(request: Request, user_id: str) -> list[str]:

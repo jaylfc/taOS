@@ -1,0 +1,3 @@
+### Added
+- Every chat turn is now also ingested into taOSmd with its role, session id, turn index and session date, so the agent's recall can rebuild the surrounding conversation on any host, including CPU-only ones. Covers chat (HTTP and WebSocket), channel hub inbound and outbound, and bridge session replies. Each turn goes to the own shelf of every agent in the conversation, and a person's own messages also to their personal memory shelf. Delivery runs in the background from a saved queue that retries, keeps what it could not deliver, and never sends the same turn twice.
+- `python -m tinyagentos.turn_backfill --data-dir <dir>` backfills existing chat history into taOSmd. It is resumable and rate limited.
