@@ -97,3 +97,16 @@ container lock and retry when Incus answers "ETag doesn't match", so two launche
 
 `licence accept <id>` records the acceptance of the licence the catalogue now names, for an app installed before licences
 were recorded. It installs nothing.
+
+## Links and sign-in (the URL broker, engine part)
+
+`browser set <app-id>|host [--group G]`, `browser get`, `browser clear [--group G]` choose where web links open: one browser
+for everything, or one per group (a work group with its own Chromium keeps work logins apart). `open-url [--from <group>] <url>`
+opens a link the way the desktop should: only `http(s)` links (in the chosen browser, in whatever group it lives) and the
+custom schemes an installed app registers in its manifest `mime_types` (`antigravity://`, `claude://`: the link goes back to
+that app, in its group). Everything else (`file:`, `javascript:`, `data:`, an unregistered scheme, control characters) is
+refused with exit 5. When a web link carries `redirect_uri=http://127.0.0.1:PORT/...` and the browser lives in another
+group, that one port is forwarded: a proxy on the app's group exposes its loopback port on the host loopback, a proxy on the
+browser's group listens on its own loopback and reaches it. Both are removed after the first connection (plus a short grace)
+or after `TAOS_APPGROUPS_FORWARD_SECONDS` (default 180). Not built yet: the shim inside each group that sends `xdg-open`,
+`$BROWSER` and the portal's OpenURI to `open-url`, and the Store/Settings screens for the choices.

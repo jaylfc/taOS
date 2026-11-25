@@ -15,6 +15,8 @@
 #include <QRegularExpression>
 #include <QSaveFile>
 #include <QStandardPaths>
+#include <QUrl>
+#include <QUrlQuery>
 #include <QTextStream>
 #include <QThread>
 
@@ -1767,6 +1769,210 @@ Result Engine::syncLaunchers()
         done.append(desktopPath(m.id));
     }
     r.data[u"launchers"_s] = done;
+    return r;
+}
+
+
+// ------------------------------------------------------------------ links: the URL broker
+
+namespace {
+
+QString settingsPath() { return Engine::dataRoot() + u"/settings.json"_s; }
+
+QJsonObject readSettings()
+{
+    QFile f(settingsPath());
+    return f.open(QIODevice::ReadOnly) ? QJsonDocument::fromJson(f.readAll()).object() : QJsonObject();
+}
+
+bool writeSettings(const QJsonObject &o, QString *err)
+{
+    QDir().mkpath(Engine::dataRoot());
+    QSaveFile f(settingsPath());
+    if (!f.open(QIODevice::WriteOnly) || f.write(QJsonDocument(o).toJson()) < 0 || !f.commit()) {
+        *err = u"cannot write %1"_s.arg(settingsPath());
+        return false;
+    }
+    return true;
+}
+
+bool isWebScheme(const QString &s) { return s == u"http"_s || s == u"https"_s; }
+
+// A port that a sign-in asked the browser to call back on: redirect_uri=http://127.0.0.1:PORT/... (also localhost, ::1).
+int localhostCallbackPort(const QUrl &u)
+{
+    const QRegularExpression re(u"^http://(127\\.0\\.0\\.1|localhost|\\[::1\\]):(\\d{2,5})(/|$)"_s);
+    for (const auto &kv : QUrlQuery(u).queryItems(QUrl::FullyDecoded)) {
+        const auto m = re.match(kv.second);
+        if (m.hasMatch()) {
+            const int port = m.captured(2).toInt();
+            if (port >= 1024 && port <= 65535)
+                return port;
+        }
+    }
+    return 0;
+}
+
+// True once something has connected to the local port (any TCP state but LISTEN in /proc/net/tcp).
+bool callbackSeen(int port)
+{
+    QFile f(u"/proc/net/tcp"_s);
+    if (!f.open(QIODevice::ReadOnly))
+        return false;
+    const QString want = u":%1"_s.arg(port, 4, 16, QLatin1Char('0')).toUpper();
+    for (const QString &l : QString::fromLatin1(f.readAll()).split(u'\n').mid(1)) {
+        const QStringList c = l.simplified().split(u' ');
+        if (c.size() > 3 && c[1].endsWith(want) && c[3] != u"0A"_s)
+            return true;
+    }
+    return false;
+}
+
+} // namespace
+
+Result Engine::browserGet()
+{
+    const QJsonObject s = readSettings();
+    Result r;
+    r.data[u"browser"_s] = s.value(u"browser"_s).toString();
+    r.data[u"groups"_s] = s.value(u"groups"_s).toObject();
+    return r;
+}
+
+Result Engine::browserSet(const QString &appOrHost, const QString &group)
+{
+    if (!group.isEmpty() && !validGroupName(group))
+        return Result::fail(ExitUsage, u"bad group name"_s);
+    if (appOrHost != u"host"_s) {
+        const QJsonObject rec = readIndex().value(u"apps"_s).toObject().value(appOrHost).toObject();
+        if (rec.isEmpty())
+            return Result::fail(ExitNotFound, u"%1 is not installed"_s.arg(appOrHost));
+        Manifest m;
+        QString err;
+        if (!parseManifest(QJsonDocument(rec.value(u"manifest"_s).toObject()).toJson(), &m, &err))
+            return Result::fail(ExitRefused, err);
+        if (!m.mimeTypes.contains(u"x-scheme-handler/https"_s))
+            return Result::fail(ExitUsage, u"%1 is not a web browser (it does not open web links)"_s.arg(m.name));
+    }
+    QJsonObject s = readSettings();
+    if (group.isEmpty()) {
+        s[u"browser"_s] = appOrHost;
+    } else {
+        QJsonObject gs = s.value(u"groups"_s).toObject();
+        QJsonObject g = gs.value(group).toObject();
+        g[u"browser"_s] = appOrHost;
+        gs[group] = g;
+        s[u"groups"_s] = gs;
+    }
+    QString err;
+    if (!writeSettings(s, &err))
+        return Result::fail(ExitFailed, err);
+    return browserGet();
+}
+
+Result Engine::browserClear(const QString &group)
+{
+    QJsonObject s = readSettings();
+    if (group.isEmpty()) {
+        s.remove(u"browser"_s);
+    } else {
+        QJsonObject gs = s.value(u"groups"_s).toObject();
+        gs.remove(group);
+        s[u"groups"_s] = gs;
+    }
+    QString err;
+    if (!writeSettings(s, &err))
+        return Result::fail(ExitFailed, err);
+    return browserGet();
+}
+
+Result Engine::openUrl(const QString &url, const QString &fromGroup)
+{
+    for (const QChar c : url)
+        if (c.unicode() < 0x20 || c.unicode() == 0x7f)
+            return Result::fail(ExitRefused, u"that link has a control character in it"_s);
+    const QUrl u(url, QUrl::StrictMode);
+    const QString scheme = u.scheme().toLower();
+    if (url.size() > 8192 || !u.isValid() || scheme.isEmpty())
+        return Result::fail(ExitRefused, u"that is not a link taOS will open"_s);
+    const QJsonObject apps = readIndex().value(u"apps"_s).toObject();
+    QString target;           // the app that gets the link
+    int fwdPort = 0;
+    if (isWebScheme(scheme)) {
+        if (u.host().isEmpty())
+            return Result::fail(ExitRefused, u"that web link has no address"_s);
+        const QJsonObject s = readSettings();
+        QString choice = s.value(u"groups"_s).toObject().value(fromGroup).toObject().value(u"browser"_s).toString();
+        if (choice.isEmpty())
+            choice = s.value(u"browser"_s).toString();
+        if (choice.isEmpty())
+            return Result::fail(ExitUnavailable, u"no browser is chosen for links yet (taos-appgroups browser set <app-id>|host)"_s);
+        if (choice == u"host"_s) {
+            QProcess::startDetached(u"xdg-open"_s, {url});
+            Result r;
+            r.data[u"routed"_s] = u"host"_s;
+            return r;
+        }
+        if (!apps.contains(choice))
+            return Result::fail(ExitNotFound, u"the browser chosen for links (%1) is not installed"_s.arg(choice));
+        target = choice;
+        fwdPort = localhostCallbackPort(u);
+    } else {
+        // only the schemes an installed app has registered, and the link goes back to that app
+        for (auto it = apps.begin(); it != apps.end() && target.isEmpty(); ++it)
+            for (const QJsonValue &mt : it.value().toObject().value(u"manifest"_s).toObject().value(u"mime_types"_s).toArray())
+                if (mt.toString() == u"x-scheme-handler/"_s + scheme)
+                    target = it.key();
+        if (target.isEmpty())
+            return Result::fail(ExitRefused, u"no installed app registers the \"%1\" scheme"_s.arg(scheme));
+    }
+    const QString targetGroup = apps.value(target).toObject().value(u"group"_s).toString();
+    Result r;
+    r.data[u"routed"_s] = u"app"_s;
+    r.data[u"app"_s] = target;
+    r.data[u"group"_s] = targetGroup;
+    const bool forward = fwdPort > 0 && !fromGroup.isEmpty() && fromGroup != targetGroup && validGroupName(fromGroup);
+    const QString fromCt = containerFor(fromGroup), toCt = containerFor(targetGroup);
+    const QString dev = u"fwd-%1"_s.arg(fwdPort);
+    QString err;
+    if (forward) {
+        // app's group -> host loopback; browser's group loopback -> host loopback: that port, nothing else
+        const QString p = QString::number(fwdPort);
+        {
+            DeviceLock l1(fromCt);
+            if (!addDevice(d, fromCt, dev, {u"proxy"_s, u"listen=tcp:127.0.0.1:"_s + p, u"connect=tcp:127.0.0.1:"_s + p, u"bind=host"_s}, &err))
+                return Result::fail(ExitIncus, u"cannot forward the sign-in port: %1"_s.arg(err));
+        }
+        DeviceLock l2(toCt);
+        if (!addDevice(d, toCt, dev, {u"proxy"_s, u"listen=tcp:127.0.0.1:"_s + p, u"connect=tcp:127.0.0.1:"_s + p, u"bind=container"_s}, &err)) {
+            removeDevice(d, fromCt, dev, &err);
+            return Result::fail(ExitIncus, u"cannot forward the sign-in port: %1"_s.arg(err));
+        }
+    }
+    if (!QProcess::startDetached(selfExec(), {u"run"_s, target, url})) {
+        if (forward) {
+            removeDevice(d, fromCt, dev, &err);
+            removeDevice(d, toCt, dev, &err);
+        }
+        return Result::fail(ExitFailed, u"could not start %1"_s.arg(target));
+    }
+    if (forward) {
+        r.data[u"forwarded_port"_s] = fwdPort;
+        // wait for the callback (something connecting to the port) or the timeout, then close the port again
+        const int secs = qEnvironmentVariableIntValue("TAOS_APPGROUPS_FORWARD_SECONDS") > 0 ? qEnvironmentVariableIntValue("TAOS_APPGROUPS_FORWARD_SECONDS") : 180;
+        QElapsedTimer t;
+        t.start();
+        bool seen = false;
+        while (t.elapsed() < qint64(secs) * 1000 && !seen) {
+            QThread::msleep(250);
+            seen = callbackSeen(fwdPort);
+        }
+        if (seen)
+            QThread::sleep(3);   // let the answer finish
+        { DeviceLock l1(fromCt); removeDevice(d, fromCt, dev, &err); }
+        { DeviceLock l2(toCt); removeDevice(d, toCt, dev, &err); }
+        r.data[u"forward_closed"_s] = seen ? u"after the callback"_s : u"after the timeout"_s;
+    }
     return r;
 }
 

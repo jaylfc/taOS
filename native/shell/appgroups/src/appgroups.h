@@ -62,6 +62,14 @@ public:
     // Records the person's acceptance of the licence the catalogue now names, for an app installed before licences were
     // recorded. Installs nothing and changes nothing else.
     Result acceptLicence(const QString &appId, const QString &acceptedBy);
+    // The URL broker. Opens only web links (in the person's chosen browser: one for everything, or one for a group) and
+    // the schemes that an installed app registers (sign-in callbacks, back to that app). A localhost sign-in callback
+    // (redirect_uri=http://127.0.0.1:PORT) is forwarded from the browser's group to the app's group for that port only,
+    // and closed again after the callback or a timeout.
+    Result openUrl(const QString &url, const QString &fromGroup);
+    Result browserGet();
+    Result browserSet(const QString &appOrHost, const QString &group);   // group empty: for everything
+    Result browserClear(const QString &group);
     Result backups();
     Result backupDelete(const QString &appId, const QString &stamp);
     // Looks for (checkOnly) or installs a newer version: from the app's apt source, or from the publisher's feed.

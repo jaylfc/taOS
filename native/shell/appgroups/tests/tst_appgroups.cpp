@@ -761,6 +761,88 @@ private slots:
         QCOMPARE(cli({u"run"_s, u"chromium"_s}, env).code, 0);   // no appearance file: nothing is forced
         QVERIFY(!callsLog().contains(u"GTK_THEME"_s));
     }
+
+    // ---------------------------------------------------------------- links: the URL broker
+
+    QString launchLog() { return QString::fromUtf8(readAll(fakeDir + u"/launch.log"_s)); }
+    QMap<QString, QString> launcherEnv()
+    {
+        // the "taos-appgroups" the broker starts for `run` is a recorder, so what it would have run can be read back
+        const QString rec = m_tmp.path() + u"/recorder.sh"_s;
+        writeFile(rec, "#!/bin/sh\necho \"$*\" >> \"$FAKE_DIR/launch.log\"\n");
+        QFile::setPermissions(rec, QFile::ReadOwner | QFile::WriteOwner | QFile::ExeOwner);
+        return {{u"TAOS_APPGROUPS_EXEC"_s, rec}};
+    }
+    void setUpBrokerApps()
+    {
+        QCOMPARE(cli({u"install"_s, u"chromium"_s}).code, 0);
+        QCOMPARE(cli({u"install"_s, u"antigravity"_s, u"--accept-licence"_s, u"antigravity"_s}).code, 0);
+        QFile::remove(fakeDir + u"/launch.log"_s);
+        QFile::remove(fakeDir + u"/calls.log"_s);
+    }
+    void linksGoToTheChosenBrowserAndOnlyWebLinksDo()
+    {
+        setUpBrokerApps();
+        const QMap<QString, QString> env = launcherEnv();
+        QCOMPARE(cli({u"open-url"_s, u"https://example.org/a"_s}, env).code, 9);   // no browser chosen yet: said so, nothing guessed
+        QCOMPARE(cli({u"browser"_s, u"set"_s, u"nosuchapp"_s}).code, 3);
+        QCOMPARE(cli({u"browser"_s, u"set"_s, u"antigravity"_s}).code, 2);          // not a browser (no web handler)
+        QCOMPARE(cli({u"browser"_s, u"set"_s, u"chromium"_s}).code, 0);
+        QCOMPARE(cli({u"browser"_s, u"get"_s, u"--json"_s}).last.value(u"browser"_s).toString(), u"chromium"_s);
+        const Run r = cli({u"open-url"_s, u"--from"_s, u"default"_s, u"https://example.org/a?b=1"_s, u"--json"_s}, env);
+        QVERIFY2(r.code == 0, qPrintable(r.raw + r.err));
+        QTRY_VERIFY2(launchLog().contains(u"run chromium https://example.org/a?b=1"_s), qPrintable(launchLog()));
+        QFile::remove(fakeDir + u"/launch.log"_s);
+        // nothing but web links, and the schemes of installed apps, is ever opened
+        for (const QString &bad : {u"file:///etc/passwd"_s, u"javascript:alert(1)"_s, u"data:text/html,x"_s, u"ssh://host/"_s, u"https://"_s, u"not a url"_s,
+                                   u"https://example.org/\nx"_s})
+            QVERIFY2(cli({u"open-url"_s, bad}, env).code == 5, qPrintable(bad));
+        QTest::qWait(300);
+        QVERIFY2(launchLog().isEmpty(), qPrintable(launchLog()));
+    }
+    void aSignInCallbackSchemeGoesBackToTheAppThatOwnsIt()
+    {
+        setUpBrokerApps();
+        const QMap<QString, QString> env = launcherEnv();
+        QCOMPARE(cli({u"open-url"_s, u"antigravity://auth/callback?code=abc"_s}, env).code, 0);
+        QTRY_VERIFY2(launchLog().contains(u"run antigravity antigravity://auth/callback?code=abc"_s), qPrintable(launchLog()));
+        QCOMPARE(cli({u"open-url"_s, u"claude://claude.ai/new"_s}, env).code, 5);   // nothing installed registers it
+    }
+    void aGroupCanHaveItsOwnBrowser()
+    {
+        setUpBrokerApps();
+        const QMap<QString, QString> env = launcherEnv();
+        QCOMPARE(cli({u"install"_s, u"firefox"_s, u"--target"_s, u"group:dev-apps"_s}).code, 0);
+        QCOMPARE(cli({u"browser"_s, u"set"_s, u"chromium"_s}).code, 0);
+        QCOMPARE(cli({u"browser"_s, u"set"_s, u"firefox"_s, u"--group"_s, u"dev-apps"_s}).code, 0);
+        QCOMPARE(cli({u"open-url"_s, u"--from"_s, u"dev-apps"_s, u"https://work.example/"_s}, env).code, 0);
+        QCOMPARE(cli({u"open-url"_s, u"--from"_s, u"default"_s, u"https://home.example/"_s}, env).code, 0);
+        QTRY_VERIFY(launchLog().contains(u"run firefox https://work.example/"_s) && launchLog().contains(u"run chromium https://home.example/"_s));
+        QCOMPARE(cli({u"browser"_s, u"clear"_s, u"--group"_s, u"dev-apps"_s}).code, 0);
+        QFile::remove(fakeDir + u"/launch.log"_s);
+        QCOMPARE(cli({u"open-url"_s, u"--from"_s, u"dev-apps"_s, u"https://work.example/"_s}, env).code, 0);
+        QTRY_VERIFY(launchLog().contains(u"run chromium https://work.example/"_s));
+    }
+    void aLocalhostCallbackIsForwardedFromTheBrowsersGroupToTheAppsGroupForThatPortOnly()
+    {
+        setUpBrokerApps();   // chromium is in default; antigravity is moved to dev-apps and asks for a localhost redirect
+        QCOMPARE(cli({u"move"_s, u"antigravity"_s, u"--to"_s, u"group:dev-apps"_s}).code, 0);
+        QCOMPARE(cli({u"browser"_s, u"set"_s, u"chromium"_s}).code, 0);
+        QFile::remove(fakeDir + u"/calls.log"_s);
+        QMap<QString, QString> env = launcherEnv();
+        env.insert(u"TAOS_APPGROUPS_FORWARD_SECONDS"_s, u"1"_s);
+        const QString url = u"https://accounts.google.com/o/oauth2/v2/auth?client_id=x&redirect_uri=http%3A%2F%2F127.0.0.1%3A51234%2Foauth-callback&scope=a"_s;
+        const Run r = cli({u"open-url"_s, u"--from"_s, u"dev-apps"_s, url, u"--json"_s}, env);
+        QVERIFY2(r.code == 0, qPrintable(r.raw + r.err));
+        QCOMPARE(r.last.value(u"forwarded_port"_s).toInt(), 51234);
+        const QString c = callsLog();
+        // the app's group exposes the port on the host loopback, the browser's group listens on its own loopback and reaches it
+        QVERIFY2(c.contains(u"config device add appgroup-dev-apps fwd-51234 proxy listen=tcp:127.0.0.1:51234 connect=tcp:127.0.0.1:51234 bind=host"_s), qPrintable(c));
+        QVERIFY2(c.contains(u"config device add user-apps fwd-51234 proxy listen=tcp:127.0.0.1:51234 connect=tcp:127.0.0.1:51234 bind=container"_s), qPrintable(c));
+        QVERIFY(!c.contains(u"fwd-80"_s) && !c.contains(u"0.0.0.0"_s));
+        // closed again after the timeout
+        QTRY_VERIFY2(callsLog().contains(u"config device remove appgroup-dev-apps fwd-51234"_s) && callsLog().contains(u"config device remove user-apps fwd-51234"_s), qPrintable(callsLog()));
+    }
     void usageAndRunWithoutSession()
     {
         QCOMPARE(cli({u"bogus"_s}).code, 2);

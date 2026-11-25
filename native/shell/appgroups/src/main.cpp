@@ -35,6 +35,10 @@ QString usage()
                                  the acceptance is recorded with the time, the licence URL and who accepted
   move <app-id> --to group:<name> move an installed app and its data to another group (refused while it runs);
                                  the old data is kept as a dated backup until you delete it
+  open-url [--from <group>] <url> open a link the way the desktop would: web links in the chosen browser, sign-in
+                                 callbacks back to the app that registered their scheme; nothing else
+  browser get | set <app-id>|host [--group G] | clear [--group G]
+                                 the browser links open in (for everything, or for one group)
   licence accept <app-id> [--accepted-by TEXT]
                                  record that you accept the licence of an app installed before licences were recorded
   icon set <app-id> <file>       use your own icon for an app (PNG or SVG); it is never replaced
@@ -80,8 +84,8 @@ int main(int argc, char *argv[])
     QCoreApplication app(argc, argv);
     QStringList a = app.arguments().mid(1);
     bool json = false, available = false, purge = false, acceptHost = false;
-    QString target, to, displayName, acceptLicence, acceptedBy;
-    bool check = false;
+    QString target, to, displayName, acceptLicence, acceptedBy, fromGroup;
+    bool check = false, groupGiven = false;
     QString group = QString::fromLatin1(kDefaultGroup);
     QStringList pos, rest;
     bool afterRun = false;
@@ -97,6 +101,8 @@ int main(int argc, char *argv[])
             purge = true;
         } else if (s == u"--accept-host-warning"_s) {
             acceptHost = true;
+        } else if (s == u"--from"_s && i + 1 < a.size()) {
+            fromGroup = a[++i];
         } else if (s == u"--check"_s) {
             check = true;
         } else if (s == u"--to"_s && i + 1 < a.size()) {
@@ -111,6 +117,7 @@ int main(int argc, char *argv[])
             target = a[++i];
         } else if (s == u"--group"_s && i + 1 < a.size()) {
             group = a[++i];
+            groupGiven = true;
         } else if (s == u"--help"_s || s == u"-h"_s) {
             out(usage());
             return 0;
@@ -187,6 +194,14 @@ int main(int argc, char *argv[])
                                             d.value(u"backup"_s).toString().isEmpty() ? QString() : u" (old data kept in %1 of group %2)"_s.arg(d.value(u"backup"_s).toString(), d.value(u"from"_s).toString()));
         });
     }
+    if (cmd == u"open-url"_s && pos.size() == 2)
+        return finish(e.openUrl(pos[1], fromGroup), json, [](const QJsonObject &d) { return u"opened in %1"_s.arg(d.value(u"app"_s).toString(d.value(u"routed"_s).toString())); });
+    if (cmd == u"browser"_s && pos.value(1) == u"get"_s)
+        return finish(e.browserGet(), json, [](const QJsonObject &d) { return d.value(u"browser"_s).toString(u"(none chosen)"_s); });
+    if (cmd == u"browser"_s && pos.value(1) == u"set"_s && pos.size() == 3)
+        return finish(e.browserSet(pos[2], group == QLatin1String(kDefaultGroup) && !groupGiven ? QString() : group), json, [](const QJsonObject &d) { return d.value(u"browser"_s).toString(); });
+    if (cmd == u"browser"_s && pos.value(1) == u"clear"_s)
+        return finish(e.browserClear(group == QLatin1String(kDefaultGroup) && !groupGiven ? QString() : group), json, [](const QJsonObject &) { return QString(); });
     if (cmd == u"licence"_s && pos.value(1) == u"accept"_s && pos.size() == 3)
         return finish(e.acceptLicence(pos[2], acceptedBy), json, [](const QJsonObject &d) { return u"recorded your acceptance for %1"_s.arg(d.value(u"id"_s).toString()); });
     if (cmd == u"icon"_s && pos.value(1) == u"set"_s && pos.size() == 4)
