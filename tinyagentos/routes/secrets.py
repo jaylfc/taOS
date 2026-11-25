@@ -75,16 +75,11 @@ async def get_agent_github_grants(
     permissions extracted from the encrypted secret value.
 
     Requires a valid session cookie — unauthenticated callers receive 401.
-    Only the agent's owner or an admin may read its grants (403 otherwise).
+    Only the agent's owner or an admin may read its grants (403 otherwise). An
+    agent the registry cannot attribute is readable by an admin only, the same
+    rule as the plaintext secrets route above.
     """
-    registry = getattr(request.app.state, "agent_registry", None)
-    if registry is not None:
-        try:
-            agent = await registry.get_by_handle(agent_name)
-        except RuntimeError:
-            agent = None
-        if agent is not None:
-            require_owner_or_admin(user, agent["user_id"])
+    await require_agent_owner_or_admin(request, user, agent_name)
     store = request.app.state.secrets
     installations = await store.get_agent_github_installations(agent_name)
     return installations
