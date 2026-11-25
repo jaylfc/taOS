@@ -210,6 +210,108 @@ def test_proprietary_style_substring_is_not_narrowed_to_word_boundaries():
     assert check_install_licences.classify_licence("Proprietary-ish") == "blocked"
 
 
+def test_gpl_2_0_without_or_later_is_blocked():
+    """GPL-2.0 (without "or-later") is incompatible with AGPL-3.0 and must be blocked.
+
+    The plain SPDX id "GPL-2.0" historically means GPL-2.0-only unless explicitly
+    qualified with "or-later". taOS ships AGPL-3.0-or-later and cannot combine
+    with a GPL-2.0-only dependency.
+    """
+    assert check_install_licences.classify_licence("GPL-2.0") == "blocked"
+
+
+def test_gplv2_is_blocked():
+    """GPLv2 is a common alias for GPL-2.0-only and must be blocked.
+
+    Many packages use the short "GPLv2" form instead of the full SPDX id.
+    """
+    assert check_install_licences.classify_licence("GPLv2") == "blocked"
+
+
+def test_elastic_2_0_is_blocked():
+    """Elastic-2.0 (Elastic License v2.0) is source-available, not open source, and must be blocked.
+
+    The Elastic License v2.0 restricts commercial SaaS use and is not compatible
+    with AGPL-3.0 redistribution.
+    """
+    assert check_install_licences.classify_licence("Elastic-2.0") == "blocked"
+
+
+def test_bsl_1_1_is_blocked():
+    """BSL-1.1 (Business Source License 1.1) is source-available with a time-delayed open source conversion and must be blocked.
+
+    BSL imposes use restrictions (e.g., no competing SaaS) during the change
+    period, making it incompatible with free redistribution under AGPL-3.0.
+    """
+    assert check_install_licences.classify_licence("BSL-1.1") == "blocked"
+
+
+def test_cc_by_nc_4_0_is_blocked():
+    """CC-BY-NC-4.0 (Creative Commons Attribution-NonCommercial 4.0) is non-commercial and must be blocked.
+
+    The NC clause prohibits commercial use, which conflicts with taOS's AGPL-3.0
+    redistribution model.
+    """
+    assert check_install_licences.classify_licence("CC-BY-NC-4.0") == "blocked"
+
+
+def test_ssp_is_blocked():
+    """SSPL (Server Side Public License) is a source-available license with SaaS restrictions and must be blocked.
+
+    Both the full name "Server Side Public License" and the SPDX id "SSPL-1.0"
+    must be recognized as blocked.
+    """
+    assert check_install_licences.classify_licence("Server Side Public License") == "blocked"
+    assert check_install_licences.classify_licence("SSPL-1.0") == "blocked"
+
+
+def test_gpl_2_0_or_later_is_allowed():
+    """GPL-2.0-or-later is compatible with AGPL-3.0 and must be allowed.
+
+    The "or-later" qualifier permits upgrading to GPL-3.0, which is compatible
+    with AGPL-3.0.
+    """
+    assert check_install_licences.classify_licence("GPL-2.0-or-later") is None
+
+
+def test_gpl_3_0_is_allowed():
+    """GPL-3.0 (both -only and -or-later) is compatible with AGPL-3.0 and must be allowed."""
+    assert check_install_licences.classify_licence("GPL-3.0-only") is None
+    assert check_install_licences.classify_licence("GPL-3.0-or-later") is None
+    assert check_install_licences.classify_licence("GPL-3.0") is None
+
+
+def test_agpl_3_0_is_allowed():
+    """AGPL-3.0 (both -only and -or-later) is the taOS ship license and must be allowed."""
+    assert check_install_licences.classify_licence("AGPL-3.0-only") is None
+    assert check_install_licences.classify_licence("AGPL-3.0-or-later") is None
+    assert check_install_licences.classify_licence("AGPL-3.0") is None
+
+
+def test_lgpl_is_allowed():
+    """LGPL (all versions) is compatible with AGPL-3.0 and must be allowed."""
+    assert check_install_licences.classify_licence("LGPL-2.0-only") is None
+    assert check_install_licences.classify_licence("LGPL-2.0-or-later") is None
+    assert check_install_licences.classify_licence("LGPL-2.1-only") is None
+    assert check_install_licences.classify_licence("LGPL-2.1-or-later") is None
+    assert check_install_licences.classify_licence("LGPL-3.0-only") is None
+    assert check_install_licences.classify_licence("LGPL-3.0-or-later") is None
+
+
+def test_mpl_is_allowed():
+    """MPL-2.0 is compatible with AGPL-3.0 and must be allowed."""
+    assert check_install_licences.classify_licence("MPL-2.0") is None
+
+
+def test_permissive_licenses_are_allowed():
+    """Standard permissive licenses (MIT, Apache-2.0, BSD variants) must be allowed."""
+    assert check_install_licences.classify_licence("MIT") is None
+    assert check_install_licences.classify_licence("Apache-2.0") is None
+    assert check_install_licences.classify_licence("BSD-3-Clause") is None
+    assert check_install_licences.classify_licence("BSD-2-Clause") is None
+    assert check_install_licences.classify_licence("ISC") is None
+
+
 def test_installer_pip_uses_constraints_file():
     """Every controller pip install must pin against the committed constraints file.
 

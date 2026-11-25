@@ -77,10 +77,101 @@ BLOCKING_PATTERNS = (
 # both ways, e.g. "MIT-0 WITH Commons-Clause"), case-insensitively.
 COMMONS_CLAUSE_RE = re.compile(r"\bcommons[\s-]?clause\b", re.IGNORECASE)
 
-# First-party packages: same licensor as taOS, so the terms that would block a
-# third-party dependency are ours to grant. taosmd ships MIT + Commons Clause
-# and is published by jaylfc, the same licensor as taOS itself.
-FIRST_PARTY = {"taosmd", "tinyagentos"}
+# Normalise a licence string to a canonical form for exact matching.
+# Handles SPDX ids, common aliases, and vendor licence names.
+def _normalize_licence(licence: str) -> str:
+    text = licence.strip().lower()
+    # Remove surrounding quotes
+    text = text.strip('"').strip("'")
+    # Drop a single trailing parenthetical note, e.g. "GPL-2.0 (some note)".
+    if text.endswith(")") and "(" in text:
+        text = text[: text.rindex("(")].strip()
+    # Collapse whitespace
+    text = " ".join(text.split())
+    # Common aliases -> canonical SPDX-ish form
+    aliases = {
+        "gplv2": "gpl-2.0",
+        "gplv3": "gpl-3.0",
+        "agplv3": "agpl-3.0",
+        "lgplv2": "lgpl-2.0",
+        "lgplv2.1": "lgpl-2.1",
+        "lgplv3": "lgpl-3.0",
+        "elastic-2.0": "elastic-2.0",
+        "elastic license 2.0": "elastic-2.0",
+        "elastic license v2": "elastic-2.0",
+        "elv2": "elastic-2.0",
+        "business source license 1.1": "bsl-1.1",
+        "business source license": "bsl-1.1",
+        "busl-1.1": "bsl-1.1",
+        "server side public license": "sspl-1.0",
+        "server side public license 1": "sspl-1.0",
+        "cc-by-nc-4.0": "cc-by-nc-4.0",
+        "cc by nc 4.0": "cc-by-nc-4.0",
+        "creative commons attribution noncommercial 4.0": "cc-by-nc-4.0",
+    }
+    return aliases.get(text, text)
+
+# Exact-match classification table. Keys are normalised licence strings.
+# Value: "blocked" or "allowed". Missing keys fall through to substring patterns.
+_LICENSE_CLASSIFICATION: dict[str, str] = {
+    # Blocked: GPL-2.0 without "or-later"
+    "gpl-2.0": "blocked",
+    "gpl-2.0-only": "blocked",
+    # Blocked: SSPL, Elastic v2, BSL, non-commercial, unlicensed
+    "sspl-1.0": "blocked",
+    "elastic-2.0": "blocked",
+    "bsl-1.1": "blocked",
+    "cc-by-nc-4.0": "blocked",
+    # Allowed: GPL-2.0-or-later, GPL-3.0, AGPL-3.0, LGPL, MPL, permissive
+    "gpl-2.0-or-later": "allowed",
+    "gpl-3.0": "allowed",
+    "gpl-3.0-only": "allowed",
+    "gpl-3.0-or-later": "allowed",
+    "agpl-3.0": "allowed",
+    "agpl-3.0-only": "allowed",
+    "agpl-3.0-or-later": "allowed",
+    "lgpl-2.0": "allowed",
+    "lgpl-2.0-only": "allowed",
+    "lgpl-2.0-or-later": "allowed",
+    "lgpl-2.1": "allowed",
+    "lgpl-2.1-only": "allowed",
+    "lgpl-2.1-or-later": "allowed",
+    "lgpl-3.0": "allowed",
+    "lgpl-3.0-only": "allowed",
+    "lgpl-3.0-or-later": "allowed",
+    "mpl-2.0": "allowed",
+    "mit": "allowed",
+    "apache-2.0": "allowed",
+    "bsd-3-clause": "allowed",
+    "bsd-2-clause": "allowed",
+    "isc": "allowed",
+}
+
+
+def classify_licence(licence: str) -> str | None:
+    """Classify a licence string as ``"unknown-licence"``, ``"blocked"``, or ``None`` (ok).
+
+    An ``"UNKNOWN"`` licence (see ``licence_from_info``) is its own finding,
+    distinct from ``"blocked"``: PyPI gave us nothing to check, which is not
+    the same claim as "we checked and it is clear". Both must count toward a
+    non-zero exit so the gate cannot pass silently on either.
+
+    Classification order:
+    1. Exact match against known SPDX ids and common names (normalised).
+    2. Substring patterns for broader coverage (BLOCKING_PATTERNS, Commons Clause).
+    """
+    if licence == "UNKNOWN":
+        return "unknown-licence"
+    norm = _normalize_licence(licence)
+    exact = _LICENSE_CLASSIFICATION.get(norm)
+    if exact == "blocked":
+        return "blocked"
+    if exact == "allowed":
+        return None
+    low = licence.lower()
+    if any(pattern in low for pattern in BLOCKING_PATTERNS) or COMMONS_CLAUSE_RE.search(licence):
+        return "blocked"
+    return None
 
 # pip flags and non-package arguments to skip when reading the installer.
 _PIP_FLAG = re.compile(r"^-")
@@ -250,22 +341,6 @@ def pypi_licence(name: str, version: str) -> str:
         # Never narrate a degraded run as a clean one.
         raise SystemExit(f"ERROR  could not read licence for {name} {version}: {exc}")
     return licence_from_info(info)
-
-
-def classify_licence(licence: str) -> str | None:
-    """Classify a licence string as ``"unknown-licence"``, ``"blocked"``, or ``None`` (ok).
-
-    An ``"UNKNOWN"`` licence (see ``licence_from_info``) is its own finding,
-    distinct from ``"blocked"``: PyPI gave us nothing to check, which is not
-    the same claim as "we checked and it is clear". Both must count toward a
-    non-zero exit so the gate cannot pass silently on either.
-    """
-    if licence == "UNKNOWN":
-        return "unknown-licence"
-    low = licence.lower()
-    if any(pattern in low for pattern in BLOCKING_PATTERNS) or COMMONS_CLAUSE_RE.search(licence):
-        return "blocked"
-    return None
 
 
 def main(argv: list[str] | None = None) -> int:
