@@ -1,0 +1,42 @@
+{
+  "groups": ["Windows", "Desktops", "Launcher and menu", "Screenshots", "System", "App shortcuts"],
+  "other": "Other shortcuts",
+  "bindings": [
+    {"match": "kill", "group": "Windows", "text": "Close the window"},
+    {"match": "fullscreen toggle", "group": "Windows", "text": "Fullscreen on or off"},
+    {"match": "floating toggle", "group": "Windows", "text": "Float or tile the window"},
+    {"match": "focus (left|right|up|down)", "group": "Windows", "text": "Focus the next window", "merge": "arrows"},
+    {"match": "move (left|right|up|down)", "group": "Windows", "text": "Move the window", "merge": "arrows"},
+    {"match": "exec taos-window toggle-minimise focused", "group": "Windows", "text": "Minimise, or bring back"},
+    {"match": "exec taos-window restore last", "group": "Windows", "text": "Restore the last minimised window"},
+    {"match": "exec taos-window full focused", "group": "Windows", "text": "Full size, or back to normal"},
+    {"match": "exec taos-window fullscreen focused", "group": "Windows", "text": "Fullscreen"},
+    {"match": "exec taos-window mode toggle", "group": "Windows", "text": "Desktop or tiling windows on this desktop"},
+    {"match": "resize (shrink|grow) (width|height) \\d+ px", "group": "Windows", "text": "Resize the window", "merge": "arrows"},
+    {"match": "exec taos-frame menu", "group": "Windows", "text": "Window menu (right click on the title bar)"},
+    {"match": "workspace number (\\d+)", "group": "Desktops", "text": "Go to desktop %1", "merge": "1 to 9"},
+    {"match": "move container to workspace number (\\d+)", "group": "Desktops", "text": "Send the window to desktop %1", "merge": "1 to 9"},
+    {"match": "exec taos-overview overview", "group": "Desktops", "text": "Overview of windows and desktops"},
+    {"match": "exec taos-overview switcher", "group": "Desktops", "text": "Switch window"},
+    {"match": "exec taos-overview switcher --reverse", "group": "Desktops", "text": "Switch window, backwards"},
+    {"match": "exec taos-overview help", "group": "System", "text": "This shortcuts list"},
+    {"match": "exec taos-launcher toggle", "group": "Launcher and menu", "text": "App menu and search"},
+    {"match": "exec taos-dock focus", "group": "Launcher and menu", "text": "Move the keyboard to the dock"},
+    {"match": "exec taos-bar volume up", "group": "System", "text": "Volume up"},
+    {"match": "exec taos-bar volume down", "group": "System", "text": "Volume down"},
+    {"match": "exec taos-bar volume mute", "group": "System", "text": "Mute"},
+    {"match": "exec taos-bar volume mic-mute", "group": "System", "text": "Mute the microphone"}
+  ],
+  "gestures": [
+    {"keys": ["Super", "Drag"], "text": "Move a window from anywhere in it", "group": "Windows"},
+    {"keys": ["Super", "Right drag"], "text": "Resize a window from the nearest corner or edge", "group": "Windows"},
+    {"keys": ["Hold Alt", "Tab"], "text": "Cycle windows, release to choose", "group": "Desktops"},
+    {"keys": ["Drag a window"], "text": "In the overview: onto a desktop to move it there", "group": "Desktops"},
+    {"keys": ["Drag a desktop"], "text": "In the overview: to a new place to reorder", "group": "Desktops"},
+    {"keys": ["Double click"], "text": "In the overview: a desktop's name to rename it", "group": "Desktops"},
+    {"keys": ["Tap"], "text": "Open a window or go to a desktop", "group": "Desktops", "touch": true, "pointer": false},
+    {"keys": ["Swipe up"], "text": "On a window in the overview: close it", "group": "Windows", "touch": true, "pointer": false},
+    {"keys": ["Drag"], "text": "A window onto a desktop chip to move it", "group": "Desktops", "touch": true, "pointer": false},
+    {"keys": ["Press and hold"], "text": "A desktop chip to rename it", "group": "Desktops", "touch": true, "pointer": false}
+  ]
+}

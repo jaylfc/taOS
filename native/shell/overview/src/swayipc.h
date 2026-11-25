@@ -9,7 +9,7 @@
 // The i3/sway IPC wire format: "i3-ipc", payload length (u32), message type (u32), payload.
 namespace SwayWire {
 enum Type : quint32 {
-    RunCommand = 0, GetWorkspaces = 1, Subscribe = 2, GetOutputs = 3, GetTree = 4,
+    RunCommand = 0, GetWorkspaces = 1, Subscribe = 2, GetOutputs = 3, GetTree = 4, GetVersion = 7,
     EventWorkspace = 0x80000000u, EventOutput = 0x80000001u, EventMode = 0x80000002u,
     EventWindow = 0x80000003u, EventBarconfig = 0x80000004u, EventBinding = 0x80000005u,
     EventShutdown = 0x80000006u, EventTick = 0x80000007u, EventInput = 0x80000015u,

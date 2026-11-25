@@ -3,6 +3,8 @@
 
 #include <QAccessible>
 #include <QCoreApplication>
+#include <QDir>
+#include <QStandardPaths>
 #include <QDateTime>
 #include <QFile>
 #include <QJsonArray>
@@ -65,6 +67,9 @@ bool Controller::connectSway(QString *error) {
         return false;
     }
     m_ev.subscribe({ QStringLiteral("window"), QStringLiteral("workspace") });
+    m_cmd.request(SwayWire::GetVersion, {}, [this](bool ok, const QByteArray &p) {   // the config sway really loaded
+        if (ok) m_configPath = QJsonDocument::fromJson(p).object().value(QLatin1String("loaded_config_file_name")).toString();
+    });
     refresh();
     return true;
 }
@@ -192,6 +197,12 @@ QString Controller::handleCommand(const QStringList &w) {
         else { setMode(QStringLiteral("overview")); m_sticky = true; recomputeLayout(); rebuildWorkspaces(); updateCapture(); }
         return QStringLiteral("ok");
     }
+    if (v == QLatin1String("help")) {
+        if (m_mode == QLatin1String("hidden")) open(QStringLiteral("help"), false, true);
+        else if (m_mode == QLatin1String("help")) cancel();
+        else { setMode(QStringLiteral("help")); m_sticky = true; loadHelp(); updateCapture(); }
+        return QStringLiteral("ok");
+    }
     if (v == QLatin1String("hide")) { cancel(); return QStringLiteral("ok"); }
     if (v == QLatin1String("commit")) { commit(); return QStringLiteral("ok"); }
     if (v == QLatin1String("next") || v == QLatin1String("prev") || v == QLatin1String("left") || v == QLatin1String("right")
@@ -204,7 +215,7 @@ QString Controller::handleCommand(const QStringList &w) {
         return r;
     }
     if (v == QLatin1String("status")) return QStringLiteral("ok ") + statusJson();
-    return QStringLiteral("error: unknown command '%1' (switcher, overview, space, hide, commit, next, prev, status)").arg(v);
+    return QStringLiteral("error: unknown command '%1' (switcher, overview, help, space, hide, commit, next, prev, status)").arg(v);
 }
 
 void Controller::setMode(const QString &m) {
@@ -230,6 +241,7 @@ void Controller::open(const QString &mode, bool reverse, bool sticky) {
     m_showTimer.start();
     setMode(mode);
     m_idle.start();
+    if (mode == QLatin1String("help")) loadHelp();
     recomputeLayout();
     rebuildWorkspaces();
     updateCapture();
@@ -372,6 +384,7 @@ bool Controller::matches(const WinInfo &w) const {
 }
 
 void Controller::typeText(const QString &t) {
+    if (m_mode == QLatin1String("help")) { m_filter += t; emit filterTextChanged(); applyHelpFilter(); return; }
     if (m_mode != QLatin1String("overview")) return;
     m_filter += t;
     emit filterTextChanged();
@@ -385,6 +398,7 @@ void Controller::backspace() {
     if (m_filter.isEmpty()) return;
     m_filter.chop(1);
     emit filterTextChanged();
+    if (m_mode == QLatin1String("help")) { applyHelpFilter(); return; }
     recomputeLayout();
     updateCapture();
     setSelectedIndex(m_layoutIds.isEmpty() ? -1 : m_model.rowOf(m_layoutIds.first()));
@@ -394,6 +408,7 @@ void Controller::clearFilter() {
     if (m_filter.isEmpty()) return;
     m_filter.clear();
     emit filterTextChanged();
+    if (m_mode == QLatin1String("help")) { applyHelpFilter(); return; }
     recomputeLayout();
     updateCapture();
 }
@@ -548,7 +563,7 @@ void Controller::rebuildWorkspaces() {
 void Controller::updateCapture() {
     if (!m_cap || !m_cap->available()) return;
     QHash<QString, QSize> t;
-    if (m_mode != QLatin1String("hidden")) {
+    if (m_mode != QLatin1String("hidden") && m_mode != QLatin1String("help")) {
         const auto px = [&](qreal w, qreal h) { return QSize(int(std::ceil(w * m_dpr)), int(std::ceil(h * m_dpr))); };
         for (const WinInfo &w : m_model.all()) {
             if (w.identifier.isEmpty()) continue;
@@ -604,4 +619,44 @@ QString Controller::statusJson() {
         for (const QByteArray &l : f.readAll().split('\n'))
             if (l.startsWith("VmRSS:")) o.insert(QStringLiteral("rss_kb"), l.mid(6).trimmed().split(' ').first().toInt());
     return QString::fromUtf8(QJsonDocument(o).toJson(QJsonDocument::Compact));
+}
+
+// ---- the shortcuts overlay ----------------------------------------------------------------------
+
+void Controller::loadHelp() {
+    Shortcuts::Registry reg;
+    QString err;
+    QByteArray json;
+    const QString over = qEnvironmentVariable("TAOS_SHORTCUTS_JSON");
+    QFile f(over.isEmpty() ? QStringLiteral(":/taos/overview/resources/shortcuts.json") : over);
+    if (f.open(QIODevice::ReadOnly)) json = f.readAll();
+    if (!reg.load(json, &err)) fprintf(stderr, "taos-overview: shortcuts registry: %s\n", qPrintable(err));
+    QString cfg = m_configPath;
+    if (cfg.isEmpty()) cfg = qEnvironmentVariable("TAOS_SWAY_CONFIG");
+    if (cfg.isEmpty()) cfg = QDir::homePath() + QStringLiteral("/.config/sway/config");
+    const Shortcuts::ParseResult p = Shortcuts::parseConfig(cfg);
+    for (const QString &e : p.errors) fprintf(stderr, "taos-overview: shortcuts: %s\n", qPrintable(e));
+    m_helpAll = Shortcuts::build(p, reg, m_helpTouch);
+    if (!m_helpTouch) {   // the focused app's own shortcuts, when it declares any, come first
+        QStringList dirs;
+        for (const QString &d : QStandardPaths::standardLocations(QStandardPaths::GenericDataLocation)) dirs << d + QStringLiteral("/taos/shortcuts");
+        QString app;
+        for (const WinInfo &w : m_snap.windows) if (w.conId == m_snap.focusedConId) app = w.appId;
+        const Shortcuts::Group g = Shortcuts::appGroup(app, m_apps ? m_apps->displayName(app) : app, dirs);
+        if (!g.rows.isEmpty()) m_helpAll.prepend(g);
+    }
+    m_helpUndescribed = 0;
+    for (const Shortcuts::Group &g : m_helpAll) for (const Shortcuts::Row &r : g.rows) if (!r.described) ++m_helpUndescribed;
+    applyHelpFilter();
+}
+
+void Controller::applyHelpFilter() {
+    m_helpView = Shortcuts::toVariant(Shortcuts::filter(m_helpAll, m_filter));
+    emit helpChanged();
+}
+
+void Controller::setHelpTouch(bool touch) {
+    if (touch == m_helpTouch) return;
+    m_helpTouch = touch;
+    if (m_mode == QLatin1String("help")) loadHelp();
 }

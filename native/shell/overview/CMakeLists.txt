@@ -37,6 +37,7 @@ add_library(taosoverview_core STATIC
     src/appinfo.cpp src/appinfo.h
     src/spaces.cpp src/spaces.h
     src/iconresolve.cpp src/iconresolve.h
+    src/shortcuts.cpp src/shortcuts.h
     ${CMAKE_CURRENT_SOURCE_DIR}/../dock/src/desktopentry.cpp)
 target_include_directories(taosoverview_core PUBLIC src ${CMAKE_CURRENT_SOURCE_DIR}/../dock/src)
 target_link_libraries(taosoverview_core PUBLIC taos_common taos_window_core Qt6::Core Qt6::Gui Qt6::Network)
@@ -61,11 +62,14 @@ qt_add_resources(taos-overview overview_resources
         qml/Glass.qml
         qml/WindowThumb.qml
         qml/AppBadge.qml
-        qml/Monogram.qml)
+        qml/Monogram.qml
+        qml/HelpView.qml
+        resources/shortcuts.json)
 target_link_libraries(taos-overview PRIVATE taosoverview_core taos_overview_proto Qt6::Quick Qt6::Qml
                       LayerShellQt::Interface)
 install(TARGETS taos-overview RUNTIME DESTINATION bin)
 install(FILES sway/40-overview.conf DESTINATION share/taos/sway.d)
+install(FILES resources/shortcuts.json DESTINATION share/taos)
 
 function(taos_overview_test name)
     qt_add_executable(${name} tests/${name}.cpp)
@@ -80,3 +84,5 @@ taos_overview_test(test_packing)
 taos_overview_test(test_ipc)
 taos_overview_test(test_spaces)
 taos_overview_test(test_icons)
+taos_overview_test(test_shortcuts)
+target_compile_definitions(test_shortcuts PRIVATE TAOS_SHORTCUTS_JSON="${CMAKE_CURRENT_SOURCE_DIR}/resources/shortcuts.json" TAOS_SHELL_DIR="${CMAKE_CURRENT_SOURCE_DIR}/..")

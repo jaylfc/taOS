@@ -10,6 +10,7 @@
 
 #include "appinfo.h"
 #include "capture.h"
+#include "shortcuts.h"
 #include "spaces.h"
 #include "swayipc.h"
 #include "thumbnails.h"
@@ -32,6 +33,8 @@ class Controller : public QObject {
     Q_PROPERTY(QString outputName READ outputName NOTIFY outputNameChanged)
     Q_PROPERTY(bool sticky READ sticky NOTIFY modeChanged)
     Q_PROPERTY(bool framed READ framed NOTIFY framedChanged)
+    Q_PROPERTY(QVariantList helpGroups READ helpGroups NOTIFY helpChanged)   // shortcuts overlay: filtered groups
+    Q_PROPERTY(int helpUndescribed READ helpUndescribed NOTIFY helpChanged)
     Q_PROPERTY(QString currentWorkspace READ currentWorkspace NOTIFY workspacesChanged)
 public:
     explicit Controller(AppInfo *apps, QObject *parent = nullptr);
@@ -57,6 +60,9 @@ public:
         for (const WinInfo &w : m_model.all()) l << (w.rect.height() > 0 ? double(w.rect.width()) / w.rect.height() : 1.6);
         return l;
     }
+    QVariantList helpGroups() const { return m_helpView; }
+    int helpUndescribed() const { return m_helpUndescribed; }
+    Q_INVOKABLE void setHelpTouch(bool touch);   // QML: a phone layout wants gestures instead of keys
     QString outputName() const { return m_output; }
     bool sticky() const { return m_sticky; }
     QString currentWorkspace() const { return m_curWs; }
@@ -109,6 +115,7 @@ signals:
     void layoutChanged();
     void workspacesChanged();
     void countChanged();
+    void helpChanged();
     void noticeChanged();
     void framedChanged();
     void outputNameChanged();
@@ -134,6 +141,8 @@ private:
     void selectionAnnounce();
     QString statusJson();
     void afterSpaceChange();
+    void loadHelp();
+    void applyHelpFilter();
 
     struct CmdSink : Spaces::Sink {
         SwayIpc *ipc;
@@ -144,6 +153,11 @@ private:
     Spaces::Store m_spaceStore;
     Spaces::Engine m_spaces;
     QString m_notice;
+    QString m_configPath;
+    QVector<Shortcuts::Group> m_helpAll;
+    QVariantList m_helpView;
+    int m_helpUndescribed = 0;
+    bool m_helpTouch = false;
     MruTracker m_mru;
     Snapshot m_snap;
     WindowModel m_model;
