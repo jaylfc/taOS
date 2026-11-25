@@ -9,6 +9,11 @@ import pytest
 import pytest_asyncio
 
 
+def _me(client) -> str:
+    """Id of the signed-in test user (the install owner)."""
+    return client._transport.app.state.auth.find_user("admin")["id"]
+
+
 @pytest_asyncio.fixture
 async def user_memory(client, tmp_path):
     """Ensure user_memory store is initialized on the test app."""
@@ -75,7 +80,7 @@ class TestUpdateSettings:
             "/api/user-memory/settings",
             json={"capture_searches": True},
         )
-        settings = await user_memory.get_settings("user")
+        settings = await user_memory.get_settings(_me(client))
         assert settings["capture_searches"] is True
 
     async def test_update_defaults_preserved(self, client, user_memory):
@@ -83,7 +88,7 @@ class TestUpdateSettings:
             "/api/user-memory/settings",
             json={"capture_notes": False},
         )
-        settings = await user_memory.get_settings("user")
+        settings = await user_memory.get_settings(_me(client))
         # Defaults not in the update payload should remain
         assert settings["capture_conversations"] is True
 
@@ -142,7 +147,7 @@ class TestSave:
             json={"content": "test content"},
         )
         assert resp.status_code == 200
-        chunks = await user_memory.browse("user")
+        chunks = await user_memory.browse(_me(client))
         assert len(chunks) == 1
         assert chunks[0]["collection"] == "snippets"
 
@@ -152,7 +157,7 @@ class TestSave:
             json={"content": "test", "collection": "journal"},
         )
         assert resp.status_code == 200
-        chunks = await user_memory.browse("user", collection="journal")
+        chunks = await user_memory.browse(_me(client), collection="journal")
         assert len(chunks) == 1
 
     async def test_save_taosmd_ingest_failure_is_nonfatal(self, client, user_memory):
@@ -186,7 +191,7 @@ class TestDeleteChunk:
     async def test_delete_actually_removes(self, client, user_memory):
         h = await user_memory.save_chunk("user", "temp", "t", "snippets")
         await client.delete(f"/api/user-memory/chunk/{h}")
-        chunks = await user_memory.browse("user")
+        chunks = await user_memory.browse(_me(client))
         assert len(chunks) == 0
 
 
