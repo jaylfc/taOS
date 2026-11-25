@@ -217,6 +217,23 @@
     return err;
   }
 
+  function isArrayBuffer(value) {
+    // Realm-independent: a buffer from a same-origin iframe fails
+    // `instanceof ArrayBuffer` in this realm but carries the same
+    // internal slots, and Object.prototype.toString reads those.
+    return (
+      value instanceof ArrayBuffer ||
+      Object.prototype.toString.call(value) === "[object ArrayBuffer]"
+    );
+  }
+
+  function isDataView(value) {
+    return (
+      value instanceof DataView ||
+      Object.prototype.toString.call(value) === "[object DataView]"
+    );
+  }
+
   function cloneValue(value, seen) {
     if (value === null) return null;
     var type = typeof value;
@@ -241,8 +258,11 @@
       seen.set(value, copy);
       return copy;
     }
-    if (value instanceof ArrayBuffer) {
-      copy = value.slice(0);
+    if (isArrayBuffer(value)) {
+      // Copy into a buffer of this realm: the view constructors below
+      // require one, and a foreign buffer's slice() would stay foreign.
+      copy = new ArrayBuffer(value.byteLength);
+      new Uint8Array(copy).set(new Uint8Array(value));
       seen.set(value, copy);
       return copy;
     }
@@ -252,7 +272,7 @@
       // their byte offset and length. Constructing from the view itself
       // would copy the elements into a fresh buffer and lose both.
       var clonedBuffer = cloneValue(value.buffer, seen);
-      if (value instanceof DataView) {
+      if (isDataView(value)) {
         copy = new DataView(clonedBuffer, value.byteOffset, value.byteLength);
       } else {
         copy = new value.constructor(clonedBuffer, value.byteOffset, value.length);

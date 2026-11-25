@@ -93,8 +93,9 @@ interface FakeEl {
 
 function makeDomWindow() {
   const observers: { target: FakeEl; cb: () => void; active: boolean }[] = [];
-  const timers = new Map<number, { fn: () => void; ms: number }>();
+  const timers = new Map<number, { fn: () => void; fireAt: number }>();
   let nextTimer = 1;
+  let now = 0;
   const listeners: Record<string, (() => void)[]> = {};
 
   function notify(el: FakeEl) {
@@ -168,7 +169,7 @@ function makeDomWindow() {
     MutationObserver: FakeMutationObserver,
     setTimeout: (fn: () => void, ms: number) => {
       const id = nextTimer++;
-      timers.set(id, { fn, ms });
+      timers.set(id, { fn, fireAt: now + ms });
       return id;
     },
     clearTimeout: (id: number) => {
@@ -187,8 +188,27 @@ function makeDomWindow() {
     fireDOMContentLoaded() {
       for (const fn of (listeners.DOMContentLoaded || []).slice()) fn();
     },
+    advance(ms: number) {
+      const target = now + ms;
+      for (;;) {
+        let dueId: number | null = null;
+        let dueAt = Infinity;
+        for (const [id, t] of timers) {
+          if (t.fireAt <= target && t.fireAt < dueAt) {
+            dueId = id;
+            dueAt = t.fireAt;
+          }
+        }
+        if (dueId === null) break;
+        const t = timers.get(dueId);
+        timers.delete(dueId);
+        now = dueAt;
+        if (t) t.fn();
+      }
+      now = target;
+    },
     runTimers() {
-      const pending = [...timers.values()];
+      const pending = [...timers.values()].sort((a, b) => a.fireAt - b.fireAt);
       timers.clear();
       for (const t of pending) t.fn();
     },
@@ -390,7 +410,7 @@ describe("built compat.js webview shim (#2082)", () => {
     w.fireDOMContentLoaded();
     w.error("ResizeObserver loop completed with undelivered notifications");
     w.mount();
-    w.runTimers();
+    w.advance(5000);
     expect(w.overlay()).toBeNull();
   });
 
@@ -399,7 +419,7 @@ describe("built compat.js webview shim (#2082)", () => {
     vm.runInContext(compat, w.sandbox);
     w.fireDOMContentLoaded();
     w.error("TypeError: Object.hasOwn is not a function");
-    w.runTimers();
+    w.advance(2000);
     expect(w.overlay()).not.toBeNull();
     w.mount();
     expect(w.overlay()).toBeNull();
@@ -410,7 +430,47 @@ describe("built compat.js webview shim (#2082)", () => {
     vm.runInContext(compat, w.sandbox);
     w.fireDOMContentLoaded();
     w.error("TypeError: structuredClone is not a function");
-    w.runTimers();
+    w.advance(1999);
+    expect(w.overlay()).toBeNull();
+    w.advance(1);
     expect(w.overlay()).not.toBeNull();
+  });
+
+  it("clones buffers and views from a foreign realm over the cloned buffer", () => {
+    const sandbox = makeWindow();
+    vm.runInContext("structuredClone = undefined;", sandbox);
+    vm.runInContext(compat, sandbox);
+    const foreign: Record<string, unknown> = {};
+    vm.createContext(foreign);
+    (sandbox as Record<string, unknown>).__foreign = vm.runInContext(
+      `(function () {
+         var buf = new ArrayBuffer(4);
+         var all = new Uint8Array(buf);
+         all[1] = 7; all[2] = 8;
+         return { buf: buf, view: new Uint8Array(buf, 1, 2), dv: new DataView(buf, 1, 2) };
+       })()`,
+      foreign,
+    );
+    const results = vm.runInContext(
+      `(function () {
+         var copy = structuredClone(window.__foreign);
+         return {
+           bufIsLocalBuffer: copy.buf instanceof ArrayBuffer && copy.buf.byteLength === 4,
+           viewSharesClonedBuffer: copy.view.buffer === copy.buf,
+           viewBoundsAndData: copy.view.byteOffset === 1 && copy.view.length === 2 &&
+             copy.view[0] === 7 && copy.view[1] === 8,
+           dvSharesClonedBuffer: copy.dv.buffer === copy.buf,
+           dvBounds: copy.dv.byteOffset === 1 && copy.dv.byteLength === 2,
+         };
+       })()`,
+      sandbox,
+    ) as Record<string, boolean>;
+    expect(results).toEqual({
+      bufIsLocalBuffer: true,
+      viewSharesClonedBuffer: true,
+      viewBoundsAndData: true,
+      dvSharesClonedBuffer: true,
+      dvBounds: true,
+    });
   });
 });
