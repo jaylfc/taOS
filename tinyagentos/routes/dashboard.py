@@ -72,6 +72,11 @@ async def api_health(request: Request, detailed: bool = False):
         # Surfaced on the cheap probe too: an identity that could not be
         # minted must not hide behind a log line. Fixed words only.
         basic["controller_identity"] = {"status": "error", "reason": ci.get("reason", "")}
+    mse = getattr(request.app.state, "memory_store_error", None)
+    if mse:
+        # A memory-store check failure blocks the memory service; surface it
+        # on the cheap probe so the person sees it without ?detailed.
+        basic["memory_store"] = {"status": "error", "message": mse}
     if not detailed:
         return basic
 
@@ -109,6 +114,12 @@ async def api_health(request: Request, detailed: bool = False):
     subsystems["controller_identity"] = (
         {"status": ci.get("status", "unknown"), "reason": ci.get("reason", "")}
         if ci else {"status": "unavailable", "reason": ""}
+    )
+    mse = getattr(request.app.state, "memory_store_error", None)
+    subsystems["memory_store"] = (
+        {"status": "error", "message": mse}
+        if mse
+        else {"status": "ok", "message": ""}
     )
 
     return {**basic, "subsystems": subsystems}

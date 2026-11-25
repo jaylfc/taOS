@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import os
 import sys
@@ -17,76 +18,199 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
 
-def _check_and_convert_memory_store(data_dir: Path) -> tuple[bool, str | None]:
-    """Probe the taOSmd store format and run guarded conversion if needed.
+# Exit codes from the taosmd migrate command-line contract (not invented).
+# taosmd migrate --probe --json: 0 current, 10 old (legacy store served as
+# is; never converted on open), 11 unknown (live WAL / corrupt), 12 newer.
+# taosmd migrate --convert-vectors: 0 converted or already current, 1
+# unexpected, 2 refused (nothing touched), 3 unknown or newer, 4 failed and
+# restored. Opening a store never converts it; conversion runs only through
+# the explicit --convert-vectors path, which refuses while a server holds the
+# store.
+_PROBE_CURRENT = 0
+_PROBE_OLD = 10
+_PROBE_UNKNOWN = 11
+_PROBE_NEWER = 12
+_CONVERT_OK = 0
+_CONVERT_UNEXPECTED = 1
+_CONVERT_REFUSED = 2
+_CONVERT_UNKNOWN_OR_NEWER = 3
+_CONVERT_FAILED_RESTORED = 4
 
-    Returns (ok, error_message). On success, ok=True and error_message=None.
-    On failure (newer format, conversion failed, conversion missing), ok=False
-    and error_message contains a plain user-facing explanation.
+_TAOSMD_MIGRATE_TIMEOUT = 30.0
+
+
+async def _run_taosmd_migrate(argv: list[str]) -> dict:
+    """Run ``taosmd <argv>`` and return a plain-result dict.
+
+    Never raises: a missing or unrunnable taosmd, a timeout, or an unparseable
+    payload is reported as an unavailable result so the caller can refuse
+    loudly instead of silently falling back.
     """
+    cmd = ["taosmd", *argv]
     try:
-        from taosmd.store_probe import probe_store, ProbeState
-    except Exception as exc:  # pragma: no cover - missing taosmd or probe module
-        return False, (
-            "Memory store format check unavailable: the taosmd probe module "
-            f"could not be loaded ({type(exc).__name__}: {exc}). Memories are untouched."
+        proc = await asyncio.create_subprocess_exec(
+            *cmd,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
         )
-
-    report = probe_store(data_dir)
-    if report.state == ProbeState.CURRENT:
-        return True, None
-    if report.state == ProbeState.NEWER:
-        return False, (
-            "The memory store on disk was written by a newer version of the "
-            "memory service. This version cannot read it. The store is "
-            "unchanged and your memories are safe. Please update taOS to a "
-            "version that supports this store format."
-        )
-    if report.state == ProbeState.UNKNOWN:
-        return False, (
-            "The memory store format could not be determined (unreadable or "
-            "live writer detected). The store is unchanged and your memories "
-            "are safe. Ensure the memory service is stopped and retry."
-        )
-
-    # OLD format: attempt guarded conversion
+    except (FileNotFoundError, OSError) as exc:  # pragma: no cover - taosmd missing
+        return {
+            "exit_code": -1,
+            "state": "unavailable",
+            "error": (
+                "The taosmd command could not be run "
+                f"({type(exc).__name__}: {exc}). The store is untouched and "
+                "your memories are safe. Please install taOSmd."
+            ),
+            "stdout": "",
+            "stderr": "",
+        }
     try:
-        from taosmd.store_convert import convert_dense_store, EXIT_OK, EXIT_RESTORED, EXIT_REFUSED, EXIT_UNKNOWN_FORMAT, EXIT_ERROR
-    except Exception as exc:  # pragma: no cover - missing taosmd or convert module
-        return False, (
-            "The memory store needs conversion but the conversion tool is "
-            f"unavailable ({type(exc).__name__}: {exc}). The store is unchanged "
-            "and your memories are safe. Please update taOS to a version that "
-            "includes the conversion tool."
+        stdout, stderr = await asyncio.wait_for(
+            proc.communicate(), timeout=_TAOSMD_MIGRATE_TIMEOUT
         )
+    except asyncio.TimeoutError:
+        try:
+            proc.kill()
+        except (ProcessLookupError, Exception):  # noqa: BLE001
+            pass
+        try:
+            await asyncio.wait_for(proc.wait(), timeout=2.0)
+        except (asyncio.TimeoutError, Exception):  # noqa: BLE001
+            pass
+        return {
+            "exit_code": -1,
+            "state": "unavailable",
+            "error": (
+                f"The taosmd command timed out after {_TAOSMD_MIGRATE_TIMEOUT}s. "
+                "The store is untouched and your memories are safe. Retry."
+            ),
+            "stdout": "",
+            "stderr": "",
+        }
+    return {
+        "exit_code": proc.returncode or 0,
+        "state": None,
+        "error": None,
+        "stdout": (stdout or b"").decode(errors="replace"),
+        "stderr": (stderr or b"").decode(errors="replace"),
+    }
 
-    vector_db = data_dir / "vector-memory.db"
-    if not vector_db.exists():
-        # No vector store to convert; treat as current
-        return True, None
 
-    backup_dir = data_dir / "backups"
-    result = convert_dense_store(vector_db, backup_dir=backup_dir)
+async def _taosmd_probe(data_dir: Path) -> dict:
+    """Read-only probe of the memory store format via ``taosmd migrate``.
 
-    if result.exit_code == EXIT_OK:
-        if result.status == "converted":
-            logger.info("Memory store converted: %s", result.message)
-        return True, None
-    if result.exit_code == EXIT_RESTORED:
-        return False, (
-            "Memory store conversion failed and the original store was restored. "
-            "Your memories are untouched. The backup is kept at "
-            f"{result.backup_path}. Please check disk space and retry."
-        )
-    if result.exit_code in (EXIT_REFUSED, EXIT_UNKNOWN_FORMAT, EXIT_ERROR):
-        return False, (
-            "Memory store conversion was refused or failed: "
-            f"{result.message}. Your memories are untouched."
-        )
-    return False, (
-        f"Memory store conversion returned unexpected result: {result.message}. "
-        "Your memories are untouched."
+    Opening a store never converts it; this only reports. Returns a dict with
+    ``exit_code``, ``state`` (current/old/unknown/newer/unavailable),
+    ``error`` (plain user-facing refusal message, or None), ``report`` (parsed
+    JSON report when available), ``stdout`` and ``stderr``.
+    """
+    result = await _run_taosmd_migrate(
+        ["--data-dir", str(data_dir), "migrate", "--probe", "--json"]
     )
+    if result["exit_code"] == -1:
+        return result
+    code = result["exit_code"]
+    try:
+        result["report"] = json.loads(result["stdout"])
+    except ValueError:
+        result["report"] = None
+    if code == _PROBE_CURRENT:
+        result["state"] = "current"
+    elif code == _PROBE_OLD:
+        result["state"] = "old"
+    elif code == _PROBE_UNKNOWN:
+        result["state"] = "unknown"
+        result["error"] = (
+            "The memory store format could not be determined (unreadable "
+            "store, a live writer, or an uncheckpointed WAL). The store is "
+            "unchanged and your memories are safe. Stop the memory service "
+            "and retry."
+        )
+    elif code == _PROBE_NEWER:
+        result["state"] = "newer"
+        result["error"] = (
+            "The memory store on disk was written by a newer version of the "
+            "memory service. The older memory service will not be started on "
+            "this store. The store is unchanged and your memories are safe. "
+            "Please update taOS to a version that supports this store format."
+        )
+    else:
+        result["state"] = "unavailable"
+        result["error"] = (
+            f"The taosmd store probe returned an unexpected exit code {code}. "
+            "The store is untouched and your memories are safe. Check the "
+            "logs and retry."
+        )
+    return result
+
+
+async def _taosmd_convert_vectors(data_dir: Path) -> dict:
+    """Run the guarded vector conversion via ``taosmd migrate --convert-vectors``.
+
+    Nothing is converted unless this command is explicitly invoked. It refuses
+    while a server holds the store (exit 2) and never converts on open.
+    """
+    result = await _run_taosmd_migrate(
+        ["--data-dir", str(data_dir), "migrate", "--convert-vectors"]
+    )
+    if result["exit_code"] == -1:
+        return result
+    code = result["exit_code"]
+    try:
+        result["report"] = json.loads(result["stdout"])
+    except ValueError:
+        result["report"] = None
+    if code == _CONVERT_OK:
+        result["state"] = "converted_or_current"
+    elif code == _CONVERT_REFUSED:
+        result["state"] = "refused"
+        result["error"] = (
+            "The memory store conversion was refused (nothing touched). A "
+            "running server may hold the store, or the store format is not "
+            "recognized. The store is unchanged and your memories are safe."
+        )
+    elif code == _CONVERT_UNKNOWN_OR_NEWER:
+        result["state"] = "unknown_or_newer"
+        result["error"] = (
+            "The memory store conversion was refused: the store format is "
+            "unknown or newer than this build. The store is untouched and "
+            "your memories are safe."
+        )
+    elif code == _CONVERT_FAILED_RESTORED:
+        result["state"] = "failed_restored"
+        result["error"] = (
+            "The memory store conversion failed and the original store was "
+            "restored. Your memories are untouched. A backup is kept; check "
+            "disk space and retry."
+        )
+    elif code == _CONVERT_UNEXPECTED:
+        result["state"] = "unexpected"
+        result["error"] = (
+            "The memory store conversion failed unexpectedly. The store is "
+            "untouched and your memories are safe."
+        )
+    else:
+        result["state"] = "unavailable"
+        result["error"] = (
+            f"The taosmd store conversion returned an unexpected exit code "
+            f"{code}. The store is untouched and your memories are safe."
+        )
+    return result
+
+
+async def _probe_memory_store(data_dir: Path) -> tuple[bool, str | None]:
+    """Probe the memory store at startup.
+
+    Returns (ok, error_message). Exit 0 (current) and exit 10 (old/legacy,
+    served as is and never converted on open) are OK. Exit 11 (unknown) and
+    exit 12 (newer) refuse with a plain user-facing message; a missing or
+    unrunnable taosmd also refuses with a clear message.
+    """
+    result = await _taosmd_probe(data_dir)
+    if result["error"] is not None:
+        return False, result["error"]
+    return True, None
 
 
 class _CacheAwareStaticFiles(StaticFiles):
@@ -686,13 +810,14 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
-        # Probe the memory store format and run guarded conversion if needed.
-        # This must run before any store initialization to avoid opening an
-        # old-format store with a newer service.
-        ok, err = _check_and_convert_memory_store(data_dir)
+        # Probe the memory store format at startup. This must run before any
+        # store initialization to avoid opening an old-format store with a
+        # newer service. Exit 10 (old/legacy) is served as is and is never
+        # converted on open; conversion is an explicit choice only.
+        ok, err = await _probe_memory_store(data_dir)
         if not ok:
-            # Log the error and set a flag on app.state so routes can surface it.
-            # We do NOT raise here: a failed conversion must not brick the
+            # Log the error and set a flag on app.state so routes can surface
+            # it. We do NOT raise here: a failed conversion must not brick the
             # controller. The memory service (taosmd) runs separately and will
             # fail to start on its own if the store is incompatible. The user
             # sees the message in /api/health and the update flow.

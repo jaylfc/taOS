@@ -21,6 +21,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request, UploadFile
 from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel
 
+from tinyagentos.app import _taosmd_convert_vectors, _taosmd_probe
 from tinyagentos.auto_update import PREF_NAMESPACE, is_valid_branch_name, resolve_tracked_branch
 from tinyagentos.config import AppConfig, save_config_locked, validate_config
 from tinyagentos.data_snapshot import snapshot_data_dir
@@ -1162,88 +1163,15 @@ async def _update_local_taosmd(request: Request) -> dict:
     if not restart_argv:
         return {"error": "taosmd_restart_cmd parses to an empty command"}
 
-    # Probe the memory store format before updating taOSmd. If the store is
-    # older than the new service, run the guarded conversion. If the store is
-    # newer or unknown, refuse the update and keep the old service running.
-    data_dir = getattr(request.app.state, "config_path", None)
-    if data_dir is not None:
-        data_dir = Path(data_dir).parent
-    else:
-        data_dir = Path("data")
-    try:
-        from taosmd.store_probe import probe_store, ProbeState
-    except Exception as exc:
-        return {
-            "error": (
-                "Memory store format check unavailable: the taosmd probe module "
-                f"could not be loaded ({type(exc).__name__}: {exc}). The store is "
-                "unchanged and your memories are safe. Please update taOS to a "
-                "version that includes the probe module."
-            )
-        }
-
-    report = probe_store(data_dir)
-    if report.state == ProbeState.NEWER:
-        return {
-            "error": (
-                "The memory store on disk was written by a newer version of the "
-                "memory service. This version cannot read it. The store is "
-                "unchanged and your memories are safe. Please update taOS to a "
-                "version that supports this store format."
-            )
-        }
-    if report.state == ProbeState.UNKNOWN:
-        return {
-            "error": (
-                "The memory store format could not be determined (unreadable or "
-                "live writer detected). The store is unchanged and your memories "
-                "are safe. Ensure the memory service is stopped and retry."
-            )
-        }
-
-    if report.state == ProbeState.OLD:
-        # Attempt guarded conversion before pulling the new service
-        try:
-            from taosmd.store_convert import convert_dense_store, EXIT_OK, EXIT_RESTORED, EXIT_REFUSED, EXIT_UNKNOWN_FORMAT, EXIT_ERROR
-        except Exception as exc:
-            return {
-                "error": (
-                    "The memory store needs conversion but the conversion tool is "
-                    f"unavailable ({type(exc).__name__}: {exc}). The store is unchanged "
-                    "and your memories are safe. Please update taOS to a version that "
-                    "includes the conversion tool."
-                )
-            }
-
-        vector_db = data_dir / "vector-memory.db"
-        if vector_db.exists():
-            backup_dir = data_dir / "backups"
-            try:
-                result = convert_dense_store(vector_db, backup_dir=backup_dir)
-            except Exception as exc:
-                return {
-                    "error": (
-                        "Memory store conversion raised an unexpected error: "
-                        f"{type(exc).__name__}: {exc}. The store is unchanged and your "
-                        "memories are safe. Please check the logs and retry."
-                    )
-                }
-
-            if result.exit_code != EXIT_OK:
-                if result.exit_code == EXIT_RESTORED:
-                    return {
-                        "error": (
-                            "Memory store conversion failed and the original store was restored. "
-                            "Your memories are untouched. The backup is kept at "
-                            f"{result.backup_path}. Please check disk space and retry."
-                        )
-                    }
-                return {
-                    "error": (
-                        "Memory store conversion was refused or failed: "
-                        f"{result.message}. Your memories are untouched."
-                    )
-                }
+    # Probe the memory store format before updating taOSmd. Uses the same
+    # resolved data directory as startup (never a relative "data" fallback).
+    # Exit 12 (newer) and exit 11 (unknown) refuse the update; exit 10 (old
+    # legacy store, served as is) and exit 0 (current) proceed. Conversion is
+    # never automatic -- it is an explicit choice only.
+    data_dir = request.app.state.data_dir
+    probe = await _taosmd_probe(data_dir)
+    if probe["error"] is not None:
+        return {"error": probe["error"]}
 
     rc, out = await _run_capture(["git", "pull", "--ff-only"], cwd=taosmd_dir)
     if rc != 0:
@@ -1260,6 +1188,44 @@ async def _update_local_taosmd(request: Request) -> dict:
         "output": out.strip()[-1500:],
         "announced": announced,
         "restarted": True,
+    }
+
+
+class ConvertVectorsBody(BaseModel):
+    confirm: bool = False
+
+
+@router.post("/api/settings/memory-store/convert")
+async def convert_memory_store_vectors(request: Request, body: ConvertVectorsBody):
+    """Run the guarded vector conversion only when explicitly confirmed.
+
+    Conversion is one-way: releases that only read JSON vectors cannot read
+    the store afterwards (the backup is kept). It is never automatic, it
+    refuses while a server holds the store (exit 2), and opening a store
+    never converts it.
+    """
+    if not body.confirm:
+        return JSONResponse(
+            {
+                "error": (
+                    "Memory store conversion is not automatic. Set \"confirm\": "
+                    "true to run it. Warning: older versions of the memory "
+                    "service cannot read a converted store; the backup is kept "
+                    "so you can roll back."
+                )
+            },
+            status_code=400,
+        )
+    data_dir = request.app.state.data_dir
+    result = await _taosmd_convert_vectors(data_dir)
+    if result["error"] is not None:
+        return JSONResponse(
+            {"error": result["error"], "taosmd": result}, status_code=500
+        )
+    return {
+        "status": result["state"],
+        "taosmd": result,
+        "message": "Memory store conversion complete.",
     }
 
 
@@ -1643,6 +1609,15 @@ async def apply_update(request: Request):
     # fails the update loudly — a silent half-update is worse than no update.
     taosmd_report = await _update_local_taosmd(request)
     if "error" in taosmd_report:
+        try:
+            await request.app.state.notifications.add(
+                title="Memory store check refused the taOSmd update",
+                message=taosmd_report["error"],
+                level="warning",
+                source="system.update",
+            )
+        except Exception:  # noqa: BLE001 - a notification must not block the update result
+            logger.exception("failed to record memory-store update refusal notification")
         return JSONResponse(
             {
                 "error": f"taOSmd update FAILED — update aborted: {taosmd_report['error']}",
