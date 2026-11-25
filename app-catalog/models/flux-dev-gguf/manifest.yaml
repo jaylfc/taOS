@@ -6,6 +6,10 @@ description: Flux.1 Dev in GGUF — higher quality than Schnell, requires more s
   Non-commercial license.
 homepage: https://huggingface.co/city96/FLUX.1-dev-gguf
 license: flux-1-dev-non-commercial-license
+weights_license: "flux-1-dev-non-commercial-license"
+license_class: non-commercial
+license_version: "1.0"
+license_url: "https://huggingface.co/black-forest-labs/FLUX.1-dev/blob/main/LICENSE"
 capabilities:
 - image-generation
 variants:

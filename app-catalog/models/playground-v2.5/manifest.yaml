@@ -6,6 +6,10 @@ description: Playground's photorealistic SDXL-compatible model — strong aesthe
   quality
 homepage: https://huggingface.co/playgroundai/playground-v2.5-1024px-aesthetic
 license: Playground v2.5 Community License
+weights_license: "Playground v2.5 Community License"
+license_class: gated
+license_version: "e4b23ef8cec3"
+license_url: "https://huggingface.co/playgroundai/playground-v2.5-1024px-aesthetic/blob/main/LICENSE"
 capabilities:
 - image-generation
 variants:

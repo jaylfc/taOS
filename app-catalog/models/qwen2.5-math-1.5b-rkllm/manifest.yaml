@@ -6,6 +6,10 @@ description: RK3588 NPU-accelerated Qwen 2.5 Math 1.5B — fast math/reasoning m
   for Orange Pi NPU
 homepage: https://huggingface.co/c01zaut/Qwen2.5-Math-1.5B-Instruct-RK3588-1.1.4
 license: Qwen Research License
+weights_license: "Qwen Research License"
+license_class: research-only
+license_version: "1.0"
+license_url: "https://github.com/QwenLM/Qwen/blob/main/LICENSE"
 capabilities:
 - chat
 - math

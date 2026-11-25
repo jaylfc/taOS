@@ -5,6 +5,10 @@ version: 3.5.0
 description: Stability AI's SD3.5 Large Turbo — 4-step high quality generation
 homepage: https://huggingface.co/city96/stable-diffusion-3.5-large-turbo-gguf
 license: Stability AI Community License
+weights_license: "Stability AI Community License"
+license_class: revenue-capped
+license_version: "1.0"
+license_url: "https://huggingface.co/stabilityai/stable-diffusion-3.5-large/blob/main/LICENSE"
 capabilities:
 - image-generation
 variants:

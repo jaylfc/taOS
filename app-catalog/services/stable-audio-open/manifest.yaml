@@ -6,7 +6,10 @@ version: 1.0.0
 description: "Stability AI's open audio diffusion — generates up to 47s of music or sound effects from a prompt. Open weights under a community license."
 homepage: https://github.com/Stability-AI/stable-audio-tools
 license: "Stability AI Community License"
-
+weights_license: "Stability AI Community License"
+license_class: revenue-capped
+license_version: "1.0"
+license_url: "https://huggingface.co/stabilityai/stable-audio-open-1.0/blob/main/LICENSE"
 requires:
   ram_mb: 8192
   disk_mb: 8000

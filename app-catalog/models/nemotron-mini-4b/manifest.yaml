@@ -5,6 +5,10 @@ version: 1.0.0
 description: NVIDIA's 4B fine-tune of Minitron — strong roleplay and function calling
 homepage: https://huggingface.co/nvidia/Nemotron-Mini-4B-Instruct
 license: NVIDIA Open Model License
+weights_license: "NVIDIA Open Model License"
+license_class: revenue-capped
+license_version: "1.0"
+license_url: "https://github.com/NVIDIA/Megatron-LM/blob/main/LICENSE"
 capabilities:
 - chat
 - tool-calling

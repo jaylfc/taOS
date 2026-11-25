@@ -5,6 +5,10 @@ version: 1.0.0
 description: Real-time image generation — single-step SDXL distillation, fast on GPU
 homepage: https://huggingface.co/stabilityai/sdxl-turbo
 license: sai-nc-community (non-commercial)
+weights_license: "sai-nc-community (non-commercial)"
+license_class: non-commercial
+license_version: "1.0"
+license_url: "https://huggingface.co/stabilityai/sdxl-turbo/blob/main/LICENSE"
 capabilities:
 - image-generation
 variants:

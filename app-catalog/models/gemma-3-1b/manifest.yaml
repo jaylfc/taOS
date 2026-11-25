@@ -5,6 +5,10 @@ version: 3.0.0
 description: Google's smallest Gemma 3 — 1B params, fast on any hardware
 homepage: https://huggingface.co/google/gemma-3-1b-it
 license: Gemma Terms of Use
+weights_license: "Gemma Terms of Use"
+license_class: research-only
+license_version: "1.0"
+license_url: "https://ai.google.dev/gemma/terms"
 capabilities:
 - chat
 - multilingual

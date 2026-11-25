@@ -6,6 +6,10 @@ description: Stability AI's efficient 3-stage cascade — strong quality at redu
   compute
 homepage: https://huggingface.co/stabilityai/stable-cascade
 license: stable-cascade-nc-community (non-commercial)
+weights_license: "stable-cascade-nc-community (non-commercial)"
+license_class: non-commercial
+license_version: "1039bfd6d68c"
+license_url: "https://huggingface.co/stabilityai/stable-cascade/blob/main/LICENSE"
 capabilities:
 - image-generation
 variants:

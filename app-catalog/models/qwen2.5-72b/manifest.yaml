@@ -5,6 +5,10 @@ version: 2.5.0
 description: Flagship 72B — competes with GPT-4 class models on reasoning and code
 homepage: https://huggingface.co/Qwen/Qwen2.5-72B-Instruct
 license: Qwen License (commercial requires agreement)
+weights_license: "Qwen License (commercial requires agreement)"
+license_class: gated
+license_version: "6b4a92b0efdb"
+license_url: "https://github.com/QwenLM/Qwen/blob/main/LICENSE"
 capabilities:
 - chat
 - tool-calling

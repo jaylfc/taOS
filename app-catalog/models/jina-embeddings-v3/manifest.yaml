@@ -6,6 +6,10 @@ description: Multilingual embedding model — 89 languages, 8192 token context, 
   LoRA adapters. 570M params, 1024 dim.
 homepage: https://huggingface.co/jinaai/jina-embeddings-v3
 license: CC-BY-NC-4.0
+weights_license: "CC-BY-NC-4.0"
+license_class: non-commercial
+license_version: "4.0"
+license_url: "https://creativecommons.org/licenses/by-nc/4.0/legalcode"
 capabilities:
 - embedding
 - multilingual

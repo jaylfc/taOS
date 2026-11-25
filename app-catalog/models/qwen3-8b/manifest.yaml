@@ -4,6 +4,11 @@ type: model
 version: 3.0.0
 description: General-purpose chat model with strong tool calling and reasoning
 homepage: https://huggingface.co/Qwen/Qwen3-8B
+license: Qwen License
+weights_license: "Qwen License"
+license_class: research-only
+license_version: "1.0"
+license_url: "https://github.com/QwenLM/Qwen/blob/main/LICENSE"
 capabilities:
 - chat
 - tool-calling

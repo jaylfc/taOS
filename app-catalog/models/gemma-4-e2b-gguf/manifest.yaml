@@ -6,6 +6,10 @@ description: Google Gemma 4 E2B (~5B raw / 2.3B effective via PLE), Q4_K_M GGUF 
   runs on Pi NPU via rk-llama.cpp
 homepage: https://huggingface.co/unsloth/gemma-4-E2B-it-GGUF
 license: Gemma Terms of Use
+weights_license: "Gemma Terms of Use"
+license_class: research-only
+license_version: "1.0"
+license_url: "https://ai.google.dev/gemma/terms"
 capabilities:
 - chat
 - tool-calling

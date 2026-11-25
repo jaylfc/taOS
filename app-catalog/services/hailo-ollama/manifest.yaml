@@ -2,6 +2,10 @@ id: hailo-ollama
 # The hailo-ollama runtime is Hailo proprietary software; the install flow
 # presents Hailo's EULA for acceptance before download (see the design doc).
 license: Proprietary (Hailo EULA, accepted at install)
+weights_license: "Proprietary (Hailo EULA, accepted at install)"
+license_class: proprietary
+license_version: "9d408d73c1a2"
+license_url: "https://hailo.ai/"
 name: hailo-ollama (Hailo-10H NPU LLM)
 type: service
 version: 0.1.0

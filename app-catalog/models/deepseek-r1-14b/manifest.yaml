@@ -5,6 +5,11 @@ version: 1.0.0
 description: DeepSeek's reasoning model distilled to 14B — strong at math, code, and
   logical reasoning
 homepage: https://huggingface.co/deepseek-ai/DeepSeek-R1-Distill-Qwen-14B
+license: "No license declared"
+weights_license: "No license declared"
+license_class: unlicensed
+license_version: "af069e3e40ad"
+license_url: ""
 capabilities:
 - chat
 - reasoning

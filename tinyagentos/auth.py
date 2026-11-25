@@ -616,6 +616,7 @@ class AuthManager:
             "username": record.get("username", ""),
             "full_name": record.get("full_name", ""),
             "email": record.get("email", ""),
+            "country": record.get("country", ""),
             "is_admin": bool(record.get("is_admin", False)),
             "pending": "pending_invite" in record,
             "last_login_at": record.get("last_login_at"),
@@ -1151,7 +1152,7 @@ class AuthManager:
         return False
 
     @_serialized
-    def update_profile(self, username: str, full_name: str | None, email: str | None) -> dict:
+    def update_profile(self, username: str, full_name: str | None, email: str | None, country: str | None) -> dict:
         """Update own profile fields."""
         data = self._read_users()
         users = data.get("users", [])
@@ -1161,6 +1162,8 @@ class AuthManager:
                     u["full_name"] = full_name
                 if email is not None:
                     u["email"] = email
+                if country is not None:
+                    u["country"] = country.upper()
                 users[i] = u
                 data["users"] = users
                 self._write_users(data)
