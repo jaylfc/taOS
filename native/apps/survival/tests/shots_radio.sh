@@ -7,6 +7,7 @@
 #   shots_radio.sh <build dir> <out dir> [theme variant ...]      (default: graphite dark; add pairs like "graphite light")
 # The build dir needs: survival/taos-survival, survival/tests/fake-survival-engines, survival/tests/make-survival-fixture-packs.
 # Set LD_LIBRARY_PATH yourself when libzim is not in a system path.  JOBS=3 renders three pictures at a time.
+# ONLY=<regex> renders only the pictures whose file name matches, e.g. ONLY='switch-done'.
 set -euo pipefail
 B=$(readlink -f "$1"); OUT=$2; shift 2
 mkdir -p "$OUT"; OUT=$(readlink -f "$OUT")
@@ -56,6 +57,7 @@ while [ $i -lt ${#THEMES[@]} ]; do
   done
 done
 for line in "${jobs_list[@]}"; do
+  [ -z "${ONLY:-}" ] || [[ $line =~ $ONLY ]] || continue
   while [ "$(jobs -rp | wc -l)" -ge "${JOBS:-2}" ]; do sleep 1; done
   eval "one $line" &
 done
