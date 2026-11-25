@@ -305,6 +305,7 @@ async def send_web_push(
     store: NotificationPushStore,
     vapid: tuple[str, str] | None,
     delivery_check=None,
+    persistent_check=None,
 ) -> dict:
     """Best-effort fan-out of one notification row to every subscription.
 
@@ -321,6 +322,13 @@ async def send_web_push(
     delivery against the recipient's prefs. A failing check fails open
     (the recipient is kept): push is best-effort and a prefs hiccup must
     not silently swallow system notices.
+
+    ``persistent_check`` is an optional async callable ``(user_id) -> bool``
+    consulted once per recipient for BROADCAST rows only: a recipient it
+    approves gets a payload built with ``persistent: true`` (their delivery
+    style for the source is "alert"), so the payload is built per recipient
+    instead of once for the whole fan-out. The shared row is never mutated.
+    A failing check fails closed to a plain payload (the push still sends).
 
     Returns {"sent", "failed", "removed"} counts (also useful for tests). Never
     raises: a missing VAPID key or no subscriptions is a no-op, and every
@@ -365,9 +373,32 @@ async def send_web_push(
         if not subs:
             return {"sent": 0, "failed": 0, "removed": 0}
 
-    data_str = json.dumps(_build_payload(row))
+    if persistent_check is not None and not user_id:
+        persistent_by_user: dict[str, bool] = {}
+
+        async def _data_for(sub: dict) -> str:
+            uid = sub.get("user_id") or ""
+            if uid not in persistent_by_user:
+                if not uid:
+                    persistent_by_user[uid] = False
+                else:
+                    try:
+                        persistent_by_user[uid] = bool(await persistent_check(uid))
+                    except Exception:  # noqa: BLE001 - plain payload, see docstring
+                        persistent_by_user[uid] = False
+            payload = _build_payload(row)
+            if persistent_by_user[uid]:
+                payload["persistent"] = True
+            return json.dumps(payload)
+
+        data_strs = [await _data_for(sub) for sub in subs]
+    else:
+        data_strs = [json.dumps(_build_payload(row))] * len(subs)
     results = await asyncio.gather(
-        *[_send_one(sub, data_str, signing_key, store) for sub in subs],
+        *[
+            _send_one(sub, data_str, signing_key, store)
+            for sub, data_str in zip(subs, data_strs)
+        ],
         return_exceptions=True,
     )
     sent = failed = removed = 0

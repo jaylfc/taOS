@@ -238,6 +238,31 @@ class NotificationStore(BaseStore):
                 "ALTER TABLE notification_prefs_new RENAME TO notification_prefs"
             )
             await self._db.commit()
+        # The schema-column guard (scripts/check_schema_column_migrations.py)
+        # requires every column the CREATE TABLE gained to also appear as a
+        # guarded ALTER in this file. The rebuild above is the real migration
+        # for legacy tables -- SQLite cannot change a primary key in place --
+        # and it runs FIRST, so these ALTERs can never suppress it: by this
+        # point every real path (rebuilt table, fresh CREATE, or a table that
+        # already had the composite key) has all three columns, and the
+        # PRAGMA-guarded ALTERs are no-ops there. They still earn their keep
+        # on a table that has the composite key but somehow lost a column.
+        pref_cols = {row[1] for row in await (await self._db.execute("PRAGMA table_info(notification_prefs)")).fetchall()}
+        if pref_cols and "user_id" not in pref_cols:
+            await self._db.execute(
+                "ALTER TABLE notification_prefs ADD COLUMN user_id TEXT NOT NULL DEFAULT ''"
+            )
+            await self._db.commit()
+        if pref_cols and "style" not in pref_cols:
+            await self._db.execute(
+                "ALTER TABLE notification_prefs ADD COLUMN style TEXT NOT NULL DEFAULT 'banner'"
+            )
+            await self._db.commit()
+        if pref_cols and "show_centre" not in pref_cols:
+            await self._db.execute(
+                "ALTER TABLE notification_prefs ADD COLUMN show_centre INTEGER NOT NULL DEFAULT 1"
+            )
+            await self._db.commit()
         # Same move for notification_dnd if an early single-row shape is
         # present (it held no per-person data worth preserving).
         dnd_cols = {row[1] for row in await (await self._db.execute("PRAGMA table_info(notification_dnd)")).fetchall()}
@@ -359,6 +384,7 @@ class NotificationStore(BaseStore):
             "source": source,
             "data": data,
             "user_id": user_id,
+            "show_centre": pref["show_centre"],
         }
         if pref["style"] == "alert":
             row["persistent"] = True
@@ -478,7 +504,7 @@ class NotificationStore(BaseStore):
                     _row = {
                         "id": target[0], "timestamp": ts, "level": level, "title": title,
                         "message": message, "read": False, "source": source, "data": data,
-                        "user_id": user_id,
+                        "user_id": user_id, "show_centre": _pref["show_centre"],
                     }
                     if _pref["style"] == "alert":
                         _row["persistent"] = True
@@ -521,7 +547,7 @@ class NotificationStore(BaseStore):
             hidden_pred = ""
             if hidden:
                 hidden_pred = (
-                    f" AND (n.user_id IS NOT NULL OR n.source NOT IN ({hidden_placeholders}))"
+                    f" AND (n.user_id IS NOT NULL OR n.source IS NULL OR n.source NOT IN ({hidden_placeholders}))"
                 )
             # First, fetch pinned grant requests (non-archived, ignoring read/unread_only)
             pinned_placeholders = ",".join("?" * len(PINNED_SOURCES))
@@ -552,7 +578,7 @@ class NotificationStore(BaseStore):
             params_list = [user_id, user_id] + list(PINNED_SOURCES)
             if hidden:
                 conds.append(
-                    f"(n.user_id IS NOT NULL OR n.source NOT IN ({hidden_placeholders}))"
+                    f"(n.user_id IS NOT NULL OR n.source IS NULL OR n.source NOT IN ({hidden_placeholders}))"
                 )
                 params_list += sorted(hidden)
             if unread_only:
@@ -640,7 +666,7 @@ class NotificationStore(BaseStore):
             if hidden:
                 hidden_placeholders = ",".join("?" * len(hidden))
                 hidden_pred = (
-                    f" AND (n.user_id IS NOT NULL OR n.source NOT IN ({hidden_placeholders}))"
+                    f" AND (n.user_id IS NOT NULL OR n.source IS NULL OR n.source NOT IN ({hidden_placeholders}))"
                 )
                 hidden_params = tuple(sorted(hidden))
             sql = (
@@ -878,6 +904,16 @@ class NotificationStore(BaseStore):
         if pref["muted"] or pref["style"] == "none":
             return False
         return not await self.dnd_active(user_id)
+
+    async def live_delivery_style(self, user_id: str, source: str) -> str:
+        """``user_id``'s delivery style for ``source`` ("banner" default).
+
+        The fan-out points consult this alongside live_delivery_allowed()
+        to mark a broadcast frame persistent for recipients whose style
+        is "alert": broadcast rows are inserted with the default pref,
+        so add() cannot set the flag for them (#206).
+        """
+        return (await self._get_event_pref(user_id, source))["style"]
 
     async def _hidden_sources(self, user_id: str) -> set[str]:
         """Sources this user muted or hid from their Notification Centre."""

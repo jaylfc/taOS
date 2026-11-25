@@ -24,9 +24,14 @@ export interface ServerNotificationRow {
   archived?: boolean;
   /** Present on live-published rows for alert-style sources (#206). */
   persistent?: boolean;
-  /** Present on live-published rows that were never stored (#206):
-   *  toast-only (Centre visibility off for the source). */
+  /** Present on live-published rows from older servers that were never
+   *  stored (#206): toast-only. */
   transient?: boolean;
+  /** Present on live-published rows (#206): the row's Centre visibility
+   *  for its owner. `false` means the row IS stored, marked show_centre
+   *  = 0 server-side and filtered from the Centre listing; mapRow marks
+   *  the live copy transient so it stays toast-only on this client too. */
+  show_centre?: boolean;
 }
 
 const VALID_LEVELS: ReadonlySet<Notification["level"]> = new Set([
@@ -146,7 +151,7 @@ export function mapRow(row: ServerNotificationRow): Notification {
     ...(meta ? { meta } : {}),
     ...(row.data ? { data: row.data } : {}),
     ...(row.persistent ? { persistent: true } : {}),
-    ...(row.transient ? { transient: true } : {}),
+    ...(row.transient || row.show_centre === false ? { transient: true } : {}),
   };
 }
 

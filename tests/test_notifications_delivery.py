@@ -138,6 +138,22 @@ class TestShowCentre:
         assert published[0]["id"] == result
         assert not published[0].get("transient")
 
+    async def test_centre_off_published_row_carries_show_centre_false(self, store, published):
+        # The live payload must carry the row's centre visibility: until
+        # the next feed poll (and after it -- the feed never returns
+        # marked rows) the desktop can only keep a centre-off row out of
+        # its Centre list and unread badge if the payload says so. The
+        # toast still publishes (CodeRabbit, PR #4507).
+        await store.set_event_pref(U1, "app.installed", show_centre=False)
+        await store.add("App installed", "ready", source="app.installed", user_id=U1)
+        assert len(published) == 1
+        assert published[0]["show_centre"] is False
+
+    async def test_centre_on_published_row_carries_show_centre_true(self, store, published):
+        await store.add("Hello", "world", source="app.installed", user_id=U1)
+        assert len(published) == 1
+        assert published[0]["show_centre"] is True
+
     async def test_centre_off_os_notification_still_stores(self, store):
         # OS-originated rows always stored (their idempotency record commits
         # with the row); a centre-off pref marks the row hidden, it does not
@@ -408,6 +424,15 @@ class TestBroadcastLiveDelivery:
         await store.set_dnd(U1, enabled=True, start="08:00", end="08:00")
         assert await store.live_delivery_allowed(U1, "worker.join") is False
 
+    async def test_live_delivery_style_reflects_the_recipient_pref(self, store):
+        # The fan-out points (SSE stream, web-push) consult the
+        # recipient's style to mark alert recipients' broadcast frames
+        # persistent (CodeRabbit, PR #4507).
+        assert await store.live_delivery_style(U1, "worker.join") == "banner"
+        await store.set_event_pref(U1, "worker.join", style="alert")
+        assert await store.live_delivery_style(U1, "worker.join") == "alert"
+        assert await store.live_delivery_style(U2, "worker.join") == "banner"
+
     async def test_centre_off_does_not_block_the_toast(self, store):
         # Centre visibility governs the Centre, not the live toast (#206).
         await store.set_event_pref(U1, "worker.join", show_centre=False)
@@ -443,6 +468,19 @@ class TestListAndCountFiltering:
         await store.set_event_muted(U1, "worker.join", True)
         assert await store.unread_count(U1) == 1  # own row only
         assert await store.unread_count(U2) == 1  # the broadcast
+
+    async def test_null_source_broadcast_survives_an_unrelated_hidden_source(self, store):
+        # SQL three-valued logic: `source NOT IN (...)` evaluates to NULL
+        # (not true) for a NULL-source broadcast, so the hidden-source
+        # predicate must keep NULL sources explicitly -- otherwise hiding
+        # one source hides every NULL-source broadcast from list() and
+        # unread_count() (CodeRabbit, PR #4507).
+        await store.add("No source", "x", source=None)
+        await store.add("Hidden", "x", source="worker.join")
+        await store.set_event_pref(U1, "worker.join", show_centre=False)
+        titles = [i["title"] for i in await store.list(limit=10, user_id=U1)]
+        assert titles == ["No source"]
+        assert await store.unread_count(U1) == 1
 
     async def test_unread_count_excludes_centre_off_own_rows(self, store):
         # Badge coherence with the J2 design: a stored-but-Centre-hidden

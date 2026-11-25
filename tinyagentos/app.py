@@ -1607,6 +1607,7 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
                 # fan-out so a suppressed broadcast never reaches them
                 # (#206). Personal rows pass no check: add() decided them.
                 delivery_check = None
+                persistent_check = None
                 if not row.get("user_id"):
                     _source = row.get("source") or "system"
 
@@ -1617,11 +1618,22 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
 
                     delivery_check = _broadcast_check
 
+                    async def _broadcast_persistent(
+                        user_id: str, _src: str = _source
+                    ) -> bool:
+                        return (
+                            await notif_store.live_delivery_style(user_id, _src)
+                            == "alert"
+                        )
+
+                    persistent_check = _broadcast_persistent
+
                 await send_web_push(
                     row,
                     store=app.state.notif_push_store,
                     vapid=app.state.notif_vapid_keypair,
                     delivery_check=delivery_check,
+                    persistent_check=persistent_check,
                 )
                 await send_device_push(
                     row,
