@@ -21,6 +21,7 @@
     {"match": "exec taos-overview switcher --reverse", "group": "Desktops", "text": "Switch window, backwards"},
     {"match": "exec taos-overview help", "group": "System", "text": "This shortcuts list"},
     {"match": "exec taos-launcher toggle", "group": "Launcher and menu", "text": "App menu and search"},
+    {"match": "exec taos-launcher show-actions", "group": "Launcher and menu", "text": "System actions: capture, toggle, style, setup, install, help, power"},
     {"match": "exec taos-dock focus", "group": "Launcher and menu", "text": "Move the keyboard to the dock"},
     {"match": "exec taos-bar volume up", "group": "System", "text": "Volume up"},
     {"match": "exec taos-bar volume down", "group": "System", "text": "Volume down"},
