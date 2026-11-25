@@ -848,6 +848,17 @@ install_rk3588_perf_if_needed() {
     fi
     log "installing /etc/systemd/system/taos-rk3588-perf.service"
     $local_sudo install -m 0644 "$INSTALL_DIR/$perf_unit" /etc/systemd/system/taos-rk3588-perf.service
+    # The unit's ExecStart/ExecStop delegate to this helper: it owns the
+    # devfreq (`governor`) vs cpufreq (`scaling_governor`) split and the
+    # record-at-start / restore-at-stop state. Without it the unit can
+    # only fail, so install it in the same step.
+    local perf_script="scripts/taos-rk3588-perf.sh"
+    if [[ -f "$INSTALL_DIR/$perf_script" ]]; then
+        log "installing /usr/local/bin/taos-rk3588-perf"
+        $local_sudo install -m 0755 "$INSTALL_DIR/$perf_script" /usr/local/bin/taos-rk3588-perf
+    else
+        warn "taos-rk3588-perf.sh not found in repo - perf unit installed but its governor helper is missing"
+    fi
     # The Settings toggle flips this unit as the unprivileged controller
     # user (`taos`); under default polkit that is an interactive admin
     # auth, so ship the unit-scoped rule that lets exactly that user

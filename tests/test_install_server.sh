@@ -82,6 +82,10 @@ echo "test: perf service calls systemctl daemon-reload + enable"
 grep -q "systemctl daemon-reload" "$SCRIPT"
 grep -q "systemctl enable taos-rk3588-perf.service" "$SCRIPT"
 
+echo "test: perf service install also installs the governor helper the unit calls"
+grep -q "scripts/taos-rk3588-perf.sh" "$SCRIPT"
+grep -q "/usr/local/bin/taos-rk3588-perf" "$SCRIPT"
+
 echo "test: perf service install also installs the unit-scoped polkit rule"
 grep -q "50-taos-rk3588-perf.rules" "$SCRIPT"
 grep -q "/etc/polkit-1/rules.d/50-taos-rk3588-perf.rules" "$SCRIPT"

@@ -1846,10 +1846,12 @@ async def put_demo_mode(request: Request):
 # ---------------------------------------------------------------------------
 # RK3588 performance mode (#361): the Settings toggle over the
 # taos-rk3588-perf.service unit. install-server.sh installs and enables
-# the unit on Rockchip boards; its ExecStart applies the devfreq governor
-# tuning and its ExecStop restores simple_ondemand, so enabling/disabling
-# the unit with --now changes the governors immediately AND persists the
-# choice across boots via the unit enablement state.
+# the unit on Rockchip boards; its ExecStart applies the performance
+# governor tuning and its ExecStop restores the governors recorded at
+# enable time (devfreq via `governor`, cpufreq via `scaling_governor`),
+# so enabling/disabling the unit with --now changes the governors
+# immediately AND persists the choice across boots via the unit
+# enablement state.
 # ---------------------------------------------------------------------------
 
 _RK3588_PERF_UNIT = "taos-rk3588-perf.service"
