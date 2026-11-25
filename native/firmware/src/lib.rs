@@ -7,6 +7,7 @@ pub mod detect;
 pub mod flash;
 pub mod library;
 pub mod net;
+pub mod owner;
 pub mod sources;
 pub mod store;
 pub mod timefmt;

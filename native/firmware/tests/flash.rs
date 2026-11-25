@@ -31,6 +31,12 @@ fn flash(
         a.push(c);
     }
     a.extend_from_slice(extra);
+    // Unsigned images also need the acknowledgement; tests of that pass `--no-ack` to leave it out.
+    if let Some(i) = a.iter().position(|x| *x == "--no-ack") {
+        a.remove(i);
+    } else {
+        a.push("--ack-unsigned");
+    }
     env.run_env(&a, envs)
 }
 
@@ -210,7 +216,10 @@ fn flashing_needs_the_board_name_typed() {
         (1, Some("confirmation_required")),
         "{v}"
     );
-    assert!(v["message"].as_str().unwrap().contains("Heltec V3"));
+    assert!(
+        !v["message"].as_str().unwrap().contains("Heltec"),
+        "the refusal does not repeat the name"
+    );
     let (_, v) = flash(&env, V3, e, Some("Heltec V4"), &[], &[]);
     assert_eq!(v["code"], "confirmation_required");
     let (_, v) = flash(&env, V3, e, Some("yes"), &[], &[]);
@@ -234,7 +243,12 @@ fn the_plan_shows_the_exact_command_without_running_it() {
         "meshcore:heltec-v3:1.18.0:usb",
     ]);
     assert_eq!(code, 0, "{v}");
-    assert_eq!(v["plan"]["confirm_phrase"], "Heltec V3");
+    assert!(v["plan"].get("confirm_phrase").is_none());
+    assert_eq!(v["plan"]["chip_probe"], "after confirmation");
+    assert!(
+        env.tool_log().iter().all(|l| !l.contains("chip_id")),
+        "planning does not reset the board"
+    );
     let flash_step = v["plan"]["steps"]
         .as_array()
         .unwrap()
@@ -246,7 +260,7 @@ fn the_plan_shows_the_exact_command_without_running_it() {
     assert!(v["plan"]["warnings"][0]
         .as_str()
         .unwrap()
-        .contains("unsigned by publisher"));
+        .contains("Not verified:"));
 }
 
 fn argv_line(env: &Env, tool: &str, rest: &[String]) -> String {
@@ -773,7 +787,7 @@ fn an_unconfirmed_chip_or_missing_tool_blocks_the_flash() {
         &[("TAOS_FW_ESPTOOL", "/nonexistent/esptool")],
     );
     assert_eq!(code, 1);
-    assert_eq!(v["code"], "probe_required");
+    assert_eq!(v["code"], "tool_missing");
     assert!(
         v["message"].as_str().unwrap().contains("not an executable"),
         "{v}"
@@ -983,4 +997,93 @@ fn an_image_that_cannot_fit_never_resets_the_board() {
         "no probe, no flash: {:?}",
         env.tool_log()
     );
+}
+
+#[test]
+fn an_image_nobody_signs_needs_a_separate_acknowledgement() {
+    let (_s, env) = setup();
+    env.add_usb("1-1", "10c4", "ea60", "SN1", "ttyUSB0");
+    let e = "meshtastic:heltec-v3:2.7.26.54e0d8d";
+    let (code, v) = flash(&env, V3, e, Some("Heltec V3"), &["--no-ack"], &[]);
+    assert_eq!(
+        (code, v["code"].as_str()),
+        (1, Some("unsigned_ack_required")),
+        "{v}"
+    );
+    let m = v["message"].as_str().unwrap();
+    assert!(
+        m.contains("Verified: the file matches sha256")
+            && m.contains("Not verified:")
+            && m.contains("does not sign"),
+        "{m}"
+    );
+    assert!(writes(&env).is_empty());
+    assert!(
+        env.tool_log().iter().all(|l| !l.contains("chip_id")),
+        "refused before any probe"
+    );
+    // RNode ships a publisher checksum: no acknowledgement needed.
+    let (code, v) = flash(
+        &env,
+        V3,
+        "rnode:heltec-v3:1.86",
+        Some("Heltec V3"),
+        &["--no-ack"],
+        &[],
+    );
+    assert_eq!(code, 0, "{v}");
+    // An entry with no checksum from anyone is never flashed, acknowledged or not.
+    let p = env.data.join("manifest.json");
+    let mut m: Value = serde_json::from_slice(&fs::read(&p).unwrap()).unwrap();
+    for e in m["entries"].as_array_mut().unwrap() {
+        if e["id"] == "meshcore:heltec-v3:1.18.0:ble" {
+            e["verification"] = "unsigned-by-publisher".into();
+        }
+    }
+    fs::write(&p, m.to_string()).unwrap();
+    let (_, v) = flash(
+        &env,
+        V3,
+        "meshcore:heltec-v3:1.18.0:ble",
+        Some("Heltec V3"),
+        &[],
+        &[],
+    );
+    assert_eq!(v["code"], "unverified", "{v}");
+}
+
+#[test]
+fn the_board_is_not_reset_until_the_person_has_confirmed() {
+    let (_s, env) = setup();
+    env.add_usb("1-1", "10c4", "ea60", "SN1", "ttyUSB0");
+    let e = "meshtastic:heltec-v3:2.7.26.54e0d8d";
+    let probes = |env: &Env| {
+        env.tool_log()
+            .iter()
+            .filter(|l| l.contains("chip_id"))
+            .count()
+    };
+    let (_, v) = flash(&env, V3, e, None, &[], &[]);
+    assert_eq!(v["code"], "confirmation_required");
+    let (_, v) = flash(&env, V3, e, Some("wrong"), &[], &[]);
+    assert_eq!(v["code"], "confirmation_required");
+    let (_, v) = flash(
+        &env,
+        V3,
+        e,
+        Some("Heltec V3"),
+        &["--actor", "agent:nobody"],
+        &[],
+    );
+    assert_eq!(v["code"], "consent_required");
+    let (_, v) = flash(&env, V3, e, Some("Heltec V3"), &["--no-ack"], &[]);
+    assert_eq!(v["code"], "unsigned_ack_required");
+    assert_eq!(
+        probes(&env),
+        0,
+        "no refusal before the confirmation touched the board"
+    );
+    let (code, v) = flash(&env, V3, e, Some("Heltec V3"), &[], &[]);
+    assert_eq!(code, 0, "{v}");
+    assert_eq!(probes(&env), 1);
 }

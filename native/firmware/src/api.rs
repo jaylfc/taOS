@@ -22,6 +22,7 @@ pub struct App {
     pub port: u16,
     /// Held while a flash or a refresh runs; a second one is refused rather than queued.
     busy: Mutex<()>,
+    nonces: Arc<crate::owner::Nonces>,
 }
 
 pub fn verify_wait_from_env() -> Duration {
@@ -65,6 +66,8 @@ pub fn load_or_create_token(p: &Paths) -> Result<String, String> {
 
 pub fn serve(paths: Paths, port: u16) -> Result<(), String> {
     let token = load_or_create_token(&paths)?;
+    let nonces: Arc<crate::owner::Nonces> = Arc::default();
+    crate::owner::listen(&paths, nonces.clone())?;
     let l = TcpListener::bind(("127.0.0.1", port))
         .map_err(|e| format!("bind 127.0.0.1:{port}: {e}"))?;
     let port = l.local_addr().map_err(|e| e.to_string())?.port();
@@ -75,6 +78,7 @@ pub fn serve(paths: Paths, port: u16) -> Result<(), String> {
         token,
         port,
         busy: Mutex::new(()),
+        nonces: nonces.clone(),
     });
     println!(
         "{}",
@@ -219,6 +223,20 @@ fn handle(app: &App, mut s: TcpStream) {
     respond(&mut s, status, &v);
 }
 
+/// Licence acceptance, consent and flashing need the owner's single-use nonce for that exact action.
+fn need_owner(app: &App, body: &Value, action: &str, subject: &str) -> Option<(u16, Value)> {
+    let n = body["owner_nonce"].as_str().unwrap_or("");
+    if app.nonces.consume(n, action, subject) {
+        None
+    } else {
+        Some((
+            403,
+            json!({"ok":false,"code":"owner_required","message":format!(
+                "{action} needs the owner's confirmation: mint a nonce on the owner socket after the person acts on screen")}),
+        ))
+    }
+}
+
 fn bad(msg: &str) -> (u16, Value) {
     (400, json!({"ok":false,"error":msg}))
 }
@@ -323,6 +341,9 @@ fn route(app: &App, r: &Req) -> (u16, Value) {
             let Some(n) = Network::parse(&s_field(&body, "network")) else {
                 return bad("network must be meshtastic, meshcore or rnode");
             };
+            if let Some(r) = need_owner(app, &body, "licence.accept", n.id()) {
+                return r;
+            }
             match Licences::accept(p, n, &s_field(&body, "by"), "") {
                 Ok((a, new)) => (200, json!({"ok":true,"newly_accepted":new,"acceptance":a})),
                 Err(e) => err(e),
@@ -371,6 +392,10 @@ fn route(app: &App, r: &Req) -> (u16, Value) {
                     json!({"ok":false,"code":"busy","message":"a flash or refresh is already running"}),
                 );
             };
+            let subject = format!("{}|{}", s_field(&body, "device"), s_field(&body, "entry"));
+            if let Some(r) = need_owner(app, &body, "flash.run", &subject) {
+                return r;
+            }
             let req = Request {
                 device_id: s_field(&body, "device"),
                 entry_id: s_field(&body, "entry"),
@@ -378,6 +403,7 @@ fn route(app: &App, r: &Req) -> (u16, Value) {
                 actor: body["actor"].as_str().unwrap_or("person").to_string(),
                 allow_no_backup: body["allow_no_backup"].as_bool().unwrap_or(false),
                 erase: body["erase"].as_bool().unwrap_or(false),
+                ack_unsigned: body["ack_unsigned"].as_bool().unwrap_or(false),
                 restore_from: body["restore_from"].as_str().map(String::from),
             };
             (200, flash::run(&ctx, &req))
@@ -392,6 +418,9 @@ fn route(app: &App, r: &Req) -> (u16, Value) {
             Err(e) => err(e),
         },
         ("POST", ["v1", "consent", "grant"]) => {
+            if let Some(r) = need_owner(app, &body, "consent.grant", &s_field(&body, "agent")) {
+                return r;
+            }
             match Consent::grant(
                 p,
                 &s_field(&body, "agent"),

@@ -20,6 +20,12 @@ impl Drop for Api {
     }
 }
 
+fn mint(env: &Env, action: &str, subject: &str) -> String {
+    let (c, v) = env.run(&["owner", "mint", "--action", action, "--subject", subject]);
+    assert_eq!(c, 0, "{v}");
+    v["nonce"].as_str().unwrap().to_string()
+}
+
 fn start(env: &Env) -> Api {
     start_with(env, &[])
 }
@@ -156,14 +162,16 @@ fn an_app_can_run_the_whole_flow_over_the_api() {
         let (s, _) = c(
             "POST",
             "/v1/licences/accept",
-            Some(json!({"network":n,"by":"Test Owner"})),
+            Some(
+                json!({"network":n,"by":"Test Owner","owner_nonce":mint(&env,"licence.accept",n)}),
+            ),
         );
         assert_eq!(s, 200);
     }
     let (s, _) = c(
         "POST",
         "/v1/licences/accept",
-        Some(json!({"network":"meshcore"})),
+        Some(json!({"network":"meshcore","owner_nonce":mint(&env,"licence.accept","meshcore")})),
     );
     assert_eq!(s, 400, "someone must be named");
     let (_, v) = c("POST", "/v1/library/refresh", Some(json!({})));
@@ -188,10 +196,17 @@ fn an_app_can_run_the_whole_flow_over_the_api() {
     let body =
         json!({"device":"usb-10c4-ea60-SN1-1-1","entry":"meshtastic:heltec-v3:2.7.26.54e0d8d"});
     let (_, v) = c("POST", "/v1/flash/plan", Some(body.clone()));
-    assert_eq!(v["plan"]["confirm_phrase"], "Heltec V3");
-    let (_, v) = c("POST", "/v1/flash/run", Some(body.clone()));
-    assert_eq!(v["code"], "confirmation_required");
+    assert!(
+        v["plan"].get("confirm_phrase").is_none(),
+        "the plan does not repeat the confirmation"
+    );
+    assert_eq!(v["plan"]["requires_unsigned_ack"], true);
+    let subject = "usb-10c4-ea60-SN1-1-1|meshtastic:heltec-v3:2.7.26.54e0d8d";
     let mut run = body.clone();
+    run["owner_nonce"] = mint(&env, "flash.run", subject).into();
+    let (_, v) = c("POST", "/v1/flash/run", Some(run.clone()));
+    assert_eq!(v["code"], "confirmation_required");
+    run["owner_nonce"] = mint(&env, "flash.run", subject).into();
     run["confirm"] = "Heltec V3".into();
     run["actor"] = "agent:scout".into();
     let (_, v) = c("POST", "/v1/flash/run", Some(run.clone()));
@@ -199,9 +214,16 @@ fn an_app_can_run_the_whole_flow_over_the_api() {
     let (s, _) = c(
         "POST",
         "/v1/consent/grant",
-        Some(json!({"agent":"scout","by":"Test Owner","minutes":5})),
+        Some(
+            json!({"agent":"scout","by":"Test Owner","minutes":5,"owner_nonce":mint(&env,"consent.grant","scout")}),
+        ),
     );
     assert_eq!(s, 200);
+    run["owner_nonce"] = mint(&env, "flash.run", subject).into();
+    let (_, v) = c("POST", "/v1/flash/run", Some(run.clone()));
+    assert_eq!(v["code"], "unsigned_ack_required");
+    run["owner_nonce"] = mint(&env, "flash.run", subject).into();
+    run["ack_unsigned"] = true.into();
     let (_, v) = c("POST", "/v1/flash/run", Some(run));
     assert_eq!(v["ok"], true, "{v}");
     assert_eq!(v["verify"]["status"], "confirmed");
@@ -225,6 +247,11 @@ fn a_probe_never_runs_while_a_flash_is_writing() {
     env.add_usb("1-1", "10c4", "ea60", "SN1", "ttyUSB0");
     let a = start_with(&env, &[("FAKE_FLASH_SLEEP", "2")]);
     let (port, token) = (a.port, a.token.clone());
+    let nonce = mint(
+        &env,
+        "flash.run",
+        "usb-10c4-ea60-SN1-1-1|meshtastic:heltec-v3:2.7.26.54e0d8d",
+    );
     let t = std::thread::spawn(move || {
         let b = Api {
             child: std::process::Command::new("true").spawn().unwrap(),
@@ -236,7 +263,7 @@ fn a_probe_never_runs_while_a_flash_is_writing() {
             "POST",
             "/v1/flash/run",
             Some(
-                json!({"device":"usb-10c4-ea60-SN1-1-1","entry":"meshtastic:heltec-v3:2.7.26.54e0d8d","confirm":"Heltec V3"}),
+                json!({"device":"usb-10c4-ea60-SN1-1-1","entry":"meshtastic:heltec-v3:2.7.26.54e0d8d","confirm":"Heltec V3","ack_unsigned":true,"owner_nonce":nonce}),
             ),
             true,
             "",
@@ -280,4 +307,81 @@ fn a_probe_never_runs_while_a_flash_is_writing() {
     assert_eq!(probes(), before, "no board was probed during the write");
     let (_, run) = t.join().unwrap();
     assert_eq!(run["ok"], true, "{run}");
+}
+
+#[test]
+fn consent_licence_and_flash_need_the_owner_nonce_not_just_the_token() {
+    use std::os::unix::fs::PermissionsExt;
+    let srv = Server::start();
+    let env = Env::new(&srv.base);
+    let a = start(&env);
+    let c = |p: &str, b: Value| call(&a, "POST", p, Some(b), true, "", None);
+    // The bearer token alone is refused everywhere that matters.
+    assert_eq!(
+        c("/v1/licences/accept", json!({"network":"rnode","by":"x"})).0,
+        403
+    );
+    assert_eq!(
+        c(
+            "/v1/consent/grant",
+            json!({"agent":"a","by":"x","minutes":5})
+        )
+        .0,
+        403
+    );
+    assert_eq!(
+        c(
+            "/v1/flash/run",
+            json!({"device":"d","entry":"e","actor":"person"})
+        )
+        .0,
+        403
+    );
+    // A nonce is scoped to its action and subject, and used up by one try.
+    let n = mint(&env, "licence.accept", "rnode");
+    assert_eq!(
+        c(
+            "/v1/licences/accept",
+            json!({"network":"meshcore","by":"x","owner_nonce":n})
+        )
+        .0,
+        403
+    );
+    assert_eq!(
+        c(
+            "/v1/licences/accept",
+            json!({"network":"rnode","by":"x","owner_nonce":n})
+        )
+        .0,
+        403,
+        "already spent"
+    );
+    let n = mint(&env, "consent.grant", "scout");
+    assert_eq!(
+        c(
+            "/v1/licences/accept",
+            json!({"network":"rnode","by":"x","owner_nonce":n})
+        )
+        .0,
+        403,
+        "wrong action"
+    );
+    let n = mint(&env, "licence.accept", "rnode");
+    assert_eq!(
+        c(
+            "/v1/licences/accept",
+            json!({"network":"rnode","by":"Owner","owner_nonce":n})
+        )
+        .0,
+        200
+    );
+    // An unknown action cannot be minted, and the socket is private.
+    let (code, _) = env.run(&["owner", "mint", "--action", "anything", "--subject", "x"]);
+    assert_eq!(code, 1);
+    let mode = std::fs::metadata(env.data.join("owner.sock"))
+        .unwrap()
+        .permissions()
+        .mode()
+        & 0o777;
+    assert_eq!(mode, 0o600);
 }
