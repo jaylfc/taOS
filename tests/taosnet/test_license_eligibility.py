@@ -101,3 +101,74 @@ def test_every_catalog_manifest_classifies_without_error():
         data = yaml.safe_load(path.read_text())
         result = classify_manifest(data)
         assert isinstance(result, bool), f"{path.name}: {data.get('license')!r} -> {result!r}"
+
+
+# SPDX / common licence classification table (fix-forward #4516).
+# GPL-2.0-only and GPL-2.0 without "or later" -> BLOCK (False).
+# GPL-2.0-or-later, GPL-3.0, AGPL-3.0, LGPL, MPL, permissive -> ALLOW (True).
+# SSPL, ELv2, BSL, non-commercial, unlicensed -> BLOCK (False).
+
+
+@pytest.mark.parametrize(
+    "lic,expected",
+    [
+        # GPL-2.0 family: "only" and bare GPL-2.0 block; "or-later" allows.
+        ("GPL-2.0-only", False),
+        ("GPL-2.0", False),  # bare GPL-2.0 treated as GPL-2.0-only
+        ("GPLv2", False),  # common alias for GPL-2.0-only
+        ("GPL-2.0-or-later", True),
+        ("GPL-3.0-only", True),  # GPL-3.0 family allows
+        ("GPL-3.0", True),
+        ("GPL-3.0-or-later", True),
+    ],
+)
+def test_spdx_gpl_classification(lic, expected):
+    assert license_allows_redistribution(lic) is expected
+
+
+@pytest.mark.parametrize(
+    "lic,expected",
+    [
+        # LGPL, MPL, AGPL families allow.
+        ("LGPL-2.0", True),
+        ("LGPL-2.1", True),
+        ("LGPL-3.0", True),
+        ("MPL-2.0", True),
+        ("MPL-1.1", True),
+        ("AGPL-3.0", True),
+        ("AGPL-3.0-only", True),
+        ("AGPL-3.0-or-later", True),
+    ],
+)
+def test_spdx_lgpl_mpl_agpl_classification(lic, expected):
+    assert license_allows_redistribution(lic) is expected
+
+
+@pytest.mark.parametrize(
+    "lic,expected",
+    [
+        # Elastic v2, BSL, SSPL block.
+        ("Elastic-2.0", False),
+        ("BSL-1.0", False),
+        ("BSL-1.1", False),
+        ("SSPL-1.0", False),
+        ("Server Side Public License", False),
+        ("Server Side Public License v1", False),
+    ],
+)
+def test_spdx_elastic_bsl_sspl_classification(lic, expected):
+    assert license_allows_redistribution(lic) is expected
+
+
+@pytest.mark.parametrize(
+    "lic,expected",
+    [
+        # Non-commercial and unlicensed block.
+        ("CC-BY-NC-4.0", False),
+        ("CC-BY-NC-SA-4.0", False),
+        ("Unlicensed", False),
+        ("unlicense", False),
+    ],
+)
+def test_spdx_noncommercial_unlicensed_classification(lic, expected):
+    assert license_allows_redistribution(lic) is expected

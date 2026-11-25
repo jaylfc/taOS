@@ -13,7 +13,9 @@ Policy (conservative by default):
 2. Otherwise, if the licence exactly matches a known-redistributable licence
    (permissive, plus the RAIL / Gemma / Llama-community family that permit
    redistribution with their terms attached), it IS redistributable.
-3. Otherwise it is NOT redistributable, and the caller should surface it for a
+3. Otherwise, if the normalised SPDX / common licence ID is in the
+   classification table, use that verdict.
+4. Otherwise it is NOT redistributable, and the caller should surface it for a
    human to review and, if appropriate, add to ``PERMISSIVE_LICENSES``.
 
 Missing a genuinely-redistributable model only costs us an HTTP-only download
@@ -60,6 +62,53 @@ PERMISSIVE_LICENSES: frozenset[str] = frozenset(
     }
 )
 
+# Classification table for normalised SPDX IDs and common licence aliases.
+# True  -> allows redistribution
+# False -> blocks redistribution
+# Keys are the output of normalize_license().
+# GPL-2.0-only and bare GPL-2.0 block; GPL-2.0-or-later and GPL-3.0+ allow.
+# LGPL, MPL, AGPL families allow.
+# SSPL, Elastic-2.0, BSL, non-commercial, unlicensed block.
+_SPDX_CLASSIFICATION: dict[str, bool] = {
+    # GPL family
+    "gpl-2.0": False,
+    "gpl-2.0-only": False,
+    "gplv2": False,          # common alias
+    "gpl-2.0-or-later": True,
+    "gpl-3.0": True,
+    "gpl-3.0-only": True,
+    "gpl-3.0-or-later": True,
+    # LGPL family (all allow)
+    "lgpl-2.0": True,
+    "lgpl-2.0-only": True,
+    "lgpl-2.0-or-later": True,
+    "lgpl-2.1": True,
+    "lgpl-2.1-only": True,
+    "lgpl-2.1-or-later": True,
+    "lgpl-3.0": True,
+    "lgpl-3.0-only": True,
+    "lgpl-3.0-or-later": True,
+    # AGPL family (all allow)
+    "agpl-3.0": True,
+    "agpl-3.0-only": True,
+    "agpl-3.0-or-later": True,
+    # MPL family (all allow)
+    "mpl-1.0": True,
+    "mpl-1.1": True,
+    "mpl-2.0": True,
+    # Restrictive licences that must block
+    "elastic-2.0": False,
+    "bsl-1.0": False,
+    "bsl-1.1": False,
+    "sspl-1.0": False,
+    "server side public license": False,
+    "server side public license v1": False,
+    "unlicensed": False,
+    "unlicense": False,
+    "cc-by-nc-4.0": False,
+    "cc-by-nc-sa-4.0": False,
+}
+
 
 def normalize_license(raw: str) -> str:
     """Lower-case, strip surrounding quotes, drop a trailing ``(...)`` note, and
@@ -82,6 +131,9 @@ def license_allows_redistribution(raw: str | None) -> bool:
     normalized = normalize_license(raw)
     if any(marker in normalized for marker in _RESTRICTIVE_MARKERS):
         return False
+    # SPDX / common-alias classification table takes precedence.
+    if normalized in _SPDX_CLASSIFICATION:
+        return _SPDX_CLASSIFICATION[normalized]
     return normalized in PERMISSIVE_LICENSES
 
 
