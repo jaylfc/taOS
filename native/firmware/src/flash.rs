@@ -28,6 +28,8 @@ pub struct Request {
     /// `person` or `agent:<id>`.
     pub actor: String,
     pub allow_no_backup: bool,
+    /// The person acknowledges that the publisher does not sign this image.
+    pub ack_unsigned: bool,
     /// Erase the whole flash first (clean switch between networks). ESP32 only.
     pub erase: bool,
     /// Backup id to restore after the flash (default: the backup taken now).
@@ -62,8 +64,10 @@ pub struct Plan {
     pub board: String,
     pub network: String,
     pub version: String,
-    /// What the person must type to confirm.
-    pub confirm_phrase: String,
+    /// The person must type the board name shown on screen; it is deliberately not repeated here.
+    pub requires_unsigned_ack: bool,
+    /// The chip probe resets the board, so it runs only after the confirmation.
+    pub chip_probe: String,
     pub method: String,
     pub backup: String,
     pub steps: Vec<Step>,
@@ -168,7 +172,8 @@ fn lib_path(p: &Paths, rel: &str) -> String {
     p.library().join(rel).display().to_string()
 }
 
-fn evaluate(ctx: &Ctx, device_id: &str, entry_id: &str) -> Result<Eval, Refusal> {
+/// `probe` is false until the person has confirmed: the chip probe resets the board.
+fn evaluate(ctx: &Ctx, device_id: &str, entry_id: &str, probe: bool) -> Result<Eval, Refusal> {
     let man = Manifest::load(ctx.paths).map_err(|m| Refusal {
         code: "manifest",
         message: m,
@@ -214,7 +219,7 @@ fn evaluate(ctx: &Ctx, device_id: &str, entry_id: &str) -> Result<Eval, Refusal>
             ),
         );
     }
-    if device.kind == "serial" {
+    if probe && device.kind == "serial" {
         detect::probe_device(ctx.runner, &mut device);
     }
     match Licences::load(ctx.paths) {
@@ -254,16 +259,22 @@ fn evaluate(ctx: &Ctx, device_id: &str, entry_id: &str) -> Result<Eval, Refusal>
         }
     }
     let mut warnings = vec![];
+    if entry.verification == "unsigned-by-publisher" {
+        return refuse(
+            "unverified",
+            format!(
+                "{} has no checksum from the publisher or the release host, only the sha256 we computed ({}). It is not offered for flashing.",
+                entry.id, entry.source_sha256
+            ),
+        );
+    }
     if entry.unsigned_by_publisher {
-        warnings.push(format!(
-            "unsigned by publisher: checked against the release host digest only (sha256 {})",
-            entry.source_sha256
-        ));
+        warnings.push(unsigned_text(&entry));
     }
     let mut steps = vec![];
     let (method, action) = match (entry.method.as_str(), device.kind.as_str()) {
         ("esptool", "serial") => {
-            if device.probe != "ok" {
+            if probe && device.probe != "ok" {
                 return refuse(
                     "probe_required",
                     format!(
@@ -388,7 +399,8 @@ fn evaluate(ctx: &Ctx, device_id: &str, entry_id: &str) -> Result<Eval, Refusal>
         board: board.id.into(),
         network: entry.network.clone(),
         version: entry.version.clone(),
-        confirm_phrase: board.name.into(),
+        requires_unsigned_ack: entry.unsigned_by_publisher,
+        chip_probe: if probe { "done" } else { "after confirmation" }.into(),
         method: method.into(),
         backup: backup.into(),
         steps,
@@ -405,7 +417,7 @@ fn evaluate(ctx: &Ctx, device_id: &str, entry_id: &str) -> Result<Eval, Refusal>
 }
 
 pub fn plan(ctx: &Ctx, device_id: &str, entry_id: &str) -> Result<Plan, Refusal> {
-    evaluate(ctx, device_id, entry_id).map(|e| e.plan)
+    evaluate(ctx, device_id, entry_id, false).map(|e| e.plan)
 }
 
 fn log(ctx: &Ctx, v: Value) -> Result<(), String> {
@@ -425,7 +437,7 @@ fn refused(ctx: &Ctx, req: &Request, r: Refusal) -> Value {
 }
 
 pub fn run(ctx: &Ctx, req: &Request) -> Value {
-    let ev = match evaluate(ctx, &req.device_id, &req.entry_id) {
+    let ev = match evaluate(ctx, &req.device_id, &req.entry_id, false) {
         Ok(e) => e,
         Err(r) => return refused(ctx, req, r),
     };
@@ -448,7 +460,7 @@ pub fn run(ctx: &Ctx, req: &Request) -> Value {
             req,
             Refusal {
                 code: "confirmation_required",
-                message: format!("type the board name exactly to confirm: {}", ev.board.name),
+                message: "type the name of the board, as shown on screen, to confirm".into(),
             },
         );
     }
@@ -486,7 +498,32 @@ pub fn run(ctx: &Ctx, req: &Request) -> Value {
             },
         );
     }
+    if ev.entry.unsigned_by_publisher && !req.ack_unsigned {
+        return refused(
+            ctx,
+            req,
+            Refusal {
+                code: "unsigned_ack_required",
+                message: unsigned_text(&ev.entry),
+            },
+        );
+    }
+    // Confirmed: only now is the board reset to read its chip, and every check runs again with it.
+    let ev = match evaluate(ctx, &req.device_id, &req.entry_id, true) {
+        Ok(e) => e,
+        Err(r) => return refused(ctx, req, r),
+    };
     execute(ctx, req, ev)
+}
+
+/// Says exactly what was and was not verified for an image its publisher does not sign.
+pub fn unsigned_text(e: &Entry) -> String {
+    format!(
+        "Verified: the file matches sha256 {}, the digest the release host (GitHub) lists for the asset, and it was downloaded from {}. \
+Not verified: the {} project does not sign its releases or publish checksums, so nothing proves the file is what the project built. \
+Flashing needs a separate acknowledgement of this.",
+        e.source_sha256, e.source, e.network
+    )
 }
 
 fn copy_synced(src: &Path, dest: &Path) -> std::io::Result<()> {

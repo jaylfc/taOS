@@ -105,10 +105,13 @@ Overrides for tests: `TAOS_FW_USB_ROOT`, `TAOS_FW_DEV_ROOT`, `TAOS_FW_UF2_ROOTS`
 
 ## Flash flow
 
-1. **plan** (`flash plan`, `POST /v1/flash/plan`): runs every check and returns the steps and the exact
-   argument lists, `confirm_phrase` (the board name the person must type), warnings (for example
-   "unsigned by publisher") and the board's recovery steps. Nothing is written.
-2. **run** (`flash run`, `POST /v1/flash/run`): repeats the checks, then
+1. **plan** (`flash plan`, `POST /v1/flash/plan`): runs every check that does not touch the board and returns the steps and
+   the exact argument lists, warnings and the board's recovery steps. Nothing is written and the board is not reset (the chip
+   probe waits until after the confirmation: `chip_probe: "after confirmation"`). The plan does not repeat the board name:
+   the app shows it, and the person types it.
+2. **run** (`flash run`, `POST /v1/flash/run`): checks, then requires in order the typed board name, the agent's consent
+   (when the actor is an agent) and, for an image its publisher does not sign, `ack_unsigned` (`--ack-unsigned`). Only then
+   is the board probed (reset) and every check repeated with the real chip, and then
    1. writes a `flash-start` line to the flash log (if the log cannot be written, nothing is flashed),
    2. backs up: Meshtastic `--export-config`, else MeshCore `infos` (identity and radio details, not a restorable export).
       If no firmware answers the result says `not_possible` and the flash is refused unless `allow_no_backup`.
@@ -124,10 +127,15 @@ Overrides for tests: `TAOS_FW_USB_ROOT`, `TAOS_FW_DEV_ROOT`, `TAOS_FW_UF2_ROOTS`
    7. writes `flash-end`.
    On failure the result has `recovery`: the per-board bootloader button sequence plus general advice.
 
+Images with `unsigned_by_publisher` (Meshtastic, MeshCore) flash only with `ack_unsigned`; the refusal and the plan warning say
+exactly what was verified (the file matches the sha256 the release host lists, and where it came from) and what was not (the
+project signs nothing, so nothing proves it is what the project built). An entry with no checksum from anyone
+(`verification: unsigned-by-publisher`) is refused as `unverified` and never flashed.
+
 Refusals (HTTP 200 with `ok:false`, CLI exit 1), all logged: `no_such_device`, `no_such_firmware`,
 `licence_required`, `hash_mismatch`, `board_mismatch` (the image's board is not among the device's candidates),
-`chip_mismatch`, `probe_required`, `tool_missing`, `not_in_bootloader`, `confirmation_required`, `consent_required`,
-`bad_request`, `log_unavailable`. Failure stages: `backup`, `erase`, `flash`; the verify result is separate.
+`chip_mismatch`, `probe_required` (after confirmation), `tool_missing`, `not_in_bootloader`, `confirmation_required`, `consent_required`,
+`bad_request`, `log_unavailable`, `unsigned_ack_required`, `unverified`, `owner_required` (403). Failure stages: `backup`, `erase`, `flash`; the verify result is separate.
 
 Tools: `esptool` (or `esptool.py`), `meshtastic`, `adafruit-nrfutil`, `meshcore-cli`, `rnodeconf`, found on PATH or via
 `TAOS_FW_ESPTOOL`, `TAOS_FW_MESHTASTIC`, `TAOS_FW_NRFUTIL`, `TAOS_FW_MESHCORE_CLI`, `TAOS_FW_RNODECONF`.
@@ -145,8 +153,14 @@ Every attempt is in the flash log with its actor.
 `taos-firmware serve [--port N]` (default 7421; 0 picks a free port and prints `{"ok":true,"port":N}`).
 Binds 127.0.0.1 only. Every request needs `Authorization: Bearer <contents of api-token>`; requests with an
 `Origin` header or a Host other than `127.0.0.1:<port>` / `localhost:<port>` are refused (403), so a web page cannot call it.
-The token is for the Survival Studio app, not for agents: an agent must reach this API through the app, which
-shows the confirmation and records the person's consent. Whoever holds the token can grant consent and declare an actor.
+The token alone is not enough for the three actions that carry the person's authority: `POST /v1/licences/accept`,
+`POST /v1/consent/grant` and `POST /v1/flash/run`. Each needs `owner_nonce` in the body: a single-use, five-minute nonce scoped
+to that action and subject (`licence.accept` + network, `consent.grant` + agent id, `flash.run` + `device|entry`). The app mints
+it when the person acts on screen, by connecting to the unix socket `owner.sock` in the data directory (mode 0600, directory 0700)
+and sending `{"action":"...","subject":"..."}`; the server checks the kernel-reported peer uid is the owner's (`SO_PEERCRED`).
+`taos-firmware owner mint --action A --subject S` does the same for scripts. Limit: another process running as the same
+user can also reach that socket, so keeping an agent away from it takes a separate uid or a sandbox that hides the data
+directory. The CLI is the person's own shell and has no such check.
 
 Request bodies are JSON (max 64 KB); replies are JSON, `ok` always present. One flash or refresh runs at a time
 (a second gets HTTP 409 `busy`). `refresh` and `flash/run` block until finished (a flash can take minutes).
@@ -158,15 +172,15 @@ Request bodies are JSON (max 64 KB); replies are JSON, `ok` always present. One 
 | GET /v1/library | `?board=&network=` | `{entries:[manifest entries]}` |
 | POST /v1/library/refresh | `{network?, board?}` | `{reports:[{network, status, detail, fetched, skipped, errors, retry_after_epoch}]}`; status `ok`, `licence_required`, `offline`, `rate_limited`, `error` |
 | GET /v1/licences | | `{accepted:[...], pending:[{network, name, licence_id, licence_url}]}` |
-| POST /v1/licences/accept | `{network, by}` | `{newly_accepted, acceptance}` (400 if `by` is empty) |
+| POST /v1/licences/accept | `{network, by, owner_nonce}` | `{newly_accepted, acceptance}` (400 if `by` is empty) |
 | GET /v1/devices | `?probe=1` | `{devices:[...]}` |
 | GET /v1/devices/{id}/firmware | `?probe=1` | `{device, firmware:[entries with usable_now]}` |
 | POST /v1/flash/plan | `{device, entry}` | `{ok, plan}` or `{ok:false, code, message}` |
-| POST /v1/flash/run | `{device, entry, confirm, actor?, allow_no_backup?, erase?, restore_from?}` | `{ok, stage, steps, backup, verify, restore, recovery?}` or a refusal |
+| POST /v1/flash/run | `{device, entry, confirm, owner_nonce, actor?, ack_unsigned?, allow_no_backup?, erase?, restore_from?}` | `{ok, stage, steps, backup, verify, restore, recovery?}` or a refusal |
 | GET /v1/backups | | `{backups:[{id, board, network, file, taken_at, replaced_by}]}` |
 | GET /v1/log | `?limit=50` | `{log:[...]}` |
 | GET /v1/consent | | `{grants}` |
-| POST /v1/consent/grant | `{agent, by, minutes}` | `{grant}` |
+| POST /v1/consent/grant | `{agent, by, minutes, owner_nonce}` | `{grant}` |
 | POST /v1/consent/revoke | `{agent}` | `{revoked}` |
 
 ## Not done, or not verified

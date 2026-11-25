@@ -18,8 +18,9 @@ pub const USAGE: &str = "usage: taos-firmware [--json] <command>
   devices [--probe]                       detect connected boards (--probe asks ESP32 boards for their chip, which resets them)
   compatible --device ID [--probe]       firmware that fits a device
   flash plan --device ID --entry ID
-  flash run --device ID --entry ID --confirm \"BOARD NAME\" [--actor person|agent:ID] [--allow-no-backup] [--erase] [--restore-from BACKUP]
+  flash run --device ID --entry ID --confirm \"BOARD NAME\" [--actor person|agent:ID] [--allow-no-backup] [--erase] [--ack-unsigned] [--restore-from BACKUP]
   consent grant --agent ID --by NAME [--minutes N] | consent revoke --agent ID | consent list
+  owner mint --action A --subject S        single-use owner nonce from a running serve (for the app)
   backups | log [--limit N]
   serve [--port N]                        local JSON API on 127.0.0.1 (default 7421)";
 
@@ -276,6 +277,7 @@ pub fn run(argv: Vec<String>) -> i32 {
                 actor: flag(rr, "--actor").unwrap_or_else(|| "person".into()),
                 allow_no_backup: has(rr, "--allow-no-backup"),
                 erase: has(rr, "--erase"),
+                ack_unsigned: has(rr, "--ack-unsigned"),
                 restore_from: flag(rr, "--restore-from"),
             };
             let v = flash::run(&ctx, &req);
@@ -306,6 +308,16 @@ pub fn run(argv: Vec<String>) -> i32 {
             },
             _ => fail(j, "consent grant|revoke|list"),
         },
+        "owner" => {
+            // `owner mint --action A --subject S`: ask a running `serve` for a single-use nonce.
+            let (Some(a), Some(s)) = (flag(r, "--action"), flag(r, "--subject")) else {
+                return fail(j, "owner mint --action A --subject S");
+            };
+            match crate::owner::mint_via_socket(&paths, &a, &s) {
+                Ok(n) => out(j, true, json!({"ok":true,"nonce":n}), None),
+                Err(e) => fail(j, &e),
+            }
+        }
         "backups" => out(
             j,
             true,
