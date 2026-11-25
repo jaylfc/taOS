@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 #include "runner.h"
 
+#include <QDateTime>
 #include <QDir>
 #include <QJsonArray>
 #include <QJsonDocument>
@@ -73,6 +74,15 @@ bool runAction(const Action &a, QString *error) {
         }
         if (argv.isEmpty()) { if (error) *error = QStringLiteral("empty command"); return false; }
         return detached(argv.first(), argv.mid(1), error);
+    }
+    if (a.verb == QLatin1String("capture-screen") || a.verb == QLatin1String("capture-region")) {
+        // grim (and slurp for an area) write a PNG in Pictures/Screenshots; the short sleep lets the launcher fade out first
+        const QString dir = QStandardPaths::writableLocation(QStandardPaths::PicturesLocation) + QStringLiteral("/Screenshots");
+        if (!QDir().mkpath(dir)) { if (error) *error = QStringLiteral("cannot create %1").arg(dir); return false; }
+        const QString file = dir + QStringLiteral("/taos-") + QDateTime::currentDateTime().toString(QStringLiteral("yyyyMMdd-HHmmss")) + QStringLiteral(".png");
+        const bool region = a.verb == QLatin1String("capture-region");
+        const QString script = region ? QStringLiteral("sleep 0.3; g=$(slurp) || exit 0; exec grim -g \"$g\" \"$1\"") : QStringLiteral("sleep 0.4; exec grim \"$1\"");
+        return detached(QStringLiteral("sh"), { QStringLiteral("-c"), script, QStringLiteral("taos-capture"), file }, error);
     }
     if (a.verb == QLatin1String("focus-window")) return detached(QStringLiteral("taos-window"), { QStringLiteral("focus"), a.data }, error);
     if (a.verb == QLatin1String("open")) return detached(QStringLiteral("xdg-open"), { a.data }, error);

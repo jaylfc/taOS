@@ -9,6 +9,7 @@
 #include "config.h"
 #include "engine.h"
 #include "frecency.h"
+#include "menucontroller.h"
 #include "rowmodel.h"
 
 namespace taos::launcher {
@@ -32,6 +33,10 @@ class Controller : public QObject {
     Q_PROPERTY(QString currentTitle READ currentTitle NOTIFY currentChanged)
     Q_PROPERTY(QString currentIcon READ currentIcon NOTIFY currentChanged)
     Q_PROPERTY(QString currentKind READ currentKind NOTIFY currentChanged)
+    Q_PROPERTY(QObject *menu READ menuObject CONSTANT)
+    Q_PROPERTY(bool menuMode READ menuMode CONSTANT)                  // the app menu is wired in (the daemon); tests of search alone leave it off
+    Q_PROPERTY(bool menuVisible READ menuVisible NOTIFY queryChanged)   // open, nothing typed: the menu is what shows
+    Q_PROPERTY(bool actionsMode READ actionsMode NOTIFY queryChanged)   // the query starts with ">": the system action menu
 public:
     Controller(taos::search::SearchEngine *engine, std::shared_ptr<taos::search::Frecency> frec, QObject *parent = nullptr);
 
@@ -51,6 +56,17 @@ public:
     QString currentIcon() const;
     QString currentKind() const;
     RowModel &model() { return m_model; }
+    // The app menu: one model and engine for every layout. Without it the launcher is search only.
+    void setMenu(std::shared_ptr<taos::search::AppMenu> apps, std::shared_ptr<taos::search::ActionMenu> actions);
+    QObject *menuObject() { return m_menuCtl.get(); }
+    MenuController *menuController() { return m_menuCtl.get(); }
+    bool menuMode() const { return m_menuCtl != nullptr; }
+    bool menuVisible() const { return m_menuCtl && m_open && (m_query.isEmpty() || m_query.startsWith(QLatin1Char('>'))); }
+    bool actionsMode() const { return m_menuCtl && m_query.startsWith(QLatin1Char('>')); }
+    Q_INVOKABLE void menuMove(int dx, int dy);        // arrow keys while the menu shows
+    Q_INVOKABLE void menuEnter();                     // Enter while the menu shows
+    Q_INVOKABLE void menuContext();                   // Menu key, Tab: the app under the cursor
+    Q_INVOKABLE bool menuBack();                      // Backspace in an empty action filter: one level up
     Q_INVOKABLE void setAccessibleTarget(QObject *o) { m_a11y = o; }
     void setLaunchDelay(int ms) { m_launchMs = ms; }
     void setConfig(std::shared_ptr<taos::search::LauncherConfig> c) { m_cfg = std::move(c); }
@@ -100,6 +116,7 @@ private:
     void finishLaunch();
     void setNotice(const QString &n);
     taos::search::SearchEngine *m_engine;
+    std::unique_ptr<MenuController> m_menuCtl;
     std::shared_ptr<taos::search::Frecency> m_frec;
     RowModel m_model;
     QString m_query;

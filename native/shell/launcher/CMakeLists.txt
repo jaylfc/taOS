@@ -21,7 +21,7 @@ target_link_libraries(taos-search PRIVATE taos_search_core)
 install(TARGETS taos-search RUNTIME DESTINATION bin)
 
 # The controller and row model (no window in them) are a library so the tests drive the real thing.
-add_library(taos_launcher_ui STATIC src/menunav.cpp src/menunav.h src/controller.cpp src/controller.h src/rowmodel.cpp src/rowmodel.h
+add_library(taos_launcher_ui STATIC src/menunav.cpp src/menunav.h src/menucontroller.cpp src/menucontroller.h src/controller.cpp src/controller.h src/rowmodel.cpp src/rowmodel.h
     src/iconprovider.cpp src/iconprovider.h)
 target_include_directories(taos_launcher_ui PUBLIC src)
 target_link_libraries(taos_launcher_ui PUBLIC taos_search_core Qt6::Gui Qt6::Quick)
@@ -69,3 +69,4 @@ taos_launcher_test(launcher_test_appmenu)
 taos_launcher_test(launcher_test_icons)
 taos_launcher_test(launcher_test_actionmenu)
 taos_launcher_test(launcher_test_menunav)
+taos_launcher_test(launcher_test_menu)
