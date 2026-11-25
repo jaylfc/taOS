@@ -224,6 +224,8 @@ void SocketMeshBackend::apply(const std::shared_ptr<FetchAcc> &accp)
             rd.link = o.value(u"link"_s).toString();
             rd.state = o.value(u"state"_s).toString();
             rd.firmware = o.value(u"firmware"_s).toString();
+            rd.hardware = o.value(u"hardware"_s).toString();
+            rd.port = o.value(u"port"_s).toString();
             rd.batteryPercent = o.value(u"batteryPercent"_s).toInt(-1);
             m_radios.append(rd);
         }
@@ -444,6 +446,17 @@ void SocketMeshBackend::forgetDevice(const QString &id)
     });
 }
 
+void SocketMeshBackend::releaseDevice(const QString &port)
+{
+    m_client->request(u"radios.release"_s, QJsonObject{{u"device"_s, port}}, this, [this, port](const MeshReply &r) {
+        Q_EMIT actionDone(u"release:"_s + port, r.ok, r.ok ? QString() : r.message);
+        if (r.ok) {
+            fetchAll();
+            discoverDevices();
+        }
+    });
+}
+
 void SocketMeshBackend::assign(const QString &node, const QString &identity, const QString &name)
 {
     QJsonObject p{{u"node"_s, node}, {u"identity"_s, identity.isEmpty() ? QJsonValue() : QJsonValue(identity)}};
@@ -498,8 +511,16 @@ void SocketMeshBackend::requestDeviceConfig(const QString &radioId)
         MeshDeviceConfig c;
         c.radioId = radioId;
         if (r.ok) {
-            c.state = u"ok"_s;
-            c.values = r.result.toObject().toVariantMap();
+            // the engine answers {radio, state, note, values}; an older one answered the values themselves
+            const QJsonObject o = r.result.toObject();
+            if (o.contains(u"values"_s) && o.contains(u"state"_s)) {
+                c.state = o.value(u"state"_s).toString();
+                c.note = o.value(u"note"_s).toString();
+                c.values = o.value(u"values"_s).toObject().toVariantMap();
+            } else {
+                c.state = u"ok"_s;
+                c.values = o.toVariantMap();
+            }
         } else if (r.code == u"unknown_method"_s) {
             c.state = u"unsupported"_s;
             c.note = tr("This engine does not read radio settings yet.");
@@ -509,6 +530,8 @@ void SocketMeshBackend::requestDeviceConfig(const QString &radioId)
         }
         m_cfg.insert(radioId, c);
         Q_EMIT radiosChanged();
+        if (c.state == QLatin1String("loading"))   // the radio is still sending its settings: ask again shortly
+            QTimer::singleShot(1000, this, [this, radioId] { if (m_cfg.value(radioId).state == QLatin1String("loading")) requestDeviceConfig(radioId); });
     });
 }
 

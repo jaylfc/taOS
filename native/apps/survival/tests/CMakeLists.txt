@@ -52,3 +52,14 @@ add_test(NAME apps_tst_survival_mesh COMMAND ${CMAKE_COMMAND} -E env QT_QPA_PLAT
          XDG_RUNTIME_DIR=${CMAKE_CURRENT_BINARY_DIR}/rt_mesh HOME=${CMAKE_CURRENT_BINARY_DIR}/home_mesh TMPDIR=${CMAKE_CURRENT_BINARY_DIR}
          $<TARGET_FILE:tst_survival_mesh>)
 set_tests_properties(apps_tst_survival_mesh PROPERTIES TIMEOUT 300)
+
+# Moving a board between networks: the sequence and its order, against the same stand-in engines.
+add_executable(tst_survival_switch tst_survival_switch.cpp fakemesh.h)
+target_link_libraries(tst_survival_switch PRIVATE taos_survival_faces Qt6::Test)
+target_include_directories(tst_survival_switch PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+target_compile_definitions(tst_survival_switch PRIVATE MESH_FIXTURES_DIR="${CMAKE_CURRENT_SOURCE_DIR}/fixtures")
+taos_survival_rpath(tst_survival_switch)
+add_test(NAME apps_tst_survival_switch COMMAND ${CMAKE_COMMAND} -E env QT_QPA_PLATFORM=offscreen TAOS_SURVIVAL_NO_SYSTEMCTL=1
+         XDG_RUNTIME_DIR=${CMAKE_CURRENT_BINARY_DIR}/rt_switch HOME=${CMAKE_CURRENT_BINARY_DIR}/home_switch TMPDIR=${CMAKE_CURRENT_BINARY_DIR}
+         $<TARGET_FILE:tst_survival_switch>)
+set_tests_properties(apps_tst_survival_switch PROPERTIES TIMEOUT 300)

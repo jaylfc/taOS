@@ -14,6 +14,7 @@
 #include <QTcpSocket>
 #include <QTimer>
 #include <QtTest>
+#include <functional>
 
 namespace FakeEngines {
 
@@ -68,6 +69,14 @@ public:
     bool refuseMessages = false;
     bool radiosConnect = true;
     QString savedDevice, connectError;
+    // scripted radios for the switch tests: when `scripted` is set, app.radios / device.config / device.apply / radios.release
+    // answer from these instead of the captured fixtures
+    bool scripted = false, configWritable = false;
+    QJsonArray radiosJson;
+    QJsonObject cfgByRadio;                 // radio id -> the engine's device.config `values`
+    QJsonArray serialDevices;               // what `discover` lists when scripted
+    std::function<void(const QString &)> onConnect;   // called with the port when radios.connect arrives
+    QStringList released;
     int delayMs = 0;
     QList<QJsonObject> requests;
     int count(const QString &method) const { int n = 0; for (const auto &r : requests) n += r.value(QStringLiteral("method")).toString() == method; return n; }
@@ -78,7 +87,7 @@ public:
         QStringList bad;
         for (const auto &r : requests) {
             const QString m = r.value(QStringLiteral("method")).toString();
-            if ((m == QLatin1String("app.send") || m == QLatin1String("send") || m == QLatin1String("device.apply") || m == QLatin1String("connect")
+            if ((m == QLatin1String("app.send") || m == QLatin1String("send") || m == QLatin1String("device.apply") || m == QLatin1String("connect") || m == QLatin1String("radios.release")
                  || m == QLatin1String("radios.connect")) && !allowed.contains(m))
                 bad << m;
         }
@@ -125,6 +134,7 @@ private:
             QJsonObject h = fixture(m_fx, QStringLiteral("health")).toObject();
             h.insert(QStringLiteral("receive_only"), receiveOnly);
             h.insert(QStringLiteral("device_config"), configReadable);
+            h.insert(QStringLiteral("device_config_write"), configWritable && !receiveOnly);
             h.insert(QStringLiteral("radios_connect"), radiosConnect);
             return ok(h);
         }
@@ -134,6 +144,22 @@ private:
             return ok(fixture(m_fx, p.value(QStringLiteral("filter")).toObject().value(QStringLiteral("kind")).toString() == QLatin1String("position") ? QStringLiteral("messages.position") : QStringLiteral("messages.text")));
         if (m == QLatin1String("contacts.create"))
             return ok(QJsonObject{{QStringLiteral("contact"), QStringLiteral("c9")}});
+        if (scripted && m == QLatin1String("app.radios"))
+            return ok(radiosJson);
+        if (scripted && m == QLatin1String("device.config")) {
+            const QString id = p.value(QStringLiteral("radio")).toString();
+            if (!cfgByRadio.contains(id))
+                return err(QStringLiteral("no_radio"), QStringLiteral("no radio ") + id);
+            return ok(QJsonObject{{QStringLiteral("radio"), id}, {QStringLiteral("state"), QStringLiteral("ok")}, {QStringLiteral("note"), QString()}, {QStringLiteral("values"), cfgByRadio.value(id)}});
+        }
+        if (scripted && m == QLatin1String("device.apply"))
+            return ok(QJsonObject{{QStringLiteral("applied"), QJsonArray::fromStringList(p.value(QStringLiteral("changes")).toObject().keys())}});
+        if (m == QLatin1String("radios.release")) {
+            released << p.value(QStringLiteral("device")).toString();
+            if (scripted)
+                radiosJson = QJsonArray();
+            return ok(QJsonObject{{QStringLiteral("released"), true}, {QStringLiteral("was_open"), true}});
+        }
         if (m == QLatin1String("device.config")) {
             if (!configReadable)
                 return err(QStringLiteral("unknown_method"), QStringLiteral("no method device.config"));
@@ -141,6 +167,8 @@ private:
                                   {QStringLiteral("channels"), QJsonArray{QJsonObject{{QStringLiteral("index"), 0}, {QStringLiteral("name"), QStringLiteral("Primary")}, {QStringLiteral("role"), QStringLiteral("PRIMARY")},
                                                                          {QStringLiteral("psk_b64"), QStringLiteral("AQ==")}, {QStringLiteral("share_url"), QStringLiteral("https://example.invalid/e/#abc")}}}}});
         }
+        if (scripted && m == QLatin1String("discover"))
+            return ok(QJsonObject{{QStringLiteral("serial"), serialDevices}, {QStringLiteral("ble"), QJsonObject{{QStringLiteral("state"), QStringLiteral("devices")}, {QStringLiteral("devices"), QJsonArray()}}}});
         if (m == QLatin1String("discover"))
             return ok(QJsonObject{{QStringLiteral("serial"), QJsonArray{QJsonObject{{QStringLiteral("path"), QStringLiteral("/dev/ttyACM0")}, {QStringLiteral("vid"), 0x303a}, {QStringLiteral("pid"), 0x1001},
                                        {QStringLiteral("product"), QStringLiteral("Fixture board")}, {QStringLiteral("manufacturer"), QStringLiteral("Fixture")}, {QStringLiteral("hint"), QStringLiteral("Espressif native USB")}}}},
@@ -155,6 +183,8 @@ private:
             if (!connectError.isEmpty())
                 return err(QStringLiteral("connect_failed"), connectError);
             savedDevice = p.value(QStringLiteral("device")).toString();
+            if (onConnect)
+                onConnect(savedDevice);
             return ok(QJsonObject{{QStringLiteral("radio"), QStringLiteral("!fixture")}, {QStringLiteral("network"), QStringLiteral("meshtastic")}});
         }
         if (m == QLatin1String("radios.disconnect")) {
