@@ -323,6 +323,33 @@ private Q_SLOTS:
         qputenv("TAOS_APPGROUPS_BIN", "/nonexistent/taos-appgroups");
     }
 
+
+    void a_container_app_installs_into_the_group_the_card_shows_selected()
+    {
+        QTemporaryDir ag;
+        const QString d = ag.path();
+        writeFile(d + u"/catalog.json"_s, jq("{'ok':true,'apps':[{'id':'chromium','name':'Chromium','type':'container-desktop-app','description':'d','publisher':'p','homepage':'https://x.example/','licence':'BSD','licence_required':false,'terms_note':'Open','version':'debian','categories':['Network'],'window_app_id':'chromium','grants':{}}]}"));
+        writeFile(d + u"/list.json"_s, jq("{'ok':true,'apps':[]}"));
+        // the order a real Incus lists them in: the named group before the default one
+        writeFile(d + u"/groups.json"_s, jq("{'ok':true,'groups':[{'name':'dev-apps','display_name':'Dev apps','state':'running','apps':[]},{'name':'default','display_name':'My apps','state':'running','apps':[]}]}"));
+        qputenv("TAOS_APPGROUPS_BIN", QByteArray(FAKE_APPGROUPS));
+        qputenv("FAKE_AG_DIR", d.toUtf8());
+        const auto log = [&] { QFile f(d + u"/args.log"_s); return f.open(QIODevice::ReadOnly) ? QString::fromUtf8(f.readAll()) : QString(); };
+        open(true);
+        QVERIFY(waitFor([this] { return m_win->property("engine").value<QObject *>() && m_win->property("engine").value<QObject *>()->property("loaded").toBool(); }));
+        m_win->setProperty("detailId", u"chromium"_s);
+        QVERIFY(waitFor([this] { return byAccessible(m_win, u"Install Chromium"_s) != nullptr; }));
+        click(byAccessible(m_win, u"Install Chromium"_s));
+        QVERIFY(waitFor([this] { return visibleByName(m_win, u"group-default"_s) != nullptr && visibleByName(m_win, u"group-dev-apps"_s) != nullptr; }));
+        QVERIFY(waitFor([this] { return visibleByName(m_win, u"group-default"_s)->property("on").toBool(); }));   // "My apps" looks selected
+        QCOMPARE(visibleByName(m_win, u"group-dev-apps"_s)->property("on").toBool(), false);
+        QCOMPARE(visibleByName(m_win, u"consentAccept"_s)->property("text").toString(), u"Install"_s);      // no licence to accept
+        click(visibleByName(m_win, u"consentAccept"_s));                                                    // the picker is never touched
+        QVERIFY(waitFor([&] { return log().contains(u"install chromium --json --target group:default"_s); }));
+        QVERIFY2(!log().contains(u"--accept-licence"_s), qPrintable(log()));
+        qputenv("TAOS_APPGROUPS_BIN", "/nonexistent/taos-appgroups");
+    }
+
     void a_member_sees_why_the_install_failed()
     {
         open(false);

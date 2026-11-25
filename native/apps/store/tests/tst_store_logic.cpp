@@ -204,7 +204,7 @@ private Q_SLOTS:
         const QString d = ag.path();
         writeFile(d + u"/catalog.json"_s, jq("{'ok':true,'apps':[ {'id':'claude-desktop','name':'Claude','type':'container-desktop-app','description':'d','publisher':'Anthropic','homepage':'https://x.example/', 'licence':'Anthropic Consumer Terms of Service','licence_url':'https://www.anthropic.com/legal/consumer-terms','licence_required':true, 'terms_note':'Proprietary','version':'apt','categories':['Development'],'can_update':true,'window_app_id':'claude-desktop','grants':{}}, {'id':'chromium','name':'Chromium','type':'container-desktop-app','description':'d','publisher':'p','homepage':'https://x.example/', 'licence':'BSD','licence_required':false,'terms_note':'Open','version':'debian','categories':['Network'],'window_app_id':'chromium','grants':{}}]}"));
         writeFile(d + u"/list.json"_s, jq("{'ok':true,'apps':[{'id':'chromium','name':'Chromium','group':'default','installed_version':'140'}]}"));
-        writeFile(d + u"/groups.json"_s, jq("{'ok':true,'groups':[ {'name':'default','display_name':'My apps','state':'running','apps':['chromium']}, {'name':'dev-apps','display_name':'Dev apps','state':'running','apps':[]}]}"));
+        writeFile(d + u"/groups.json"_s, jq("{'ok':true,'groups':[ {'name':'dev-apps','display_name':'Dev apps','state':'running','apps':[]}, {'name':'default','display_name':'My apps','state':'running','apps':['chromium']}]}"));
         qputenv("TAOS_APPGROUPS_BIN", QByteArray(FAKE_APPGROUPS));
         qputenv("FAKE_AG_DIR", d.toUtf8());
         start();
@@ -222,6 +222,8 @@ private Q_SLOTS:
         QVERIFY2(!log().contains(u"install claude-desktop"_s), "nothing is installed before the person agrees");
         m_e->refreshGroups();
         QCOMPARE(m_e->appGroups().size(), 2);
+        // the engine lists dev-apps before the default group (as Incus does); the Store puts "My apps" first
+        QCOMPARE(m_e->appGroups()[0].toMap().value(u"name"_s).toString(), u"default"_s);
         QCOMPARE(m_e->appGroups()[1].toMap().value(u"displayName"_s).toString(), u"Dev apps"_s);
         // 2. a group chosen, licence accepted: the engine is asked with that group and the licence flag
         m_e->chooseGroup(u"claude-desktop"_s, u"dev-apps"_s);

@@ -111,6 +111,8 @@ Item {
                         visible: page.st.consent === "containerapp"
                         Layout.fillWidth: true
                         engine: page.engine
+                        // chosen afresh each time the card is shown, so the row that looks selected is the group used
+                        onVisibleChanged: if (visible) reset()
                         onPicked: (g) => page.engine.chooseGroup(page.appId, g)
                     }
                     ColumnLayout {

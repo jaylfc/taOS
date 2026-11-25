@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 #include "storeengine.h"
 
+#include <algorithm>
+
 #include <QDesktopServices>
 #include <QDir>
 #include <QFile>
@@ -766,6 +768,14 @@ void StoreEngine::refreshContainerInfo()
         out << QVariantMap{{u"name"_s, g.value(u"name"_s).toString()}, {u"displayName"_s, g.value(u"display_name"_s).toString()},
                            {u"state"_s, g.value(u"state"_s).toString()}, {u"apps"_s, g.value(u"apps"_s).toArray().size()}};
     }
+    // The default group ("My apps") first, then the others by name: the first row is the one a picker preselects, and
+    // the engine's own default for an install, so what the card shows selected is what is installed.
+    std::stable_sort(out.begin(), out.end(), [](const QVariant &a, const QVariant &b) {
+        const QString x = a.toMap().value(u"name"_s).toString(), y = b.toMap().value(u"name"_s).toString();
+        if ((x == u"default"_s) != (y == u"default"_s))
+            return x == u"default"_s;
+        return x < y;
+    });
     m_groups = out;
 }
 
