@@ -21,10 +21,18 @@ REPO = Path(__file__).resolve().parent.parent
 FIXTURE_040 = REPO / "tests" / "fixtures" / "taosmd_040_store"
 
 
+def _pin_recipe(data_dir: Path) -> None:
+    """taosmd picks its retrieval recipe from the host hardware; a CPU-only host gets
+    "lite-pi", whose "fast" strategy does not search the archive. Pin one so these tests
+    say the same on every machine (CI is CPU-only)."""
+    taosmd.config.set_default_recipe("rrf-9b", data_dir=data_dir)
+
+
 @pytest.fixture
 def store(tmp_path: Path) -> Path:
     dest = tmp_path / "data"
     shutil.copytree(FIXTURE_040, dest, ignore=shutil.ignore_patterns("make_fixture.py"))
+    _pin_recipe(dest)
     return dest
 
 
@@ -111,6 +119,7 @@ async def test_recall_finds_what_taos_itself_writes(tmp_path):
 
     data = tmp_path / "data"
     data.mkdir()
+    _pin_recipe(data)
     writer = open_archive_writer("test", data / "archive", index_path=data / "archive-index.db")
     await writer.init()
     try:

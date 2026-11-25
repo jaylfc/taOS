@@ -14,6 +14,7 @@ from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+import taosmd
 
 from tinyagentos.agent_chat_router import AgentChatRouter
 from tinyagentos.chat.group_policy import GroupPolicy
@@ -36,6 +37,9 @@ class _Bridge:
 def _state(tmp_path: Path, agents: list[dict], history=None, thread_history=None):
     data = tmp_path / "data"
     shutil.copytree(FIXTURE_040, data, ignore=shutil.ignore_patterns("make_fixture.py"))
+    # taosmd picks its recipe from the host hardware (a CPU-only host gets one that skips
+    # the archive); pin one so the tests say the same on every machine.
+    taosmd.config.set_default_recipe("rrf-9b", data_dir=data)
     state = MagicMock()
     state.data_dir = data
     state.config = MagicMock()
