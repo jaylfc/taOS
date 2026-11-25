@@ -89,9 +89,18 @@ def _cache_validated_ip(hostname: str, chosen: str) -> None:
 
 
 def _is_blocked_ip(ip) -> bool:
+    # The flag list alone misses RFC 6598 shared address space
+    # (100.64.0.0/10 -- CGNAT, the range Tailscale assigns node addresses
+    # from): those addresses trip none of the flags on Python 3.11 but
+    # report is_global=False. `not ip.is_global` is therefore ADDED as a
+    # condition rather than replacing the list -- the two classifications
+    # diverge in both directions (multicast reports is_global=True and
+    # must stay blocked via is_multicast), so the union can only widen
+    # blocking, never narrow it. (#4377)
     return bool(
         ip.is_private or ip.is_loopback or ip.is_link_local
         or ip.is_reserved or ip.is_unspecified or ip.is_multicast
+        or not ip.is_global
     )
 
 
@@ -100,8 +109,10 @@ def resolve_safe_public_ip(url: str) -> str | None:
     or None if the url is not http(s) or any resolved address is non-public.
 
     Rejects private, loopback, link-local, reserved, unspecified and multicast
-    addresses (covers 127/8, ::1, 10/8, 172.16/12, 192.168/16, 169.254/16,
-    0.0.0.0, etc.). The caller MUST connect to this pinned IP (keeping the
+    addresses, and any other address that is not globally reachable -- RFC
+    6598 shared space (100.64.0.0/10, e.g. Tailscale node addresses), the
+    documentation ranges and the benchmarking range (covers 127/8, ::1, 10/8,
+    172.16/12, 192.168/16, 169.254/16, 0.0.0.0, etc.). The caller MUST connect to this pinned IP (keeping the
     original Host header and TLS SNI) rather than letting the HTTP client
     re-resolve the hostname -- re-resolution reopens a DNS-rebinding TOCTOU
     window where the resolved-and-validated address differs from the one

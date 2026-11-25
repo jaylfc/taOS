@@ -1,0 +1,2 @@
+### Fixed
+- SSRF guard (`tinyagentos/userspace/url_guard.py`): the blocked-address check now also rejects any address that is not globally reachable (`not ip.is_global`), closing the RFC 6598 shared address space gap (100.64.0.0/10 — CGNAT / Tailscale node addresses) that the flag list alone let through (#4377). The flag list is kept alongside, so multicast (which reports `is_global=True`) stays blocked.
