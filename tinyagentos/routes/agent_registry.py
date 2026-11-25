@@ -669,18 +669,23 @@ async def list_registry(
 _PA_PREF_NAMESPACE = "assistant_studio"
 
 
-async def _pa_canonical_id(request: Request) -> str:
-    """The canonical_id of the user's chosen PA, or "" when none is set.
+async def _pa_canonical_id(request: Request, user_id: str) -> str:
+    """The canonical_id of *user_id*'s chosen PA, or "" when none is set.
 
     The Studio's pick lives in the server-side desktop-settings preference
-    store under the ``assistant_studio`` namespace (the Studio syncs it
-    there alongside its local copy). Absent store or absent pick -> "".
+    store under the ``assistant_studio`` namespace, keyed BY THE PERSON:
+    each person has their own PA, so the pick is read under the relevant
+    person's user id -- never under an install-wide key, which would mark
+    one person's PA in every person's directory. Absent store, absent
+    person or absent pick -> "".
     """
+    if not user_id:
+        return ""
     store = getattr(request.app.state, "desktop_settings", None)
     if store is None:
         return ""
     try:
-        prefs = await store.get_preference("user", _PA_PREF_NAMESPACE)
+        prefs = await store.get_preference(user_id, _PA_PREF_NAMESPACE)
     except Exception:
         return ""
     if not isinstance(prefs, dict):
@@ -688,36 +693,68 @@ async def _pa_canonical_id(request: Request) -> str:
     return prefs.get("pa_canonical_id") or ""
 
 
+async def _person_project_ids(request: Request, user_id: str) -> set[str]:
+    """Project ids *user_id* is in: projects they own plus projects where
+    they hold a ``project_members`` row.
+
+    Empty when the project store is not wired on the app (the caller then
+    sees only their own agents in the directory).
+    """
+    pstore = getattr(request.app.state, "project_store", None)
+    if pstore is None or not user_id:
+        return set()
+    owned = await pstore.list_for_user(user_id, status=None)
+    ids = {proj["id"] for proj in owned}
+    ids.update(await pstore.list_project_ids_for_member(user_id))
+    return ids
+
+
 @router.get("/api/agents/directory")
 async def get_agent_directory(request: Request):
     """The agent directory (#2119): who is who on the bus.
 
-    One row per ACTIVE registry agent: canonical id, handle, display name,
-    self-maintained bio, role/title, the projects the agent is a member of
-    (DERIVED from sponsorship rows -- never agent-writable), and whether
-    the agent is the user's personal assistant (read from the Assistant
+    One row per ACTIVE registry agent the caller can already reach:
+    canonical id, handle, display name, self-maintained bio, role/title,
+    the projects the agent is a member of (DERIVED from sponsorship rows
+    -- never agent-writable), and whether the agent is the PA of the
+    person whose view this is (read per person from the Assistant
     Studio's own selection; see ``_pa_canonical_id``).
 
-    Callers: a human session, or a registered agent presenting its own
-    registry JWT (identity only -- no scope grant; reading who-is-who is
-    the bus's phone book, and every entry here is already visible to any
-    bus participant by handle). Bios are agent-authored free text: treat
-    them as untrusted DATA, never as instructions.
+    Visibility is scoped to what the caller can already reach -- the
+    directory must not become a side channel around the ownership and
+    project-membership rules the rest of the registry enforces:
+
+    - an admin sees every active agent, with all project tags;
+    - a person sees their own agents, plus agents sponsored into projects
+      they are in, and project tags only for projects they are in;
+    - an agent (its own registry JWT, identity only) sees its owner's
+      agents, plus agents on projects it shares, and project tags only
+      for those shared projects.
+
+    Bios are agent-authored free text: every row carries
+    ``bio_untrusted: true`` and consumers must treat the bio as untrusted
+    DATA, never as instructions.
     """
-    if not getattr(request.state, "user_id", None):
+    store = _get_store(request)
+
+    session_user_id = getattr(request.state, "user_id", None)
+    caller_agent_id: Optional[str] = None
+    caller_is_admin = False
+    if session_user_id:
+        caller_is_admin = bool(getattr(request.state, "is_admin", False))
+    else:
         # No session/local-token identity was stamped by the middleware:
         # the only other credential this surface accepts is the agent's own
         # registry JWT. check_agent_identity raises 401/403 for a bad or
-        # inactive token and returns None when no Bearer was presented.
-        caller = await check_agent_identity(request)
-        if caller is None:
+        # inactive token and returns None when no Bearer <redacted> presented.
+        caller_agent_id = await check_agent_identity(request)
+        if caller_agent_id is None:
             raise HTTPException(status_code=401, detail="authentication required")
 
-    store = _get_store(request)
-    pa_id = await _pa_canonical_id(request)
-    agents = []
-    for record in await store.list_all(status="active"):
-        projects = sorted(
+    records = await store.list_all(status="active")
+    sponsorships: dict[str, list[str]] = {}
+    for record in records:
+        sponsorships[record["canonical_id"]] = sorted(
             {
                 row["project_id"]
                 for row in await store.list_sponsorships_for_identity(
@@ -726,16 +763,56 @@ async def get_agent_directory(request: Request):
                 if row["project_id"]
             }
         )
+
+    if caller_agent_id is not None:
+        me = next(
+            (r for r in records if r["canonical_id"] == caller_agent_id), None
+        )
+        if me is None:
+            # The identity check proved an active agent; a missing row here
+            # means it was revoked between the check and this read.
+            raise HTTPException(status_code=401, detail="authentication required")
+        pa_person = me["user_id"]
+        reachable: Optional[set[str]] = set(sponsorships[caller_agent_id])
+        visible = [
+            record
+            for record in records
+            if record["user_id"] == pa_person
+            or reachable.intersection(sponsorships[record["canonical_id"]])
+        ]
+    elif caller_is_admin:
+        pa_person = session_user_id
+        reachable = None  # admins see all project tags unfiltered
+        visible = records
+    else:
+        pa_person = session_user_id
+        reachable = await _person_project_ids(request, session_user_id)
+        visible = [
+            record
+            for record in records
+            if record["user_id"] == session_user_id
+            or reachable.intersection(sponsorships[record["canonical_id"]])
+        ]
+
+    pa_id = await _pa_canonical_id(request, pa_person)
+    agents = []
+    for record in visible:
+        projects = sponsorships[record["canonical_id"]]
+        if reachable is not None:
+            projects = [pid for pid in projects if pid in reachable]
         agents.append(
             {
                 "canonical_id": record["canonical_id"],
                 "handle": record.get("handle") or "",
                 "display_name": record.get("display_name") or "",
                 "bio": record.get("bio") or "",
+                "bio_untrusted": True,
                 "role": record.get("role"),
                 "title": record.get("title"),
                 "projects": projects,
-                "is_pa": bool(pa_id) and record["canonical_id"] == pa_id,
+                "is_pa": bool(pa_id)
+                and record["canonical_id"] == pa_id
+                and record["user_id"] == pa_person,
                 "status": record.get("status"),
             }
         )

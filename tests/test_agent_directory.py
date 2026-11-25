@@ -66,14 +66,14 @@ def _bare(app) -> AsyncClient:
     return AsyncClient(transport=ASGITransport(app=app), base_url="http://test")
 
 
-async def _register_agent(app, *, display_name, handle="", role=None):
+async def _register_agent(app, *, display_name, handle="", role=None, user_id="owner-1"):
     """Register an active agent directly; return (canonical_id, registry JWT)."""
     registry = app.state.agent_registry
     priv, _pub = app.state.agent_registry_keypair
     rec = await registry.register(
         framework="taosmd",
         display_name=display_name,
-        user_id="owner-1",
+        user_id=user_id,
         origin="taos-deployed",
         handle=handle,
         role=role,
@@ -171,6 +171,7 @@ class TestAgentDirectoryRoute:
         assert set(entries) == {cid_a, cid_b}
 
         alice = entries[cid_a]
+        assert all(e["bio_untrusted"] is True for e in entries.values())
         assert alice["handle"] == "@alice"
         assert alice["display_name"] == "Directory Alice"
         assert alice["bio"] == "Lead on the keep; owns deploys."
@@ -187,12 +188,15 @@ class TestAgentDirectoryRoute:
         self, directory_client
     ):
         app = directory_client._app
-        cid_a, _ = await _register_agent(app, display_name="PA Alice", handle="@paalice")
+        admin_uid = directory_client._test_admin_uid
+        cid_a, _ = await _register_agent(
+            app, display_name="PA Alice", handle="@paalice", user_id=admin_uid
+        )
         cid_b, _ = await _register_agent(app, display_name="Other Bob", handle="@otherbob")
 
         settings = app.state.desktop_settings
         await settings.save_preference(
-            "user", "assistant_studio", {"pa_canonical_id": cid_a}
+            admin_uid, "assistant_studio", {"pa_canonical_id": cid_a}
         )
 
         resp = await directory_client.get("/api/agents/directory")
@@ -314,3 +318,268 @@ class TestBioUpdateRoute:
                 headers={"Authorization": f"Bearer {token_a}"},
             )
         assert resp.status_code == 422, resp.text
+
+
+# ---------------------------------------------------------------------------
+# Sanitising beyond C0/C1: Unicode categories + NFKC (#2119 review round)
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+class TestBioSanitisingCategories:
+    async def _stored_bio(self, tmp_path, raw):
+        store = AgentRegistryStore(tmp_path / "reg.db")
+        await store.init()
+        try:
+            rec = await store.register(framework="hermes", display_name="San Agent")
+            updated = await store.set_bio(rec["canonical_id"], raw)
+            assert updated is not None
+            return updated["bio"]
+        finally:
+            await store.close()
+
+    async def test_bidi_override_cf_stripped(self, tmp_path):
+        # U+202E RIGHT-TO-LEFT OVERRIDE is category Cf.
+        assert await self._stored_bio(tmp_path, "ab\u202ecd") == "abcd"
+
+    async def test_zero_width_space_cf_stripped(self, tmp_path):
+        # U+200B ZERO WIDTH SPACE is category Cf.
+        assert await self._stored_bio(tmp_path, "ab\u200bcd") == "abcd"
+
+    async def test_isolates_cf_stripped(self, tmp_path):
+        # U+2066 LEFT-TO-RIGHT ISOLATE / U+2069 POP DIRECTIONAL ISOLATE (Cf).
+        assert await self._stored_bio(tmp_path, "ab\u2066cd\u2069ef") == "abcdef"
+
+    async def test_line_separator_zl_stripped(self, tmp_path):
+        # U+2028 LINE SEPARATOR is category Zl.
+        assert await self._stored_bio(tmp_path, "ab\u2028cd") == "abcd"
+
+    async def test_paragraph_separator_zp_stripped(self, tmp_path):
+        # U+2029 PARAGRAPH SEPARATOR is category Zp.
+        assert await self._stored_bio(tmp_path, "ab\u2029cd") == "abcd"
+
+    async def test_lone_surrogate_cs_stripped(self, tmp_path):
+        # A lone surrogate is category Cs.
+        assert await self._stored_bio(tmp_path, "ab\ud800cd") == "abcd"
+
+    async def test_nfkc_normalisation_applied(self, tmp_path):
+        # Full-width letters and the fi ligature fold under NFKC.
+        assert await self._stored_bio(tmp_path, "ＡＢＣ ﬁ") == "ABC fi"
+
+    async def test_cap_applies_after_nfkc(self, tmp_path):
+        store = AgentRegistryStore(tmp_path / "reg.db")
+        await store.init()
+        try:
+            rec = await store.register(framework="hermes", display_name="Cap2 Agent")
+            with pytest.raises(ValueError):
+                # 101 ligatures: 101 chars before NFKC, 202 after.
+                await store.set_bio(rec["canonical_id"], "ﬁ" * 101)
+        finally:
+            await store.close()
+
+
+# ---------------------------------------------------------------------------
+# Directory visibility scoping + per-owner PA (#2119 review round)
+# ---------------------------------------------------------------------------
+
+async def _member_client(app, username="member2", password="memberpass12345"):
+    """Non-admin member session client; exposes ``._member_uid``."""
+    auth_mgr = app.state.auth
+    if not auth_mgr.find_user(username):
+        invite_code = auth_mgr.add_user_invite(username, "admin")
+        auth_mgr.complete_invite(username, invite_code, "Test Member", "", password)
+    record = auth_mgr.find_user(username)
+    uid = record["id"] if record else ""
+    token = auth_mgr.create_session(user_id=uid, long_lived=True)
+    client = AsyncClient(
+        transport=ASGITransport(app=app),
+        base_url="http://test",
+        cookies={"taos_session": token},
+        event_hooks=csrf_event_hooks(),
+    )
+    client._member_uid = uid
+    return client
+
+
+async def _visibility_world(app, member_uid):
+    """Two session people + a third owner, three agents, three projects.
+
+    - admin owns agent_admin (projects: shared, admin-only)
+    - member owns agent_member (projects: shared); member is a human
+      member of the shared project only
+    - person-x (no session) owns agent_outsider (projects: outsider-only)
+    """
+    registry = app.state.agent_registry
+    pstore = app.state.project_store
+    if pstore._db is None:
+        await pstore.init()
+    admin_uid = app.state.auth.find_user("admin")["id"]
+
+    shared = await pstore.create_project(
+        "Shared Proj", "shared-proj", admin_uid, user_id=admin_uid
+    )
+    admin_only = await pstore.create_project(
+        "Admin Only Proj", "admin-only-proj", admin_uid, user_id=admin_uid
+    )
+    outsider_only = await pstore.create_project(
+        "Outsider Proj", "outsider-proj", "person-x", user_id="person-x"
+    )
+    await pstore.add_member(shared["id"], member_uid, "human")
+
+    cid_admin, _ = await _register_agent(
+        app, display_name="Keeper Agent", handle="@keeperagent", user_id=admin_uid
+    )
+    cid_member, token_member = await _register_agent(
+        app, display_name="Helper Agent", handle="@helperagent", user_id=member_uid
+    )
+    cid_outsider, _ = await _register_agent(
+        app, display_name="Remote Agent", handle="@remoteagent", user_id="person-x"
+    )
+    await registry.set_bio(cid_admin, "admin agent bio")
+    await registry.set_bio(cid_member, "member agent bio")
+    await registry.set_bio(cid_outsider, "outsider secret bio")
+    await registry.set_sponsorship(cid_admin, shared["id"], "contact-a")
+    await registry.set_sponsorship(cid_admin, admin_only["id"], "contact-a")
+    await registry.set_sponsorship(cid_member, shared["id"], "contact-m")
+    await registry.set_sponsorship(cid_outsider, outsider_only["id"], "contact-x")
+    return {
+        "admin_uid": admin_uid,
+        "shared": shared["id"],
+        "admin_only": admin_only["id"],
+        "outsider_only": outsider_only["id"],
+        "cid_admin": cid_admin,
+        "cid_member": cid_member,
+        "cid_outsider": cid_outsider,
+        "token_member": token_member,
+    }
+
+
+@pytest.mark.asyncio
+class TestDirectoryVisibility:
+    async def test_member_sees_own_and_shared_not_outsider(self, directory_client):
+        app = directory_client._app
+        async with await _member_client(app) as member:
+            world = await _visibility_world(app, member._member_uid)
+            resp = await member.get("/api/agents/directory")
+        assert resp.status_code == 200, resp.text
+        entries = {e["canonical_id"]: e for e in resp.json()["agents"]}
+        # Own agent + the admin's agent shared via the shared project.
+        assert set(entries) == {world["cid_member"], world["cid_admin"]}
+        # Project membership leaks only for projects the member is in.
+        assert entries[world["cid_admin"]]["projects"] == [world["shared"]]
+        assert entries[world["cid_member"]]["projects"] == [world["shared"]]
+        # The outsider is absent through every field, not just the id list.
+        assert world["cid_outsider"] not in entries
+        assert "outsider secret bio" not in resp.text
+        assert "Remote Agent" not in resp.text
+        assert world["outsider_only"] not in resp.text
+        assert world["admin_only"] not in resp.text
+        assert all(e["bio_untrusted"] is True for e in entries.values())
+
+    async def test_agent_caller_sees_owner_agents_and_project_sharers(
+        self, directory_client
+    ):
+        app = directory_client._app
+        member = await _member_client(app)
+        world = await _visibility_world(app, member._member_uid)
+        async with _bare(app) as bare:
+            resp = await bare.get(
+                "/api/agents/directory",
+                headers={"Authorization": f"Bearer {world['token_member']}"},
+            )
+        assert resp.status_code == 200, resp.text
+        entries = {e["canonical_id"]: e for e in resp.json()["agents"]}
+        # Its owner's agents (itself) + agents on projects it shares.
+        assert set(entries) == {world["cid_member"], world["cid_admin"]}
+        assert entries[world["cid_admin"]]["projects"] == [world["shared"]]
+        assert "outsider secret bio" not in resp.text
+
+    async def test_admin_sees_all_agents_and_projects(self, directory_client):
+        app = directory_client._app
+        member = await _member_client(app)
+        world = await _visibility_world(app, member._member_uid)
+        resp = await directory_client.get("/api/agents/directory")
+        assert resp.status_code == 200, resp.text
+        entries = {e["canonical_id"]: e for e in resp.json()["agents"]}
+        assert set(entries) == {
+            world["cid_admin"],
+            world["cid_member"],
+            world["cid_outsider"],
+        }
+        assert sorted(entries[world["cid_admin"]]["projects"]) == sorted(
+            [world["shared"], world["admin_only"]]
+        )
+        assert entries[world["cid_outsider"]]["bio"] == "outsider secret bio"
+
+
+@pytest.mark.asyncio
+class TestPaPerOwner:
+    async def test_each_owner_sees_only_their_own_pa_marked(self, directory_client):
+        app = directory_client._app
+        member = await _member_client(app)
+        world = await _visibility_world(app, member._member_uid)
+        settings = app.state.desktop_settings
+        await settings.save_preference(
+            world["admin_uid"], "assistant_studio",
+            {"pa_canonical_id": world["cid_admin"]},
+        )
+        await settings.save_preference(
+            member._member_uid, "assistant_studio",
+            {"pa_canonical_id": world["cid_member"]},
+        )
+        # A legacy install-wide pick naming a third person's agent must
+        # mark nothing for anyone.
+        await settings.save_preference(
+            "user", "assistant_studio",
+            {"pa_canonical_id": world["cid_outsider"]},
+        )
+
+        resp = await directory_client.get("/api/agents/directory")
+        entries = {e["canonical_id"]: e for e in resp.json()["agents"]}
+        assert entries[world["cid_admin"]]["is_pa"] is True
+        assert entries[world["cid_member"]]["is_pa"] is False
+        assert entries[world["cid_outsider"]]["is_pa"] is False
+
+        async with member:
+            resp = await member.get("/api/agents/directory")
+        entries = {e["canonical_id"]: e for e in resp.json()["agents"]}
+        assert entries[world["cid_member"]]["is_pa"] is True
+        assert entries[world["cid_admin"]]["is_pa"] is False
+
+    async def test_pick_naming_another_persons_agent_is_not_marked(
+        self, directory_client
+    ):
+        app = directory_client._app
+        member = await _member_client(app)
+        world = await _visibility_world(app, member._member_uid)
+        settings = app.state.desktop_settings
+        # The member's pick names the ADMIN's agent: visible via the shared
+        # project, but it is not the member's PA and must not be marked.
+        await settings.save_preference(
+            member._member_uid, "assistant_studio",
+            {"pa_canonical_id": world["cid_admin"]},
+        )
+        async with member:
+            resp = await member.get("/api/agents/directory")
+        entries = {e["canonical_id"]: e for e in resp.json()["agents"]}
+        assert entries[world["cid_admin"]]["is_pa"] is False
+        assert entries[world["cid_member"]]["is_pa"] is False
+
+    async def test_studio_sync_writes_the_per_owner_key(self, directory_client):
+        """PUT /api/preferences/assistant_studio lands under the caller's id."""
+        app = directory_client._app
+        admin_uid = directory_client._test_admin_uid
+        cid, _ = await _register_agent(
+            app, display_name="Sync PA", handle="@syncpa", user_id=admin_uid
+        )
+        resp = await directory_client.put(
+            "/api/preferences/assistant_studio", json={"pa_canonical_id": cid}
+        )
+        assert resp.status_code == 200, resp.text
+        settings = app.state.desktop_settings
+        own = await settings.get_preference(admin_uid, "assistant_studio")
+        assert own.get("pa_canonical_id") == cid
+        legacy = await settings.get_preference("user", "assistant_studio")
+        assert legacy.get("pa_canonical_id") != cid
+        resp = await directory_client.get("/api/preferences/assistant_studio")
+        assert resp.status_code == 200, resp.text
+        assert resp.json().get("pa_canonical_id") == cid

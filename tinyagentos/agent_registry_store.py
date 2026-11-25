@@ -17,6 +17,7 @@ import json
 import logging
 import re
 import time
+import unicodedata
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -93,20 +94,35 @@ VALID_STATUSES = frozenset({"pending", "active", "suspended", "revoked", "reject
 # stripped on write because a bio is agent-authored free text that OTHER
 # agents read -- it is untrusted data, and embedded newlines/NULs would let one
 # agent forge structure (fake line breaks, truncated strings) in whatever
-# surface renders it.
+# surface renders it. The same reasoning extends past C0/C1 controls to the
+# invisible Unicode troublemakers: format characters (Cf -- bidi overrides,
+# zero-width spaces, isolates), line/paragraph separators (Zl/Zp) and lone
+# surrogates (Cs) are dropped, and the text is NFKC-normalised so lookalike
+# compatibility characters fold to their plain forms before storage.
 BIO_MAX_CHARS = 200
 
 _BIO_CONTROL_CHARS = re.compile(r"[\x00-\x1f\x7f-\x9f]")
 
+_BIO_DROP_CATEGORIES = frozenset({"Cf", "Zl", "Zp", "Cs"})
+
 
 def sanitize_bio(text: str) -> str:
-    """Strip control characters from *text* and trim surrounding whitespace.
+    """Normalise *text* and strip everything a stored bio must not contain.
 
-    Length is NOT enforced here -- callers check the sanitised length against
+    NFKC-normalise first, then drop Unicode categories Cf/Zl/Zp/Cs and the
+    C0/C1 control range, and trim surrounding whitespace. Length is NOT
+    enforced here -- callers check the sanitised length against
     BIO_MAX_CHARS so a bio that only exceeds the cap via stripped characters
-    is not rejected for content that would never be stored.
+    is not rejected for content that would never be stored (and one that
+    only exceeds it AFTER normalisation is).
     """
-    return _BIO_CONTROL_CHARS.sub("", text or "").strip()
+    normalised = unicodedata.normalize("NFKC", text or "")
+    kept = "".join(
+        ch
+        for ch in normalised
+        if unicodedata.category(ch) not in _BIO_DROP_CATEGORIES
+    )
+    return _BIO_CONTROL_CHARS.sub("", kept).strip()
 
 
 # Maps (from_status, to_status) → True for allowed transitions.

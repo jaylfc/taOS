@@ -506,6 +506,23 @@ class ProjectStore(ProjectsDBStore):
             keys = [d[0] for d in cur.description]
         return [dict(zip(keys, r)) for r in rows]
 
+    async def list_project_ids_for_member(self, member_id: str) -> list[str]:
+        """Project ids where *member_id* holds a ``project_members`` row.
+
+        The complement of ``list_for_user`` (projects a person OWNS): this
+        is the projects a person is IN. The agent directory's visibility
+        scoping (#2119) needs exactly that set. Only human member rows
+        carry user ids, so matching on member_id alone is sufficient.
+        """
+        if not member_id:
+            return []
+        async with self._read(
+            "SELECT project_id FROM project_members WHERE member_id = ?",
+            (member_id,),
+        ) as cur:
+            rows = await cur.fetchall()
+        return [r[0] for r in rows]
+
     async def get_member(self, project_id: str, member_id: str) -> dict | None:
         async with self._read(
             "SELECT * FROM project_members WHERE project_id = ? AND member_id = ?",
