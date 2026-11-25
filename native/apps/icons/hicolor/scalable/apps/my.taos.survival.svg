@@ -2,7 +2,12 @@
   <rect x="6" y="6" width="116" height="116" rx="28" fill="#2b3038"/>
   <rect x="6.5" y="6.5" width="115" height="115" rx="27.5" fill="none" stroke="#4a515c"/>
   <g fill="none" stroke="#e8ebef" stroke-width="7" stroke-linecap="round" stroke-linejoin="round">
-    <circle cx="64" cy="64" r="34"/>
-    <path d="M78 50 L70 70 L50 78 L58 58 Z"/>
+    <path d="M22 98 H106"/>
+    <path d="M24 98 L44 60 L64 98"/>
+    <path d="M38 98 L44 86 L50 98"/>
+    <path d="M88 38 L76 60 H100 Z"/>
+    <path d="M88 54 L72 80 H104 Z"/>
+    <path d="M88 80 V98"/>
   </g>
+  <circle cx="34" cy="38" r="4.5" fill="#e8ebef"/>
 </svg>
