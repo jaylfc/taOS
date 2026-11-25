@@ -183,7 +183,7 @@ fn listen(socket: &std::path::Path) -> ExitCode {
 
 fn daemon(a: &Args, socket: &std::path::Path) -> ExitCode {
     let dir = a.opt("data-dir").map(PathBuf::from).unwrap_or_else(data_dir);
-    let owner = a.opt("owner").unwrap_or("owner").to_string();
+    let owner = a.opt("owner").map(String::from).unwrap_or_else(|| std::env::var("USER").map(|u| format!("person:{u}")).unwrap_or_else(|_| "owner".to_string()));
     let engine = match Engine::open(&dir, &owner) {
         Ok(e) => e,
         Err(e) => {
