@@ -16,7 +16,7 @@ ColumnLayout {
     readonly property var engine: Survival.packs
     // the card list follows the ids only; each card reads its own pack, so a progress tick never rebuilds a card
     // (and never drops a pressed button or a half-done Delete confirmation)
-    StableModel { id: ids; source: { root.engine.packs; return root.engine.ofKind(root.kind).map(p => p.id) } }
+    StableModel { id: ids; source: { root.engine.packs; return (root.kind === "" ? root.engine.packs.filter(p => p.installed || p.state !== "available" || p.error !== "" || p.resumable) : root.engine.ofKind(root.kind)).map(p => p.id) } }
     spacing: Look.space3
 
     Repeater {
@@ -43,7 +43,7 @@ ColumnLayout {
                         Layout.alignment: Qt.AlignTop
                         width: 40; height: 40; radius: Look.radiusCard - 3
                         color: Look.field; border.width: 1; border.color: Look.hairline
-                        Glyph { anchors.centerIn: parent; name: root.kind === "map" ? "map" : "book"; size: 20; stroke: 1.8; color: Look.textSecondary }
+                        Glyph { anchors.centerIn: parent; name: card.pk.kind === "map" ? "map" : "book"; size: 20; stroke: 1.8; color: Look.textSecondary }
                     }
                     ColumnLayout {
                         Layout.fillWidth: true
@@ -63,6 +63,10 @@ ColumnLayout {
                                    accessibleName: qsTr("Licence %1").arg(card.pk.licence) }
                             Chip { visible: card.pk.language !== ""; text: card.pk.language.toUpperCase() }
                             Chip { visible: card.pk.local; text: qsTr("Your file") }
+                            Chip { visible: card.pk.source !== "" && !card.pk.local; text: card.pk.source; glyph: "globe" }
+                            Chip { visible: card.pk.version !== "" && card.pk.installed; text: card.pk.version; mono: true }
+                            Chip { visible: card.pk.unverified; text: qsTr("No checksum published"); tone: "warning"; glyph: "alert" }
+                            Chip { visible: card.pk.updateAvailable; text: qsTr("Update %1").arg(card.pk.updateVersion); tone: "accent"; glyph: "refresh" }
                         }
                         TaosText {
                             visible: card.pk.attribution !== ""
@@ -98,16 +102,16 @@ ColumnLayout {
                 }
                 // downloading
                 ColumnLayout {
-                    visible: card.pk.state === "downloading" || card.pk.state === "verifying"
+                    visible: card.pk.state === "downloading" || card.pk.state === "verifying" || card.pk.state === "preparing"
                     Layout.fillWidth: true
                     spacing: 6
-                    ProgressTrack { Layout.fillWidth: true; value: card.pk.progress; indeterminate: card.pk.state === "verifying" }
+                    ProgressTrack { Layout.fillWidth: true; value: card.pk.progress; indeterminate: card.pk.state === "verifying" || card.pk.state === "preparing" }
                     RowLayout {
                         Layout.fillWidth: true
                         TaosText {
                             Layout.fillWidth: true
                             font.pixelSize: Look.small; color: Look.textSecondary
-                            text: card.pk.state === "verifying" ? qsTr("Checking the file against its checksum")
+                            text: card.pk.state === "preparing" ? qsTr("Asking the publisher for the checksum and the exact size") : card.pk.state === "verifying" ? qsTr("Checking the file against its checksum")
                                 : qsTr("%1 of %2").arg(card.pk.receivedText || "0 B").arg(card.pk.sizeText)
                         }
                         TaosButton { visible: card.pk.state === "downloading"; text: qsTr("Pause"); compact: true
@@ -137,7 +141,7 @@ ColumnLayout {
                     spacing: Look.space2
                     Item { Layout.fillWidth: true }
                     PillButton {
-                        visible: !card.pk.installed && card.pk.hasDownload && card.pk.state !== "downloading" && card.pk.state !== "verifying"
+                        visible: !card.pk.installed && card.pk.hasDownload && card.pk.state !== "downloading" && card.pk.state !== "verifying" && card.pk.state !== "preparing"
                         enabled: card.accepted
                         variant: "primary"; glyph: "download"
                         text: card.pk.resumable ? qsTr("Resume") : card.pk.state === "failed" ? qsTr("Try again") : qsTr("Download")
@@ -145,7 +149,14 @@ ColumnLayout {
                         onClicked: root.engine.download(card.pk.id)
                     }
                     PillButton {
-                        visible: card.pk.installed && root.kind === "zim"
+                        visible: card.pk.updateAvailable
+                        variant: "primary"; glyph: "refresh"
+                        text: qsTr("Update")
+                        accessibleName: qsTr("Update %1 to %2").arg(card.pk.title).arg(card.pk.updateVersion)
+                        onClicked: root.engine.update(card.pk.id)
+                    }
+                    PillButton {
+                        visible: card.pk.installed && card.pk.kind === "zim"
                         variant: "primary"; text: qsTr("Open")
                         accessibleName: qsTr("Open %1").arg(card.pk.title)
                         onClicked: root.openRequested(card.pk.id)

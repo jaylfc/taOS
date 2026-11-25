@@ -14,6 +14,14 @@ Data (never in the repository; downloaded or imported by the person into their o
   (Wikipedia contributors, packaged by Kiwix). Map packs made from the Protomaps basemap carry OpenStreetMap data
   under the ODbL: the attribution is shown on the map and in the pack list.
 
+Catalogues
+  catalog/collections.json is derived from the curated tiers of Project N.O.M.A.D. (collections/kiwix-categories.json,
+  https://github.com/Crosstalk-Solutions/project-nomad, Apache-2.0, Copyright Crosstalk Solutions, LLC): the choice of
+  packs and their grouping. catalog/models.json lists the models that project offers. catalog/regions.json names its
+  ready-made US map files. The packs themselves come from their publishers (Kiwix, Learning Equality, Protomaps, the
+  OpenStreetMap contributors) and are never in this repository. The Kiwix OPDS catalogue and the Kolibri catalogue
+  are read at run time.
+
 Icons
   The application icon (icons/hicolor/scalable/apps/my.taos.survival.svg) was drawn for taOS from plain shapes.
   The line icons in Taos.Apps Glyph.qml (the set this app uses, with the ones added for it) are Lucide/Feather derived:

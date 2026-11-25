@@ -55,6 +55,7 @@ private Q_SLOTS:
         qputenv("XDG_CONFIG_HOME", (r + u"/config"_s).toUtf8());
         qputenv("TAOS_SURVIVAL_DIR", (r + u"/survival"_s).toUtf8());
         qputenv("TAOS_REDUCE_MOTION", "1");
+        qputenv("TAOS_SURVIVAL_CATALOG_URL", QByteArray("file://") + SURVIVAL_TEST_DATA + "/opds");
         QDir().mkpath(r + u"/survival/packs"_s);
         QVERIFY(Fixture::writeZim(r + u"/survival/packs/lib.zim"_s));
         QVERIFY(Fixture::writePmtiles(r + u"/survival/packs/area.pmtiles"_s));
@@ -113,16 +114,26 @@ private Q_SLOTS:
         QTest::qWait(150);
         QVERIFY(!m_win->grabWindow().isNull());
     }
-    void packs_page_lists_the_catalogue_and_the_installed_pack()
+    void packs_page_lists_installed_and_browses_the_catalogue()
     {
         section("library");
-        m_win->findChild<QObject *>(u"x"_s);   // (nothing: the Packs view is a mode of the Library page)
         auto *page = byName(m_win, u"page-library"_s);
         QVERIFY(page);
         page->setProperty("mode", u"packs"_s);
-        QTest::qWait(200);
+        QTest::qWait(250);
         QVERIFY(findItem(m_win->contentItem(), [](QQuickItem *i) { return i->objectName() == u"pack-local-lib"_s && i->isVisible(); }));
-        QVERIFY(findItem(m_win->contentItem(), [](QQuickItem *i) { return i->objectName() == u"pack-wikipedia-medicine-mini"_s && i->isVisible(); }));
+        // Browse shows what the catalogue offers (a fixture feed), with the https-less entries already dropped
+        auto *browser = byName(m_win, u"packBrowser"_s);
+        QVERIFY(browser);
+        browser->setProperty("tab", u"browse"_s);
+        QVERIFY(waitFor([&] { return findItem(m_win->contentItem(), [](QQuickItem *i) { return i->objectName() == u"result-kiwix:wikipedia_en_all_nopic_2026-06"_s && i->isVisible(); }) != nullptr; }, 6000));
+        QVERIFY(findItem(m_win->contentItem(), [](QQuickItem *i) { return i->objectName() == u"result-kiwix:libretexts.org_en_math_2026-01"_s && i->isVisible(); }));
+        QVERIFY(!findItem(m_win->contentItem(), [](QQuickItem *i) { return i->objectName().contains(u"evil"_s); }));
+        for (const char *t : {"collections", "maps", "learn", "models", "installed"}) {
+            browser->setProperty("tab", QString::fromLatin1(t));
+            QTest::qWait(150);
+            QVERIFY(!m_win->grabWindow().isNull());
+        }
         page->setProperty("mode", u"read"_s);
     }
     void map_opens_the_map_pack_and_taostak_shows_radios_and_messages()

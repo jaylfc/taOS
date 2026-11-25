@@ -12,6 +12,7 @@ Item {
     property bool narrow: false
     property string mode: "read"
     property bool reading: false
+    property string packTab: "installed"
     readonly property var lib: Survival.library
     readonly property var engine: Survival.packs
     readonly property var installed: { engine.packs; return engine.ofKind("zim", true) }
@@ -59,19 +60,16 @@ Item {
                 onActivated: (id) => { page.mode = id; page.reading = false }
             }
         }
-        // packs
-        C.ScrollView {
+        // packs: everything that can be downloaded
+        PackBrowser {
             visible: page.mode === "packs"
             Layout.fillWidth: true; Layout.fillHeight: true
-            contentWidth: availableWidth
-            clip: true
-            PackList {
-                x: page.narrow ? Look.space4 : Look.space5
-                width: Math.min(820, parent.width - 2 * x)
-                compact: page.narrow
-                kind: "zim"
-                onOpenRequested: (id) => page.openPack(id)
-            }
+            Layout.leftMargin: page.narrow ? Look.space4 : Look.space5
+            Layout.rightMargin: page.narrow ? Look.space4 : Look.space5
+            narrow: page.narrow
+            tab: page.packTab
+            onTabChanged: page.packTab = tab
+            onOpenRequested: (id) => page.openPack(id)
         }
         // nothing installed
         Item {

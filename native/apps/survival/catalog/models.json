@@ -1,0 +1,36 @@
+{
+ "version": 1,
+ "source": "The model list Project N.O.M.A.D. offers (admin/constants/ollama.ts, Apache-2.0). Models are not downloaded here: the taOS Store holds the model catalogue.",
+ "models": [
+  {
+   "name": "llama3.1",
+   "description": "Llama 3.1 is a new state-of-the-art model from Meta available in 8B, 70B and 405B parameter sizes.",
+   "tags": [
+    {
+     "tag": "llama3.1:8b-text-q4_1",
+     "size": "5.1 GB"
+    }
+   ]
+  },
+  {
+   "name": "deepseek-r1",
+   "description": "DeepSeek-R1 is a family of open reasoning models with performance approaching that of leading models, such as O3 and Gemini 2.5 Pro.",
+   "tags": [
+    {
+     "tag": "deepseek-r1:1.5b",
+     "size": "1.1 GB"
+    }
+   ]
+  },
+  {
+   "name": "llama3.2",
+   "description": "Meta",
+   "tags": [
+    {
+     "tag": "llama3.2:1b-text-q2_K",
+     "size": "581 MB"
+    }
+   ]
+  }
+ ]
+}

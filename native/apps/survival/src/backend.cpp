@@ -12,6 +12,7 @@
 #include <cmath>
 
 #include "articlehtml.h"
+#include "content.h"
 #include "kit.h"
 #include "mapview.h"
 #include "paths.h"
@@ -95,6 +96,7 @@ PacksEngine::PacksEngine(const QString &dataDir, QObject *parent) : QObject(pare
         m_progress.remove(id);
         setMessage(ok ? tr("%1 is ready.").arg(m_pm.pack(id).title) : msg);
         if (ok) Q_EMIT packInstalled(id);
+        if (id == m_active) { m_active.clear(); startNext(); }
         Q_EMIT changed();
     });
 }
@@ -114,6 +116,9 @@ QVariantMap PacksEngine::toMap(const PackInfo &p) const
     m[u"receivedText"_s] = sizeText(got); m[u"path"_s] = p.path;
     m[u"progress"_s] = total > 0 ? qBound(0.0, double(got) / double(total), 1.0) : 0.0;
     m[u"resumable"_s] = got > 0 && p.state == u"available"_s;
+    m[u"source"_s] = p.source; m[u"series"_s] = p.series; m[u"restrictive"_s] = p.needsAcceptance;
+    m[u"unverified"_s] = p.unverified; m[u"updateAvailable"_s] = p.updateAvailable; m[u"updateVersion"_s] = p.updateVersion;
+    m[u"catalogPack"_s] = !p.series.isEmpty();
     return m;
 }
 
@@ -132,6 +137,31 @@ QVariantList PacksEngine::ofKind(const QString &kind, bool installedOnly) const
             out.append(toMap(p));
     return out;
 }
+void PacksEngine::enqueue(const QStringList &ids)
+{
+    for (const QString &id : ids)
+        if (!m_queue.contains(id) && id != m_active) m_queue << id;
+    if (m_active.isEmpty())
+        startNext();
+}
+void PacksEngine::startNext()
+{
+    while (!m_queue.isEmpty()) {
+        const QString id = m_queue.takeFirst();
+        QString err;
+        if (m_pm.download(id, &err)) { m_active = id; return; }
+        setMessage(err);
+    }
+    m_active.clear();
+}
+bool PacksEngine::update(const QString &id)
+{
+    QString err;
+    if (!m_pm.update(id, &err)) { setMessage(err); return false; }
+    setMessage(QString());
+    return true;
+}
+
 QVariantMap PacksEngine::pack(const QString &id) const { return toMap(m_pm.pack(id)); }
 QString PacksEngine::freeText() const
 {
@@ -660,6 +690,12 @@ SurvivalBackend::SurvivalBackend(const QString &dataDir, QObject *parent)
 {
     m_radios.scan();
     m_kits.refresh();
+    auto *packs = &m_packs;
+    m_catalog = new CatalogEngine(packs, this);
+    m_collections = new CollectionsEngine(packs, this);
+    m_mapPacks = new MapPacksEngine(packs, &m_exec, this);
+    m_edu = new EduEngine(dataDir, &m_exec, this);
+    m_models = new ModelsEngine(this);
 }
 
 void SurvivalBackend::setMesh(MeshBackend *b)

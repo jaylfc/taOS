@@ -12,6 +12,7 @@
 #include <memory>
 
 #include "mapdata.h"
+#include "containerexec.h"
 #include "meshinterface.h"
 #include "packmanager.h"
 #include "radiodetector.h"
@@ -72,6 +73,9 @@ public:
     Q_INVOKABLE bool importFile(const QString &path, const QString &sha256 = QString());
     Q_INVOKABLE void acceptLicence(const QString &id) { m_pm.acceptLicence(id); }
     Q_INVOKABLE void rescan() { m_pm.rescan(); }
+    /// Downloads these (already known) packs one after another.
+    Q_INVOKABLE void enqueue(const QStringList &ids);
+    Q_INVOKABLE bool update(const QString &id);
 Q_SIGNALS:
     void changed();
     void messageChanged();
@@ -83,6 +87,9 @@ private:
     PackManager m_pm;
     QString m_message;
     QHash<QString, QPair<qint64, qint64>> m_progress;
+    QStringList m_queue;
+    QString m_active;
+    void startNext();
 };
 
 class LibraryEngine : public QObject
@@ -255,6 +262,11 @@ class SurvivalBackend : public QObject
     Q_PROPERTY(QObject *map READ map CONSTANT)
     Q_PROPERTY(QObject *radios READ radios CONSTANT)
     Q_PROPERTY(QObject *kits READ kits CONSTANT)
+    Q_PROPERTY(QObject *catalog READ catalog CONSTANT)
+    Q_PROPERTY(QObject *collections READ collections CONSTANT)
+    Q_PROPERTY(QObject *mapPacks READ mapPacks CONSTANT)
+    Q_PROPERTY(QObject *edu READ edu CONSTANT)
+    Q_PROPERTY(QObject *models READ models CONSTANT)
     Q_PROPERTY(QObject *mesh READ mesh NOTIFY meshChanged)
     Q_PROPERTY(bool meshAvailable READ meshAvailable NOTIFY meshChanged)
     Q_PROPERTY(QString meshReason READ meshReason NOTIFY meshChanged)
@@ -265,6 +277,11 @@ public:
     QObject *map() { return &m_map; }
     QObject *radios() { return &m_radios; }
     QObject *kits() { return &m_kits; }
+    QObject *catalog() { return m_catalog; }
+    QObject *collections() { return m_collections; }
+    QObject *mapPacks() { return m_mapPacks; }
+    QObject *edu() { return m_edu; }
+    QObject *models() { return m_models; }
     QObject *mesh() { return m_mesh; }
     bool meshAvailable() const { return m_mesh && m_mesh->available(); }
     QString meshReason() const { return m_mesh ? m_mesh->unavailableReason() : QString(); }
@@ -285,6 +302,8 @@ private:
     MapEngine m_map;
     RadioEngine m_radios;
     KitEngine m_kits;
+    ContainerExec m_exec;
+    QObject *m_catalog = nullptr, *m_collections = nullptr, *m_mapPacks = nullptr, *m_edu = nullptr, *m_models = nullptr;
     FakeMeshBackend m_fakeMesh;
     MeshBackend *m_mesh = &m_fakeMesh;
 };

@@ -1,0 +1,14 @@
+<?xml version="1.0"?>
+<feed xmlns="http://www.w3.org/2005/Atom" xmlns:dc="http://purl.org/dc/terms/">
+  <totalResults>3682</totalResults><startIndex>30</startIndex><itemsPerPage>4</itemsPerPage>
+  <entry><id>urn:uuid:aaaa</id><title>Wikipedia</title><updated>2026-06-17T00:00:00Z</updated><summary>The free encyclopedia</summary>
+    <language>eng</language><name>wikipedia_en_all</name><flavour>nopic</flavour><category>wikipedia</category>
+    <tags>wikipedia;_pictures:no;_ftindex:yes</tags><articleCount>19191219</articleCount><mediaCount>515775</mediaCount>
+    <author><name>Wikipedia</name></author><publisher><name>openZIM</name></publisher>
+    <link rel="http://opds-spec.org/acquisition/open-access" type="application/x-zim" href="https://lb.download.kiwix.org/zim/wikipedia/wikipedia_en_all_nopic_2026-06.zim.meta4" length="52690707456"/></entry>
+  <entry><id>urn:uuid:bbbb</id><title>Plain http</title><updated>2026-01-01T00:00:00Z</updated><language>eng</language><name>evil_en_all</name><category>other</category>
+    <link type="application/x-zim" href="http://download.example/zim/evil_en_all_2026-01.zim.meta4" length="1000"/></entry>
+  <entry><id>urn:uuid:cccc</id><title>No link</title><updated>2026-01-01T00:00:00Z</updated><language>eng</language><name>nolink_en_all</name><category>other</category></entry>
+  <entry><id>urn:uuid:dddd</id><title>LibreTexts Math</title><updated>2026-01-05T00:00:00Z</updated><summary>Math books</summary><language>eng</language><name>libretexts.org_en_math</name><category>libretexts</category>
+    <link type="application/x-zim" href="https://download.kiwix.org/zim/libretexts/libretexts.org_en_math_2026-01.zim.meta4" length="792000000"/></entry>
+</feed>
