@@ -1708,6 +1708,20 @@ Result Engine::run(const QString &appId, const QStringList &extra)
                      u"--env"_s, u"DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus"_s};
     if (audio)
         a << u"--env"_s << u"PULSE_SERVER=unix:"_s + kSessionDir + u"/"_s + pa;
+    // The container has no settings portal, so the desktop's light or dark mode is handed over as the GTK theme, which
+    // GTK, Chromium/Electron and Firefox all read at start. It is read when the app starts: a switch while it runs
+    // needs the app restarted (live switching needs a portal forwarded into the group, which is not built).
+    {
+        const QString cfgHome = envOr("XDG_CONFIG_HOME", hostHome() + u"/.config"_s);
+        QFile af(cfgHome + u"/taos/appearance.json"_s);
+        if (af.open(QIODevice::ReadOnly)) {
+            const QString mode = QJsonDocument::fromJson(af.readAll()).object().value(u"mode"_s).toString();
+            if (mode == u"dark"_s)
+                a << u"--env"_s << u"GTK_THEME=Adwaita:dark"_s;
+            else if (mode == u"light"_s)
+                a << u"--env"_s << u"GTK_THEME=Adwaita"_s;
+        }
+    }
     for (auto it = m.launchEnv.begin(); it != m.launchEnv.end(); ++it)
         a << u"--env"_s << it.key() + u"="_s + it.value().toString();
     a << u"--"_s << m.launchArgv << extra;

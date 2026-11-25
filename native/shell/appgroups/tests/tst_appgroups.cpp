@@ -739,6 +739,28 @@ private slots:
         QCOMPARE(cli({u"licence"_s, u"accept"_s, u"nosuchapp"_s}).code, 3);
         QCOMPARE(cli({u"licence"_s, u"accept"_s, u"chromium"_s}).code, 3);   // not installed
     }
+
+    // ---------------------------------------------------------------- appearance
+
+    void anAppStartsInTheModeTheDesktopIsIn()
+    {
+        QCOMPARE(cli({u"install"_s, u"chromium"_s}).code, 0);
+        QMap<QString, QString> env = sessionEnv();
+        const QString cfg = m_tmp.path() + u"/cfg"_s;
+        env.insert(u"XDG_CONFIG_HOME"_s, cfg);
+        writeFile(cfg + u"/taos/appearance.json"_s, "{\"mode\": \"dark\", \"theme\": \"graphite\"}");
+        QFile::remove(fakeDir + u"/calls.log"_s);
+        QCOMPARE(cli({u"run"_s, u"chromium"_s}, env).code, 0);
+        QVERIFY2(callsLog().contains(u"--env GTK_THEME=Adwaita:dark"_s), qPrintable(callsLog()));
+        writeFile(cfg + u"/taos/appearance.json"_s, "{\"mode\": \"light\", \"theme\": \"graphite\"}");
+        QFile::remove(fakeDir + u"/calls.log"_s);
+        QCOMPARE(cli({u"run"_s, u"chromium"_s}, env).code, 0);
+        QVERIFY2(callsLog().contains(u"--env GTK_THEME=Adwaita"_s) && !callsLog().contains(u"Adwaita:dark"_s), qPrintable(callsLog()));
+        QFile::remove(fakeDir + u"/calls.log"_s);
+        QFile::remove(cfg + u"/taos/appearance.json"_s);
+        QCOMPARE(cli({u"run"_s, u"chromium"_s}, env).code, 0);   // no appearance file: nothing is forced
+        QVERIFY(!callsLog().contains(u"GTK_THEME"_s));
+    }
     void usageAndRunWithoutSession()
     {
         QCOMPARE(cli({u"bogus"_s}).code, 2);
