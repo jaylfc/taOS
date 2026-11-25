@@ -29,6 +29,7 @@ from types import SimpleNamespace
 from typing import Any, AsyncIterator
 
 from tinyagentos.prompt_assembly import assemble_system_prompt
+from tinyagentos.session_fields import next_turn_index, session_date_iso, session_fields
 
 logger = logging.getLogger(__name__)
 
@@ -216,6 +217,7 @@ class BridgeSessionRegistry:
             return
         try:
             store = await self._trace_registry.get(slug)
+            fields = await self._session_fields(msg.get("channel_id"), msg.get("created_at"))
             await store.record(
                 "message_in",
                 trace_id=msg.get("trace_id") or msg.get("id"),
@@ -226,6 +228,7 @@ class BridgeSessionRegistry:
                     "message_id": msg.get("id"),
                     "author_type": msg.get("author_type", "user"),
                     "delivery": "queued",
+                    **fields,
                 },
             )
         except Exception:
@@ -391,13 +394,19 @@ class BridgeSessionRegistry:
                 channel_id = body.get("channel_id") or await self._resolve_channel(slug)
                 if channel_id:
                     _delta_hops = session.pending_hops.get(trace_id, 0)
+                    sf = await self._session_fields(channel_id)
                     new_msg = await self._chat_messages.send_message(
                         channel_id=channel_id,
                         author_id=slug,
                         author_type="agent",
                         content="",
                         state="streaming",
-                        metadata={"trace_id": trace_id, "openclaw_msg_id": msg_id, "hops_since_user": _delta_hops},
+                        metadata={
+                            "trace_id": trace_id,
+                            "openclaw_msg_id": msg_id,
+                            "hops_since_user": _delta_hops,
+                            **sf,
+                        },
                     )
                     session.set_pending_msg(trace_id, new_msg["id"])
                     if self._chat_channels:
@@ -499,6 +508,7 @@ class BridgeSessionRegistry:
                     )
                 else:
                     try:
+                        sf = await self._session_fields(channel_id, time.time())
                         await self._archive.record(
                             event_type="final",
                             data={
@@ -506,6 +516,7 @@ class BridgeSessionRegistry:
                                 "trace_id": trace_id,
                                 "reply_id": reply_id,
                                 "channel_id": channel_id,
+                                **sf,
                             },
                             agent_name=slug,
                             summary=final_content[:120] if final_content else "",
@@ -526,11 +537,12 @@ class BridgeSessionRegistry:
             # Write trace event (only for new reply_ids).
             if self._trace_registry:
                 store = await self._trace_registry.get(slug)
+                sf = await self._session_fields(channel_id, time.time())
                 await store.record(
                     "message_out",
                     trace_id=trace_id,
                     channel_id=channel_id,
-                    payload={"content": final_content},
+                    payload={"content": final_content, **sf},
                 )
 
             persisted = None
@@ -575,7 +587,12 @@ class BridgeSessionRegistry:
                         content=final_content,
                         state="complete",
                         content_blocks=validated_blocks,  # passes None or list, which send_message handles
-                        metadata={"trace_id": trace_id, "openclaw_msg_id": msg_id, "hops_since_user": _final_hops},
+                        metadata={
+                            "trace_id": trace_id,
+                            "openclaw_msg_id": msg_id,
+                            "hops_since_user": _final_hops,
+                            **(await self._session_fields(channel_id, time.time())),
+                        },
                     )
                     await self._chat_channels.update_last_message_at(channel_id)
                     if self._chat_hub:
@@ -601,6 +618,7 @@ class BridgeSessionRegistry:
         elif kind == "tool_call":
             channel_id = body.get("channel_id") or await self._resolve_channel(slug)
             tool_name = body.get("tool") or ""
+            sf = await self._session_fields(channel_id, time.time())
             if self._trace_registry:
                 store = await self._trace_registry.get(slug)
                 await store.record(
@@ -611,6 +629,7 @@ class BridgeSessionRegistry:
                         "tool": tool_name,
                         "args": body.get("args") or {},
                         "caller": "openclaw",
+                        **sf,
                     },
                 )
             if self._archive is not None:
@@ -621,6 +640,7 @@ class BridgeSessionRegistry:
                             "tool": tool_name,
                             "args": body.get("args") or {},
                             "trace_id": trace_id,
+                            **sf,
                         },
                         agent_name=slug,
                         summary=tool_name,
@@ -631,6 +651,7 @@ class BridgeSessionRegistry:
         elif kind == "tool_result":
             channel_id = body.get("channel_id") or await self._resolve_channel(slug)
             tool_name = body.get("tool") or ""
+            sf = await self._session_fields(channel_id, time.time())
             if self._trace_registry:
                 store = await self._trace_registry.get(slug)
                 await store.record(
@@ -641,6 +662,7 @@ class BridgeSessionRegistry:
                         "tool": tool_name,
                         "result": body.get("result"),
                         "success": body.get("success", True),
+                        **sf,
                     },
                 )
             if self._archive is not None:
@@ -652,6 +674,7 @@ class BridgeSessionRegistry:
                             "result": body.get("result"),
                             "success": body.get("success", True),
                             "trace_id": trace_id,
+                            **sf,
                         },
                         agent_name=slug,
                         summary=tool_name,
@@ -690,13 +713,14 @@ class BridgeSessionRegistry:
         elif kind == "error":
             error_text = body.get("error") or ""
             channel_id = body.get("channel_id") or await self._resolve_channel(slug)
+            sf = await self._session_fields(channel_id, time.time())
             if self._trace_registry:
                 store = await self._trace_registry.get(slug)
                 await store.record(
                     "error",
                     trace_id=trace_id,
                     channel_id=channel_id,
-                    payload={"stage": "openclaw", "message": error_text},
+                    payload={"stage": "openclaw", "message": error_text, **sf},
                 )
             if self._archive is not None:
                 try:
@@ -705,6 +729,7 @@ class BridgeSessionRegistry:
                         data={
                             "error": error_text,
                             "trace_id": trace_id,
+                            **sf,
                         },
                         agent_name=slug,
                         summary=error_text,
@@ -725,13 +750,14 @@ class BridgeSessionRegistry:
 
         elif kind == "reasoning":
             channel_id = body.get("channel_id") or await self._resolve_channel(slug)
+            sf = await self._session_fields(channel_id, time.time())
             if self._trace_registry:
                 store = await self._trace_registry.get(slug)
                 await store.record(
                     "reasoning",
                     trace_id=trace_id,
                     channel_id=channel_id,
-                    payload={"text": content},
+                    payload={"text": content, **sf},
                 )
             if self._archive is not None:
                 try:
@@ -740,6 +766,7 @@ class BridgeSessionRegistry:
                         data={
                             "text": content,
                             "trace_id": trace_id,
+                            **sf,
                         },
                         agent_name=slug,
                         summary=content[:120] if content else "",
@@ -747,6 +774,25 @@ class BridgeSessionRegistry:
                 except Exception:
                     logger.exception("archive dual-write failed (reasoning)")
         # "delta" without a matching kind is silently ignored.
+
+    async def _session_fields(self, channel_id: str | None, created_at=None) -> dict:
+        """Build the {session_id, turn_index, session_date} fragment for a write.
+
+        turn_index is derived from the stored conversation (count of messages
+        in the channel) so it survives a restart; falls back to 0 when the
+        message store is unavailable.
+        """
+        if not channel_id:
+            channel_id = ""
+        turn_index = 0
+        if self._chat_messages and channel_id:
+            try:
+                turn_index = await next_turn_index(
+                    await self._chat_messages.count_messages(channel_id)
+                )
+            except Exception:
+                turn_index = 0
+        return session_fields(channel_id, turn_index, session_date_iso(created_at))
 
     async def _resolve_channel(self, slug: str) -> str | None:
         """Return the DM channel id for the agent, or None if unavailable."""

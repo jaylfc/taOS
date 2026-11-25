@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 import logging
+import time
 from typing import TYPE_CHECKING
 
 from fastapi import Request
 from fastapi.responses import JSONResponse
+
+from tinyagentos.session_fields import session_date_iso, session_fields
 
 if TYPE_CHECKING:
     from tinyagentos.routes.agents import DeployAgentRequest
@@ -297,9 +300,12 @@ async def archive_smoke_check(request: Request, unique_slug: str, framework: str
     smoke_ok = False
     if archive is not None:
         try:
+            sf = session_fields(
+                unique_slug, 0, session_date_iso(time.time())
+            )
             await archive.record(
                 event_type="agent_deployed",
-                data={"slug": unique_slug, "framework": framework},
+                data={"slug": unique_slug, "framework": framework, **sf},
                 agent_name=unique_slug,
                 summary=f"deployed {unique_slug}",
             )
