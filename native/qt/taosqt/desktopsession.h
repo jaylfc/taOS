@@ -45,6 +45,10 @@ public:
     /// (remember() or clearSignedOut()). The desktop single sign-on service does not sign a person
     /// back in while it exists, so signing out stays signed out.
     bool signedOut() const;
+    /// `<runtime dir>/taos/sso-unlinked`: written by the desktop sign-in service when the controller says this
+    /// Linux account is not linked to a person; removed when a session is issued.
+    bool accountUnlinked() const override;
+    void setAccountUnlinked(bool on);
     void clearSignedOut();
 
 private:

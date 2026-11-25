@@ -97,6 +97,27 @@ bool DesktopSessionTokenSource::signedOut() const
     return !m_path.isEmpty() && QFileInfo::exists(QFileInfo(m_path).absolutePath() + u"/signed-out"_s);
 }
 
+bool DesktopSessionTokenSource::accountUnlinked() const
+{
+    return !m_path.isEmpty() && QFileInfo::exists(QFileInfo(m_path).absolutePath() + u"/sso-unlinked"_s);
+}
+
+void DesktopSessionTokenSource::setAccountUnlinked(bool on)
+{
+    if (m_path.isEmpty())
+        return;
+    const QString dir = QFileInfo(m_path).absolutePath();
+    QDir().mkpath(dir);
+    QFile::setPermissions(dir, QFileDevice::ReadOwner | QFileDevice::WriteOwner | QFileDevice::ExeOwner);
+    QFile f(dir + u"/sso-unlinked"_s);
+    if (on) {
+        if (f.open(QIODevice::WriteOnly))
+            f.setPermissions(QFileDevice::ReadOwner | QFileDevice::WriteOwner);
+    } else {
+        f.remove();
+    }
+}
+
 void DesktopSessionTokenSource::clearSignedOut()
 {
     if (!m_path.isEmpty())

@@ -164,6 +164,7 @@ private Q_SLOTS:
         QCOMPARE(r.code, 1);
         QVERIFY2(r.out.contains(u"not linked"_s), qPrintable(r.out));
         QVERIFY(!QFileInfo::exists(rt.filePath(u"taos/session"_s)));
+        QVERIFY(QFileInfo::exists(rt.filePath(u"taos/sso-unlinked"_s))); // the sign-in form can say why it is asked
         // the service has nothing to do and exits cleanly (the supervisor does not restart a clean exit)
         const Run d = run(rt.path(), {u"sso"_s});
         QCOMPARE(d.code, 0);

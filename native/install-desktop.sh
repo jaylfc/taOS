@@ -300,6 +300,21 @@ else
     { cat "$shell_env"; echo "TAOS_SHELL_COMPONENTS=\"$components\""; } >"$stage/shell.env"
 fi
 put "$stage/shell.env" "$shell_env" 0644
+
+# The install owner's Linux account is linked to their taOS person automatically (the controller reads this
+# root-owned file; see the desktop sign-in socket). Written once, never overwritten, so an update on an
+# existing install links the owner without anyone running a command and never undoes a later change.
+owner_file=$R/etc/taos/owner-linux-user
+if [ ! -e "$owner_file" ]; then
+    owner=${TAOS_OWNER_USER:-${SUDO_USER:-}}
+    if [ -n "$owner" ] && [ "$owner" != root ] && id "$owner" >/dev/null 2>&1; then
+        printf '%s\n' "$owner" >"$stage/owner-linux-user"
+        put "$stage/owner-linux-user" "$owner_file" 0644
+        echo "linked the Linux account '$owner' to this install's owner ($owner_file)"
+    else
+        echo "note: the install owner's Linux account is not known (set TAOS_OWNER_USER); the desktop will ask for a taOS sign-in until it is linked"
+    fi
+fi
 echo "TAOS_SHELL_COMPONENTS=\"$components\" in $shell_env"
 
 # ---------------------------------------------------------------- 3b. what applies how

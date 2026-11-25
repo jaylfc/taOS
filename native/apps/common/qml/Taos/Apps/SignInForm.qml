@@ -33,7 +33,9 @@ Item {
                 Layout.fillWidth: true
                 wrapMode: Text.Wrap
                 text: (root.appName !== "" ? qsTr("%1 needs your taOS session.").arg(root.appName) + " " : "")
-                      + qsTr("Sign in once and every app on this desktop is signed in.")
+                      + (Taos.session.accountUnlinked
+                         ? qsTr("This Linux account is not linked to a taOS person yet, so taOS cannot sign you in by itself. Sign in with your taOS password for now, or ask the owner to link the account.")
+                         : qsTr("Sign in once and every app on this desktop is signed in."))
                 color: Look.textSecondary; font.pixelSize: Look.small
             }
             TaosText {
