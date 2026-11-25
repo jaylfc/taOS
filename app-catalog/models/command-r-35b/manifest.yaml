@@ -5,6 +5,10 @@ version: 1.0.0
 description: Cohere's 35B — specialized for RAG and tool use, 128K context
 homepage: https://huggingface.co/CohereForAI/c4ai-command-r-v01
 license: CC-BY-NC 4.0 (non-commercial)
+weights_license: "CC-BY-NC 4.0"
+license_class: non-commercial
+license_version: "4.0"
+license_url: "https://creativecommons.org/licenses/by-nc/4.0/legalcode"
 capabilities:
 - chat
 - tool-calling

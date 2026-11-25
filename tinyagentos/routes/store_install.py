@@ -1011,7 +1011,7 @@ async def install_app(request: Request):
                 status_code=403,
             )
 
-    # Non-commercial weights gate (#169): a manifest's code license (MIT etc.)
+    # Restrictive-weights gate (tsk-virtol): a manifest's code license (MIT etc.)
     # can be permissive while the model weights it downloads are not (e.g.
     # musicgen pulls Meta's CC-BY-NC 4.0 weights). Block the install until the
     # user has explicitly accepted the weights license -- either previously
@@ -1019,35 +1019,100 @@ async def install_app(request: Request):
     # true, sent by the frontend after the user clicks Agree in the license
     # dialog). Applies uniformly, including to admins: license acceptance is
     # a legal fact about the user, not a permission an admin role bypasses.
-    if getattr(manifest, "license_class", "") == "non-commercial":
+    #
+    # license_class values that require acceptance (all except permissive/copyleft):
+    #   non-commercial      - CC-BY-NC, FLUX.1-dev-non-commercial
+    #   revenue-capped      - Llama Community License, Stability AI Community License
+    #   research-only       - Gemma Terms of Use, Qwen Research License
+    #   territory-limited   - Licences restricted to specific jurisdictions
+    #   proprietary         - Commercial licences requiring purchase
+    #   gated               - Licences requiring approval/access request
+    #   unlicensed          - No licence declared / all rights reserved
+    restrictive_classes = {
+        "non-commercial",
+        "revenue-capped",
+        "research-only",
+        "territory-limited",
+        "proprietary",
+        "gated",
+        "unlicensed",
+    }
+    license_class = getattr(manifest, "license_class", "")
+    if license_class in restrictive_classes:
         license_store = getattr(request.app.state, "license_acceptances", None)
         license_id = getattr(manifest, "weights_license", "") or manifest.id
+        license_version = getattr(manifest, "license_version", "") or ""
         user = _get_current_user(request)
         user_id = (user or {}).get("id") or "anonymous"
         already_accepted = (
-            await license_store.has_accepted(user_id, manifest.id, license_id)
+            await license_store.has_accepted(user_id, manifest.id, license_id, license_version)
             if license_store is not None else False
         )
         accepted_now = bool(body.get("accepted", False))
         if not already_accepted and not accepted_now:
             progress.finish(install_id, success=False, error="needs_license_acceptance")
+            # Per-class acceptance text with licence name, version, and link
+            license_name = manifest.weights_license or manifest.license or license_id
+            version_suffix = f" version {license_version}" if license_version else ""
+            url_suffix = f" — full text: {manifest.license_url}" if getattr(manifest, "license_url", "") else ""
+            class_text = {
+                "non-commercial": (
+                    f"{manifest.name} uses model weights licensed under {license_name}{version_suffix}, "
+                    "for non-commercial use only.{url_suffix} Continuing means you agree to that "
+                    "license for the weights this service uses."
+                ),
+                "revenue-capped": (
+                    f"{manifest.name} uses model weights licensed under {license_name}{version_suffix}, "
+                    "which permits commercial use only below a revenue threshold.{url_suffix} "
+                    "Continuing means you agree to that license for the weights this service uses."
+                ),
+                "research-only": (
+                    f"{manifest.name} uses model weights licensed under {license_name}{version_suffix}, "
+                    "for research use only.{url_suffix} Continuing means you agree to that "
+                    "license for the weights this service uses."
+                ),
+                "territory-limited": (
+                    f"{manifest.name} uses model weights licensed under {license_name}{version_suffix}, "
+                    "which is restricted to specific jurisdictions.{url_suffix} "
+                    "Acceptance does not override territory exclusions. Continuing means you agree "
+                    "to that license for the weights this service uses."
+                ),
+                "proprietary": (
+                    f"{manifest.name} uses model weights under a proprietary licence "
+                    f"({license_name}{version_suffix}).{url_suffix} Continuing means you agree "
+                    "to that license for the weights this service uses."
+                ),
+                "gated": (
+                    f"{manifest.name} uses model weights under a gated licence "
+                    f"({license_name}{version_suffix}) requiring approval.{url_suffix} "
+                    "Continuing means you agree to that license for the weights this service uses."
+                ),
+                "unlicensed": (
+                    f"{manifest.name} uses model weights with no declared licence "
+                    "(all rights reserved).{url_suffix} Continuing means you accept the risk of "
+                    "using unlicensed weights."
+                ),
+            }
+            text = class_text.get(license_class, (
+                f"{manifest.name} uses model weights under a restrictive licence "
+                f"({license_name}{version_suffix}).{url_suffix} Continuing means you agree "
+                "to that license for the weights this service uses."
+            ))
             return JSONResponse(
                 {
                     "needs_license_acceptance": True,
                     "license_id": license_id,
+                    "license_version": license_version,
+                    "license_class": license_class,
                     "weights_license": manifest.weights_license,
+                    "license_url": getattr(manifest, "license_url", ""),
                     "name": manifest.name,
-                    "text": (
-                        f"{manifest.name} downloads model weights licensed under "
-                        f"{manifest.weights_license}, for non-commercial use only. "
-                        "Continuing means you agree to that license for the "
-                        "weights this service uses."
-                    ),
+                    "text": text,
                 },
                 status_code=412,
             )
         if accepted_now and not already_accepted and license_store is not None:
-            await license_store.record_acceptance(user_id, manifest.id, license_id)
+            await license_store.record_acceptance(user_id, manifest.id, license_id, license_version)
 
     # Non-model manifests use the legacy method-driven path.
     if getattr(manifest, "type", "model") != "model":

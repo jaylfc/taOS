@@ -101,9 +101,32 @@ class AppManifest(BaseModel):
     # non-commercial (e.g. musicgen's CC-BY-NC 4.0 weights) -- these two
     # fields make that distinction explicit instead of leaving it implied by
     # `license` alone. weights_license is a free-text label ("CC-BY-NC 4.0");
-    # license_class is "permissive" | "non-commercial" ("" = unknown/code-only).
+    # license_class categorises the licence so the Store can gate installs.
+    # Allowed values:
+    #   permissive      - MIT, Apache-2.0, BSD, etc. (no acceptance required)
+    #   copyleft        - GPL, LGPL, AGPL (no acceptance required)
+    #   non-commercial  - CC-BY-NC, FLUX.1-dev-non-commercial (acceptance required)
+    #   revenue-capped  - Llama Community License, Stability AI Community License (acceptance required)
+    #   research-only   - Gemma Terms of Use, Qwen Research License (acceptance required)
+    #   territory-limited - Licences restricted to specific jurisdictions (acceptance required, never overrides exclusion)
+    #   proprietary     - Commercial licences requiring purchase (acceptance required)
+    #   gated           - Licences requiring approval/access request (acceptance required)
+    #   unlicensed      - No licence declared / all rights reserved (acceptance required)
     weights_license: str = ""
-    license_class: str = ""
+    license_class: Literal[
+        "",
+        "permissive",
+        "copyleft",
+        "non-commercial",
+        "revenue-capped",
+        "research-only",
+        "territory-limited",
+        "proprietary",
+        "gated",
+        "unlicensed",
+    ] = ""
+    license_version: str = ""       # Licence version (e.g. "4.0", "3.1") for version-gated re-acceptance
+    license_url: str = ""           # Link to full licence text for the acceptance dialog
     requires: dict[str, Any] = Field(default_factory=dict)
     install: dict[str, Any] = Field(default_factory=dict)
     hardware_tiers: dict[str, Any] = Field(default_factory=dict)

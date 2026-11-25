@@ -6,6 +6,10 @@ description: Community favorite ESRGAN upscaler — crisp results for general im
   and art
 homepage: https://huggingface.co/lokCX/4x-Ultrasharp
 license: CC BY-NC-SA 4.0
+weights_license: "CC BY-NC-SA 4.0"
+license_class: non-commercial
+license_version: "4.0"
+license_url: "https://creativecommons.org/licenses/by-nc-sa/4.0/legalcode"
 capabilities:
 - upscaling
 variants:

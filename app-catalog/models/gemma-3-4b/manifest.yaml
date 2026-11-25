@@ -5,6 +5,10 @@ version: 3.0.0
 description: Google's Gemma 3 4B — multimodal, multilingual, 128K context
 homepage: https://huggingface.co/google/gemma-3-4b-it
 license: Gemma Terms of Use
+weights_license: "Gemma Terms of Use"
+license_class: research-only
+license_version: "1.0"
+license_url: "https://ai.google.dev/gemma/terms"
 capabilities:
 - chat
 - vision
