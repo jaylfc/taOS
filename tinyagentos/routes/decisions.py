@@ -396,6 +396,8 @@ async def create_decision(
                     "priority": body.priority,
                     "from_agent": from_agent,
                 },
+                # Only the decider's bell and push devices, never a broadcast.
+                user_id=actor.decider_user_id,
             )
         except Exception:
             pass
