@@ -10,11 +10,29 @@ license: MIT
 requires:
   ram_mb: 2048
   disk_mb: 4000
-  ports: [30450]
+  ports: [30450, 30451]
 
 install:
   method: script
   script: scripts/install-sd-cpp.sh
+
+lifecycle:
+  # Auto-register as a backend (type sd-cpp) wrapped in the lazy lifecycle
+  # proxy (#63). The proxy listens on the public port 30450 and starts
+  # run.sh — bound to loopback on the private port 30451 — on the first
+  # request, then stops it after keep_alive_minutes with no traffic:
+  # sd-server loads its model at process start and has no idle eviction
+  # of its own (it pinned ~1.6 GB on the Orange Pi with zero calls).
+  # Model args still come from TAOS_SD_CPP_ARGS in the app process
+  # environment, exactly as with a directly launched run.sh.
+  backend_type: sd-cpp
+  default_url: http://127.0.0.1:30450
+  auto_manage: false
+  keep_alive_minutes: 5
+  lazy:
+    backend_url: http://127.0.0.1:30451
+    health_url: http://127.0.0.1:30451/sdapi/v1/options
+    start_cmd: "env TAOS_SD_CPP_PORT=30451 TAOS_SD_CPP_HOST=127.0.0.1 {project_dir}/services/stable-diffusion-cpp/run.sh"
 
 hardware_tiers:
   arm-npu-16gb: degraded

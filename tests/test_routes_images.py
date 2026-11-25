@@ -266,3 +266,76 @@ class TestImagesDelete:
         resp = await images_client.delete("/api/images/..%2F..%2Fetc%2Fpasswd")
         # URL-decoded path with ".." should be rejected
         assert resp.status_code in (400, 404)
+
+
+class TestGetImageBackendStaticFallback:
+    """Unit tests for _get_image_backend's static-config fallback (step 3),
+    used when the backend catalog is not up (startup, no-lifespan tests).
+
+    Regression (#63): auto_register_from_manifest now registers an sd-cpp
+    entry (priority 99) into every app's config.backends. The old fallback
+    grouped by type before priority, so that default-priority entry
+    displaced an explicitly configured priority-1 rkllama and the generate
+    route parsed a non-sd-cpp response as an sd-cpp one (KeyError:
+    'images'). Priority must decide; the type preference only breaks ties,
+    as the function's docstring documents for the catalog path.
+    """
+
+    def _pick(self, backends):
+        from types import SimpleNamespace
+
+        from tinyagentos.routes.images import _get_image_backend
+
+        state = SimpleNamespace(
+            config=SimpleNamespace(server={}, backends=backends)
+        )
+        request = SimpleNamespace(app=SimpleNamespace(state=state))
+        return _get_image_backend(request)
+
+    def test_priority_beats_type_group(self):
+        url, btype, name = self._pick([
+            {"name": "auto-sdcpp", "type": "sd-cpp",
+             "url": "http://127.0.0.1:30450", "priority": 99},
+            {"name": "configured-rkllama", "type": "rkllama",
+             "url": "http://localhost:8080", "priority": 1},
+        ])
+        assert (url, btype, name) == (
+            "http://localhost:8080", "rkllama", "configured-rkllama")
+
+    def test_type_preference_breaks_priority_ties(self):
+        url, btype, name = self._pick([
+            {"name": "rkllama", "type": "rkllama",
+             "url": "http://localhost:8080", "priority": 99},
+            {"name": "sdcpp", "type": "sd-cpp",
+             "url": "http://127.0.0.1:30450", "priority": 99},
+        ])
+        assert (url, btype, name) == (
+            "http://127.0.0.1:30450", "sd-cpp", "sdcpp")
+
+    def test_missing_priority_defaults_to_99(self):
+        url, btype, name = self._pick([
+            {"name": "auto-sdcpp", "type": "sd-cpp",
+             "url": "http://127.0.0.1:30450"},
+            {"name": "configured-rkllama", "type": "rkllama",
+             "url": "http://localhost:8080", "priority": 5},
+        ])
+        assert (url, btype, name) == (
+            "http://localhost:8080", "rkllama", "configured-rkllama")
+
+
+class TestGetImageBackendDisabledEntries(TestGetImageBackendStaticFallback):
+    """Disabled backends must not be selected by the static fallback
+    (CodeRabbit): a disabled entry stays in config.backends, and with
+    priority-first ordering a disabled priority-1 rkllama would otherwise
+    beat an enabled priority-99 sd-cpp and generation would post to a
+    service the user turned off."""
+
+    def test_disabled_backends_are_skipped(self):
+        url, btype, name = self._pick([
+            {"name": "disabled-rkllama", "type": "rkllama",
+             "url": "http://localhost:8080", "priority": 1, "enabled": False},
+            {"name": "auto-sdcpp", "type": "sd-cpp",
+             "url": "http://127.0.0.1:30450", "priority": 99, "enabled": True},
+        ])
+        assert (url, btype, name) == (
+            "http://127.0.0.1:30450", "sd-cpp", "auto-sdcpp")

@@ -323,3 +323,30 @@ def test_shipped_image_edit_manifests_register(service, backend_type, url):
     entry = config.backends[-1]
     assert entry["type"] == backend_type
     assert entry["url"] == url
+
+
+def test_auto_register_carries_lazy_block(tmp_path: Path):
+    """A manifest lifecycle.lazy block (#63) is carried into the backend
+    entry verbatim so lazy_backend_wiring can build a proxy from it."""
+    manifest = tmp_path / "manifest.yaml"
+    manifest.write_text("""
+id: stable-diffusion-cpp
+name: Stable Diffusion CPP
+type: service
+lifecycle:
+  backend_type: sd-cpp
+  default_url: http://127.0.0.1:30450
+  auto_manage: false
+  keep_alive_minutes: 5
+  lazy:
+    start_cmd: "env TAOS_SD_CPP_PORT=30451 {project_dir}/services/stable-diffusion-cpp/run.sh"
+    backend_url: http://127.0.0.1:30451
+    health_url: http://127.0.0.1:30451/sdapi/v1/options
+""")
+    config = AppConfig()
+    added = auto_register_from_manifest(manifest, config)
+    assert added is True
+    b = config.backends[0]
+    assert b["keep_alive_minutes"] == 5
+    assert b["lazy"]["backend_url"] == "http://127.0.0.1:30451"
+    assert b["lazy"]["start_cmd"].startswith("env TAOS_SD_CPP_PORT=30451")

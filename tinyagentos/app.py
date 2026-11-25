@@ -103,6 +103,12 @@ from tinyagentos.knowledge_categories import CategoryEngine
 from tinyagentos.knowledge_ingest import IngestPipeline
 from tinyagentos.knowledge_monitor import MonitorService
 from tinyagentos.knowledge_store import KnowledgeStore
+from tinyagentos.lazy_backend_wiring import (
+    build_lazy_proxies,
+    probe_target,
+    start_lazy_proxies,
+    stop_lazy_proxies,
+)
 from tinyagentos.lifecycle_manager import LifecycleManager
 from tinyagentos.llm_proxy import LLMProxy
 from tinyagentos.lora_store import LoraStore
@@ -422,7 +428,10 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
     council_member_store = MemberStore(data_dir / "council.db")
 
     async def _probe_backend(backend: dict) -> dict:
-        return await check_backend_health(http_client, backend)
+        # Lazy-wrapped backends (#63) are probed at their real server URL,
+        # not the public proxy URL — probing the proxy would cold-start the
+        # backend and keep it warm forever.
+        return await check_backend_health(http_client, probe_target(backend))
 
     backend_catalog = BackendCatalog(
         backends=config.backends,
@@ -1769,6 +1778,21 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
                 )
         logger.info("startup complete — accepting requests")
 
+        # Lazy lifecycle wrappers (#63) — one LazyBackendProxy per backend
+        # entry that opts in with a `lazy` block. Starting a proxy only
+        # binds its public port; the real backend subprocess starts on the
+        # first inbound connection and stops after the entry's keep-alive
+        # TTL. This runs as the LAST startup step, immediately before the
+        # yield: a startup that fails or is cancelled earlier can then
+        # never strand a bound proxy listener (the shutdown stop below
+        # only runs once the yield is reached). app.state is populated
+        # before the start await so the shutdown path always sees the
+        # proxies, and start_lazy_proxies never raises (a failed bind is
+        # logged).
+        lazy_proxies = build_lazy_proxies(config.backends)
+        app.state.lazy_backend_proxies = lazy_proxies
+        await start_lazy_proxies(lazy_proxies)
+
         yield
         # NOTE: controller restart/shutdown does NOT touch agent containers --
         # agents keep running independently across a controller restart, so
@@ -1807,6 +1831,7 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
             await c.stop()
         await score_cache.stop()
         await backend_catalog.stop()
+        await stop_lazy_proxies(getattr(app.state, "lazy_backend_proxies", {}))
         # local_heartbeat_task is cancelled+awaited above under the bounded
         # cancel_and_wait budget alongside the supervised background tasks.
         await cluster_manager.stop()
