@@ -23,6 +23,7 @@ import {
   Wifi,
   Bluetooth,
   Cpu,
+  Gauge,
 } from "lucide-react";
 import {
   Button,
@@ -46,6 +47,8 @@ import { LogsSection } from "@/apps/SettingsApp/LogsPanel";
 import { NotificationsPanel } from "@/apps/SettingsApp/NotificationsPanel";
 import { LockScreenPanel } from "@/apps/SettingsApp/LockScreenPanel";
 import { DemoModePanel } from "@/apps/SettingsApp/DemoModePanel";
+import { PerformancePanel } from "@/apps/SettingsApp/PerformancePanel";
+import { detectHwClass, type HwClass } from "@/lib/hw-detect";
 import { WifiPanel } from "@/apps/SettingsApp/WifiPanel";
 import { BluetoothPanel } from "@/apps/SettingsApp/BluetoothPanel";
 import { OfflineModelPanel } from "@/apps/SettingsApp/OfflineModelPanel";
@@ -75,7 +78,8 @@ type Section =
   | "demo"
   | "wifi"
   | "bluetooth"
-  | "offline_model";
+  | "offline_model"
+  | "performance";
 
 interface SectionDef {
   id: Section;
@@ -130,11 +134,12 @@ const SECTIONS: SectionDef[] = [
   { id: "lock", label: "Lock screen", icon: Lock },
   { id: "demo", label: "Demo mode", icon: Presentation },
   { id: "offline_model", label: "Offline model", icon: Cpu },
+  { id: "performance", label: "Performance", icon: Gauge },
 ];
 
 // Sections that require admin privileges to view (GHSA-47g9: backend already
 // 403s these for non-admins, this hides them from the sidebar/content too).
-const ADMIN_ONLY = new Set(["system", "storage", "memory", "backup", "updates", "advanced", "logs", "demo", "wifi", "bluetooth", "offline_model"]);
+const ADMIN_ONLY = new Set(["system", "storage", "memory", "backup", "updates", "advanced", "logs", "demo", "wifi", "bluetooth", "offline_model", "performance"]);
 
 const PLACEHOLDER_SYSTEM: SystemInfo = {
   cpu: "Detecting...",
@@ -1151,9 +1156,28 @@ export function SettingsApp({ windowId: _windowId, section: initialSection }: { 
   // read that never updated on resize/rotate).
   const isMobile = useIsMobile();
 
-  const visibleSections = isAdmin ? SECTIONS : SECTIONS.filter((s) => !ADMIN_ONLY.has(s.id));
-  const effectiveSection: Section =
-    !isAdmin && ADMIN_ONLY.has(section) ? (visibleSections[0]?.id ?? section) : section;
+  // Performance mode is RK3588-only (#361): the section exists only when
+  // hardware detection reports an RK3588 deployment. Fail-closed like
+  // isAdmin — hidden until detection resolves, and hidden on other SoCs.
+  const [hwClass, setHwClass] = useState<HwClass | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    detectHwClass()
+      .then((cls) => { if (!cancelled) setHwClass(cls); })
+      .catch(() => { if (!cancelled) setHwClass("cpu"); });
+    return () => { cancelled = true; };
+  }, []);
+
+  const visibleSections = SECTIONS.filter(
+    (s) =>
+      (isAdmin || !ADMIN_ONLY.has(s.id)) &&
+      (s.id !== "performance" || hwClass === "rk3588"),
+  );
+  const sectionHidden =
+    (ADMIN_ONLY.has(section) && !isAdmin) ||
+    (section === "performance" && hwClass !== "rk3588");
+  const effectiveSection: Section = sectionHidden ? (visibleSections[0]?.id ?? section) : section;
 
   const content: Record<Section, ReactNode> = {
     account: <AccountSection />,
@@ -1175,6 +1199,7 @@ export function SettingsApp({ windowId: _windowId, section: initialSection }: { 
     wifi: <WifiPanel />,
     bluetooth: <BluetoothPanel />,
     offline_model: <OfflineModelPanel />,
+    performance: <PerformancePanel />,
   };
 
   const handleSelectSection = (id: Section) => {

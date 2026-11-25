@@ -1933,6 +1933,144 @@ async def put_demo_mode(request: Request):
     return {"ok": True, "enabled": body["enabled"], "available": demo_flags_configured()}
 
 
+# ---------------------------------------------------------------------------
+# RK3588 performance mode (#361): the Settings toggle over the
+# taos-rk3588-perf.service unit. install-server.sh installs and enables
+# the unit on Rockchip boards; its ExecStart applies the performance
+# governor tuning and its ExecStop restores the governors recorded at
+# start time (devfreq via `governor`, cpufreq via `scaling_governor`).
+# The toggle itself is start/stop for the immediate effect plus a
+# persisted flag file the unit's boot start gates on
+# (ConditionPathExists), so the choice persists across boots without
+# the toggle ever changing the unit's enablement.
+#
+# Why not enable/disable --now? The toggle runs as the unprivileged
+# `taos` user, so its systemctl calls go through polkit. systemd
+# attaches the unit name as a detail to manage-units requests, so a
+# rule can scope start/stop to exactly this unit - but it attaches NO
+# details to manage-unit-files requests (enable/disable):
+# bus_verify_manage_unit_files_async passes details=NULL (checked
+# against systemd v257; bookworm's 252 is built the same way), so
+# action.lookup("unit") can never match there and no polkit rule can
+# scope enable/disable to one unit. The only alternative would be
+# granting the controller unit-file control over every unit on the
+# box. See scripts/systemd/50-taos-rk3588-perf.rules.
+# ---------------------------------------------------------------------------
+
+_RK3588_PERF_UNIT = "taos-rk3588-perf.service"
+_RK3588_PERF_UNIT_PATH = Path("/etc/systemd/system/taos-rk3588-perf.service")
+# The toggle's persisted on/off state. install-server.sh creates the
+# directory owned by the controller user and seeds the flag on fresh
+# installs only (mode on); the unit's boot start gates on the flag via
+# ConditionPathExists.
+_RK3588_PERF_FLAG_PATH = Path("/var/lib/taos-rk3588-perf/enabled")
+_RK3588_COMPATIBLE_PATH = Path("/proc/device-tree/compatible")
+# The same board set the perf unit's own ExecStart gate accepts.
+_RK3588_COMPATIBLE_RE = re.compile(r"rockchip,rk(3588|3576|3568)")
+
+
+def _rk3588_perf_supported() -> bool:
+    """True on the Rockchip boards taos-rk3588-perf.service applies to.
+
+    Mirrors the unit's own check of /proc/device-tree/compatible so the
+    settings route and the unit agree on where performance mode exists.
+    """
+    try:
+        raw = _RK3588_COMPATIBLE_PATH.read_bytes()
+    except OSError:
+        return False
+    return bool(_RK3588_COMPATIBLE_RE.search(raw.replace(b"\x00", b" ").decode(errors="replace")))
+
+
+async def _rk3588_perf_state() -> dict:
+    installed = _RK3588_PERF_UNIT_PATH.exists()
+    enabled = active = False
+    if installed:
+        enabled = _RK3588_PERF_FLAG_PATH.exists()
+        code, _err = await _systemctl("is-active", _RK3588_PERF_UNIT)
+        active = code == 0
+    return {
+        "supported": _rk3588_perf_supported(),
+        "installed": installed,
+        "enabled": enabled,
+        "active": active,
+    }
+
+
+@router.get("/api/settings/rk3588-performance")
+async def get_rk3588_performance(request: Request):
+    """Performance-mode state for the Settings toggle (#361).
+
+    ``supported`` is the Rockchip board check, ``installed`` whether the
+    perf unit exists on this device, ``enabled`` the persisted toggle
+    flag, ``active`` the unit's systemctl state (both false when the
+    unit is not installed).
+    """
+    return await _rk3588_perf_state()
+
+
+@router.put("/api/settings/rk3588-performance")
+async def put_rk3588_performance(request: Request):
+    """Flip performance mode. Admin-only via this router's dependency."""
+    try:
+        body = await request.json()
+    except ValueError:
+        return JSONResponse({"error": "invalid JSON body"}, status_code=400)
+    if not isinstance(body, dict) or not isinstance(body.get("enabled"), bool):
+        return JSONResponse({"error": "'enabled' must be true or false"}, status_code=400)
+    if not _RK3588_PERF_UNIT_PATH.exists():
+        return JSONResponse(
+            {"error": f"{_RK3588_PERF_UNIT} is not installed on this device"},
+            status_code=409,
+        )
+    if body["enabled"]:
+        # The flag must exist BEFORE the start: the unit gates its
+        # start on the flag (ConditionPathExists), so a start issued
+        # while the flag is absent is silently skipped by systemd and
+        # the toggle would report on with the unit inactive until the
+        # next boot. The flag's directory is created by install-server.sh
+        # (owned by the controller user); create it here too so a
+        # hand-installed unit still toggles.
+        try:
+            _RK3588_PERF_FLAG_PATH.parent.mkdir(parents=True, exist_ok=True)
+            _RK3588_PERF_FLAG_PATH.touch()
+        except OSError as exc:
+            return JSONResponse(
+                {"error": f"could not persist the performance-mode choice: {exc}"},
+                status_code=502,
+            )
+        code, err = await _systemctl("start", _RK3588_PERF_UNIT)
+        if code != 0:
+            # Roll the flag back: the unit did not start, so the
+            # persisted choice must not claim performance mode is on.
+            try:
+                _RK3588_PERF_FLAG_PATH.unlink(missing_ok=True)
+            except OSError:
+                pass
+            return JSONResponse(
+                {"error": f"systemctl start {_RK3588_PERF_UNIT} failed: {err or f'exit {code}'}"},
+                status_code=502,
+            )
+    else:
+        code, err = await _systemctl("stop", _RK3588_PERF_UNIT)
+        if code != 0:
+            return JSONResponse(
+                {"error": f"systemctl stop {_RK3588_PERF_UNIT} failed: {err or f'exit {code}'}"},
+                status_code=502,
+            )
+        # The unit has stopped; now persist the choice for the next
+        # boot. If persisting fails the caller hears about it - the
+        # re-read state shows the flag as it actually is.
+        try:
+            _RK3588_PERF_FLAG_PATH.unlink(missing_ok=True)
+        except OSError as exc:
+            return JSONResponse(
+                {"error": f"could not persist the performance-mode choice: {exc}"},
+                status_code=502,
+            )
+    return {"ok": True, **(await _rk3588_perf_state())}
+
+
 @router.get("/api/settings/collaboration")
 async def get_collaboration(request: Request):
     """The collaboration kill switch: instance-wide flag plus paused contacts."""

@@ -869,8 +869,49 @@ install_rk3588_perf_if_needed() {
         fi
         local_sudo="sudo"
     fi
+    # Fresh install = the unit file is not on the box yet. The
+    # toggle's persisted flag is seeded only then: once the unit
+    # exists, an absent flag is the user's off choice, and a
+    # reinstall must not resurrect performance mode over it.
+    local perf_fresh_install=1
+    if [[ -e /etc/systemd/system/taos-rk3588-perf.service ]]; then
+        perf_fresh_install=0
+    fi
     log "installing /etc/systemd/system/taos-rk3588-perf.service"
     $local_sudo install -m 0644 "$INSTALL_DIR/$perf_unit" /etc/systemd/system/taos-rk3588-perf.service
+    # The unit's ExecStart/ExecStop delegate to this helper: it owns the
+    # devfreq (`governor`) vs cpufreq (`scaling_governor`) split and the
+    # record-at-start / restore-at-stop state. Without it the unit can
+    # only fail, so install it in the same step.
+    local perf_script="scripts/taos-rk3588-perf.sh"
+    if [[ -f "$INSTALL_DIR/$perf_script" ]]; then
+        log "installing /usr/local/bin/taos-rk3588-perf"
+        $local_sudo install -m 0755 "$INSTALL_DIR/$perf_script" /usr/local/bin/taos-rk3588-perf
+    else
+        warn "taos-rk3588-perf.sh not found in repo - perf unit installed but its governor helper is missing"
+    fi
+    # The Settings toggle flips this unit as the unprivileged controller
+    # user (`taos`); under default polkit that is an interactive admin
+    # auth, so ship the unit-scoped rule that lets exactly that user
+    # manage exactly this unit (see the rule file for the scope).
+    local perf_polkit="scripts/systemd/50-taos-rk3588-perf.rules"
+    if [[ -f "$INSTALL_DIR/$perf_polkit" ]]; then
+        log "installing /etc/polkit-1/rules.d/50-taos-rk3588-perf.rules"
+        $local_sudo install -D -m 0644 "$INSTALL_DIR/$perf_polkit" /etc/polkit-1/rules.d/50-taos-rk3588-perf.rules
+    else
+        warn "50-taos-rk3588-perf.rules not found in repo - Settings will show perf state but cannot toggle it"
+    fi
+    # The unit stays enabled once installed; the Settings toggle's
+    # persisted on/off state is this flag file (the unit's boot start
+    # gates on it via ConditionPathExists), in a directory owned by
+    # the controller user so the toggle can flip it. Seed the flag on
+    # a fresh install only, so performance mode starts ON, as it did
+    # when the toggle owned the unit's enablement; on a reinstall an
+    # absent flag is an off choice and stays off.
+    $local_sudo install -d -m 0755 -o taos -g taos /var/lib/taos-rk3588-perf
+    if [[ $perf_fresh_install -eq 1 && ! -e /var/lib/taos-rk3588-perf/enabled ]]; then
+        $local_sudo install -m 0644 -o taos -g taos /dev/null /var/lib/taos-rk3588-perf/enabled
+    fi
     $local_sudo systemctl daemon-reload
     $local_sudo systemctl enable taos-rk3588-perf.service
     log "taos-rk3588-perf.service installed — NPU governors will be set on boot"
