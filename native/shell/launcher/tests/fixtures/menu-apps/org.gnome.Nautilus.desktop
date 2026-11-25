@@ -1,0 +1,7 @@
+[Desktop Entry]
+Type=Application
+Name=Files
+GenericName=File Manager
+Icon=system-file-manager
+Exec=nautilus %U
+Categories=Utility;Core;FileManager;

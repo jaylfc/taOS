@@ -1,0 +1,7 @@
+[Desktop Entry]
+Type=Application
+Name=GParted
+GenericName=Partition Editor
+Icon=gparted
+Exec=gparted %f
+Categories=System;Settings;

@@ -1,0 +1,7 @@
+[Desktop Entry]
+Type=Application
+Name=LibreOffice Calc
+GenericName=Spreadsheet
+Icon=libreoffice-calc
+Exec=soffice --calc %U
+Categories=Office;Spreadsheet;

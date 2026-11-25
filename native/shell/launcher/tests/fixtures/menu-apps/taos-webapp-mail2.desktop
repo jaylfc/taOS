@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=Fastmail (work)
+Icon=/ICONDIR/mail.svg
+Exec=taos-webapp launch mail2
+Categories=Network;
+X-taOS-AppId=chrome-fastmail-mail2
+X-taOS-WebApp=mail2

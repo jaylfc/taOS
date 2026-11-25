@@ -1,0 +1,7 @@
+[Desktop Entry]
+Type=Application
+Name=Steam
+GenericName=Game Store
+Icon=steam
+Exec=steam %U
+Categories=Game;

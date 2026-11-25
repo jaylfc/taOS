@@ -10,7 +10,8 @@ add_library(taos_search_core STATIC
     src/config.cpp src/config.h src/agents.h src/fileindex.cpp src/fileindex.h
     src/engine.cpp src/engine.h
     src/runner.cpp src/runner.h src/jsonio.cpp src/jsonio.h
-    src/setup.cpp src/setup.h src/ipc.cpp src/ipc.h)
+    src/setup.cpp src/setup.h src/ipc.cpp src/ipc.h
+    src/appmenu.cpp src/appmenu.h)
 target_include_directories(taos_search_core PUBLIC src)
 target_link_libraries(taos_search_core PUBLIC Qt6::Core Qt6::Network)
 set_target_properties(taos_search_core PROPERTIES POSITION_INDEPENDENT_CODE ON)
@@ -64,3 +65,4 @@ taos_launcher_test(launcher_test_engine)
 taos_launcher_test(launcher_test_ipc)
 taos_launcher_test(launcher_test_providers)
 taos_launcher_test(launcher_test_controller)
+taos_launcher_test(launcher_test_appmenu)

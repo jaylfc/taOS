@@ -128,6 +128,10 @@ DesktopEntry parseDesktopEntry(const QString &text, const QString &id, const QSt
             else if (key == QLatin1String("Categories")) e.categories = splitList(val);
             else if (key == QLatin1String("OnlyShowIn")) e.onlyShowIn = splitList(val);
             else if (key == QLatin1String("NotShowIn")) e.notShowIn = splitList(val);
+            else if (key == QLatin1String("X-taOS-AppId")) e.taosAppId = unescapeValue(val);
+            else if (key == QLatin1String("X-taOS-AppGroup")) e.appGroup = unescapeValue(val);
+            else if (key == QLatin1String("X-taOS-ContainerApp")) e.containerApp = unescapeValue(val);
+            else if (key == QLatin1String("X-taOS-WebApp")) e.webApp = unescapeValue(val);
             else if (key == QLatin1String("Actions")) actionOrder = splitList(val) + actionOrder;
         } else if (curAction) {
             if (key == QLatin1String("Name")) {

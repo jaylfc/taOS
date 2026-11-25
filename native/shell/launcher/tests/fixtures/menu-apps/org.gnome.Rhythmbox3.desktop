@@ -1,0 +1,7 @@
+[Desktop Entry]
+Type=Application
+Name=Rhythmbox
+GenericName=Music Player
+Icon=rhythmbox
+Exec=rhythmbox %U
+Categories=AudioVideo;Audio;Player;

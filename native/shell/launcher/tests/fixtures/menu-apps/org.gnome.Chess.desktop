@@ -1,0 +1,7 @@
+[Desktop Entry]
+Type=Application
+Name=Chess
+GenericName=Board Game
+Icon=org.gnome.Chess
+Exec=gnome-chess
+Categories=Game;BoardGame;

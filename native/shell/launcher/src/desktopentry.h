@@ -21,6 +21,7 @@ struct DesktopEntry {
     bool noDisplay = false;
     bool hidden = false;
     bool isApplication = false;
+    QString taosAppId, appGroup, containerApp, webApp;   // X-taOS-AppId, X-taOS-AppGroup, X-taOS-ContainerApp, X-taOS-WebApp
     bool valid() const { return isApplication && !name.isEmpty() && !exec.isEmpty(); }
     // Should a launcher list this entry for a session running `desktops` (XDG_CURRENT_DESKTOP split)?
     bool showable(const QStringList &desktops) const;

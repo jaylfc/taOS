@@ -1,0 +1,7 @@
+[Desktop Entry]
+Type=Application
+Name=Store
+Icon=my.taos.store
+Exec=taos-store %U
+Categories=System;PackageManager;
+X-taOS-AppId=my.taos.store

@@ -1,0 +1,7 @@
+[Desktop Entry]
+Type=Application
+Name=GIMP
+GenericName=Image Editor
+Icon=gimp
+Exec=gimp %U
+Categories=Graphics;2DGraphics;RasterGraphics;

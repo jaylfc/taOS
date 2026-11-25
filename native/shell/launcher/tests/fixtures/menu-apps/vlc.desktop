@@ -1,0 +1,7 @@
+[Desktop Entry]
+Type=Application
+Name=VLC media player
+GenericName=Media Player
+Icon=vlc
+Exec=vlc --started-from-file %U
+Categories=AudioVideo;Player;Video;

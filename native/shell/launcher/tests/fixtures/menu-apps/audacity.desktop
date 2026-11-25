@@ -1,0 +1,7 @@
+[Desktop Entry]
+Type=Application
+Name=Audacity
+GenericName=Audio Editor
+Icon=audacity
+Exec=audacity %F
+Categories=AudioVideo;Audio;AudioVideoEditing;
