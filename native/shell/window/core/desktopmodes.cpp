@@ -81,30 +81,127 @@ QStringList modeSwitchCommands(const Tree &t, const QString &workspace, const QS
     return c;
 }
 
-QRect placeNewWindow(const Tree &t, const Window &w, const DesktopModes &modes, const QSize &preferred) {
+QString PlacementMemory::path() {
+    const QString e = qEnvironmentVariable("TAOS_WINDOW_GEOMETRY");
+    if (!e.isEmpty()) return e;
+    const QString xdg = qEnvironmentVariable("XDG_CONFIG_HOME");
+    return (xdg.isEmpty() ? QDir::homePath() + QStringLiteral("/.config") : xdg) + QStringLiteral("/taos/window-geometry.json");
+}
+
+bool PlacementMemory::read(const QString &file, QString *error) {
+    byOutput.clear();
+    QFile f(file);
+    if (!f.exists()) return true;
+    if (!f.open(QIODevice::ReadOnly)) { if (error) *error = QStringLiteral("cannot read %1").arg(file); return false; }
+    const QJsonDocument d = QJsonDocument::fromJson(f.readAll());
+    if (!d.isObject()) { if (error) *error = QStringLiteral("%1 is not a JSON object").arg(file); return false; }
+    const QJsonObject outs = d.object();
+    for (auto o = outs.begin(); o != outs.end(); ++o) {
+        const QJsonObject apps = o.value().toObject();
+        for (auto a = apps.begin(); a != apps.end(); ++a) {
+            const QJsonObject r = a.value().toObject();
+            const QRect rect(r.value(QLatin1String("x")).toInt(), r.value(QLatin1String("y")).toInt(),
+                             r.value(QLatin1String("w")).toInt(), r.value(QLatin1String("h")).toInt());
+            if (rect.width() > 0 && rect.height() > 0) byOutput[o.key()].insert(a.key(), rect);
+        }
+    }
+    return true;
+}
+
+bool PlacementMemory::write(const QString &file, QString *error) const {
+    QJsonObject outs;
+    for (auto o = byOutput.begin(); o != byOutput.end(); ++o) {
+        QJsonObject apps;
+        for (auto a = o.value().begin(); a != o.value().end(); ++a)
+            apps.insert(a.key(), QJsonObject { { QStringLiteral("x"), a.value().x() }, { QStringLiteral("y"), a.value().y() },
+                                               { QStringLiteral("w"), a.value().width() }, { QStringLiteral("h"), a.value().height() } });
+        outs.insert(o.key(), apps);
+    }
+    QDir().mkpath(QFileInfo(file).absolutePath());
+    QSaveFile f(file);
+    if (!f.open(QIODevice::WriteOnly) || f.write(QJsonDocument(outs).toJson()) < 0 || !f.commit()) {
+        if (error) *error = QStringLiteral("cannot write %1: %2").arg(file, f.errorString());
+        return false;
+    }
+    return true;
+}
+
+bool PlacementMemory::remember(const Window &w) {
+    if (w.appId.isEmpty() || w.output.isEmpty() || !w.floating || w.minimised || w.fullscreen || w.fullSize || !w.rect.isValid()) return false;
+    byOutput[w.output].insert(w.appId, w.rect);
+    return true;
+}
+
+QRect placeNewWindow(const Tree &t, const Window &w, const DesktopModes &modes, const QSize &preferred, const PlacementMemory *memory) {
     if (w.minimised || w.fullscreen) return QRect();
-    if (modes.modeFor(w.workspace) != QLatin1String("desktop")) return QRect();
+    // A window sway floated on its own (a dialog) is placed whatever the workspace's style; a tiled one only on a desktop workspace.
+    if (!w.floating && modes.modeFor(w.workspace) != QLatin1String("desktop")) return QRect();
     const Workspace *ws = t.workspace(w.workspace);
     if (!ws || !ws->rect.isValid()) return QRect();
-    int others = 0;
-    for (const Window &o : t.windows)
-        if (o.id != w.id && !o.minimised && o.floating && o.workspace == w.workspace) ++others;
-    const QRect a = ws->rect;
+    const QRect a = ws->rect;   // the usable area: the output less the bar and the dock
+    // Never more than 90 % of it in either direction, so a window always leaves the desktop visible around it.
+    const int maxW = std::max(1, a.width() * 9 / 10), maxH = std::max(1, a.height() * 9 / 10);
     int width, height;
     if (preferred.isValid()) {
-        // The application asked for this size: keep it, but never larger than the free area (bar and dock excluded).
-        width = std::clamp(preferred.width(), std::min(480, a.width()), std::max(a.width() - 32, 1));
-        height = std::clamp(preferred.height(), std::min(320, a.height()), std::max(a.height() - 32, 1));
+        width = std::clamp(preferred.width(), 1, maxW);
+        height = std::clamp(preferred.height(), 1, maxH);
     } else {
-        width = std::clamp(a.width() * 6 / 10, std::min(480, a.width()), std::max(a.width() - 40, 1));
-        height = std::clamp(a.height() * 7 / 10, std::min(320, a.height()), std::max(a.height() - 40, 1));
+        width = std::clamp(a.width() * 6 / 10, std::min(480, a.width()), std::min(1600, maxW));
+        height = std::clamp(a.height() * 7 / 10, std::min(320, a.height()), std::min(900, maxH));
     }
-    const int step = 32 * (others % 6);
-    int x = a.x() + (a.width() - width) / 2 + step - 80;
-    int y = a.y() + (a.height() - height) / 2 + step - 80;
-    x = std::clamp(x, a.x(), std::max(a.x(), a.right() - width));
-    y = std::clamp(y, a.y(), std::max(a.y(), a.bottom() - height));
-    return QRect(x, y, width, height);
+    const auto inside = [&](QRect r) {
+        r.moveLeft(std::clamp(r.x(), a.x(), std::max(a.x(), a.x() + a.width() - r.width())));
+        r.moveTop(std::clamp(r.y(), a.y(), std::max(a.y(), a.y() + a.height() - r.height())));
+        return r;
+    };
+    // Where this app's window was when it was last closed on this output, while it still fits.
+    if (memory && !w.appId.isEmpty()) {
+        const QRect m = memory->recall(ws->output, w.appId);
+        if (m.isValid() && a.contains(m) && m.width() <= maxW && m.height() <= maxH) {
+            QRect r = m;
+            for (int i = 0; i < 6; ++i) {   // an open window of the app already sits there: step down and right
+                bool taken = false;
+                for (const Window &o : t.windows)
+                    if (o.id != w.id && !o.minimised && o.floating && o.workspace == w.workspace && o.appId == w.appId && o.rect.topLeft() == r.topLeft()) taken = true;
+                if (!taken) return r;
+                const QRect next = r.translated(32, 32);
+                if (!a.contains(next)) break;
+                r = next;
+            }
+        }
+    }
+    // A dialog: a smaller window of a process that already has a window open here is centred on that one.
+    if (preferred.isValid() && w.pid > 0) {
+        const Window *parent = nullptr;
+        for (const Window &o : t.windows) {
+            if (o.id == w.id || o.minimised || o.pid != w.pid || o.workspace != w.workspace || !o.rect.isValid()) continue;
+            if (qint64(width) * height * 10 >= qint64(o.rect.width()) * o.rect.height() * 6) continue;
+            if (!parent || (o.focused && !parent->focused) || (o.focused == parent->focused && o.id > parent->id)) parent = &o;
+        }
+        if (parent) {
+            QRect r(0, 0, width, height);
+            r.moveCenter(parent->rect.center());
+            return inside(r);
+        }
+    }
+    // Centred, or 32 px down and right of the last window of the same app, or stepped like other windows.
+    int others = 0;
+    const Window *sibling = nullptr;
+    for (const Window &o : t.windows) {
+        if (o.id == w.id || o.minimised || !o.floating || o.workspace != w.workspace) continue;
+        ++others;
+        if (!w.appId.isEmpty() && o.appId == w.appId && o.rect.isValid() && (!sibling || o.id > sibling->id)) sibling = &o;
+    }
+    QRect r(0, 0, width, height);
+    if (sibling) {
+        r.moveTopLeft(sibling->rect.topLeft() + QPoint(32, 32));
+        if (!a.contains(r)) r.moveTopLeft(QPoint(a.x() + (a.width() - width) / 2, a.y() + (a.height() - height) / 2));
+    } else {
+        const int step = 32 * (others % 6);
+        r.moveTopLeft(QPoint(a.x() + (a.width() - width) / 2 + step - 80, a.y() + (a.height() - height) / 2 + step - 80));
+        if (others == 0) r.moveTopLeft(QPoint(a.x() + (a.width() - width) / 2, a.y() + (a.height() - height) / 2));
+    }
+    return inside(r);
 }
 
 QRect newWindowGeometry(const Tree &t, const Window &w, const DesktopModes &modes) {
