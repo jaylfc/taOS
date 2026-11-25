@@ -206,6 +206,36 @@ describe("PA change confirmation", () => {
     await waitFor(() => expect(putBodies.length).toBe(2));
     expect(JSON.parse(putBodies[1]).pa_canonical_id).toBe("cid-atlas");
   });
+
+  it("does not sync the PA preference when the agent lookup fails", async () => {
+    const putBodies: string[] = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn((url: string, init?: RequestInit) => {
+        if (String(url).includes("/api/agents")) {
+          return Promise.resolve({
+            ok: false,
+            status: 503,
+            json: async () => ({}),
+          });
+        }
+        if (String(url).includes("/api/preferences/assistant_studio")) {
+          if (init?.method === "PUT") putBodies.push(String(init?.body ?? ""));
+          return Promise.resolve({ ok: true, json: async () => ({}) });
+        }
+        return Promise.resolve({ ok: true, json: async () => [] });
+      }),
+    );
+    localStorage.setItem("taos.assistantStudio.pa", "hermes");
+    await openStudio();
+    // Give the load effect every chance to (wrongly) sync.
+    await new Promise((r) => setTimeout(r, 50));
+    // The stored pick must NOT be mirrored off a failed lookup: with an
+    // empty agent list it resolves to "" and would wipe a valid
+    // per-person server preference while localStorage still holds it.
+    expect(putBodies.length).toBe(0);
+    expect(localStorage.getItem("taos.assistantStudio.pa")).toBe("hermes");
+  });
 });
 
 describe("AssistantStudioApp theming", () => {
