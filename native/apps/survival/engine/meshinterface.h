@@ -21,7 +21,9 @@ struct MeshRadio
     QString transport;     // meshtastic | meshcore | reticulum
     QString link;          // usb | ble | tcp
     QString state;         // connected | connecting | offline
-    QString firmware;
+    QString firmware;      // read from the radio itself; empty until it has said
+    QString hardware;      // the board model the radio reports, e.g. "Heltec V3"; empty until it has said
+    QString port;          // the serial path or ble:<address> the engine opened (what a release takes)
     int batteryPercent = -1;   // -1: unknown
 };
 
@@ -165,6 +167,9 @@ public:
     /// Opens a port through the engine (it runs a read-only handshake and remembers the port). actionDone("connect:<id>").
     virtual void connectDevice(const QString &id, const QString &network = QString()) { Q_UNUSED(id); Q_UNUSED(network); refuse(QStringLiteral("connect")); }
     virtual void forgetDevice(const QString &id) { Q_UNUSED(id); refuse(QStringLiteral("forget")); }
+    /// Closes the radio on this port and stops the engine reopening it, so the firmware flasher can have the port.
+    /// actionDone("release:<port>").
+    virtual void releaseDevice(const QString &port) { Q_EMIT actionDone(QStringLiteral("release:") + port, false, unavailableReason()); }
     virtual void assign(const QString &node, const QString &identity, const QString &name) { Q_UNUSED(node); Q_UNUSED(identity); Q_UNUSED(name); refuse(QStringLiteral("assign")); }
     virtual void createContact(const QString &name, const QString &notes, const QString &assignNode = QString()) { Q_UNUSED(name); Q_UNUSED(notes); Q_UNUSED(assignNode); refuse(QStringLiteral("contact")); }
     virtual void setTold(const QString &contact, bool told, const QString &date) { Q_UNUSED(contact); Q_UNUSED(told); Q_UNUSED(date); refuse(QStringLiteral("told")); }
@@ -172,7 +177,7 @@ public:
     virtual void requestDeviceConfig(const QString &radioId) { Q_UNUSED(radioId); }
     /// Writes settings to a radio. The only caller is the confirm step of the settings screens; the answer is a
     /// refusal in words unless deviceConfigWritable().
-    virtual void applyDeviceConfig(const QString &radioId, const QVariantMap &changes) { Q_UNUSED(radioId); Q_UNUSED(changes); refuse(QStringLiteral("device")); }
+    virtual void applyDeviceConfig(const QString &radioId, const QVariantMap &changes, bool confirmRegion = false) { Q_UNUSED(radioId); Q_UNUSED(changes); Q_UNUSED(confirmRegion); refuse(QStringLiteral("device")); }
 
 Q_SIGNALS:
     void radiosChanged();

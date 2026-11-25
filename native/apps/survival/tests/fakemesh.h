@@ -14,8 +14,12 @@
 #include <QTcpSocket>
 #include <QTimer>
 #include <QtTest>
+#include <functional>
 
 namespace FakeEngines {
+
+/// One counter shared by both stand-in engines, so a test can prove the order of requests that went to different engines.
+inline int g_fakeSeq = 0;
 
 inline QJsonValue fixture(const QString &dir, const QString &name, bool envelope = true)
 {
@@ -68,6 +72,18 @@ public:
     bool refuseMessages = false;
     bool radiosConnect = true;
     QString savedDevice, connectError;
+    // scripted radios for the switch tests: when `scripted` is set, app.radios / device.config / device.apply / radios.release
+    // answer from these instead of the captured fixtures
+    bool scripted = false, configWritable = false;
+    QJsonArray radiosJson;
+    QJsonObject cfgByRadio;                 // radio id -> the engine's device.config `values`
+    QJsonArray serialDevices;               // what `discover` lists when scripted
+    std::function<void(const QString &)> onConnect;
+    std::function<void(const QString &)> onRelease;   // called with the port when radios.release arrives   // called with the port when radios.connect arrives
+    QStringList released;
+    bool refuseApply = false;                 // device.apply answers with a refusal (receive-only engine)
+    int connectingMs = 0;                     // a radio opened by radios.connect stays "connecting" this long
+    QJsonArray textMessages, identitiesJson;   // when scripted and not empty, answer these (full engine records / app identities)
     int delayMs = 0;
     QList<QJsonObject> requests;
     int count(const QString &method) const { int n = 0; for (const auto &r : requests) n += r.value(QStringLiteral("method")).toString() == method; return n; }
@@ -78,7 +94,7 @@ public:
         QStringList bad;
         for (const auto &r : requests) {
             const QString m = r.value(QStringLiteral("method")).toString();
-            if ((m == QLatin1String("app.send") || m == QLatin1String("send") || m == QLatin1String("device.apply") || m == QLatin1String("connect")
+            if ((m == QLatin1String("app.send") || m == QLatin1String("send") || m == QLatin1String("device.apply") || m == QLatin1String("connect") || m == QLatin1String("radios.release")
                  || m == QLatin1String("radios.connect")) && !allowed.contains(m))
                 bad << m;
         }
@@ -101,7 +117,9 @@ private:
         while ((nl = m_buf[c].indexOf('\n')) >= 0) {
             const QJsonObject req = QJsonDocument::fromJson(m_buf[c].left(nl)).object();
             m_buf[c].remove(0, nl + 1);
-            requests << req;
+            QJsonObject stamped = req;
+            stamped.insert(QStringLiteral("_seq"), ++g_fakeSeq);
+            requests << stamped;
             if (req.value(QStringLiteral("method")).toString() == QLatin1String("subscribe")) {
                 m_subs << c;
                 c->write(QJsonDocument(QJsonObject{{QStringLiteral("id"), req.value(QStringLiteral("id"))}, {QStringLiteral("ok"), true}, {QStringLiteral("result"), QJsonObject{{QStringLiteral("subscribed"), true}}}}).toJson(QJsonDocument::Compact) + '\n');
@@ -125,15 +143,40 @@ private:
             QJsonObject h = fixture(m_fx, QStringLiteral("health")).toObject();
             h.insert(QStringLiteral("receive_only"), receiveOnly);
             h.insert(QStringLiteral("device_config"), configReadable);
+            h.insert(QStringLiteral("device_config_write"), configWritable && !receiveOnly);
             h.insert(QStringLiteral("radios_connect"), radiosConnect);
             return ok(h);
         }
         if (m == QLatin1String("messages") && refuseMessages)
             return err(QStringLiteral("invalid"), QStringLiteral("bad filter: unknown field"));
+        if (scripted && m == QLatin1String("messages") && !textMessages.isEmpty() && p.value(QStringLiteral("filter")).toObject().value(QStringLiteral("kind")).toString() != QLatin1String("position"))
+            return ok(textMessages);
+        if (scripted && m == QLatin1String("app.identities") && !identitiesJson.isEmpty())
+            return ok(identitiesJson);
         if (m == QLatin1String("messages"))
             return ok(fixture(m_fx, p.value(QStringLiteral("filter")).toObject().value(QStringLiteral("kind")).toString() == QLatin1String("position") ? QStringLiteral("messages.position") : QStringLiteral("messages.text")));
         if (m == QLatin1String("contacts.create"))
             return ok(QJsonObject{{QStringLiteral("contact"), QStringLiteral("c9")}});
+        if (scripted && m == QLatin1String("app.radios"))
+            return ok(radiosJson);
+        if (scripted && m == QLatin1String("device.config")) {
+            const QString id = p.value(QStringLiteral("radio")).toString();
+            if (!cfgByRadio.contains(id))
+                return err(QStringLiteral("no_radio"), QStringLiteral("no radio ") + id);
+            return ok(QJsonObject{{QStringLiteral("radio"), id}, {QStringLiteral("state"), QStringLiteral("ok")}, {QStringLiteral("note"), QString()}, {QStringLiteral("values"), cfgByRadio.value(id)}});
+        }
+        if (scripted && m == QLatin1String("device.apply") && refuseApply)
+            return err(QStringLiteral("forbidden"), QStringLiteral("the engine is in receive-only mode: it writes nothing to a radio"));
+        if (scripted && m == QLatin1String("device.apply"))
+            return ok(QJsonObject{{QStringLiteral("applied"), QJsonArray::fromStringList(p.value(QStringLiteral("changes")).toObject().keys())}});
+        if (m == QLatin1String("radios.release")) {
+            released << p.value(QStringLiteral("device")).toString();
+            if (onRelease)
+                onRelease(released.last());
+            if (scripted)
+                radiosJson = QJsonArray();
+            return ok(QJsonObject{{QStringLiteral("released"), true}, {QStringLiteral("was_open"), true}});
+        }
         if (m == QLatin1String("device.config")) {
             if (!configReadable)
                 return err(QStringLiteral("unknown_method"), QStringLiteral("no method device.config"));
@@ -141,6 +184,8 @@ private:
                                   {QStringLiteral("channels"), QJsonArray{QJsonObject{{QStringLiteral("index"), 0}, {QStringLiteral("name"), QStringLiteral("Primary")}, {QStringLiteral("role"), QStringLiteral("PRIMARY")},
                                                                          {QStringLiteral("psk_b64"), QStringLiteral("AQ==")}, {QStringLiteral("share_url"), QStringLiteral("https://example.invalid/e/#abc")}}}}});
         }
+        if (scripted && m == QLatin1String("discover"))
+            return ok(QJsonObject{{QStringLiteral("serial"), serialDevices}, {QStringLiteral("ble"), QJsonObject{{QStringLiteral("state"), QStringLiteral("devices")}, {QStringLiteral("devices"), QJsonArray()}}}});
         if (m == QLatin1String("discover"))
             return ok(QJsonObject{{QStringLiteral("serial"), QJsonArray{QJsonObject{{QStringLiteral("path"), QStringLiteral("/dev/ttyACM0")}, {QStringLiteral("vid"), 0x303a}, {QStringLiteral("pid"), 0x1001},
                                        {QStringLiteral("product"), QStringLiteral("Fixture board")}, {QStringLiteral("manufacturer"), QStringLiteral("Fixture")}, {QStringLiteral("hint"), QStringLiteral("Espressif native USB")}}}},
@@ -155,6 +200,8 @@ private:
             if (!connectError.isEmpty())
                 return err(QStringLiteral("connect_failed"), connectError);
             savedDevice = p.value(QStringLiteral("device")).toString();
+            if (onConnect)
+                onConnect(savedDevice);
             return ok(QJsonObject{{QStringLiteral("radio"), QStringLiteral("!fixture")}, {QStringLiteral("network"), QStringLiteral("meshtastic")}});
         }
         if (m == QLatin1String("radios.disconnect")) {
@@ -182,8 +229,8 @@ class FakeFirmware : public QObject
 {
     Q_OBJECT
 public:
-    struct Req { QString method, path; QJsonObject body; QByteArray auth; };
-    FakeFirmware(QString fixtures, QString dataDir, QObject *parent = nullptr) : QObject(parent), m_fx(std::move(fixtures))
+    struct Req { QString method, path; QJsonObject body; QByteArray auth; int seq = 0; };
+    FakeFirmware(QString fixtures, QString dataDir, QObject *parent = nullptr, quint16 fixedPort = 0) : QObject(parent), m_fx(std::move(fixtures))
     {
         QDir().mkpath(dataDir);
         QFile t(dataDir + QStringLiteral("/api-token"));
@@ -192,7 +239,7 @@ public:
             while (QTcpSocket *s = m_srv.nextPendingConnection())
                 connect(s, &QTcpSocket::readyRead, this, [this, s] { read(s); });
         });
-        m_srv.listen(QHostAddress::LocalHost, 0);
+        m_srv.listen(QHostAddress::LocalHost, fixedPort);
         // the owner socket: mints a nonce per request, like the engine's 0600 socket (which also checks the peer uid)
         QLocalServer::removeServer(dataDir + QStringLiteral("/owner.sock"));
         m_owner.listen(dataDir + QStringLiteral("/owner.sock"));
@@ -215,6 +262,9 @@ public:
     QStringList used;
     QList<Req> requests;
     QString mode = QStringLiteral("ready");   // ready | pending
+    QString devicePort;                       // when set, /v1/devices lists the board on this port instead of the captured one
+    int runDelayMs = 0;                       // how long /v1/flash/run takes to answer (pictures of a flash in progress)
+    QString runName = QStringLiteral("Heltec V3");   // the board name /v1/flash/run accepts
     int count(const QString &method, const QString &path) const { int n = 0; for (const auto &r : requests) n += r.method == method && r.path == path; return n; }
     Req last(const QString &path) const { for (int i = requests.size() - 1; i >= 0; --i) if (requests[i].path == path) return requests[i]; return {}; }
 
@@ -242,6 +292,7 @@ private:
         for (const QByteArray &l : head.split('\n'))
             if (l.toLower().startsWith("authorization:"))
                 r.auth = l.mid(14).trimmed();
+        r.seq = ++g_fakeSeq;
         requests << r;
         QJsonValue out;
         int code = 200;
@@ -265,8 +316,12 @@ private:
         } else if (r.auth != "Bearer test-token") { out = QJsonObject{{QStringLiteral("ok"), false}, {QStringLiteral("error"), QStringLiteral("unauthorized")}}; code = 401; }
         else out = route(r);
         const QByteArray payload = QJsonDocument(out.toObject()).toJson(QJsonDocument::Compact);
-        s->write("HTTP/1.1 " + QByteArray::number(code) + " OK\r\nContent-Type: application/json\r\nContent-Length: " + QByteArray::number(payload.size()) + "\r\nConnection: close\r\n\r\n" + payload);
-        s->disconnectFromHost();
+        const QByteArray reply = "HTTP/1.1 " + QByteArray::number(code) + " OK\r\nContent-Type: application/json\r\nContent-Length: " + QByteArray::number(payload.size()) + "\r\nConnection: close\r\n\r\n" + payload;
+        auto answer = [s, reply] { if (s->state() == QAbstractSocket::ConnectedState) { s->write(reply); s->disconnectFromHost(); } };
+        if (r.path == QLatin1String("/v1/flash/run") && runDelayMs > 0)
+            QTimer::singleShot(runDelayMs, s, answer);
+        else
+            answer();
     }
     QJsonValue route(const Req &r)
     {
@@ -276,14 +331,22 @@ private:
         if (r.path == QLatin1String("/v1/licences")) return fx(mode == QLatin1String("pending") ? QStringLiteral("licences_pending") : QStringLiteral("licences_accepted"));
         if (r.path == QLatin1String("/v1/licences/accept")) return QJsonObject{{QStringLiteral("ok"), true}};
         if (r.path == QLatin1String("/v1/library/refresh")) return fx(QStringLiteral("refresh_ok"));
-        if (r.path == QLatin1String("/v1/devices")) return fx(QStringLiteral("devices"));
+        if (r.path == QLatin1String("/v1/devices")) {
+            QJsonObject o = fx(QStringLiteral("devices")).toObject();
+            if (!devicePort.isEmpty()) {
+                QJsonArray ds = o.value(QStringLiteral("devices")).toArray();
+                for (int i = 0; i < ds.size(); ++i) { QJsonObject d = ds[i].toObject(); d.insert(QStringLiteral("port"), devicePort); ds[i] = d; }
+                o.insert(QStringLiteral("devices"), ds);
+            }
+            return o;
+        }
         if (r.path.endsWith(QLatin1String("/firmware"))) return fx(QStringLiteral("device_firmware"));
         if (r.path == QLatin1String("/v1/flash/plan")) return fx(QStringLiteral("plan"));
         if (r.path == QLatin1String("/v1/flash/run") && r.body.contains(QStringLiteral("actor")) && r.body.value(QStringLiteral("actor")).toString() != QLatin1String("person")
             && !r.body.value(QStringLiteral("actor")).toString().startsWith(QLatin1String("agent:")))
             return QJsonObject{{QStringLiteral("ok"), false}, {QStringLiteral("stage"), QStringLiteral("refused")}, {QStringLiteral("code"), QStringLiteral("consent_required")}, {QStringLiteral("message"), QStringLiteral("actor must be person or agent:<id>")}};
         if (r.path == QLatin1String("/v1/flash/run")) {
-            if (r.body.value(QStringLiteral("confirm")).toString() != QLatin1String("Heltec V3"))
+            if (r.body.value(QStringLiteral("confirm")).toString() != runName)
                 return fx(QStringLiteral("run_unconfirmed"));
             if (!r.body.value(QStringLiteral("ack_unsigned")).toBool())
                 return fx(QStringLiteral("run_unacknowledged"));

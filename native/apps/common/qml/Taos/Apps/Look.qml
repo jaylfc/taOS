@@ -13,6 +13,7 @@ QtObject {
 
     // Inter is the taOS face; the generic family is the fallback when it is not installed.
     readonly property string family: "Inter"
+    readonly property string monoFamily: "monospace"   // ids, ports and firmware versions
     readonly property bool dark: TaosStyle.dark
     readonly property color ground: TaosStyle.ground
     readonly property color text: TaosStyle.text

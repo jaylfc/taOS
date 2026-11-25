@@ -42,6 +42,7 @@ public:
     void discoverDevices() override;
     void connectDevice(const QString &id, const QString &network) override;
     void forgetDevice(const QString &id) override;
+    void releaseDevice(const QString &port) override;
     /// The engine's error in words a person can act on (permission, busy port).
     static QString explainConnectError(const QString &engineMessage);
     void assign(const QString &node, const QString &identity, const QString &name) override;
@@ -49,7 +50,7 @@ public:
     void setTold(const QString &contact, bool told, const QString &date) override;
     void link(const QString &contact, const QString &account) override;
     void requestDeviceConfig(const QString &radioId) override;
-    void applyDeviceConfig(const QString &radioId, const QVariantMap &changes) override;
+    void applyDeviceConfig(const QString &radioId, const QVariantMap &changes, bool confirmRegion = false) override;
 
     // parsing, public so the tests can drive it with the engine's real JSON
     static MeshMessage messageFromRecord(const QJsonObject &r);

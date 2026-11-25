@@ -17,6 +17,7 @@ const USAGE: &str = "taos-mesh: mesh radio engine
   taos-mesh messages [--identity I] [--channel N] [--network N] [--kind K] [--since MS] [--until MS] [--limit N] [--as WHO]
   taos-mesh send --network N --text T [--to NODE] [--channel N] [--radio R] [--as PRINCIPAL]
   taos-mesh positions [--as WHO]
+  taos-mesh release DEVICE | device-config RADIO | device-apply RADIO path=value ... [--confirm-region]
   taos-mesh identities
   taos-mesh identities assign NODE IDENTITY [--name NAME] | unassign NODE
   taos-mesh identities contact NAME [--notes TEXT] | told CONTACT [--date YYYY-MM-DD] | untold CONTACT
@@ -61,7 +62,7 @@ fn parse(args: Vec<String>) -> Args {
     let mut it = args.into_iter().peekable();
     while let Some(x) = it.next() {
         if let Some(k) = x.strip_prefix("--") {
-            if k == "receive-only" {
+            if k == "receive-only" || k == "confirm-region" {
                 a.flags.push(k.into());
             } else if let Some(v) = it.next() {
                 a.opts.push((k.into(), v));
@@ -158,6 +159,28 @@ fn main() -> ExitCode {
             "connect",
             json!({"device": a.pos.get(1), "network": a.opt("network")}),
         ),
+        "release" => c("radios.release", json!({"device": a.pos.get(1)})),
+        "device-config" => c("device.config", json!({"radio": a.pos.get(1)})),
+        "device-apply" => {
+            // taos-mesh device-apply RADIO path=value ...   (the owner's own shell; agents have no such method)
+            let mut ch = serde_json::Map::new();
+            for kv in a.pos.iter().skip(2) {
+                let Some((k, v)) = kv.split_once('=') else {
+                    eprintln!("taos-mesh: {kv}: expected path=value");
+                    return ExitCode::from(2);
+                };
+                ch.insert(
+                    k.into(),
+                    v.parse::<u64>()
+                        .map(|n| json!(n))
+                        .unwrap_or_else(|_| json!(v)),
+                );
+            }
+            c(
+                "device.apply",
+                json!({"radio": a.pos.get(1), "changes": ch, "confirm_region": a.flags.iter().any(|f| f == "confirm-region")}),
+            )
+        }
         "listen" => listen(&socket),
         "messages" => {
             let mut f = json!({});

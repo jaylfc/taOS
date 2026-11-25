@@ -659,8 +659,9 @@ void KitEngine::refresh()
 SurvivalBackend::SurvivalBackend(const QString &dataDir, QObject *parent)
     : QObject(parent), m_packs(dataDir), m_library(&m_packs), m_map(&m_packs, dataDir), m_radios(), m_kits(&m_packs, &m_radios, &m_map),
       m_meshClient(MeshClient::defaultSocketPath()), m_socketMesh(&m_meshClient), m_tak(&m_fakeMesh, dataDir),
-      m_firmware(&m_fwClient, QString::fromLocal8Bit(qgetenv("USER")))
+      m_firmware(&m_fwClient, QString::fromLocal8Bit(qgetenv("USER"))), m_switch(&m_tak, &m_firmware, &m_fwClient)
 {
+    m_tak.setFirmware(&m_firmware);
     m_radios.scan();
     m_kits.refresh();
     m_fakeMesh.setReason(m_meshClient.socketPath().isEmpty() ? tr("There is no runtime directory (XDG_RUNTIME_DIR is not set), so the mesh engine's socket cannot be found.")

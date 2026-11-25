@@ -141,7 +141,8 @@ fn sigkill_mid_write_loses_no_acknowledged_record() {
     }
     child.kill().unwrap(); // SIGKILL: no destructors, no flush
     child.wait().unwrap();
-    // drain what the child had already printed before dying
+    // drain what the child had already printed before dying (line may still hold a partial read from the loop above)
+    line.clear();
     while rd.read_line(&mut line).unwrap_or(0) > 0 {
         let l = line.trim().to_string();
         if !l.is_empty() {

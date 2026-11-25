@@ -5,37 +5,45 @@ import QtQuick.Layouts
 import Taos.Apps 1.0
 import Taos.Survival 1.0
 
-// Radios: the ones the mesh engine has open (with who each belongs to and its settings), the USB devices found on this
-// device, and the firmware library with the guarded switch of a board between networks.
+// Radios: one card per physical radio, whether the mesh engine has it open or it is only plugged in. Each card says what
+// the board is, which network it runs and which firmware version (read from the radio itself, never guessed), and offers
+// Connect, Settings, Assign and "Switch network". Reticulum is shown as coming, with what it needs. The firmware library
+// has its own page.
 C.ScrollView {
     id: root
     property var nav
     readonly property var tak: Survival.tak
-    readonly property var radios: Survival.radios
     readonly property var fw: Survival.firmware
     property string assigning: ""
-    Component.onCompleted: fw.reload()
+    Component.onCompleted: { fw.reload(); fw.detect(); tak.discover() }
     onNavChanged: if (nav && nav.demo.assign !== undefined) assigning = nav.demo.assign
     contentWidth: availableWidth
     clip: true
+    Timer { interval: 5000; repeat: true; running: root.visible && root.tak.connecting === ""; onTriggered: { root.tak.discover(); root.fw.detect() } }
+    function stateText(r) {
+        return r.state === "connected" ? qsTr("Connected") : r.state === "connecting" ? qsTr("Connecting") : r.state === "detected" ? qsTr("Not connected") : qsTr("Offline")
+    }
+    function stateTone(r) { return r.state === "connected" ? "success" : r.state === "connecting" ? "warning" : "neutral" }
     ColumnLayout {
         x: Look.space3
         width: parent.width - Look.space3 * 2
         spacing: Look.space2
-        TakLabel { text: qsTr("Connected to the engine"); Layout.topMargin: Look.space3; Layout.leftMargin: Look.space3 }
+        TakLabel { text: qsTr("Your radios"); Layout.topMargin: Look.space3; Layout.leftMargin: Look.space3 }
         EmptyState {
-            visible: root.tak.radios.length === 0
+            visible: root.tak.radioRows.length === 0
             Layout.fillWidth: true; Layout.topMargin: Look.space3
-            glyph: "radio"
-            title: root.tak.available ? qsTr("The engine has no radio open") : qsTr("No mesh engine")
-            detail: root.tak.available ? qsTr("Plug a radio in and press Connect below. The app never opens a radio on its own.") : qsTr("Radios the engine has open are listed here once it runs.")
+            glyph: "usb"
+            title: root.tak.available ? qsTr("No radio found") : qsTr("No mesh engine")
+            detail: root.tak.available ? qsTr("Plug a radio into a USB port. It shows up here within a few seconds. Nothing is sent or changed on it until you ask.")
+                                       : qsTr("Radios are listed here once the mesh engine runs.")
         }
         Repeater {
-            model: root.tak.radios
+            model: root.tak.radioRows
             delegate: GlassPanel {
                 id: card
                 required property var modelData
-                objectName: "radio-" + modelData.id
+                readonly property var r: modelData
+                objectName: r.engineRadioId !== "" ? "radio-" + r.engineRadioId : "device-row-" + r.key
                 Layout.fillWidth: true
                 implicitHeight: col.implicitHeight + Look.space3 * 2
                 ColumnLayout {
@@ -46,90 +54,95 @@ C.ScrollView {
                         spacing: Look.space3
                         Rectangle {
                             Layout.alignment: Qt.AlignTop
-                            width: 36; height: 36; radius: Look.radiusCard - 4
-                            color: Look.tint(card.modelData.state === "connected" ? Look.success : Look.textSecondary, 0.14)
-                            border.width: 1; border.color: Look.tint(card.modelData.state === "connected" ? Look.success : Look.textSecondary, 0.3)
-                            Glyph { anchors.centerIn: parent; name: "radio"; size: 18; stroke: 1.8; color: card.modelData.state === "connected" ? Look.success : Look.textSecondary }
+                            implicitWidth: Look.space6 + Look.space1; implicitHeight: implicitWidth; radius: Look.radiusControl
+                            color: Look.tint(card.r.state === "connected" ? Look.success : Look.textSecondary, 0.14)
+                            border.width: 1; border.color: Look.tint(card.r.state === "connected" ? Look.success : Look.textSecondary, 0.3)
+                            Glyph { anchors.centerIn: parent; name: card.r.kind === "ble" ? "radio" : "usb"; size: 18; stroke: 1.8; color: card.r.state === "connected" ? Look.success : Look.textSecondary }
                         }
                         ColumnLayout {
                             Layout.fillWidth: true; spacing: 2
-                            TaosText { text: card.modelData.name; Layout.fillWidth: true; elide: Text.ElideRight; font.pixelSize: Look.bodyMedium; font.weight: Font.DemiBold }
-                            TaosText { text: card.modelData.id; font.pixelSize: Look.small; color: Look.textSecondary; font.family: "monospace" }
+                            TaosText { objectName: "radioTitle"; text: card.r.title; Layout.fillWidth: true; elide: Text.ElideRight; font.pixelSize: Look.bodyMedium; font.weight: Font.DemiBold }
+                            TaosText { text: card.r.port !== "" ? card.r.port : (card.r.detail || card.r.key); Layout.fillWidth: true; elide: Text.ElideMiddle; font.pixelSize: Look.small; color: Look.textSecondary; font.family: Look.monoFamily }
                         }
                     }
                     Flow {
                         Layout.fillWidth: true; spacing: Look.space2
-                        Chip { text: card.modelData.networkName }
-                        Chip { text: card.modelData.link === "usb" ? qsTr("USB") : card.modelData.link === "ble" ? qsTr("Bluetooth") : qsTr("Network") }
-                        Chip { text: card.modelData.state === "connected" ? qsTr("Connected") : card.modelData.state === "connecting" ? qsTr("Connecting") : qsTr("Offline")
-                               tone: card.modelData.state === "connected" ? "success" : card.modelData.state === "connecting" ? "warning" : "neutral" }
-                        Chip { text: card.modelData.battery >= 0 ? qsTr("Battery %1%").arg(card.modelData.battery) : qsTr("Battery unknown"); glyph: "battery" }
+                        Chip { objectName: "networkChip"; visible: card.r.network !== ""; text: card.r.networkName; tone: "accent" }
+                        Chip { objectName: "firmwareChip"; visible: card.r.firmware !== ""; text: qsTr("Firmware %1").arg(card.r.firmware); mono: true }
+                        Chip { objectName: "stateChip"; text: root.stateText(card.r); tone: root.stateTone(card.r) }
+                        Chip { visible: card.r.kind === "ble"; text: qsTr("Bluetooth") }
+                        Chip { visible: card.r.battery >= 0; text: qsTr("Battery %1%").arg(card.r.battery); glyph: "battery" }
+                        Chip { visible: card.r.saved; text: qsTr("Opens again after a restart"); tone: "success"; glyph: "check" }
                     }
+                    TaosText { visible: card.r.kind === "ble"; objectName: "bleNote"; Layout.fillWidth: true; wrapMode: Text.Wrap; font.pixelSize: Look.small; color: Look.textSecondary
+                               text: qsTr("Bluetooth radios are listed here but the mesh engine cannot connect them yet. Use a USB cable.") }
+                    TaosText { visible: card.r.state === "detected" && card.r.network === "" && card.r.kind !== "ble"; objectName: "notConnectedNote"; Layout.fillWidth: true; wrapMode: Text.Wrap; font.pixelSize: Look.small; color: Look.textSecondary
+                               text: card.r.boardGuess !== "" ? qsTr("Looks like a %1. Connect to read which network it runs and its firmware version. Connecting only reads; nothing is sent over the air.").arg(card.r.boardGuess)
+                                                              : qsTr("Connect to read which network it runs and its firmware version. Connecting only reads; nothing is sent over the air.") }
+                    TaosText { visible: card.r.busy; objectName: "handshake-" + card.r.key; Layout.fillWidth: true; wrapMode: Text.Wrap; font.pixelSize: Look.small; color: Look.textSecondary
+                               text: qsTr("Opening the port and asking the radio who it is. This only reads; nothing is sent over the air.") }
+                    TaosText { visible: card.r.error !== ""; objectName: "connectError-" + card.r.key; Layout.fillWidth: true; wrapMode: Text.Wrap; font.pixelSize: Look.small; color: Look.danger; text: card.r.error }
                     RowLayout {
+                        visible: card.r.assignedKind !== undefined && card.r.engineRadioId !== ""
                         spacing: Look.space2
-                        Glyph { name: card.modelData.assignedKind === "agent" ? "bot" : card.modelData.assignedKind === "person" ? "user" : card.modelData.assignedKind === "contact" ? "users" : "alert"
-                                size: 14; stroke: 2; color: card.modelData.assignedKind === "none" ? Look.warning : Look.textSecondary }
+                        Glyph { name: card.r.assignedKind === "agent" ? "bot" : card.r.assignedKind === "person" ? "user" : card.r.assignedKind === "contact" ? "users" : "alert"
+                                size: 14; stroke: 2; color: card.r.assignedKind === "none" ? Look.warning : Look.textSecondary }
                         TaosText { Layout.fillWidth: true; wrapMode: Text.Wrap; font.pixelSize: Look.body
-                                   color: card.modelData.assignedKind === "none" ? Look.warning : Look.text
-                                   text: card.modelData.assignedKind === "none" ? qsTr("Not assigned to anyone") : qsTr("Belongs to %1").arg(card.modelData.assignedName) }
+                                   color: card.r.assignedKind === "none" ? Look.warning : Look.text
+                                   text: card.r.assignedKind === "none" ? qsTr("Not assigned to anyone") : qsTr("Belongs to %1").arg(card.r.assignedName) }
                     }
-                    RowLayout {
-                        spacing: Look.space2
-                        PillButton { objectName: "assignToggle-" + card.modelData.id; compact: true; text: root.assigning === card.modelData.id ? qsTr("Done") : qsTr("Assign")
-                                     glyph: "user"; onClicked: root.assigning = root.assigning === card.modelData.id ? "" : card.modelData.id }
-                        PillButton { objectName: "settings-" + card.modelData.id; compact: true; text: qsTr("Settings"); glyph: "cpu"; onClicked: root.nav.open("settings", card.modelData.id) }
+                    TaosText { visible: card.r.profiles.length > 0; objectName: "savedProfiles"; Layout.fillWidth: true; wrapMode: Text.Wrap; font.pixelSize: Look.small; color: Look.textSecondary
+                               text: qsTr("Settings kept for: %1").arg(card.r.profiles.map(p => p.network === "meshtastic" ? "Meshtastic" : p.network === "meshcore" ? "MeshCore" : p.network).join(", ")) }
+                    Flow {
+                        Layout.fillWidth: true; spacing: Look.space2
+                        PillButton { objectName: "connect-" + card.r.key; compact: true; variant: "primary"; glyph: "plug"
+                                     visible: card.r.state === "detected" && card.r.kind !== "ble" && !card.r.saved
+                                     text: card.r.busy ? qsTr("Connecting...") : qsTr("Connect")
+                                     enabled: card.r.canConnect && root.tak.connecting === ""
+                                     onClicked: root.tak.connectDevice(card.r.key) }
+                        PillButton { compact: true; text: qsTr("Try again"); visible: card.r.error !== "" && card.r.kind !== "ble"; enabled: root.tak.connecting === ""; onClicked: root.tak.connectDevice(card.r.key) }
+                        PillButton { objectName: "assignToggle-" + card.r.engineRadioId; compact: true; visible: card.r.engineRadioId !== ""
+                                     text: root.assigning === card.r.engineRadioId ? qsTr("Done") : qsTr("Assign"); glyph: "user"
+                                     onClicked: root.assigning = root.assigning === card.r.engineRadioId ? "" : card.r.engineRadioId }
+                        PillButton { objectName: "settings-" + card.r.engineRadioId; compact: true; visible: card.r.canSettings; text: qsTr("Settings"); glyph: "cpu"; onClicked: root.nav.open("settings", card.r.engineRadioId) }
+                        PillButton { objectName: "switch-" + (card.r.fwDeviceId !== "" ? card.r.fwDeviceId : card.r.key); compact: true; visible: card.r.kind !== "ble"; text: qsTr("Switch network..."); glyph: "refresh"
+                                     enabled: card.r.canSwitch && !Survival.switcher.running
+                                     onClicked: root.nav.open("switch", card.r.key) }
+                        PillButton { objectName: "forget-" + card.r.key; compact: true; text: qsTr("Forget"); visible: card.r.saved && card.r.state === "detected"; onClicked: root.tak.forgetDevice(card.r.key) }
                     }
-                    TakAssign { visible: root.assigning === card.modelData.id; Layout.fillWidth: true; node: card.modelData.id; current: card.modelData.identity }
+                    TaosText { visible: card.r.kind !== "ble" && !card.r.canSwitch && (card.r.switchWhy || "") !== ""; objectName: "switchWhy"; Layout.fillWidth: true; wrapMode: Text.Wrap; font.pixelSize: Look.small; color: Look.textTertiary
+                               text: card.r.switchWhy || "" }
+                    TakAssign { visible: root.assigning === card.r.engineRadioId && card.r.engineRadioId !== ""; Layout.fillWidth: true; node: card.r.engineRadioId; current: card.r.identity }
                 }
             }
         }
+        TaosText {
+            visible: root.tak.radioRows.length > 0 && root.tak.radioRows.every(r => r.state !== "connected")
+            Layout.fillWidth: true; Layout.leftMargin: Look.space3; Layout.rightMargin: Look.space3; wrapMode: Text.Wrap; font.pixelSize: Look.small; color: Look.textSecondary
+            text: qsTr("One radio per network works best: a Meshtastic radio and a MeshCore radio can be connected at the same time. With only one spare radio, use Switch network to move it between them.")
+        }
 
-        TakLabel { visible: root.tak.available; text: qsTr("Radios the engine can open"); Layout.topMargin: Look.space4; Layout.leftMargin: Look.space3 }
-        TaosText { visible: root.tak.available && root.tak.devices.length === 0; Layout.fillWidth: true; Layout.leftMargin: Look.space3; Layout.rightMargin: Look.space3; wrapMode: Text.Wrap
-                   font.pixelSize: Look.small; color: Look.textSecondary; text: qsTr("No radio port found. Plug a radio into a USB port.") }
-        Timer { interval: 5000; repeat: true; running: root.visible && root.tak.available && root.tak.connecting === ""; triggeredOnStart: true; onTriggered: root.tak.discover() }
-        Repeater {
-            model: root.tak.available ? root.tak.devices : []
-            delegate: GlassPanel {
-                id: dv
-                required property var modelData
-                objectName: "device-row-" + modelData.id
-                Layout.fillWidth: true
-                implicitHeight: dvCol.implicitHeight + Look.space3 * 2
-                ColumnLayout {
-                    id: dvCol
-                    anchors { fill: parent; margins: Look.space3 }
+        // ---- Reticulum: coming
+        TakLabel { text: qsTr("Reticulum"); Layout.topMargin: Look.space4; Layout.leftMargin: Look.space3 }
+        GlassPanel {
+            objectName: "reticulumComing"
+            Layout.fillWidth: true
+            implicitHeight: retCol.implicitHeight + Look.space3 * 2
+            ColumnLayout {
+                id: retCol
+                anchors { fill: parent; margins: Look.space3 }
+                spacing: Look.space2
+                RowLayout {
                     spacing: Look.space2
-                    RowLayout {
-                        spacing: Look.space3
-                        Glyph { name: dv.modelData.kind === "ble" ? "radio" : "usb"; size: 18; stroke: 1.8; color: Look.textSecondary }
-                        ColumnLayout {
-                            Layout.fillWidth: true; spacing: 2
-                            TaosText { text: dv.modelData.label; Layout.fillWidth: true; elide: Text.ElideRight; font.pixelSize: Look.bodyMedium; font.weight: Font.DemiBold }
-                            TaosText { text: dv.modelData.detail; Layout.fillWidth: true; elide: Text.ElideMiddle; font.pixelSize: Look.small; color: Look.textSecondary; font.family: "monospace" }
-                        }
-                    }
-                    Flow {
-                        Layout.fillWidth: true; spacing: Look.space2
-                        Chip { visible: dv.modelData.hint !== ""; text: dv.modelData.hint }
-                        Chip { visible: dv.modelData.saved; text: qsTr("Opens again after a restart"); tone: "success"; glyph: "check" }
-                        Chip { visible: !dv.modelData.supported; text: qsTr("Bluetooth is not supported by the engine yet") }
-                    }
-                    TaosText { visible: dv.modelData.busy; objectName: "handshake-" + dv.modelData.id; Layout.fillWidth: true; wrapMode: Text.Wrap; font.pixelSize: Look.small; color: Look.textSecondary
-                               text: qsTr("Opening the port and asking the radio who it is. This only reads; nothing is sent over the air.") }
-                    TaosText { visible: dv.modelData.error !== ""; objectName: "connectError-" + dv.modelData.id; Layout.fillWidth: true; wrapMode: Text.Wrap; font.pixelSize: Look.small; color: Look.danger
-                               text: dv.modelData.error }
-                    RowLayout {
-                        spacing: Look.space2
-                        PillButton { objectName: "connect-" + dv.modelData.id; compact: true; variant: "primary"; glyph: "plug"
-                                     visible: dv.modelData.supported && !dv.modelData.saved
-                                     text: dv.modelData.busy ? qsTr("Connecting...") : qsTr("Connect")
-                                     enabled: root.tak.canConnect && root.tak.connecting === ""
-                                     onClicked: root.tak.connectDevice(dv.modelData.id) }
-                        PillButton { objectName: "forget-" + dv.modelData.id; compact: true; text: qsTr("Forget"); visible: dv.modelData.saved; onClicked: root.tak.forgetDevice(dv.modelData.id) }
-                        PillButton { compact: true; text: qsTr("Try again"); visible: dv.modelData.error !== "" && dv.modelData.supported; enabled: root.tak.connecting === ""; onClicked: root.tak.connectDevice(dv.modelData.id) }
-                    }
+                    Glyph { name: "clock"; size: 16; stroke: 1.8; color: Look.textSecondary }
+                    TaosText { text: qsTr("Reticulum is coming"); font.pixelSize: Look.bodyMedium; font.weight: Font.DemiBold; Layout.fillWidth: true; wrapMode: Text.Wrap }
                 }
+                Chip { text: qsTr("Not available yet") }
+                TaosText { Layout.fillWidth: true; wrapMode: Text.Wrap; font.pixelSize: Look.small; color: Look.textSecondary
+                           text: qsTr("There is no Reticulum driver in the mesh engine yet, so nothing can be connected or sent on it.") }
+                TaosText { Layout.fillWidth: true; wrapMode: Text.Wrap; font.pixelSize: Look.small; font.weight: Font.DemiBold; text: qsTr("What it will need") }
+                TaosText { Layout.fillWidth: true; wrapMode: Text.Wrap; font.pixelSize: Look.small; color: Look.textSecondary
+                           text: qsTr("RNode firmware on a board (the firmware library already stores it, and Switch network will offer it once the driver exists), and the shared Survival Studio container, which will run Reticulum for every part of the app. Reticulum's licence is shown and accepted the first time it is fetched.") }
             }
         }
 
@@ -141,57 +154,9 @@ C.ScrollView {
             title: qsTr("Firmware library")
             subtitle: root.fw.state === "offline" ? qsTr("The firmware manager is not running") : root.fw.library.length === 0 ? qsTr("Nothing stored yet")
                       : qsTr("%1 stored on this device").arg(root.fw.totalSize)
-            detail: qsTr("Keep firmware for Meshtastic, MeshCore and RNode ready with no internet, and move a board between networks.")
+            detail: qsTr("Keep firmware for Meshtastic, MeshCore and RNode ready with no internet.")
             onClicked: root.nav.open("firmware", "")
             trailing: Component { Glyph { name: "chevron-right"; size: 16; stroke: 2; color: Look.textTertiary } }
-        }
-
-        TakLabel { text: qsTr("Found on this device"); Layout.topMargin: Look.space4; Layout.leftMargin: Look.space3 }
-        EmptyState {
-            visible: root.radios.scanned && root.radios.radios.length === 0
-            Layout.fillWidth: true; Layout.topMargin: Look.space3
-            glyph: "usb"
-            title: qsTr("No radio plugged in")
-            detail: qsTr("Plug a radio into a USB port. It shows up here within a few seconds. Nothing is sent or changed on it.")
-        }
-        StableModel { id: radioIds; source: root.radios.radios.map(r => r.device) }
-        Repeater {
-            model: radioIds.value
-            delegate: GlassPanel {
-                id: rcard
-                required property string modelData
-                readonly property var rd: { root.radios.radios; for (const r of root.radios.radios) if (r.device === modelData) return r; return null }
-                visible: rd !== null
-                Layout.fillWidth: true
-                implicitHeight: rd ? rcol.implicitHeight + Look.space3 * 2 : 0
-                ColumnLayout {
-                    id: rcol
-                    anchors { fill: parent; margins: Look.space3 }
-                    spacing: Look.space2
-                    TaosText { text: rcard.rd && rcard.rd.name !== "" ? rcard.rd.name : qsTr("USB serial device"); Layout.fillWidth: true; elide: Text.ElideRight
-                               font.pixelSize: Look.bodyMedium; font.weight: Font.DemiBold }
-                    TaosText { text: rcard.rd ? rcard.rd.device + "  " + rcard.rd.usbId : ""; Layout.fillWidth: true; elide: Text.ElideRight
-                               font.pixelSize: Look.small; color: Look.textSecondary; font.family: "monospace" }
-                    Flow {
-                        Layout.fillWidth: true; spacing: Look.space2
-                        Chip { visible: !!rcard.rd && rcard.rd.protocol === ""; text: rcard.rd && rcard.rd.confidence === "possible" ? qsTr("Possible radio") : qsTr("Unlikely a radio"); tone: rcard.rd && rcard.rd.confidence === "possible" ? "accent" : "neutral" }
-                        Chip { visible: !!rcard.rd && rcard.rd.protocol !== ""; text: qsTr("Meshtastic"); tone: "success"; glyph: "check" }
-                        Chip { visible: !!rcard.rd && rcard.rd.firmware !== ""; text: rcard.rd ? rcard.rd.firmware : ""; mono: true }
-                        Chip { visible: !!rcard.rd && rcard.rd.inUse; text: qsTr("In use by another program"); tone: "warning" }
-                    }
-                    TaosText { visible: !!rcard.rd && rcard.rd.chip !== ""; Layout.fillWidth: true; wrapMode: Text.Wrap; font.pixelSize: Look.small; color: Look.textSecondary
-                               text: rcard.rd ? rcard.rd.chip + (rcard.rd.boards !== "" ? " - " + rcard.rd.boards : "") : "" }
-                    TaosText { visible: !!rcard.rd && !rcard.rd.probed; Layout.fillWidth: true; wrapMode: Text.Wrap; font.pixelSize: Look.small; color: Look.textTertiary
-                               text: qsTr("A USB ID only tells the chip, not what runs on it. Checking opens the port and asks for its configuration; some boards restart when a port is opened. It never transmits.") }
-                    PillButton {
-                        Layout.alignment: Qt.AlignRight
-                        compact: true
-                        text: rcard.rd && rcard.rd.probing ? qsTr("Checking...") : rcard.rd && rcard.rd.probed ? qsTr("Check again") : qsTr("Check this device")
-                        enabled: !!rcard.rd && !rcard.rd.inUse && root.radios.probing === ""
-                        onClicked: root.radios.probe(rcard.modelData)
-                    }
-                }
-            }
         }
         Item { Layout.preferredHeight: Look.space4 }
     }

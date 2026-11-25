@@ -36,7 +36,9 @@ pub fn set_radios_file(p: Option<std::path::PathBuf>) {
 
 /// The remembered radios: `[{"device": "/dev/ttyACM0", "network": null}]`.
 pub fn saved_radios() -> Vec<Value> {
-    let Some(p) = RADIOS_FILE.lock().unwrap().clone() else { return vec![] };
+    let Some(p) = RADIOS_FILE.lock().unwrap().clone() else {
+        return vec![];
+    };
     std::fs::read_to_string(p)
         .ok()
         .and_then(|s| serde_json::from_str::<Value>(&s).ok())
@@ -45,9 +47,15 @@ pub fn saved_radios() -> Vec<Value> {
 }
 
 fn write_saved(list: &[Value]) -> Result<(), String> {
-    let Some(p) = RADIOS_FILE.lock().unwrap().clone() else { return Ok(()) };
+    let Some(p) = RADIOS_FILE.lock().unwrap().clone() else {
+        return Ok(());
+    };
     let tmp = p.with_extension("json.tmp");
-    std::fs::write(&tmp, serde_json::to_string_pretty(&json!({"devices": list})).unwrap()).map_err(|e| format!("cannot save the radio list: {e}"))?;
+    std::fs::write(
+        &tmp,
+        serde_json::to_string_pretty(&json!({"devices": list})).unwrap(),
+    )
+    .map_err(|e| format!("cannot save the radio list: {e}"))?;
     std::fs::rename(&tmp, &p).map_err(|e| format!("cannot save the radio list: {e}"))
 }
 
@@ -82,6 +90,9 @@ fn need<'a>(p: &'a Value, k: &str) -> Result<&'a str, String> {
     s(p, k).ok_or_else(|| format!("missing parameter {k}"))
 }
 
+/// (stop flag, alive flag) of one supervised radio.
+type Supervision = (Arc<AtomicBool>, Arc<AtomicBool>);
+
 pub struct Daemon {
     pub engine: Arc<Engine>,
     pub receive_only: bool,
@@ -90,6 +101,10 @@ pub struct Daemon {
     pub owner_uid: u32,
     /// Verifies capability tokens for non-owner principals; None refuses them all.
     pub verifier: Option<crate::auth::TokenVerifier>,
+    /// One stop flag per supervised radio, by the connector's label: `radios.release` sets it.
+    releases: std::sync::Mutex<std::collections::HashMap<String, Supervision>>,
+    /// Ports a `connect` is working on right now (the probe takes seconds): a release waits for them.
+    connecting: std::sync::Mutex<std::collections::HashSet<String>>,
 }
 
 impl Daemon {
@@ -102,6 +117,8 @@ impl Daemon {
             stop: Arc::new(AtomicBool::new(false)),
             owner_uid: nix::unistd::geteuid().as_raw(),
             verifier: None,
+            releases: Default::default(),
+            connecting: Default::default(),
         }
     }
 
@@ -139,24 +156,107 @@ impl Daemon {
         first: Option<(Box<dyn Link>, Vec<u8>)>,
     ) -> String {
         let label = connector.describe();
+        // its own stop flag, so one radio can be released without stopping the daemon; the daemon's flag is
+        // copied into it by a small watcher
+        let own = Arc::new(AtomicBool::new(false));
+        {
+            let (global, own2) = (self.stop.clone(), own.clone());
+            std::thread::spawn(move || {
+                while !own2.load(Ordering::Relaxed) {
+                    if global.load(Ordering::Relaxed) {
+                        own2.store(true, Ordering::Relaxed);
+                    }
+                    std::thread::sleep(Duration::from_millis(200));
+                }
+            });
+        }
+        let alive = Arc::new(AtomicBool::new(true));
+        self.releases
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .insert(label.clone(), (own.clone(), alive.clone()));
         let sup = supervisor::Supervised {
             engine: self.engine.clone(),
             connector,
             network: network.to_string(),
             transmit: !self.receive_only,
-            stop: self.stop.clone(),
+            stop: own,
             backoff: supervisor::Backoff::standard(),
             first,
         };
-        let stop = self.stop.clone();
+        let stop = sup.stop.clone();
         std::thread::spawn(move || {
-            supervisor::run(sup, &|d| supervisor::sleep_unless_stopped(&stop, d))
+            supervisor::run(sup, &|d| supervisor::sleep_unless_stopped(&stop, d));
+            alive.store(false, Ordering::SeqCst); // the link is dropped: the port is closed
         });
         label
     }
 
+    /// Close a radio's link and stop reconnecting it, so another program (the firmware flasher) can have the port.
+    /// The saved entry goes too: it is not opened again at the next start.
+    pub fn release_spec(&self, spec: &str) -> Result<Value, String> {
+        // a connect that is probing this port right now would open it after we return: wait for it to end first
+        let end = std::time::Instant::now() + Duration::from_secs(15);
+        while self
+            .connecting
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .contains(spec)
+        {
+            if std::time::Instant::now() > end {
+                return Err(format!("{spec}: a connect is still in progress, try again"));
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        let entry = self
+            .releases
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .remove(spec);
+        let was_open = entry.is_some();
+        if let Some((stop, _)) = &entry {
+            stop.store(true, Ordering::Relaxed);
+        }
+        let list: Vec<Value> = saved_radios()
+            .into_iter()
+            .filter(|d| d["device"] != spec)
+            .collect();
+        write_saved(&list)?;
+        if let Some((_, alive)) = &entry {
+            // the supervisor thread ends only after its session (and so the port) is dropped
+            let end = std::time::Instant::now() + Duration::from_secs(10);
+            while alive.load(Ordering::SeqCst) {
+                if std::time::Instant::now() > end {
+                    return Err(format!("{spec}: the radio did not close in time"));
+                }
+                std::thread::sleep(Duration::from_millis(50));
+            }
+        }
+        let gone = self.engine.forget_radio(spec);
+        Ok(json!({"device": spec, "released": true, "was_open": was_open, "entries_removed": gone}))
+    }
+
     /// `spec` is a serial path, `tcp:host:port` or `ble:ADDRESS`.
     pub fn connect_spec(&self, spec: &str, network: Option<&str>) -> Result<Value, String> {
+        struct Busy<'a>(&'a Daemon, String);
+        impl Drop for Busy<'_> {
+            fn drop(&mut self) {
+                self.0
+                    .connecting
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner())
+                    .remove(&self.1);
+            }
+        }
+        self.connecting
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .insert(spec.to_string());
+        let _busy = Busy(self, spec.to_string());
+        self.connect_spec_inner(spec, network)
+    }
+
+    fn connect_spec_inner(&self, spec: &str, network: Option<&str>) -> Result<Value, String> {
         if let Some(addr) = spec.strip_prefix("ble:") {
             let net = match network {
                 Some(n) => n.to_string(),
@@ -177,6 +277,22 @@ impl Daemon {
             });
             let name = self.attach_supervised(c, &net, None);
             return Ok(json!({"radio": name, "network": net}));
+        }
+        // already open and still supervised: opening it again would open the port twice and replace the release flag
+        let alive = self
+            .releases
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .get(spec)
+            .is_some_and(|(stop, _)| !stop.load(Ordering::Relaxed));
+        if alive {
+            let net = self
+                .engine
+                .radios()
+                .iter()
+                .find(|r| r.link == spec)
+                .map(|r| r.network.clone());
+            return Ok(json!({"radio": spec, "network": net, "already_open": true}));
         }
         let connector: Arc<dyn Connector> = if let Some(a) = spec.strip_prefix("tcp:") {
             Arc::new(TcpConnector(a.to_string()))
@@ -241,8 +357,8 @@ impl Daemon {
                 // what the app needs to decide whether it may offer sending and configuration writes
                 let mut h = self.engine.health();
                 h["receive_only"] = json!(self.receive_only);
-                h["device_config"] = json!(false);
-                h["device_config_write"] = json!(false);
+                h["device_config"] = json!(true);
+                h["device_config_write"] = json!(!self.receive_only);
                 h["radios_connect"] = json!(true);
                 ok!(h)
             }
@@ -275,7 +391,11 @@ impl Daemon {
                 }
                 let spec = try_p!(need(p, "device"));
                 if spec.starts_with("ble:") {
-                    return err(&id, "connect_failed", "Bluetooth radios cannot be opened by this engine yet");
+                    return err(
+                        &id,
+                        "connect_failed",
+                        "Bluetooth radios cannot be opened by this engine yet",
+                    );
                 }
                 match self.connect_spec(spec, s(p, "network")) {
                     Ok(v) => {
@@ -297,18 +417,59 @@ impl Daemon {
                     return e;
                 }
                 let spec = try_p!(need(p, "device"));
-                let list: Vec<Value> = saved_radios().into_iter().filter(|d| d["device"] != spec).collect();
+                let list: Vec<Value> = saved_radios()
+                    .into_iter()
+                    .filter(|d| d["device"] != spec)
+                    .collect();
                 if let Err(m) = write_saved(&list) {
                     return err(&id, "store_error", &m);
                 }
                 // forgetting stops it being opened again; the open session ends when the engine restarts
-                ok!(json!({"device": spec, "forgotten": true, "closes": "at the next engine start"}))
+                ok!(
+                    json!({"device": spec, "forgotten": true, "closes": "at the next engine start"})
+                )
+            }
+            "radios.release" => {
+                if let Some(e) = owner_only(&id) {
+                    return e;
+                }
+                let spec = try_p!(need(p, "device"));
+                match self.release_spec(spec) {
+                    Ok(v) => ok!(v),
+                    Err(m) => err(&id, "connect_failed", &m),
+                }
             }
             "radios.saved" => {
                 if let Some(e) = owner_only(&id) {
                     return e;
                 }
                 ok!(saved_radios())
+            }
+            "device.config" => {
+                if let Some(e) = owner_only(&id) {
+                    return e;
+                }
+                let radio = try_p!(need(p, "radio"));
+                ok!(eng!(self.engine.device_config(radio)))
+            }
+            "device.apply" => {
+                if let Some(e) = owner_only(&id) {
+                    return e;
+                }
+                let radio = try_p!(need(p, "radio"));
+                let Some(changes) = p.get("changes").and_then(|c| c.as_object()) else {
+                    return err(
+                        &id,
+                        "invalid",
+                        "changes: an object of setting path to new value",
+                    );
+                };
+                ok!(eng!(self.engine.device_apply(
+                    radio,
+                    changes,
+                    self.receive_only,
+                    p.get("confirm_region").and_then(|v| v.as_bool()) == Some(true)
+                )))
             }
             "app.radios" => ok!(eng!(crate::appview::radios(&self.engine, who))),
             "app.identities" => ok!(eng!(crate::appview::identities(&self.engine, who))),

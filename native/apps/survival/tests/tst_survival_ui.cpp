@@ -182,15 +182,15 @@ private Q_SLOTS:
         QMetaObject::invokeMethod(page, "back");
         qunsetenv("TAOS_SURVIVAL_DEMO");
         const int plans = m_fw->count(u"POST"_s, u"/v1/flash/plan"_s), runs = m_fw->count(u"POST"_s, u"/v1/flash/run"_s);
-        const QStringList args{u"--section"_s, u"taostak"_s, u"--tak-view"_s, u"firmware"_s, u"--demo"_s, u"fwstep=result;typed=Heltec V3"_s};
+        const QStringList args{u"--section"_s, u"taostak"_s, u"--tak-view"_s, u"switch:/dev/ttyUSB0"_s, u"--demo"_s, u"swstep=review;swgo=run;typed=Heltec V3"_s};
         QMetaObject::invokeMethod(m_win, "applyArgs", Q_ARG(QVariant, args));
         QTest::qWait(1500);
         QCOMPARE(m_fw->count(u"POST"_s, u"/v1/flash/plan"_s), plans);   // not even a plan
         QCOMPARE(m_fw->count(u"POST"_s, u"/v1/flash/run"_s), runs);
         QMetaObject::invokeMethod(page, "back");
-        // with the switch the screens can be scripted for pictures, but a result still needs the plan first
+        // with the switch the screens can be scripted for pictures: a plan is asked for, a flash never is unless swgo says so
         qputenv("TAOS_SURVIVAL_DEMO", "1");
-        const QStringList planArgs{u"--section"_s, u"taostak"_s, u"--tak-view"_s, u"firmware"_s, u"--demo"_s, u"fwstep=plan"_s};
+        const QStringList planArgs{u"--section"_s, u"taostak"_s, u"--tak-view"_s, u"switch:/dev/ttyUSB0"_s, u"--demo"_s, u"swstep=review"_s};
         QMetaObject::invokeMethod(m_win, "applyArgs", Q_ARG(QVariant, planArgs));
         QTRY_VERIFY_WITH_TIMEOUT(m_fw->count(u"POST"_s, u"/v1/flash/plan"_s) == plans + 1, 5000);
         QCOMPARE(m_fw->count(u"POST"_s, u"/v1/flash/run"_s), runs);
@@ -276,6 +276,8 @@ private Q_SLOTS:
         QTest::qWait(250);
         QVERIFY(visibleByName(m_win, u"radio-!28af67cc"_s));
         QVERIFY(visibleByName(m_win, u"firmwareRow"_s));
+        QVERIFY(visibleByName(m_win, u"reticulumComing"_s));         // Reticulum is shown as coming, with what it needs
+        QVERIFY(!visibleByName(m_win, u"firmwareChip"_s));           // this radio has not reported a firmware version: none is shown
         QVERIFY(waitFor([&] { return visibleByName(m_win, u"device-row-/dev/ttyACM0"_s) != nullptr; }, 5000));
         QVERIFY(visibleByName(m_win, u"connect-/dev/ttyACM0"_s)->isEnabled());   // offered, never pressed here
         QCOMPARE(m_mesh->count(u"radios.connect"_s), 0);
@@ -308,14 +310,16 @@ private Q_SLOTS:
         open("firmware", QString());
         QVERIFY(waitFor([&] { return visibleByName(m_win, u"fw-meshcore|heltec-v3"_s) != nullptr; }, 5000));
         QVERIFY(waitFor([&] { return visibleByName(m_win, u"device-usb-10c4-ea60-SN1-1-1"_s) != nullptr; }, 5000));
-        QMetaObject::invokeMethod(visibleByName(m_win, u"switch-usb-10c4-ea60-SN1-1-1"_s), "clicked");
-        QTest::qWait(250);
-        auto *choice = visibleByName(m_win, u"choice-meshtastic:heltec-v3:2.7.26.54e0d8d"_s);
+        QMetaObject::invokeMethod(visibleByName(m_win, u"switch-usb-10c4-ea60-SN1-1-1"_s), "clicked");   // opens the Switch network page
+        QVERIFY(waitFor([&] { return visibleByName(m_win, u"choice-meshcore:heltec-v3:1.18.0:usb"_s) != nullptr; }, 5000));
+        QVERIFY(visibleByName(m_win, u"choice-reticulum"_s));                         // shown as coming, not clickable
+        QVERIFY(!visibleByName(m_win, u"choice-rnode:heltec-v3:1.86"_s));             // no Reticulum driver: no RNode flash offered
+        auto *choice = visibleByName(m_win, u"choice-meshcore:heltec-v3:1.18.0:usb"_s);
         QVERIFY(choice);
         QMetaObject::invokeMethod(choice, "clicked");
         QVERIFY(waitFor([&] { return visibleByName(m_win, u"confirmField"_s) != nullptr; }, 5000));
         auto *typed = visibleByName(m_win, u"confirmField"_s);
-        auto *flash = visibleByName(m_win, u"flashButton"_s);
+        auto *flash = visibleByName(m_win, u"switchButton"_s);
         QVERIFY(flash && !flash->isEnabled());
         typed->setProperty("text", u"heltec v3"_s);
         QTest::qWait(100);

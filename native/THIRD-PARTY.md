@@ -15,6 +15,7 @@ in [`shell/THIRD-PARTY.md`](shell/THIRD-PARTY.md).
 | `shell/frame/tests/vptool/wlr-virtual-pointer-unstable-v1.xml` | wlr-protocols (`unstable/wlr-virtual-pointer-unstable-v1.xml`), Copyright 2019 Josef Gajdusek | MIT | the `<copyright>` element at the top of the file (verbatim upstream copy); used only by the test tool `vptool` |
 | `compositor/patches/swayfx-0.6.1-minimize-registration.patch` | a patch written for taOS against swayfx 0.6.1 (swayfx is a fork of sway) | MIT, the licence of swayfx and sway (Copyright 2016-2017 Drew DeVault and contributors). A patch to an MIT project is distributed under that project's licence. | this file and `compositor/README.md`; the patch itself is left byte-identical because `compositor/build.sh` pins its sha256 |
 | `mesh/tests/fixtures/meshtastic.json` (four frames marked `recorded`) | byte strings copied from the test files of meshtastic/python (captures of a real Heltec V2.1 radio), GPL-3.0 | GPL-3.0, compatible with AGPL-3.0-or-later; used as test data only | `source` URL on each frame |
+| `mesh/src/meshtastic_enums.rs` | enum names and numbers (regions, modem presets, roles, hardware models) generated from the meshtastic/protobufs files by `mesh/tests/fixtures/gen_device_fixtures.py`, GPL-3.0 | GPL-3.0, compatible with AGPL-3.0-or-later; data tables only | header of the generated file |
 
 ## Fetched at build time, not in the tree
 

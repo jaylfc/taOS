@@ -76,7 +76,7 @@ allowed or over budget), `no_radio`, `store_error`, `connect_failed`.
 
 | Method | Who | Params | Result |
 |---|---|---|---|
-| `health` | any | none | `{ok, store_error, pending_unwritten, stored_this_run, torn_tail_preserved (a file name), store, receive_only, device_config, device_config_write}`; the last three tell the app whether sending is possible and whether radio settings can be read and written (both settings fields are `false`: the engine does not read or write radio settings yet) |
+| `health` | any | none | `{ok, store_error, pending_unwritten, stored_this_run, torn_tail_preserved (a file name), store, receive_only, device_config, device_config_write}`; the last three tell the app whether sending is possible and whether radio settings can be read (`device_config`, true) and written (`device_config_write`, true unless receive-only) |
 | `radios` | any | none | list of `{id, network, link, link_kind, ready, connected, identity, frames_in, frames_out, console_bytes, decode_errors, last_error, queued}` |
 | `discover` | owner | none | `{serial: [{path, vid, pid, product, manufacturer, hint}], ble: {state: "devices"|"no_adapter", ...}}` |
 | `connect` | owner | `device`, optional `network` | `{radio, network}` |
@@ -91,6 +91,9 @@ allowed or over budget), `no_radio`, `store_error`, `connect_failed`.
 | `link` | owner | `contact`, `account` (`person:<id>`) | ok |
 | `locations.hide` | the linked account | `contact` | ok |
 | `grants.list` / `grants.add` / `grants.revoke` | owner | see Grants (kinds `send`, `read`, `position`) | grants |
+| `radios.release` | owner | `device` (a serial path) | `{released, was_open, entries_removed}`: closes the radio on that port, stops reconnecting it, forgets it (so the firmware flasher can have the port) |
+| `device.config` | owner | `radio` | `{radio, state: loading\|ok, note, values}`; `values` as in DEVICE-SETTINGS.md, read from the radio's own handshake frames |
+| `device.apply` | owner | `radio`, `changes` (path to value) | `{radio, applied, note}`; refused in receive-only mode, when the radio is not connected, or for any path not in `values.writable`; nothing is written when any change is refused |
 | `app.radios`, `app.identities`, `app.messages`, `app.send` | as above | see Survival Studio view | see below |
 
 `messages` filter (all optional): `identity` (sender or recipient), `node`, `network`, `channel`, `kind`
@@ -155,9 +158,10 @@ fails does not use budget. Agents cannot grant, change identities, connect radio
 `app.*` methods return exactly the shapes of the app's `MeshBackend` interface (branch `feat/survival-studio`,
 `native/apps/survival/engine/meshinterface.h`), so the C++ side maps one to one:
 
-* `app.radios` -> `[{id, name, transport, link (usb|ble|tcp), state (connected|connecting|offline), firmware, batteryPercent}]`.
-  `firmware` is empty (not reported by the frames read so far) and `batteryPercent` is -1 until the radio's own
-  device telemetry has been heard.
+* `app.radios` -> `[{id, name, transport, link (usb|ble|tcp), state (connected|connecting|offline), firmware, hardware, port, batteryPercent}]`.
+  `firmware` and `hardware` (board model) are what the radio itself reported (Meshtastic DeviceMetadata, MeshCore
+  DEVICE_INFO); empty until it has said. `port` is the serial path the engine opened (what `radios.release` takes).
+  `batteryPercent` is -1 until the radio's own device telemetry has been heard.
 * `app.identities` -> `[{id, callsign, owner, isSelf, hasPosition, lon, lat, lastHeardMs}]`; `owner` is empty for a
   contact (not a taOS identity).
 * `app.messages {thread?}` -> `[{id, threadId, fromId, toId, text, timeMs, outgoing, delivery, trust}]`. A thread is
@@ -167,15 +171,27 @@ fails does not use budget. Agents cannot grant, change identities, connect radio
 The C++ side is `SocketMeshBackend` in the Survival Studio app (`native/apps/survival/engine/socketmeshbackend.cpp`). It reads the app's lists from `app.radios` and `app.identities` and builds messages from the full `messages` records (kind `text`) so that each message carries its sender's name, position and signal.
 Change notifications: `subscribe` and re-query.
 
-## Radio settings (proposed, not implemented)
-The app's device settings screens read `device.config {radio}` (owner only: it carries channel keys) and write through
-`device.apply {radio, changes}`. Neither exists yet; `health.device_config` and `health.device_config_write` stay `false`
-until they do, and the app shows "not read from the radio yet" rather than any default. The reply shape the screens
-expect is in `DEVICE-SETTINGS.md`.
+## Radio settings
+`device.config {radio}` (owner only: it carries channel keys) returns what the radio reported during its handshake:
+Meshtastic `DeviceMetadata` (firmware, board), `Config` (device, position, LoRa), `Channel` frames and the radio's own
+`User`; MeshCore `DEVICE_INFO`, `SELF_INFO` and `CHANNEL_INFO` (the engine asks for each channel slot, a read-only
+query). The shape is in `DEVICE-SETTINGS.md`. `state` is `loading` until the radio has finished sending; a key that is
+absent was not read.
+
+`device.apply {radio, changes}` writes, for **Meshtastic only**, these paths: `owner.long_name`, `owner.short_name`,
+`lora.region`, `lora.modem_preset`, `device.role`, `position.broadcast_secs`, `channels.<n>.name`. It sends
+`begin_edit_settings`, the sets and `commit_edit_settings` as local admin messages (no session passkey is needed for the
+local host link: checked against the firmware's `AdminModule.cpp`), patching the radio's own bytes so unknown fields
+survive. The radio may restart to apply a change and is reconnected by the supervisor. MeshCore settings are read only:
+its settings commands are not documented in the companion protocol file this engine follows, so none are guessed.
+Frames in the tests are encoded by the upstream reference library; no write has been made to a real radio.
+
+`radios.release {device}` closes the radio on a port and stops its reconnect loop, so `taos-firmware` can flash it.
+
 ## CLI
 
 ```
-taos-mesh daemon | radios | discover | health | connect DEVICE [--network N] | listen
+taos-mesh daemon | radios | discover | health | connect DEVICE [--network N] | release DEVICE | device-config RADIO | device-apply RADIO path=value ... | listen
 taos-mesh messages [--identity I] [--channel N] [--network N] [--kind K] [--since MS] [--until MS] [--limit N] [--as WHO]
 taos-mesh send --network N --text T [--to NODE] [--channel N] [--radio R] [--as PRINCIPAL]
 taos-mesh positions
@@ -225,7 +241,8 @@ pair it in the system Bluetooth settings.
   MeshCore layouts follow `MyMesh.cpp` and are untested against real firmware.
 * Serial open clears HUPCL before and after opening, as the reference Meshtastic client does (tested on a pty); the
   open itself can still pulse DTR on some USB adapters.
-* Meshtastic/MeshCore configuration, firmware management, Reticulum, TAK: not part of this engine yet.
+* MeshCore settings writes, firmware management (see taos-firmware), Reticulum, TAK: not part of this engine.
+* Settings read and write have only been run against frames from the reference library and a fake link, never a real radio.
 * Meshtastic ack with no error from a neighbour is reported as `heard`, from the recipient as `acknowledged`; a
   relay's real implicit-ack semantics were not verified on hardware.
 * Queries scan the store file (interim); fine for thousands of records, to be replaced by taOSmd queries.
