@@ -219,6 +219,11 @@ async def test_failed_send_is_retried_kept_and_logged_never_doubled(client, taos
     assert await w.drain_once() == 1  # delivered
     assert await w.drain_once() == 0  # never sent again
     ok = [c for c in shim.calls if c["agent"] == "agent-a"]
+    # every attempt, including the retries, carries the same source_id: the
+    # turn's queue key (<turn id>|<shelf>)
+    assert {c["source_id"] for c in ok} == {
+        (await (await q._db.execute("SELECT key FROM turn_ingest WHERE shelf = 'agent-a'")).fetchone())[0]}
+    assert ok[0]["source_id"].startswith("chat:") and ok[0]["source_id"].endswith("|agent-a")
     assert len(ok) == 3 and (await q.counts())["done"] >= 1
     import taosmd.api as tm
     hits = await tm.search("walrus", agent="agent-a", mode="bm25", data_dir=dd)

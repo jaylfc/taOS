@@ -18,10 +18,11 @@ module is the one path the taOS writers use to get a turn there:
 * A shelf is a taOSmd agent namespace: an agent's own name for conversations
   it takes part in, ``user_namespace(user_id)`` for a person's own memory.
 
-Limit: taOSmd's ``ingest`` carries no caller id, so if a send is accepted by
-taOSmd but the reply is lost (timeout), the retry can write the turn twice.
+Each send carries ``source_id`` (the queue key).  A taOSmd that supports it
+stores a repeat once; an older one ignores the field, and then, if a send is
+accepted but the reply is lost (timeout), the retry can write the turn twice.
 Retries after a confirmed success, after a restart and from a backfill never
-do.
+do either way.
 """
 from __future__ import annotations
 
@@ -243,7 +244,7 @@ class TurnIngestWorker:
     def __init__(self, queue: TurnIngestQueue, send, *, rate_per_sec: float = 20.0,
                  poll_seconds: float = 30.0):
         self.queue = queue
-        self.send = send  # async (shelf, turn) -> None, raises on failure
+        self.send = send  # async (shelf, turn, source_id) -> None, raises on failure
         self.min_gap = 1.0 / rate_per_sec if rate_per_sec > 0 else 0.0
         self.poll_seconds = poll_seconds
         self._task: asyncio.Task | None = None
@@ -254,7 +255,7 @@ class TurnIngestWorker:
         delivered = 0
         for item in await self.queue.due(50):
             try:
-                await self.send(item["shelf"], item["turn"])
+                await self.send(item["shelf"], item["turn"], item["key"])
             except Exception as exc:
                 state = await self.queue.mark_attempt_failed(
                     item["key"], item["attempts"], f"{type(exc).__name__}: {exc}")
@@ -300,8 +301,10 @@ class TurnIngestWorker:
 def http_sender(client_fn, base_fn, timeout: float = 30.0):
     """A ``send`` for the worker: POST the turn to taOSmd's ``/ingest``."""
 
-    async def send(shelf: str, turn: dict) -> None:
-        body = {"text": turn["content"], "agent": shelf}
+    async def send(shelf: str, turn: dict, source_id: str) -> None:
+        # source_id is the queue key (<turn id>|<shelf>): taOSmd stores a
+        # repeat of it once (newer taOSmd; older versions ignore the field).
+        body = {"text": turn["content"], "agent": shelf, "source_id": source_id}
         for name in ("role", "session_id", "turn_index", "session_date"):
             if name in turn:
                 body[name] = turn[name]
