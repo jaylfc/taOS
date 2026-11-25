@@ -14,6 +14,7 @@ in [`shell/THIRD-PARTY.md`](shell/THIRD-PARTY.md).
 | `shell/protocols/ext-image-copy-capture-v1.xml` | wayland-protocols | MIT | the `<copyright>` element at the top of the file |
 | `shell/frame/tests/vptool/wlr-virtual-pointer-unstable-v1.xml` | wlr-protocols (`unstable/wlr-virtual-pointer-unstable-v1.xml`), Copyright 2019 Josef Gajdusek | MIT | the `<copyright>` element at the top of the file (verbatim upstream copy); used only by the test tool `vptool` |
 | `compositor/patches/swayfx-0.6.1-minimize-registration.patch` | a patch written for taOS against swayfx 0.6.1 (swayfx is a fork of sway) | MIT, the licence of swayfx and sway (Copyright 2016-2017 Drew DeVault and contributors). A patch to an MIT project is distributed under that project's licence. | this file and `compositor/README.md`; the patch itself is left byte-identical because `compositor/build.sh` pins its sha256 |
+| `mesh/tests/fixtures/meshtastic.json` (four frames marked `recorded`) | byte strings copied from the test files of meshtastic/python (captures of a real Heltec V2.1 radio), GPL-3.0 | GPL-3.0, compatible with AGPL-3.0-or-later; used as test data only | `source` URL on each frame |
 
 ## Fetched at build time, not in the tree
 
@@ -23,7 +24,7 @@ private prefix and are not part of this repository.
 
 ## Libraries linked, not copied
 
-Qt 6 and LayerShellQt (LGPL-3.0, dynamically linked), libwayland (MIT), libzim and libxapian (GPL-2.0-or-later, dynamically linked, from the distribution; Survival Studio, see `apps/survival/NOTICE`), and the Rust crates named in
+Qt 6 and LayerShellQt (LGPL-3.0, dynamically linked), libwayland (MIT), libzim and libxapian (GPL-2.0-or-later, dynamically linked, from the distribution; Survival Studio, see `apps/survival/NOTICE`), `serialport` (MPL-2.0), `zbus` and `nix` (MIT), used by `mesh/` and linked unmodified, and the Rust crates named in
 `Cargo.lock` (each under its own licence; none is vendored here). No library source is copied
 into the tree.
 
