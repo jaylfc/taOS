@@ -1134,9 +1134,8 @@ async def install_app(request: Request):
         agent_name = getattr(request.state, "agent_name", None)
         is_agent_request = (
             (via == "local_token" and agent_name) or  # bound local token
-            via == "registry_jwt_deployed_agent" or
-            via == "registry_jwt_native_agent" or
-            via == "registry_jwt_candidate"
+            (via and via.startswith("registry_jwt_")) or  # any registry JWT agent path
+            via == "device_bearer_candidate"  # device bearer used by agents
         )
         accepted_now = bool(body.get("accepted", False))
         if is_agent_request and accepted_now:
@@ -1207,7 +1206,7 @@ async def install_app(request: Request):
             text = class_text.get(license_class, (
                 f"{manifest.name} uses model weights under a restrictive licence "
                 f"({license_name}{version_suffix}).{url_suffix} Continuing means you agree "
-                "to that license for the weights this service uses."
+                f"to that license for the weights this service uses."
             ))
             response_data = {
                 "needs_license_acceptance": True,
