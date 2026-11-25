@@ -1,0 +1,20 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Keeps the firmware library current: latest stable and previous stable of each network.
+# Offline, rate limited and licence-pending are normal and exit 0 (the timer tries again).
+# Install to ~/.config/systemd/user/ and enable the timer; the install step edits ExecStart
+# if taos-firmware lives elsewhere.
+[Unit]
+Description=taOS firmware library refresh
+Documentation=https://github.com/jaylfc/taOS/tree/native/native/firmware
+StartLimitIntervalSec=6h
+StartLimitBurst=4
+
+[Service]
+Type=oneshot
+ExecStart=/opt/taos/bin/taos-firmware refresh --quiet-offline
+Nice=15
+IOSchedulingClass=idle
+NoNewPrivileges=yes
+Restart=on-failure
+RestartSec=15min
+TimeoutStartSec=2h
