@@ -8,6 +8,11 @@ Usage (called by install-worker.sh and install-worker.ps1):
     python -m tinyagentos.worker.pair <controller_url> \\
         --name <name> --url <worker_url> --register-after
 
+The controller URL may be omitted: the CLI then browses the LAN for
+controllers advertising the mDNS discovery service (#119), offers a
+pick from what it finds, and falls back to asking for the URL by hand
+when nothing is discovered.
+
 Exit codes:
     0  paired (and registered if --register-after)
     1  pairing error (timeout, invalidated, network)
@@ -24,7 +29,9 @@ from pathlib import Path
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Pair this worker with a taOS controller")
-    parser.add_argument("controller", help="Controller URL, e.g. http://192.168.1.10:6969")
+    parser.add_argument("controller", nargs="?", default=None,
+                        help="Controller URL, e.g. http://192.168.1.10:6969 "
+                             "(omit to discover controllers on the LAN via mDNS)")
     parser.add_argument("--name", help="Worker name (default: hostname)")
     parser.add_argument("--url", help="Advertised worker URL (default: auto-detected LAN URL)")
     parser.add_argument("--platform", dest="platform_name",
@@ -39,6 +46,12 @@ def main() -> None:
                         help="Send a signed POST /api/cluster/workers after pairing")
     parser.add_argument("--timeout", type=float, default=600.0,
                         help="Max seconds to wait for admin confirmation (default: 600)")
+    parser.add_argument("--scan-timeout", type=float, default=6.0,
+                        help="Seconds to browse for controllers when no URL "
+                             "is given (default: 6)")
+    parser.add_argument("--expect-fingerprint", default=None,
+                        help="With discovery, pair only with the controller "
+                             "carrying this hub fingerprint (no prompt)")
     args = parser.parse_args()
 
     try:
@@ -51,6 +64,54 @@ def main() -> None:
         sys.exit(1)
 
 
+async def _resolve_controller(args) -> str:
+    """Return the controller URL to pair with.
+
+    An explicit argument wins. Without one, browse the LAN for
+    controllers advertising the #119 discovery service and offer a
+    pick; when nothing is found (or nothing is picked), fall back to
+    asking for the URL by hand. Raises ValueError when no URL can be
+    obtained at all (e.g. stdin is not interactive).
+    """
+    if args.controller:
+        return args.controller
+    from tinyagentos.worker.discovery import (
+        choose_candidate,
+        discover_controllers,
+    )
+
+    print(
+        "[pair] no controller URL given -- scanning the LAN for "
+        "taOS controllers..."
+    )
+    candidates = await discover_controllers(timeout=args.scan_timeout)
+    chosen = choose_candidate(
+        candidates, expect_fingerprint=args.expect_fingerprint
+    )
+    if chosen is not None:
+        print(
+            f"[pair] using discovered controller {chosen.url} "
+            f"(fingerprint {chosen.fingerprint[:8]}...)"
+        )
+        return chosen.url
+    if candidates:
+        print("[pair] no discovered controller selected.")
+    else:
+        print("[pair] no controllers discovered on this network.")
+    try:
+        url = input(
+            "Controller URL (e.g. http://192.168.1.10:6969): "
+        ).strip()
+    except (EOFError, KeyboardInterrupt):
+        url = ""
+    if not url:
+        raise ValueError(
+            "no controller URL given and none discovered -- "
+            "pass the controller URL explicitly"
+        )
+    return url
+
+
 async def _run(args) -> None:
     import httpx
 
@@ -59,6 +120,8 @@ async def _run(args) -> None:
         run_manual_pairing,
         run_pairing,
     )
+
+    args.controller = await _resolve_controller(args)
 
     state_dir = args.state_dir or default_state_dir()
     name = args.name or _hostname()

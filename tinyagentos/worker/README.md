@@ -41,6 +41,27 @@ python -m tinyagentos.worker http://your-server:6969 --name "gpu-box-01"
 
 Default name is the machine's hostname.
 
+### Finding the controller (mDNS discovery)
+
+The controller advertises itself on the LAN as `_tinyagentos._tcp.local.`
+(URL, hub identity fingerprint, and hardware tier in TXT records), so the
+pairing CLI can find it instead of asking for a typed URL:
+
+```bash
+# Scan, pick from the list, pair:
+python -m tinyagentos.worker.pair --name gpu-box-01 --register-after
+
+# Pair only with one specific controller, no prompt:
+python -m tinyagentos.worker.pair --expect-fingerprint <sha256-hex> --register-after
+
+# Just scan (one line per controller); --pick prints only the chosen URL:
+python -m tinyagentos.worker.discovery
+python -m tinyagentos.worker.discovery --pick
+```
+
+When nothing is discovered the pair CLI falls back to asking for the URL
+by hand. Discovery is LAN-only; remote attach still uses pairing codes.
+
 ## What it does
 
 1. **Detects hardware** — CPU, GPU, NPU, RAM via `tinyagentos.hardware`

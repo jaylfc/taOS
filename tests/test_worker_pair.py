@@ -536,3 +536,98 @@ class TestNotPairedHint:
         message = caplog.text
         assert "--state-dir" in message, message
         assert str(state_dir) in message, message
+
+
+# ======================================================================
+# _resolve_controller: mDNS discovery when no URL is given (#119)
+# ======================================================================
+
+from types import SimpleNamespace
+
+# ======================================================================
+
+
+def _resolve_args(controller=None, expect_fingerprint=None):
+    return SimpleNamespace(
+        controller=controller,
+        scan_timeout=0.05,
+        expect_fingerprint=expect_fingerprint,
+    )
+
+
+def _candidate(fp="a" * 64, url="http://taos.local:6969"):
+    from tinyagentos.worker.discovery import ControllerCandidate
+
+    return ControllerCandidate(
+        name="taOS", url=url, fingerprint=fp, tier=None,
+        host="taos.local", port=6969,
+    )
+
+
+class TestResolveController:
+    def test_explicit_controller_short_circuits(self, monkeypatch):
+        async def _no_scan(timeout=0.0):
+            raise AssertionError("discovery must not run")
+
+        monkeypatch.setattr(
+            "tinyagentos.worker.discovery.discover_controllers", _no_scan
+        )
+        result = asyncio.run(
+            pair_mod._resolve_controller(_resolve_args("http://10.0.0.1:6969"))
+        )
+        assert result == "http://10.0.0.1:6969"
+
+    def test_discovered_controller_is_used(self, monkeypatch):
+        async def _scan(timeout=0.0):
+            return [_candidate()]
+
+        monkeypatch.setattr(
+            "tinyagentos.worker.discovery.discover_controllers", _scan
+        )
+        result = asyncio.run(pair_mod._resolve_controller(_resolve_args()))
+        assert result == "http://taos.local:6969"
+
+    def test_expect_fingerprint_selects_match(self, monkeypatch):
+        async def _scan(timeout=0.0):
+            return [
+                _candidate("a" * 64, "http://one.local:6969"),
+                _candidate("b" * 64, "http://two.local:6969"),
+            ]
+
+        monkeypatch.setattr(
+            "tinyagentos.worker.discovery.discover_controllers", _scan
+        )
+        result = asyncio.run(
+            pair_mod._resolve_controller(
+                _resolve_args(expect_fingerprint="b" * 64)
+            )
+        )
+        assert result == "http://two.local:6969"
+
+    def test_no_discovery_falls_back_to_manual_entry(self, monkeypatch):
+        async def _scan(timeout=0.0):
+            return []
+
+        monkeypatch.setattr(
+            "tinyagentos.worker.discovery.discover_controllers", _scan
+        )
+        monkeypatch.setattr(
+            "builtins.input", lambda prompt="": "http://10.0.0.9:6969"
+        )
+        result = asyncio.run(pair_mod._resolve_controller(_resolve_args()))
+        assert result == "http://10.0.0.9:6969"
+
+    def test_no_discovery_and_no_manual_entry_raises(self, monkeypatch):
+        async def _scan(timeout=0.0):
+            return []
+
+        monkeypatch.setattr(
+            "tinyagentos.worker.discovery.discover_controllers", _scan
+        )
+
+        def _eof(prompt=""):
+            raise EOFError
+
+        monkeypatch.setattr("builtins.input", _eof)
+        with pytest.raises(ValueError, match="no controller"):
+            asyncio.run(pair_mod._resolve_controller(_resolve_args()))
