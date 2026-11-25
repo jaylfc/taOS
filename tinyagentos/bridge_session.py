@@ -175,6 +175,29 @@ class BridgeSessionRegistry:
         self._guest_outbox = None
         self._is_guest = None
 
+    async def _archive_session_fields(self, channel_id: str | None) -> dict:
+        """session_id / turn_index / session_date for an archive record.
+
+        session_id is the channel (conversation). turn_index is derived from
+        the stored conversation count so it survives a restart rather than
+        living in an in-memory dict. session_date is the turn's own timestamp
+        when known; openclaw replies carry none, so it is left empty rather
+        than stamped with ingest time.
+        """
+        fields: dict[str, object] = {}
+        if not channel_id:
+            return fields
+        fields["session_id"] = channel_id
+        turn_index = 0
+        try:
+            if self._chat_messages is not None:
+                turn_index = await self._chat_messages.count_messages(channel_id)
+        except Exception:
+            turn_index = 0
+        fields["turn_index"] = turn_index
+        fields["session_date"] = ""
+        return fields
+
     def _get_or_create(self, slug: str) -> _AgentSession:
         if slug not in self._sessions:
             self._sessions[slug] = _AgentSession()
@@ -506,6 +529,7 @@ class BridgeSessionRegistry:
                                 "trace_id": trace_id,
                                 "reply_id": reply_id,
                                 "channel_id": channel_id,
+                                **await self._archive_session_fields(channel_id),
                             },
                             agent_name=slug,
                             summary=final_content[:120] if final_content else "",
@@ -621,6 +645,7 @@ class BridgeSessionRegistry:
                             "tool": tool_name,
                             "args": body.get("args") or {},
                             "trace_id": trace_id,
+                            **await self._archive_session_fields(channel_id),
                         },
                         agent_name=slug,
                         summary=tool_name,
@@ -652,6 +677,7 @@ class BridgeSessionRegistry:
                             "result": body.get("result"),
                             "success": body.get("success", True),
                             "trace_id": trace_id,
+                            **await self._archive_session_fields(channel_id),
                         },
                         agent_name=slug,
                         summary=tool_name,
@@ -705,6 +731,7 @@ class BridgeSessionRegistry:
                         data={
                             "error": error_text,
                             "trace_id": trace_id,
+                            **await self._archive_session_fields(channel_id),
                         },
                         agent_name=slug,
                         summary=error_text,
@@ -740,6 +767,7 @@ class BridgeSessionRegistry:
                         data={
                             "text": content,
                             "trace_id": trace_id,
+                            **await self._archive_session_fields(channel_id),
                         },
                         agent_name=slug,
                         summary=content[:120] if content else "",

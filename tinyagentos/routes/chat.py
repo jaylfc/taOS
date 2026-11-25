@@ -72,9 +72,8 @@ def _spawn_background(coro) -> asyncio.Task:
 
 
 # Per-conversation monotonic turn index written to the taOSmd archive.
-# Keyed by conversation (channel) id; 0-based and incremented on every turn.
-# In-memory for the MVP; a restart reseeds from the message store later.
-_TURN_INDEX_BY_CHANNEL: dict[str, int] = {}
+# Derived from the stored conversation (count of messages already in the
+# channel) so it survives a restart -- never an in-memory dict.
 
 
 def _session_date_iso(created_at: float | int | str | None) -> str:
@@ -92,6 +91,48 @@ def _session_date_iso(created_at: float | int | str | None) -> str:
         return ""
 
 
+async def _turn_index_for_channel(msg_store, channel_id: str) -> int:
+    """0-based turn index for the next turn in *channel_id*, derived from the
+    stored conversation so it survives a restart (never an in-memory dict)."""
+    if msg_store is None or not channel_id:
+        return 0
+    return await msg_store.count_messages(channel_id)
+
+
+async def replay_conversation_into_archive(app, channel_id: str) -> None:
+    """Re-ingest an existing conversation into the archive, preserving each
+    stored message's original turn_index (its position in the stored
+    conversation) and session_date (its own created_at, never ingest time).
+
+    Used after a restart to rebuild the zero-loss layer for a session without
+    re-dating or re-numbering the turns.
+    """
+    msg_store = app.state.chat_messages
+    archive = getattr(app.state, "archive", None)
+    if archive is None or msg_store is None or not channel_id:
+        return
+    messages = await msg_store.get_all_messages_for_channel(channel_id)
+    for index, message in enumerate(messages):
+        try:
+            await archive.record(
+                event_type="conversation",
+                data={
+                    "content": message.get("content", ""),
+                    "channel_id": channel_id,
+                    "message_id": message.get("id"),
+                    "author_id": message.get("author_id"),
+                    "author_type": message.get("author_type"),
+                    "session_id": channel_id,
+                    "turn_index": index,
+                    "session_date": _session_date_iso(message.get("created_at")),
+                },
+                agent_name=message.get("author_id") if message.get("author_type") == "agent" else None,
+                summary=(message.get("content") or "")[:100],
+            )
+        except Exception:  # pragma: no cover - replay is best-effort
+            pass
+
+
 async def _capture_user_memory(
     user_memory,
     *,
@@ -101,6 +142,9 @@ async def _capture_user_memory(
     metadata: dict,
     setting_key: str,
     user_id: str = "user",
+    session_id: str = "",
+    turn_index: int = 0,
+    session_date: str = "",
 ) -> None:
     """Fire-and-forget user memory capture. Never raises."""
     if not user_memory or not content:
@@ -109,12 +153,19 @@ async def _capture_user_memory(
         settings = await user_memory.get_settings(user_id)
         if not settings.get(setting_key):
             return
+        chunk_metadata = dict(metadata or {})
+        if session_id:
+            chunk_metadata["session_id"] = session_id
+        if turn_index is not None:
+            chunk_metadata["turn_index"] = turn_index
+        if session_date:
+            chunk_metadata["session_date"] = session_date
         await user_memory.save_chunk(
             user_id,
             content=content,
             title=title,
             collection=collection,
-            metadata=metadata,
+            metadata=chunk_metadata,
         )
     except Exception as e:  # pragma: no cover - capture is best-effort
         logger.debug(f"user memory capture failed: {e}")
@@ -217,6 +268,9 @@ async def chat_ws(websocket: WebSocket):
                 # Capture user message into user memory (async, non-blocking)
                 user_memory = getattr(websocket.app.state, "user_memory", None)
                 if user_memory:
+                    _ws_turn_index = await _turn_index_for_channel(
+                        msg_store, data["channel_id"]
+                    )
                     asyncio.create_task(_capture_user_memory(
                         user_memory,
                         content=data.get("content", ""),
@@ -229,6 +283,9 @@ async def chat_ws(websocket: WebSocket):
                         },
                         setting_key="capture_conversations",
                         user_id=user_id,
+                        session_id=data["channel_id"],
+                        turn_index=_ws_turn_index,
+                        session_date=_session_date_iso(message.get("created_at")),
                     ))
 
             elif msg_type == "typing":
@@ -452,6 +509,11 @@ async def post_message(request: Request, user: CurrentUser = Depends(current_use
     import time as _time
     _http_expires_at = (_time.time() + _http_ttl) if isinstance(_http_ttl, (int, float)) and _http_ttl > 0 else None
 
+    # Derive the turn index from the stored conversation so it survives a
+    # restart: the number of messages already in the channel is the 0-based
+    # index of the turn being written.
+    turn_index = await _turn_index_for_channel(msg_store, channel_id)
+
     message = await msg_store.send_message(
         channel_id=channel_id,
         author_id=body["author_id"],
@@ -485,14 +547,15 @@ async def post_message(request: Request, user: CurrentUser = Depends(current_use
                     "timestamp": message.get("created_at"),
                 },
                 setting_key="capture_conversations",
+                session_id=channel_id,
+                turn_index=turn_index,
+                session_date=_session_date_iso(message.get("created_at")),
             ))
 
     # Auto-archive every message for the zero-loss layer
     archive = getattr(request.app.state, "archive", None)
     if archive:
         try:
-            turn_index = _TURN_INDEX_BY_CHANNEL.get(channel_id, 0)
-            _TURN_INDEX_BY_CHANNEL[channel_id] = turn_index + 1
             await archive.record(
                 event_type="conversation",
                 data={

@@ -1,10 +1,12 @@
 """Tests: the chat route writes session_id / turn_index / session_date
 onto every turn it archives into taOSmd (post_message -> archive.record).
 
-These fail before the fix because the archive record carried none of the
-three fields.  A replay test verifies a replayed turn keeps its original
-turn_index and date (the import/replay path reseeds the per-channel counter
-to the original next index before replaying).
+turn_index is derived from the stored conversation (count of messages already
+in the channel) so it survives a restart, never an in-memory dict.  session_date
+is each turn's own created_at, never ingest time.
+
+A replay test verifies re-ingesting an existing conversation keeps the original
+indexes and dates.
 """
 from __future__ import annotations
 
@@ -12,7 +14,10 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from tinyagentos.routes.chat import _TURN_INDEX_BY_CHANNEL, _session_date_iso
+from tinyagentos.routes.chat import (
+    _session_date_iso,
+    replay_conversation_into_archive,
+)
 
 
 def _host_token_client(app):
@@ -93,12 +98,12 @@ async def test_chat_archive_turn_index_monotonic(client):
 
 @pytest.mark.asyncio
 async def test_chat_replay_keeps_turn_index_and_date(client):
-    """A replayed turn keeps its original turn_index and its own date.
+    """Re-ingesting an existing conversation keeps each turn's original
+    turn_index and its own session_date (never re-dated to ingest time).
 
-    The import/replay path reseeds the per-channel counter to the original
-    next index before replaying, so each replayed turn is numbered as it
-    originally was, and each turn keeps its own session_date (the message's
-    own timestamp, never ingest time).
+    Simulates a restart by swapping in a fresh archive mock (the in-memory
+    counter no longer exists), then re-ingests the stored conversation through
+    the real replay path.
     """
     app = client._transport.app
     app.state.archive = AsyncMock()
@@ -106,37 +111,43 @@ async def test_chat_replay_keeps_turn_index_and_date(client):
     ch = await _create_channel(app, "replay")
     channel_id = ch["id"]
 
+    original = []
     async with _host_token_client(app) as c:
-        resp1 = await c.post(
-            "/api/chat/messages",
-            json={
-                "channel_id": channel_id,
-                "author_id": "user",
-                "author_type": "user",
-                "content": "original turn",
-            },
-        )
-    assert resp1.status_code == 200, resp1.text
-    data1 = app.state.archive.record.call_args.kwargs["data"]
-    ti1 = data1["turn_index"]
-    assert data1["session_date"] == _session_date_iso(resp1.json()["created_at"])
+        for content in ["first turn", "second turn", "third turn"]:
+            resp = await c.post(
+                "/api/chat/messages",
+                json={
+                    "channel_id": channel_id,
+                    "author_id": "user",
+                    "author_type": "user",
+                    "content": content,
+                },
+            )
+            assert resp.status_code == 200, resp.text
+            call = app.state.archive.record.call_args_list[-1]
+            data = call.kwargs["data"]
+            original.append(
+                {
+                    "turn_index": data["turn_index"],
+                    "session_date": data["session_date"],
+                    "content": data["content"],
+                }
+            )
 
-    # Replay: reseed the counter to the original next index, then re-write
-    # the same turn. The replayed turn keeps its original index and its own
-    # date (never re-dated to ingest time).
-    _TURN_INDEX_BY_CHANNEL[channel_id] = ti1
+    assert [o["turn_index"] for o in original] == [0, 1, 2]
+    assert all(o["session_date"] for o in original)
 
-    async with _host_token_client(app) as c:
-        resp2 = await c.post(
-            "/api/chat/messages",
-            json={
-                "channel_id": channel_id,
-                "author_id": "user",
-                "author_type": "user",
-                "content": "original turn",
-            },
-        )
-    assert resp2.status_code == 200, resp2.text
-    data2 = app.state.archive.record.call_args.kwargs["data"]
-    assert data2["turn_index"] == ti1
-    assert data2["session_date"] == _session_date_iso(resp2.json()["created_at"])
+    # Fresh archive mock simulates a restart: the per-session counter is gone
+    # and turn_index must be re-derived from the stored conversation.
+    app.state.archive = AsyncMock()
+
+    await replay_conversation_into_archive(app, channel_id)
+
+    calls = app.state.archive.record.call_args_list
+    assert len(calls) == len(original)
+    for call, expected in zip(calls, original):
+        data = call.kwargs["data"]
+        assert data["session_id"] == channel_id
+        assert data["turn_index"] == expected["turn_index"]
+        assert data["session_date"] == expected["session_date"]
+        assert data["content"] == expected["content"]

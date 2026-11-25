@@ -6,6 +6,7 @@ import httpx
 
 from tinyagentos.adapters.retry_policy import ROUTER_TIMEOUT_SECONDS
 from tinyagentos.channel_hub.message import IncomingMessage, OutgoingMessage, parse_inline_hints
+from tinyagentos.routes.chat import _session_date_iso
 
 logger = logging.getLogger(__name__)
 
@@ -113,6 +114,9 @@ class MessageRouter:
                         "channel_id": message.channel_id,
                         "direction": "inbound",
                         "message_id": message.id,
+                        "session_id": message.channel_id,
+                        "turn_index": 0,
+                        "session_date": _session_date_iso(message.timestamp),
                     },
                     agent_name=agent_name,
                     summary=f"[{message.platform}] {message.from_name}: {message.text[:80]}",
@@ -125,6 +129,9 @@ class MessageRouter:
                         "platform": platform,
                         "channel_id": channel_id,
                         "direction": "outbound",
+                        "session_id": channel_id,
+                        "turn_index": 0,
+                        "session_date": "",
                     },
                     agent_name=agent_name,
                     summary=f"[{platform}→] {message.content[:80]}",

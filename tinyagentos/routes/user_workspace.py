@@ -33,6 +33,9 @@ async def _capture_file_activity(
     size: int,
     action: str,
     user_id: str = "user",
+    session_id: str = "",
+    turn_index: int = 0,
+    session_date: str = "",
 ) -> None:
     """Fire-and-forget file activity capture. Never raises."""
     if not user_memory:
@@ -41,12 +44,23 @@ async def _capture_file_activity(
         settings = await user_memory.get_settings(user_id)
         if not settings.get("capture_files"):
             return
+        chunk_metadata = {
+            "path": path,
+            "size": size,
+            "action": action,
+        }
+        if session_id:
+            chunk_metadata["session_id"] = session_id
+        if turn_index is not None:
+            chunk_metadata["turn_index"] = turn_index
+        if session_date:
+            chunk_metadata["session_date"] = session_date
         await user_memory.save_chunk(
             user_id,
             content=f"File {action}: {filename}",
             title=filename,
             collection="files",
-            metadata={"path": path, "size": size, "action": action},
+            metadata=chunk_metadata,
         )
     except Exception as e:  # pragma: no cover - best-effort
         logger.debug(f"file activity capture failed: {e}")

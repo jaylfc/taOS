@@ -278,6 +278,19 @@ class ChatMessageStore(BaseStore):
             desc = cursor.description
         return [_parse(r, desc) for r in rows]
 
+    async def count_messages(self, channel_id: str) -> int:
+        """Return the number of stored messages in *channel_id*.
+
+        Used to derive a per-session turn index that survives restarts: the
+        count of messages already stored is the 0-based index of the next
+        turn in that conversation.
+        """
+        async with self._db.execute(
+            "SELECT COUNT(*) FROM chat_messages WHERE channel_id = ?", (channel_id,)
+        ) as cursor:
+            row = await cursor.fetchone()
+        return row[0] if row else 0
+
     async def latest_previews(self, channel_ids: list[str]) -> dict[str, dict]:
         """Return the latest non-deleted, non-thread, non-ephemeral message per channel.
 

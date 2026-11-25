@@ -299,7 +299,13 @@ async def archive_smoke_check(request: Request, unique_slug: str, framework: str
         try:
             await archive.record(
                 event_type="agent_deployed",
-                data={"slug": unique_slug, "framework": framework},
+                data={
+                    "slug": unique_slug,
+                    "framework": framework,
+                    "session_id": unique_slug,
+                    "turn_index": 0,
+                    "session_date": "",
+                },
                 agent_name=unique_slug,
                 summary=f"deployed {unique_slug}",
             )
