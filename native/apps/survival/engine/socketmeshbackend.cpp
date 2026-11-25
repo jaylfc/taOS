@@ -535,13 +535,13 @@ void SocketMeshBackend::requestDeviceConfig(const QString &radioId)
     });
 }
 
-void SocketMeshBackend::applyDeviceConfig(const QString &radioId, const QVariantMap &changes)
+void SocketMeshBackend::applyDeviceConfig(const QString &radioId, const QVariantMap &changes, bool confirmRegion)
 {
     if (!m_cfgWrite) {
         Q_EMIT actionDone(u"device"_s, false, tr("The engine does not write radio settings yet, so nothing was changed."));
         return;
     }
-    m_client->request(u"device.apply"_s, QJsonObject{{u"radio"_s, radioId}, {u"changes"_s, QJsonObject::fromVariantMap(changes)}}, this,
+    m_client->request(u"device.apply"_s, QJsonObject{{u"radio"_s, radioId}, {u"confirm_region"_s, confirmRegion}, {u"changes"_s, QJsonObject::fromVariantMap(changes)}}, this,
                       [this, radioId](const MeshReply &r) {
                           done(u"device"_s, r);
                           // the radio may restart to use the change: read its settings again once it is back

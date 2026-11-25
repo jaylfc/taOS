@@ -262,6 +262,7 @@ public:
     QStringList used;
     QList<Req> requests;
     QString mode = QStringLiteral("ready");   // ready | pending
+    QString devicePort;                       // when set, /v1/devices lists the board on this port instead of the captured one
     int runDelayMs = 0;                       // how long /v1/flash/run takes to answer (pictures of a flash in progress)
     QString runName = QStringLiteral("Heltec V3");   // the board name /v1/flash/run accepts
     int count(const QString &method, const QString &path) const { int n = 0; for (const auto &r : requests) n += r.method == method && r.path == path; return n; }
@@ -330,7 +331,15 @@ private:
         if (r.path == QLatin1String("/v1/licences")) return fx(mode == QLatin1String("pending") ? QStringLiteral("licences_pending") : QStringLiteral("licences_accepted"));
         if (r.path == QLatin1String("/v1/licences/accept")) return QJsonObject{{QStringLiteral("ok"), true}};
         if (r.path == QLatin1String("/v1/library/refresh")) return fx(QStringLiteral("refresh_ok"));
-        if (r.path == QLatin1String("/v1/devices")) return fx(QStringLiteral("devices"));
+        if (r.path == QLatin1String("/v1/devices")) {
+            QJsonObject o = fx(QStringLiteral("devices")).toObject();
+            if (!devicePort.isEmpty()) {
+                QJsonArray ds = o.value(QStringLiteral("devices")).toArray();
+                for (int i = 0; i < ds.size(); ++i) { QJsonObject d = ds[i].toObject(); d.insert(QStringLiteral("port"), devicePort); ds[i] = d; }
+                o.insert(QStringLiteral("devices"), ds);
+            }
+            return o;
+        }
         if (r.path.endsWith(QLatin1String("/firmware"))) return fx(QStringLiteral("device_firmware"));
         if (r.path == QLatin1String("/v1/flash/plan")) return fx(QStringLiteral("plan"));
         if (r.path == QLatin1String("/v1/flash/run") && r.body.contains(QStringLiteral("actor")) && r.body.value(QStringLiteral("actor")).toString() != QLatin1String("person")

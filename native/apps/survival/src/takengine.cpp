@@ -610,7 +610,7 @@ QString TakEngine::applyConfig(const QString &radioId, const QVariantMap &change
         return tr("The engine does not write radio settings yet, so nothing was changed.");
     if (!m_b->available())
         return m_b->unavailableReason();
-    m_b->applyDeviceConfig(radioId, changes);
+    m_b->applyDeviceConfig(radioId, changes, changes.contains(QStringLiteral("lora.region")));   // the settings screen is the explicit confirm step
     return {};
 }
 

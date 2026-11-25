@@ -50,7 +50,7 @@ public:
     void setTold(const QString &contact, bool told, const QString &date) override;
     void link(const QString &contact, const QString &account) override;
     void requestDeviceConfig(const QString &radioId) override;
-    void applyDeviceConfig(const QString &radioId, const QVariantMap &changes) override;
+    void applyDeviceConfig(const QString &radioId, const QVariantMap &changes, bool confirmRegion = false) override;
 
     // parsing, public so the tests can drive it with the engine's real JSON
     static MeshMessage messageFromRecord(const QJsonObject &r);

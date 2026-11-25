@@ -266,6 +266,13 @@ void RadioSwitch::reconnect()
         if (m_clock.elapsed() - *lastPoll > 2000) {
             *lastPoll = m_clock.elapsed();
             m_b->refresh();
+            m_c->request(u"GET"_s, u"/v1/devices"_s, {}, this, [this, run, port](const FwReply &r) {
+                if (run != m_run)
+                    return;
+                for (const QJsonValue &d : r.json.value(u"devices"_s).toArray())
+                    if (d.toObject().value(u"id"_s).toString() == m_req.deviceId && !d.toObject().value(u"port"_s).toString().isEmpty())
+                        *port = d.toObject().value(u"port"_s).toString();
+            });
         }
         // a radio the engine already has but is still shaking hands with ("connecting") is waited for, not asked for again
         bool handshaking = false;
@@ -274,19 +281,12 @@ void RadioSwitch::reconnect()
                 handshaking = true;
         if (!*inflight && !handshaking && m_clock.elapsed() - *lastTry > 4000) {
             m_b->discoverDevices();
-            // the board may have come back on another port: take the same one if it is there, else the one new USB port
-            QStringList usb, fresh;
-            for (const MeshDevice &d : m_b->devices())
-                if (d.kind == u"usb"_s) {
-                    usb << d.id;
-                    if (!m_knownPorts.contains(d.id))
-                        fresh << d.id;
-                }
+            // which port the board is on now is the firmware manager's answer (it knows the board by its USB identity, serial
+            // included); the engine must list that port. No guessing from "the one new port".
             QString pick;
-            if (!m_req.port.isEmpty() && usb.contains(m_req.port))
-                pick = m_req.port;
-            else if (fresh.size() == 1)
-                pick = fresh.first();
+            for (const MeshDevice &d : m_b->devices())
+                if (d.kind == u"usb"_s && d.id == *port)
+                    pick = d.id;
             if (!pick.isEmpty()) {
                 *port = pick;
                 *inflight = true;
@@ -312,7 +312,21 @@ void RadioSwitch::reconnect()
             return;
         }
         note(tr("The board is back on %1.").arg(networkLabel(r.transport)));
-        restore();
+        // the radio about to get the saved settings must be the board that was switched: ask the firmware manager once more which
+        // port that board is on now, and compare it with the radio's port
+        m_c->request(u"GET"_s, u"/v1/devices"_s, {}, this, [this, run, r](const FwReply &fr) {
+            if (run != m_run)
+                return;
+            QString at;
+            for (const QJsonValue &d : fr.json.value(u"devices"_s).toArray())
+                if (d.toObject().value(u"id"_s).toString() == m_req.deviceId)
+                    at = d.toObject().value(u"port"_s).toString();
+            if (at.isEmpty() || at != r.port) {
+                fail(tr("The radio that came back (on %1) is not shown by the firmware manager as the board that was switched, so no saved settings were put on it.").arg(r.port));
+                return;
+            }
+            restore();
+        });
     });
 }
 
@@ -353,6 +367,8 @@ void RadioSwitch::restore()
                 const QVariant want = valueAt(saved, p), have = valueAt(c.values, p);
                 if (!want.isValid() || want.toString().isEmpty())
                     continue;
+                if (p == u"lora.region"_s && want.toString() == u"UNSET"_s)
+                    continue;   // never write "no region" back
                 if (!have.isValid()) {   // e.g. a channel the fresh firmware does not have: the rest is still put back
                     ++skipped;
                     continue;
@@ -394,7 +410,7 @@ void RadioSwitch::restore()
             note(tr("%n earlier setting(s) put back. The radio may restart to use them.", "", n));
             finish();
         });
-        m_b->applyDeviceConfig(m_newRadio, changes);
+        m_b->applyDeviceConfig(m_newRadio, changes, changes.contains(u"lora.region"_s));   // the person confirmed the switch; the engine insists on the flag
     });
 }
 

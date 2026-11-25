@@ -177,6 +177,7 @@ private Q_SLOTS:
         QCOMPARE(apply.value(u"radio"_s).toString(), u"!a1b2c3d4"_s);
         const QJsonObject ch = apply.value(u"changes"_s).toObject();
         QCOMPARE(ch.value(u"lora.region"_s).toString(), u"US"_s);
+        QVERIFY(apply.value(u"confirm_region"_s).toBool());   // the engine refuses a region change without it
         QCOMPARE(ch.value(u"lora.modem_preset"_s).toString(), u"MEDIUM_FAST"_s);
         QCOMPARE(ch.value(u"channels.1.name"_s).toString(), u"crew"_s);
         QVERIFY(!ch.contains(u"owner.long_name"_s));   // already the same: not rewritten
@@ -242,6 +243,60 @@ private Q_SLOTS:
         QTRY_VERIFY_WITH_TIMEOUT(!r->sw->running(), 40000);
         QVERIFY2(r->sw->step() == RadioSwitch::Step::Done, qPrintable(r->sw->error()));
         QCOMPARE(r->eng->count(u"radios.connect"_s), 1);   // 6 seconds of "connecting" did not make it ask again
+    }
+
+    void a_radio_on_another_port_than_the_firmware_manager_says_is_never_connected_or_given_settings()
+    {
+        auto r = rig(radio(u"!a1b2c3d4"_s, u"meshtastic"_s, u"2.7.15"_s), mtConfig(u"EU_868"_s, u"LONG_FAST"_s, u"family"_s));
+        QVERIFY(r);
+        QTRY_VERIFY_WITH_TIMEOUT(r->backend->available() && r->backend->radios().size() == 1, 5000);
+        QVERIFY(r->profiles->save(kDevice, u"meshcore"_s, mcConfig().toVariantMap(), u"Heltec V3"_s, u"v1"_s));
+        // after the flash the manager sees OUR board on ttyUSB0 (the fixture), but the only new port the engine lists is another one
+        r->eng->onRelease = [e = r->eng.get()](const QString &) {
+            e->serialDevices = QJsonArray{QJsonObject{{u"path"_s, u"/dev/ttyACM9"_s}, {u"vid"_s, 0x303a}, {u"pid"_s, 0x1001}, {u"product"_s, u"Someone else's board"_s}}};
+        };
+        r->sw->setTimeouts(3000, 8000);
+        r->sw->start(req(u"meshtastic"_s, u"meshcore"_s));
+        QTRY_VERIFY_WITH_TIMEOUT(!r->sw->running(), 30000);
+        QCOMPARE(r->sw->step(), RadioSwitch::Step::Failed);
+        QCOMPARE(r->eng->count(u"radios.connect"_s), 0);   // the stranger's port was never opened
+        QCOMPARE(r->eng->count(u"device.apply"_s), 0);     // and nothing was written to anything
+    }
+
+    void saved_settings_are_not_put_on_a_radio_that_is_not_the_board_that_was_switched()
+    {
+        auto r = rig(radio(u"a1b2c3d4e5f6"_s, u"meshcore"_s, u"v1.9.1"_s), mcConfig());
+        QVERIFY(r);
+        QTRY_VERIFY_WITH_TIMEOUT(r->backend->available() && r->backend->radios().size() == 1, 5000);
+        QVERIFY(r->profiles->save(kDevice, u"meshtastic"_s, mtConfig(u"US"_s, u"MEDIUM_FAST"_s, u"crew"_s).toVariantMap(), u"Heltec V3"_s, u"2.7.15"_s));
+        r->eng->onConnect = [e = r->eng.get(), fw = r->fw.get()](const QString &) {
+            e->radiosJson = QJsonArray{radio(u"!a1b2c3d4"_s, u"meshtastic"_s, u"2.7.15"_s)};
+            e->cfgByRadio.insert(u"!a1b2c3d4"_s, mtConfig(u"EU_868"_s, u"LONG_FAST"_s, u"family"_s));
+            fw->devicePort = u"/dev/ttyACM9"_s;   // the manager now says the board is elsewhere: this radio is not it
+        };
+        r->sw->start(req(u"meshcore"_s, u"meshtastic"_s));
+        QTRY_VERIFY_WITH_TIMEOUT(!r->sw->running(), 30000);
+        QCOMPARE(r->sw->step(), RadioSwitch::Step::Failed);
+        QVERIFY(r->sw->error().contains(u"not shown by the firmware manager"_s));
+        QCOMPARE(r->eng->count(u"device.apply"_s), 0);
+    }
+
+    void a_saved_unset_region_is_never_written_back()
+    {
+        auto r = rig(radio(u"a1b2c3d4e5f6"_s, u"meshcore"_s, u"v1.9.1"_s), mcConfig());
+        QVERIFY(r);
+        QTRY_VERIFY_WITH_TIMEOUT(r->backend->available() && r->backend->radios().size() == 1, 5000);
+        QVERIFY(r->profiles->save(kDevice, u"meshtastic"_s, mtConfig(u"UNSET"_s, u"MEDIUM_FAST"_s, u"family"_s).toVariantMap(), u"Heltec V3"_s, u"2.7.15"_s));
+        r->eng->onConnect = [e = r->eng.get()](const QString &) {
+            e->radiosJson = QJsonArray{radio(u"!a1b2c3d4"_s, u"meshtastic"_s, u"2.7.15"_s)};
+            e->cfgByRadio.insert(u"!a1b2c3d4"_s, mtConfig(u"EU_868"_s, u"LONG_FAST"_s, u"family"_s));
+        };
+        r->sw->start(req(u"meshcore"_s, u"meshtastic"_s));
+        QTRY_VERIFY_WITH_TIMEOUT(!r->sw->running(), 30000);
+        QVERIFY2(r->sw->step() == RadioSwitch::Step::Done, qPrintable(r->sw->error()));
+        const QJsonObject apply = r->eng->last(u"device.apply"_s).value(u"params"_s).toObject();
+        QVERIFY(!apply.value(u"changes"_s).toObject().contains(u"lora.region"_s));
+        QCOMPARE(apply.value(u"changes"_s).toObject().value(u"lora.modem_preset"_s).toString(), u"MEDIUM_FAST"_s);
     }
 
     void a_refused_flash_stops_the_sequence_and_says_how_to_get_the_board_back()

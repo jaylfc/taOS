@@ -177,7 +177,7 @@ public:
     virtual void requestDeviceConfig(const QString &radioId) { Q_UNUSED(radioId); }
     /// Writes settings to a radio. The only caller is the confirm step of the settings screens; the answer is a
     /// refusal in words unless deviceConfigWritable().
-    virtual void applyDeviceConfig(const QString &radioId, const QVariantMap &changes) { Q_UNUSED(radioId); Q_UNUSED(changes); refuse(QStringLiteral("device")); }
+    virtual void applyDeviceConfig(const QString &radioId, const QVariantMap &changes, bool confirmRegion = false) { Q_UNUSED(radioId); Q_UNUSED(changes); Q_UNUSED(confirmRegion); refuse(QStringLiteral("device")); }
 
 Q_SIGNALS:
     void radiosChanged();
