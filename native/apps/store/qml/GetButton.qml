@@ -23,7 +23,7 @@ RowLayout {
 
     // progress while installing or removing
     PillButton {
-        visible: root.state === "installing" || root.state === "removing"
+        visible: root.state === "installing" || root.state === "removing" || root.state === "moving"
         compact: root.compact
         variant: "outline"
         enabled: false
@@ -37,7 +37,7 @@ RowLayout {
         onClicked: root.review()
     }
     PillButton {
-        visible: root.state === "failed"
+        visible: root.state === "failed" && root.st.op !== "move" && root.st.op !== "update"
         text: qsTr("Retry"); compact: root.compact
         accessibleName: qsTr("Retry installing %1").arg(root.nm)
         onClicked: { root.engine.dismiss(root.entry.id); root.engine.install(root.entry.id, root.pick) }

@@ -274,6 +274,11 @@ QJsonObject manifestSummary(const Manifest &m)
     o[u"licence_url"_s] = m.licenceUrl;
     o[u"licence_required"_s] = m.licenceRequired;
     o[u"schema"_s] = m.schema;
+    bool aptApp = false;
+    for (const Step &st : m.recipe)
+        if (st.op == u"apt-source"_s)
+            aptApp = true;
+    o[u"can_update"_s] = !m.package.isEmpty() && (aptApp || !m.updateFeedUrl.isEmpty());
     o[u"terms_note"_s] = m.termsNote;
     o[u"terms_url"_s] = m.termsUrl;
     o[u"version"_s] = m.version;

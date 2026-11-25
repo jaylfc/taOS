@@ -97,9 +97,30 @@ StoreEngine::StoreEngine(QObject *parent) : QObject(parent)
         if (!m_inst.contains(id))
             return;
         const bool removing = m_inst[id].state == u"removing"_s;
+        const QString op = m_inst[id].op;
+        if (op == u"update"_s) {
+            m_update[id] = QVariantMap{{u"state"_s, ok ? u"current"_s : u"failed"_s}, {u"text"_s, ok ? tr("Updated.") : text}};
+            if (ok) {
+                m_inst.remove(id);
+                refreshContainerInfo();
+                bump();
+                Q_EMIT toast(tr("%1 is up to date.").arg(m_cat.entry(id).value(u"name"_s).toString()));
+                return;
+            }
+        }
+        if (op == u"move"_s && ok) {
+            const QString to = m_inst[id].group;
+            m_inst.remove(id);
+            refreshContainerInfo();
+            bump();
+            Q_EMIT installFinished(id, true, tr("Moved."));
+            Q_EMIT toast(tr("%1 moved to %2. Its old data is kept as a backup.").arg(m_cat.entry(id).value(u"name"_s).toString(), groupDisplayName(to)));
+            return;
+        }
         if (removing && ok) {
             m_cat.markInstalled(id, false);
             m_inst.remove(id);
+            refreshContainerInfo();
             bump();
             Q_EMIT installFinished(id, true, tr("Removed. Its data was kept."));
             Q_EMIT toast(tr("%1 is removed. Its data was kept.").arg(m_cat.entry(id).value(u"name"_s).toString()));
@@ -113,6 +134,15 @@ StoreEngine::StoreEngine(QObject *parent) : QObject(parent)
             bump();
             Q_EMIT installFinished(id, false, text);
         }
+    });
+    connect(m_capps, &ContainerAppsService::groupCreated, this, [this](const QString &name, bool ok, const QString &text) {
+        if (ok) {
+            refreshContainerInfo();
+            m_groupWork = QVariantMap{{u"state"_s, u"idle"_s}, {u"name"_s, name}, {u"text"_s, text}, {u"created"_s, true}};
+        } else {
+            m_groupWork = QVariantMap{{u"state"_s, u"failed"_s}, {u"name"_s, name}, {u"text"_s, text}};
+        }
+        bump();
     });
     m_poll.setInterval(1500);
     connect(&m_poll, &QTimer::timeout, this, &StoreEngine::pollProgress);
@@ -436,6 +466,15 @@ QVariantMap StoreEngine::app(const QString &id) const
         e[u"runtimePort"_s] = rt.value(u"runtime_port"_s);
     }
     e[u"installedVersion"_s] = rt.value(u"version"_s).toString();
+    if (e.value(u"kind"_s).toString() == u"containerapp"_s && m_capInfo.contains(id)) {
+        const QJsonObject i = m_capInfo.value(id);
+        e[u"group"_s] = i.value(u"group"_s).toString();
+        e[u"groupName"_s] = groupDisplayName(i.value(u"group"_s).toString());
+        e[u"installedVersion"_s] = i.value(u"installed_version"_s).toString();
+        const QJsonObject acc = i.value(u"licence_accepted"_s).toObject();
+        if (!acc.isEmpty())
+            e[u"licenceAcceptedText"_s] = tr("Accepted %1").arg(QDateTime::fromString(acc.value(u"accepted_at"_s).toString(), Qt::ISODate).toLocalTime().toString(Qt::TextDate));
+    }
     return e;
 }
 
@@ -483,7 +522,10 @@ QVariantList StoreEngine::installedRows() const
         QStringList sub;
         const QString ver = m_runtime.value(e.value(u"id"_s).toString()).value(u"version"_s).toString();
         sub << (ver.isEmpty() ? e.value(u"version"_s).toString() : ver);
-        sub << e.value(u"runtimeText"_s).toString();
+        if (e.value(u"kind"_s).toString() == u"containerapp"_s && m_capInfo.contains(e.value(u"id"_s).toString()))
+            sub << tr("In %1").arg(groupDisplayName(m_capInfo.value(e.value(u"id"_s).toString()).value(u"group"_s).toString()));
+        else
+            sub << e.value(u"runtimeText"_s).toString();
         sub.removeAll(QString());
         out << QVariantMap{{u"id"_s, e.value(u"id"_s)}, {u"name"_s, e.value(u"name"_s)}, {u"kind"_s, e.value(u"kind"_s)},
                            {u"kindLabel"_s, kindLabel.value(e.value(u"kind"_s).toString(), tr("App"))},
@@ -512,7 +554,7 @@ QVariantMap StoreEngine::installState(const QString &id) const
 {
     const Inst s = m_inst.value(id);
     return QVariantMap{{u"state"_s, s.state}, {u"text"_s, s.text}, {u"detail"_s, s.detail}, {u"percent"_s, s.percent},
-                       {u"consent"_s, s.consent}, {u"consentText"_s, s.consentText}, {u"error"_s, s.error}};
+                       {u"consent"_s, s.consent}, {u"consentText"_s, s.consentText}, {u"error"_s, s.error}, {u"group"_s, s.group}, {u"op"_s, s.op}};
 }
 
 QString StoreEngine::refusal(const Taos::Error &e, const QString &verb) const
@@ -546,7 +588,19 @@ void StoreEngine::install(const QString &id, const QString &variantId)
         return;
     }
     if (e.value(u"kind"_s).toString() == u"containerapp"_s) {
-        installContainerApp(id);
+        // Which group, and (for proprietary apps) the licence, are asked before anything is downloaded.
+        Inst &c = m_inst[id];
+        if (c.state == u"installing"_s || c.state == u"removing"_s || c.state == u"moving"_s)
+            return;
+        c = Inst();
+        c.op = u"install"_s;
+        c.state = u"consent"_s;
+        c.consent = u"containerapp"_s;
+        c.consentText = e.value(u"licenceRequired"_s).toBool()
+            ? tr("%1 is proprietary software. taOS downloads it from %2 and never redistributes it. Installing means you accept its licence.")
+                  .arg(e.value(u"name"_s).toString(), e.value(u"publisher"_s).toString())
+            : tr("Choose the app group %1 should live in.").arg(e.value(u"name"_s).toString());
+        bump();
         return;
     }
     Inst &s = m_inst[id];
@@ -572,20 +626,151 @@ void StoreEngine::install(const QString &id, const QString &variantId)
 void StoreEngine::installContainerApp(const QString &id)
 {
     Inst &s = m_inst[id];
-    if (s.state == u"installing"_s || s.state == u"removing"_s)
+    if (s.state == u"installing"_s || s.state == u"removing"_s || s.state == u"moving"_s)
         return;
+    const QString group = s.group.isEmpty() ? u"default"_s : s.group;
+    const bool licence = m_cat.entry(id).value(u"licenceRequired"_s).toBool();
     s = Inst();
+    s.op = u"install"_s;
+    s.group = group;
     s.state = u"installing"_s;
     s.text = tr("Starting");
     bump();
-    m_capps->install(id);
+    // The licence was shown on the consent card and the person pressed "I agree and install": that is the acceptance.
+    m_capps->install(id, u"group:"_s + group, false, licence);
+}
+
+void StoreEngine::chooseGroup(const QString &id, const QString &group)
+{
+    if (m_inst.contains(id) && m_inst[id].state == u"consent"_s) {
+        m_inst[id].group = group;
+        bump();
+    }
+}
+
+QString StoreEngine::groupDisplayName(const QString &group) const
+{
+    for (const QVariant &v : m_groups)
+        if (v.toMap().value(u"name"_s).toString() == group)
+            return v.toMap().value(u"displayName"_s).toString();
+    return group == u"default"_s ? tr("My apps") : group;
+}
+
+void StoreEngine::refreshGroups()
+{
+    refreshContainerInfo();
+    bump();
+}
+
+QString StoreEngine::groupSlug(const QString &displayName) const
+{
+    QString s;
+    for (const QChar c : displayName.toLower().simplified()) {
+        if (c.isLetterOrNumber() && c.unicode() < 128)
+            s += c;
+        else if (!s.isEmpty() && !s.endsWith(u'-') && (c == u' ' || c == u'-' || c == u'_'))
+            s += u'-';
+    }
+    while (s.endsWith(u'-'))
+        s.chop(1);
+    if (s.isEmpty() || !s.at(0).isLetter())
+        return {};
+    return s.left(28) == u"default"_s ? QString() : s.left(28);
+}
+
+void StoreEngine::createAppGroup(const QString &displayName)
+{
+    const QString name = groupSlug(displayName);
+    if (name.isEmpty()) {
+        m_groupWork = QVariantMap{{u"state"_s, u"failed"_s}, {u"text"_s, tr("Use a name that starts with a letter, for example \"Dev apps\".")}};
+        bump();
+        return;
+    }
+    if (m_groupWork.value(u"state"_s).toString() == u"creating"_s)
+        return;
+    m_groupWork = QVariantMap{{u"state"_s, u"creating"_s}, {u"name"_s, name}, {u"text"_s, tr("Creating the group. This takes a few minutes the first time.")}};
+    bump();
+    m_capps->createGroup(name, displayName.simplified());
+}
+
+void StoreEngine::moveContainerApp(const QString &id, const QString &group)
+{
+    const QVariantMap e = m_cat.entry(id);
+    if (e.value(u"kind"_s).toString() != u"containerapp"_s)
+        return;
+    Inst &s = m_inst[id];
+    if (s.state == u"installing"_s || s.state == u"removing"_s || s.state == u"moving"_s)
+        return;
+    s = Inst();
+    s.op = u"move"_s;
+    s.group = group;
+    s.state = u"moving"_s;
+    s.text = tr("Moving to %1").arg(groupDisplayName(group));
+    bump();
+    m_capps->move(id, group);
+}
+
+void StoreEngine::checkAppUpdate(const QString &id)
+{
+    m_update[id] = QVariantMap{{u"state"_s, u"checking"_s}, {u"text"_s, tr("Asking the publisher")}};
+    bump();
+    auto *p = new QProcess(this);
+    connect(p, &QProcess::finished, this, [this, p, id](int code) {
+        const QList<QByteArray> lines = p->readAllStandardOutput().trimmed().split('\n');
+        const QJsonObject o = lines.isEmpty() ? QJsonObject() : QJsonDocument::fromJson(lines.last()).object();
+        if (code != 0 || !o.contains(u"update_available"_s)) {
+            m_update[id] = QVariantMap{{u"state"_s, u"failed"_s}, {u"text"_s, o.value(u"error"_s).toString(tr("Could not find out what is current."))}};
+        } else if (o.value(u"update_available"_s).toBool()) {
+            m_update[id] = QVariantMap{{u"state"_s, u"available"_s}, {u"latest"_s, o.value(u"latest_version"_s).toString()},
+                                       {u"text"_s, tr("Version %1 is available.").arg(o.value(u"latest_version"_s).toString())}};
+        } else {
+            m_update[id] = QVariantMap{{u"state"_s, u"current"_s}, {u"text"_s, tr("Up to date.")}};
+        }
+        p->deleteLater();
+        bump();
+    });
+    connect(p, &QProcess::errorOccurred, this, [this, p, id](QProcess::ProcessError e) {
+        if (e == QProcess::FailedToStart) {
+            m_update[id] = QVariantMap{{u"state"_s, u"failed"_s}, {u"text"_s, tr("The app installer (taos-appgroups) is not installed on this computer.")}};
+            p->deleteLater();
+            bump();
+        }
+    });
+    p->start(ContainerAppsService::program(), {u"update"_s, id, u"--check"_s, u"--json"_s});
+}
+
+void StoreEngine::updateContainerApp(const QString &id)
+{
+    Inst &s = m_inst[id];
+    if (s.state == u"installing"_s || s.state == u"removing"_s || s.state == u"moving"_s)
+        return;
+    s = Inst();
+    s.op = u"update"_s;
+    s.state = u"installing"_s;
+    s.text = tr("Updating");
+    m_update[id] = QVariantMap{{u"state"_s, u"updating"_s}, {u"text"_s, tr("Updating")}};
+    bump();
+    m_capps->update(id);
+}
+
+void StoreEngine::refreshContainerInfo()
+{
+    m_capInfo = m_capps->installedInfo();
+    QVariantList out;
+    for (const QJsonValue &v : m_capps->groups()) {
+        const QJsonObject g = v.toObject();
+        out << QVariantMap{{u"name"_s, g.value(u"name"_s).toString()}, {u"displayName"_s, g.value(u"display_name"_s).toString()},
+                           {u"state"_s, g.value(u"state"_s).toString()}, {u"apps"_s, g.value(u"apps"_s).toArray().size()}};
+    }
+    m_groups = out;
 }
 
 void StoreEngine::loadContainerApps()
 {
     m_cat.setContainerApps(m_capps->catalog());
-    for (const QString &id : m_capps->installedIds())
-        m_cat.markInstalled(id, true);
+    refreshContainerInfo();
+    for (auto it = m_capInfo.begin(); it != m_capInfo.end(); ++it)
+        m_cat.markInstalled(it.key(), true);
 }
 
 void StoreEngine::acceptConsent(const QString &id)
@@ -593,6 +778,10 @@ void StoreEngine::acceptConsent(const QString &id)
     if (!m_inst.contains(id) || m_inst[id].state != u"consent"_s)
         return;
     Inst &s = m_inst[id];
+    if (s.consent == u"containerapp"_s) {
+        installContainerApp(id);
+        return;
+    }
     if (s.consent == u"docker"_s)
         s.dockerOk = true;
     else if (s.consent == u"license"_s)

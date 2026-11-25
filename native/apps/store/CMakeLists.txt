@@ -4,7 +4,7 @@ find_package(Qt6 6.8 REQUIRED COMPONENTS Qml Quick QuickControls2)
 add_subdirectory(core)
 
 set(TAOS_STORE_QML Main.qml StableModel.qml GetButton.qml CardGrid.qml CompactGrid.qml Pill.qml ListPage.qml WebAppsPage.qml ThemesPage.qml
-    InstalledPage.qml DiscoverPage.qml DetailPage.qml AddWebsiteDialog.qml)
+    InstalledPage.qml DiscoverPage.qml DetailPage.qml AddWebsiteDialog.qml GroupPicker.qml MoveToGroupDialog.qml)
 set(TAOS_STORE_QML_ABS)
 foreach(f ${TAOS_STORE_QML})
   list(APPEND TAOS_STORE_QML_ABS ${CMAKE_CURRENT_SOURCE_DIR}/qml/${f})
