@@ -4,7 +4,35 @@ taOS ships under AGPL-3.0-or-later only (`LICENSE`); there is no commercial
 licence. A dependency is acceptable when its licence is compatible with
 AGPL-3.0-or-later as shipped.
 
-This file records the licences that needed a decision — not every transitive
+## Compatible (allowed)
+
+The licence gate (`scripts/check_install_licences.py`) admits any dependency
+whose licence is compatible with AGPL-3.0-or-later when shipped inside taOS:
+
+- permissive licences (MIT, BSD, Apache-2.0, ISC, PSF, Artistic-1.0, ...);
+- LGPL (any version);
+- MPL-2.0;
+- GPL-3.0 and GPL-3.0-or-later;
+- AGPL-3.0 and AGPL-3.0-or-later.
+
+## Incompatible (blocked)
+
+A dependency is refused only when its licence cannot be combined into an
+AGPL-3.0-or-later work or cannot be redistributed inside the shipped venv:
+
+- GPL-2.0-only (it cannot be upgraded to GPL-3.0/AGPL-3.0);
+- proprietary / `LicenseRef-` bespoke grants;
+- non-commercial licences;
+- unlicensed / all-rights-reserved;
+- SSPL, the Business Source License (BUSL), Elastic License 2.0 and similar
+  source-available grants.
+
+Incompatible components can still be supported as **opt-ins** the user accepts
+on first use: they are never bundled into the shipped venv or the default
+install, so distributing taOS does not redistribute them. The gate only guards
+what the default install actually lands.
+
+This file records the licences that needed a decision -- not every transitive
 package. Add a row whenever a new dependency is dual-licensed, is copyleft, or
 offers an extra that would pull in something copyleft.
 
@@ -22,13 +50,13 @@ offers an extra that would pull in something copyleft.
 | `openpyxl` (library extra) | MIT | Accepted as-is. Optional XLSX processor dependency (taOS #128). |
 | `defusedxml` (library extra) | PSF | Accepted as-is. Optional hardened XML parser for EPUB ingest (taOS #128). |
 
-## Blocked
+## Blocked or excluded
 
 | Package | Licence | Why |
 | --- | --- | --- |
-| `Unidecode` (i.e. the `python-slugify[unidecode]` extra) | GPL-2.0-or-later, **no permissive arm** | Kept out by choice: `text-unidecode` covers the need with a permissive licence, so there is no reason to ship a GPL-only transliterator. (It was a hard blocker while a commercial licence existed; under AGPL-only it is compatible, but the rule stays.) Never add the `unidecode` extra to `python-slugify`, and never depend on `Unidecode` directly. `python-slugify` uses `text-unidecode` when the extra is absent, which is what we want. |
+| `Unidecode` (i.e. the `python-slugify[unidecode]` extra) | GPL-2.0-or-later, **no permissive arm** | Excluded by choice, not by the gate: GPL-2.0-or-later is compatible with AGPL-3.0-or-later, but `text-unidecode` covers the need with a permissive licence, so there is no reason to ship a GPL-only transliterator. Never add the `unidecode` extra to `python-slugify`, and never depend on `Unidecode` directly. `python-slugify` uses `text-unidecode` when the extra is absent, which is what we want. |
 | `tldraw` / `@tldraw/*` | Source-available; incompatible with AGPL s10 and COMMERCIAL-LICENSE | Removed in favour of Excalidraw (MIT). The source-available licence forbids commercial use and is incompatible with AGPL s10. Never re-add. |
 
 `tests/test_config_slugify.py::TestTheGplUnidecodeIsNeverInstalled` enforces the
-blocked row mechanically against `pyproject.toml` and `uv.lock`, so the rule
-fails CI rather than relying on a reviewer noticing it.
+Unidecode exclusion mechanically against `pyproject.toml` and `uv.lock`, so the
+rule fails CI rather than relying on a reviewer noticing it.

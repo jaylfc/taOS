@@ -170,6 +170,34 @@ def test_commons_clause_with_hyphen_is_flagged():
     assert check_install_licences.classify_licence("MIT-0 WITH Commons-Clause") == "blocked"
 
 
+def test_agpl_dependency_is_accepted():
+    """An AGPL-3.0(-or-later) dependency is compatible with the shipped AGPL.
+
+    taOS has been AGPL-3.0-or-later only since 2026-10-01, so a dependency that
+    is itself AGPL-3.0-or-later (or plain AGPL-3.0) may be bundled. The old
+    dual-licence gate blocked any "agpl" substring; that must no longer happen.
+    """
+    assert check_install_licences.classify_licence("AGPL-3.0-or-later") is None
+    assert check_install_licences.classify_licence("AGPL-3.0") is None
+
+
+def test_gpl_3_0_dependency_is_accepted():
+    """GPL-3.0(-or-later) is compatible with AGPL-3.0 and must not be blocked."""
+    assert check_install_licences.classify_licence("GPL-3.0-or-later") is None
+    assert check_install_licences.classify_licence("GPL-3.0-only") is None
+
+
+def test_gpl_2_0_only_is_blocked():
+    """GPL-2.0-only cannot be combined into an AGPL-3.0 work and stays blocked."""
+    assert check_install_licences.classify_licence("GPL-2.0-only") == "blocked"
+
+
+def test_non_commercial_licence_is_blocked():
+    """A non-commercial licence cannot be redistributed inside the shipped venv."""
+    assert check_install_licences.classify_licence("NonCommercial") == "blocked"
+    assert check_install_licences.classify_licence("Non-Commercial") == "blocked"
+
+
 def test_proprietary_style_substring_is_not_narrowed_to_word_boundaries():
     """The non-Commons-Clause patterns stay plain substrings on purpose.
 
