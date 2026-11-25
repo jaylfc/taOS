@@ -16,7 +16,12 @@ export function PerformancePanel() {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const mounted = useRef(true);
-  useEffect(() => () => { mounted.current = false; }, []);
+  useEffect(() => {
+    // StrictMode runs setup -> cleanup -> setup in dev; restoring the flag
+    // in setup keeps the second mount's load completions from being dropped.
+    mounted.current = true;
+    return () => { mounted.current = false; };
+  }, []);
 
   useEffect(() => {
     (async () => {
@@ -36,6 +41,28 @@ export function PerformancePanel() {
     })();
   }, []);
 
+  // Re-read the unit state after a failed save. `enable --now` changes
+  // boot enablement before it starts the unit, so a failed save can leave
+  // the real state different from what the switch shows; if the re-read
+  // also fails, drop to unknown (null) instead of presenting the stale
+  // value as current. Never touches the error state — the save's own
+  // error message stands.
+  const reconcile = async () => {
+    try {
+      const res = await fetch("/api/settings/rk3588-performance", { credentials: "include" });
+      const body = await res.json().catch(() => null);
+      if (!mounted.current) return;
+      if (res.ok && typeof body?.enabled === "boolean") {
+        setEnabled(body.enabled);
+        setInstalled(body.installed !== false);
+      } else {
+        setEnabled(null);
+      }
+    } catch {
+      if (mounted.current) setEnabled(null);
+    }
+  };
+
   const toggle = async (next: boolean) => {
     if (busy) return;
     setBusy(true);
@@ -51,12 +78,18 @@ export function PerformancePanel() {
       if (!mounted.current) return;
       if (!res.ok || typeof body?.enabled !== "boolean") {
         setError(body?.error || body?.detail || `Failed to save (${res.status})`);
+        await reconcile();
         return;
       }
       setEnabled(body.enabled);
       setInstalled(body.installed !== false);
     } catch {
-      if (mounted.current) setError("Could not reach taOS.");
+      if (mounted.current) {
+        setError("Could not reach taOS.");
+        // The PUT may still have landed; re-read rather than trust the
+        // pre-save value.
+        await reconcile();
+      }
     } finally {
       if (mounted.current) setBusy(false);
     }

@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, afterEach } from "vitest";
+import { StrictMode } from "react";
 import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 import { PerformancePanel, PERFORMANCE_CAPTION } from "./PerformancePanel";
 
@@ -62,5 +63,69 @@ describe("PerformancePanel", () => {
     render(<PerformancePanel />);
     expect(await screen.findByText(/performance service is not installed/i)).toBeInTheDocument();
     expect(screen.getByLabelText("Performance mode", { selector: "button" })).toBeDisabled();
+  });
+
+  it("loads under React StrictMode instead of sticking in its loading state", async () => {
+    // StrictMode runs setup -> cleanup -> setup in dev; the mounted flag
+    // must be restored by the second setup or the load completion is
+    // dropped and the switch never renders.
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      json({ supported: true, installed: true, enabled: true, active: true }),
+    );
+    render(
+      <StrictMode>
+        <PerformancePanel />
+      </StrictMode>,
+    );
+    const sw = await screen.findByLabelText("Performance mode", { selector: "button" });
+    expect(sw).toHaveAttribute("aria-checked", "true");
+  });
+
+  it("re-reads the real state after a failed save instead of keeping the stale one", async () => {
+    // `systemctl enable --now` enables the unit for boot BEFORE starting
+    // it, so a start failure 502s after the enablement already flipped.
+    // The switch must settle on the re-read state, not the pre-save one.
+    let gets = 0;
+    vi.spyOn(globalThis, "fetch").mockImplementation((_u, init) => {
+      if (init?.method === "PUT") {
+        return Promise.resolve(
+          json({ error: "systemctl enable taos-rk3588-perf.service failed: start boom" }, 502),
+        );
+      }
+      gets += 1;
+      return Promise.resolve(
+        json({ supported: true, installed: true, enabled: gets > 1, active: false }),
+      );
+    });
+    render(<PerformancePanel />);
+    fireEvent.click(await screen.findByLabelText("Performance mode", { selector: "button" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent("start boom");
+    await waitFor(() =>
+      expect(screen.getByLabelText("Performance mode", { selector: "button" })).toHaveAttribute("aria-checked", "true"),
+    );
+  });
+
+  it("drops the switch to unknown when the re-read after a failed save also fails", async () => {
+    let gets = 0;
+    vi.spyOn(globalThis, "fetch").mockImplementation((_u, init) => {
+      if (init?.method === "PUT") {
+        return Promise.resolve(
+          json({ error: "systemctl enable taos-rk3588-perf.service failed: boom" }, 502),
+        );
+      }
+      gets += 1;
+      if (gets > 1) return Promise.resolve(json({ error: "nope" }, 500));
+      return Promise.resolve(
+        json({ supported: true, installed: true, enabled: false, active: false }),
+      );
+    });
+    render(<PerformancePanel />);
+    fireEvent.click(await screen.findByLabelText("Performance mode", { selector: "button" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent("boom");
+    // The stale pre-save value must not stay on screen as if it were
+    // current: with the state unknown, the switch unmounts.
+    await waitFor(() =>
+      expect(screen.queryByLabelText("Performance mode", { selector: "button" })).not.toBeInTheDocument(),
+    );
   });
 });

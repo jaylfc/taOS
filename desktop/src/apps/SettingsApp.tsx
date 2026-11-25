@@ -1121,7 +1121,7 @@ export function SettingsApp({ windowId: _windowId, section: initialSection }: { 
   );
   const sectionHidden =
     (ADMIN_ONLY.has(section) && !isAdmin) ||
-    (section === "performance" && hwClass !== null && hwClass !== "rk3588");
+    (section === "performance" && hwClass !== "rk3588");
   const effectiveSection: Section = sectionHidden ? (visibleSections[0]?.id ?? section) : section;
 
   const content: Record<Section, ReactNode> = {
