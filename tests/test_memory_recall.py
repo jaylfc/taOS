@@ -102,3 +102,37 @@ async def test_unusable_data_dir_is_an_error_not_an_empty_context(tmp_path):
 @pytest.mark.asyncio
 async def test_nothing_to_ask_is_skipped(store):
     assert (await recall("   ", agent="tester", data_dir=store, window_tokens=32768, used_tokens=0)).status == "skipped"
+
+
+@pytest.mark.asyncio
+async def test_recall_finds_what_taos_itself_writes(tmp_path):
+    """Write through taOS's own archive writer, with the event shapes taOS records, then recall."""
+    from tinyagentos.archive_writer import open_archive_writer, release_archive_writer
+
+    data = tmp_path / "data"
+    data.mkdir()
+    writer = open_archive_writer("test", data / "archive", index_path=data / "archive-index.db")
+    await writer.init()
+    try:
+        # routes/chat.py: an agent-authored chat message
+        await writer.record(
+            "conversation",
+            {"content": "the staging password rotation happens every thursday", "channel_id": "c1",
+             "message_id": "m1", "author_id": "tester", "author_type": "agent"},
+            agent_name="tester", summary="the staging password rotation happens every thursday",
+        )
+        # bridge_session.py: an agent's final reply
+        await writer.record(
+            "final",
+            {"content": "the backup bucket is called nightly-vault", "trace_id": "t1", "reply_id": "r1", "channel_id": "c1"},
+            agent_name="tester", summary="the backup bucket is called nightly-vault",
+        )
+    finally:
+        await release_archive_writer(writer)
+
+    conv = await recall("password rotation thursday", agent="tester", data_dir=data, window_tokens=32768, used_tokens=1000)
+    final = await recall("backup bucket called", agent="tester", data_dir=data, window_tokens=32768, used_tokens=1000)
+    other = await recall("password rotation thursday", agent="someone-else", data_dir=data, window_tokens=32768, used_tokens=1000)
+    assert conv.status == "ok" and "thursday" in conv.context, conv
+    assert final.status == "ok" and "nightly-vault" in final.context, final
+    assert "thursday" not in other.context  # another agent's memory stays its own

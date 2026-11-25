@@ -7,6 +7,7 @@ real taosmd 0.4.0 wrote; only the chat stores and the bridge are stand-ins.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import shutil
 from pathlib import Path
@@ -27,6 +28,9 @@ class _Bridge:
 
     async def enqueue_user_message(self, slug, msg):
         self.calls.append((slug, msg))
+
+    async def record_reply(self, *a, **k):
+        pass
 
 
 def _state(tmp_path: Path, agents: list[dict], history=None, thread_history=None):
@@ -129,3 +133,63 @@ async def test_nothing_relevant_adds_no_note(tmp_path):
     await AgentChatRouter(state)._route(_msg("zzzqqq unrelated"), _dm(["user", "tester"]))
     _, sent = state.bridge_sessions.calls[0]
     assert len(sent["context"]) == 1  # only the manual
+
+
+@pytest.mark.asyncio
+async def test_openclaw_acp_turn_gets_the_recalled_memory_ahead_of_the_message(tmp_path, monkeypatch):
+    """ACP is the default OpenClaw transport; its prompt carries the memory, then the unchanged message."""
+    state = _state(tmp_path, [{"name": "tester", "status": "running", "framework": "openclaw"}])
+    router = AgentChatRouter(state)
+    sent: list[str] = []
+
+    async def fake_turn(agent_name, text, trace_id, record_reply):
+        sent.append(text)
+
+    monkeypatch.setattr(router, "_run_acp_turn", fake_turn)
+    await router._route(_msg("hello from 0.4.0"), _dm(["user", "tester"]))
+    await asyncio.sleep(0.2)
+    assert len(sent) == 1
+    memory, _, message = sent[0].partition("\n\n---\n\n")
+    assert memory.startswith("Current date:") and "hello" in memory
+    assert message == "hello from 0.4.0"
+
+
+@pytest.mark.asyncio
+async def test_openclaw_acp_turn_without_memory_sends_the_message_untouched(tmp_path, monkeypatch):
+    state = _state(tmp_path, [{"name": "tester", "status": "running", "framework": "openclaw"}])
+    router = AgentChatRouter(state)
+    sent: list[str] = []
+
+    async def fake_turn(agent_name, text, trace_id, record_reply):
+        sent.append(text)
+
+    monkeypatch.setattr(router, "_run_acp_turn", fake_turn)
+    await router._route(_msg("zzzqqq unrelated"), _dm(["user", "tester"]))
+    await asyncio.sleep(0.2)
+    assert sent == ["zzzqqq unrelated"]
+
+
+@pytest.mark.asyncio
+async def test_a_small_window_budgets_for_the_system_prompt_reserve(tmp_path, monkeypatch):
+    """used_tokens includes the allowance for the agent's own prompt and tools, so a small window cannot overflow."""
+    from tinyagentos.agent_chat_router import AgentChatRouter as R
+
+    state = _state(tmp_path, [{"name": "tester", "status": "running", "model": "tiny"}])
+    manifest = MagicMock()
+    manifest.context_window = 11000
+    manifest.reasoning_reserve = 0
+    state.registry = MagicMock()
+    state.registry.get = MagicMock(return_value=manifest)
+    state.registry.list_available = MagicMock(return_value=[manifest])
+    seen = {}
+    import tinyagentos.memory_recall as mr
+
+    real = mr.recall
+
+    async def spy(*a, **k):
+        seen.update(k)
+        return await real(*a, **k)
+
+    monkeypatch.setattr(mr, "recall", spy)
+    await R(state)._route(_msg("hello from 0.4.0"), _dm(["user", "tester"]))
+    assert seen["used_tokens"] >= 10000

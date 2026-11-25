@@ -330,10 +330,25 @@ class AgentChatRouter:
                 # own history + AGENTS.md, so we send the user message and stream
                 # the mapped replies straight into record_reply (same sink).
                 # _run_acp_turn serializes turns per agent (shared session).
+                # The session keeps its own history, so the only thing to add is what
+                # taOSmd recalls for this agent: ahead of the message, never instead of it.
+                memory_messages = await self._memory_messages(
+                    agent_name=agent_name,
+                    agent=agent,
+                    guest=guest,
+                    message=message,
+                    channel=channel,
+                    thread_id=thread_id,
+                    manual_text="",
+                    history=[],
+                )
+                prompt = "\n\n---\n\n".join(
+                    [m["content"] for m in memory_messages] + [message.get("content", "")]
+                )
                 task = asyncio.create_task(
                     self._run_acp_turn(
                         agent_name,
-                        message.get("content", ""),
+                        prompt,
                         message.get("id"),
                         bridge.record_reply,
                     )
@@ -395,7 +410,7 @@ class AgentChatRouter:
         history: any problem is logged, recorded in that agent's trace, and
         told to that agent as a one-line note instead of an empty context.
         """
-        from tinyagentos.chat.context_window import estimate_tokens
+        from tinyagentos.chat.context_window import SYSTEM_PROMPT_RESERVE, estimate_tokens
         from tinyagentos.memory_recall import Recall, recall
 
         if guest is not None:
@@ -403,7 +418,10 @@ class AgentChatRouter:
             return []
         try:
             window, reserve = self._recipient_window(agent)
-            used = estimate_tokens(manual_text) + sum(
+            # What the prompt already uses: the agent's own system prompt and tool
+            # definitions (the same allowance the history budget makes, #1740), the
+            # manual, and the history that will be sent.
+            used = SYSTEM_PROMPT_RESERVE + estimate_tokens(manual_text) + sum(
                 estimate_tokens(m.get("content", "")) for m in history
             )
             result = await recall(
