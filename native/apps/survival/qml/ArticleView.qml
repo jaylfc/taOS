@@ -14,17 +14,19 @@ Item {
     signal backToList()
     readonly property var lib: Survival.library
     readonly property var art: lib.article
-    readonly property int bodyPx: 16
+    readonly property int bodyPx: Look.bodyLarge + 1
+    // CSS colours must be opaque #rrggbb: a token with alpha would stringify as #aarrggbb, which CSS reads wrongly
+    function css_(c) { return String(Qt.tint(Look.ground, c)) }
 
     function css() {
-        const t = String(Look.text), s = String(Look.textSecondary), h = String(Look.hairline)
+        const t = css_(Look.text), s = css_(Look.textSecondary)
         return "<style>"
             + "body { color: " + t + "; font-size: " + bodyPx + "px; }"
-            + "a { color: " + String(Look.accent) + "; }"
-            + "h1 { font-size: 30px; font-weight: 700; margin-top: 4px; margin-bottom: 10px; }"
-            + "h2 { font-size: 23px; font-weight: 600; margin-top: 22px; margin-bottom: 8px; }"
-            + "h3 { font-size: 19px; font-weight: 600; margin-top: 18px; margin-bottom: 6px; }"
-            + "h4, h5, h6 { font-size: 16px; font-weight: 600; margin-top: 14px; margin-bottom: 4px; }"
+            + "a { color: " + css_(Look.accent) + "; }"
+            + "h1 { font-size: " + Look.display + "px; font-weight: 700; margin-top: 4px; margin-bottom: 10px; }"
+            + "h2 { font-size: " + (Look.heading + 3) + "px; font-weight: 600; margin-top: 22px; margin-bottom: 8px; }"
+            + "h3 { font-size: " + (Look.heading - 1) + "px; font-weight: 600; margin-top: 18px; margin-bottom: 6px; }"
+            + "h4, h5, h6 { font-size: " + bodyPx + "px; font-weight: 600; margin-top: 14px; margin-bottom: 4px; }"
             + "p { margin-top: 0px; margin-bottom: 10px; }"
             + "li { margin-bottom: 4px; }"
             + "th { font-weight: 600; }"

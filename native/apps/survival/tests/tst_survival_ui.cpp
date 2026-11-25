@@ -5,6 +5,8 @@
 #include <QTemporaryDir>
 
 #include "apphost.h"
+#include <QWheelEvent>
+
 #include "backend.h"
 #include "fixtures.h"
 
@@ -148,6 +150,80 @@ private Q_SLOTS:
         const auto radios = m_backend->radios()->property("radios").toList();
         for (const QVariant &r : radios)
             QVERIFY(r.toMap().value(u"protocol"_s).toString().isEmpty());
+    }
+    void real_pointer_wheel_and_keys_drive_the_map()
+    {
+        section("map");
+        QVERIFY(waitFor([&] { return m_backend->map()->property("loaded").toBool(); }));
+        QTest::qWait(300);
+        auto *view = byName(m_win, u"mapView"_s);
+        auto *stage = byName(m_win, u"mapStage"_s);
+        QVERIFY(view && stage);
+        QVERIFY(stage->activeFocusOnTab());
+        const QPointF c = view->mapToScene(QPointF(view->width() / 2, view->height() / 2));
+        const QPoint p0(int(c.x()), int(c.y()));
+        // drag with the left button: the centre moves
+        const double lon0 = view->property("centerLon").toDouble();
+        QTest::mousePress(m_win, Qt::LeftButton, Qt::NoModifier, p0);
+        for (int i = 1; i <= 8; ++i)
+            QTest::mouseMove(m_win, p0 - QPoint(i * 12, 0));
+        QTest::mouseRelease(m_win, Qt::LeftButton, Qt::NoModifier, p0 - QPoint(96, 0));
+        QTest::qWait(50);
+        QVERIFY(view->property("centerLon").toDouble() != lon0);
+        // wheel zooms in
+        const double z0 = view->property("zoom").toDouble();
+        QWheelEvent wheel(QPointF(p0), m_win->mapToGlobal(QPointF(p0)), QPoint(), QPoint(0, 240), Qt::NoButton, Qt::NoModifier, Qt::NoScrollPhase, false);
+        QCoreApplication::sendEvent(m_win, &wheel);
+        QTest::qWait(50);
+        QVERIFY(view->property("zoom").toDouble() > z0);
+        // keys: the stage takes focus, + zooms, an arrow pans
+        stage->forceActiveFocus();
+        const double z1 = view->property("zoom").toDouble(), lat1 = view->property("centerLat").toDouble();
+        QTest::keyClick(m_win, Qt::Key_Plus);
+        QTest::keyClick(m_win, Qt::Key_Up);
+        QTest::qWait(50);
+        QVERIFY(view->property("zoom").toDouble() > z1);
+        QVERIFY(view->property("centerLat").toDouble() != lat1);
+        // a tap on empty map offers a marker; its button really adds one
+        QTest::mouseClick(m_win, Qt::LeftButton, Qt::NoModifier, p0 + QPoint(40, 40));
+        QTest::qWait(100);
+        auto *drop = findItem(m_win->contentItem(), [](QQuickItem *i) { return i->isVisible() && i->property("text").toString() == u"Drop a marker here"_s; });
+        QVERIFY(drop);
+        const int before = m_backend->map()->property("markers").toList().size();
+        QMetaObject::invokeMethod(drop, "clicked");
+        QCOMPARE(m_backend->map()->property("markers").toList().size(), before + 1);
+        const QVariantList ms = m_backend->map()->property("markers").toList();
+        QMetaObject::invokeMethod(m_backend->map(), "removeMarker", Q_ARG(QString, ms.last().toMap().value(u"id"_s).toString()));
+    }
+    void pack_cards_survive_a_refresh()
+    {
+        section("library");
+        auto *page = byName(m_win, u"page-library"_s);
+        page->setProperty("mode", u"packs"_s);
+        QTest::qWait(200);
+        auto isCard = [](QQuickItem *i) { return i->objectName() == u"pack-local-lib"_s; };
+        QQuickItem *card = findItem(m_win->contentItem(), isCard);
+        QVERIFY(card);
+        QPointer<QQuickItem> guard(card);
+        for (int i = 0; i < 3; ++i) {
+            QMetaObject::invokeMethod(m_backend->packs(), "rescan");
+            QTest::qWait(450);
+        }
+        QVERIFY(guard);
+        QCOMPARE(findItem(m_win->contentItem(), isCard), card);
+        page->setProperty("mode", u"read"_s);
+    }
+    void zim_pictures_come_through_the_image_provider()
+    {
+        QMetaObject::invokeMethod(m_backend->library(), "open", Q_ARG(QString, u"local-lib"_s));
+        ZimImageProvider provider;
+        QSize size;
+        const QImage img = provider.requestImage(u"local-lib/I/drop.png"_s, &size, QSize());
+        QVERIFY(!img.isNull());
+        QCOMPARE(size, QSize(1, 1));
+        QVERIFY(provider.requestImage(u"local-lib/I/missing.png"_s, &size, QSize()).isNull());
+        QVERIFY(provider.requestImage(u"local-lib/index"_s, &size, QSize()).isNull());   // not an image
+        QVERIFY(provider.requestImage(u"other-pack/I/drop.png"_s, &size, QSize()).isNull());
     }
     void kit_lists_the_templates()
     {

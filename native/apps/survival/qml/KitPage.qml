@@ -53,7 +53,7 @@ Item {
                                 spacing: Look.space3
                                 Rectangle {
                                     Layout.alignment: Qt.AlignTop
-                                    width: 40; height: 40; radius: 11
+                                    width: 40; height: 40; radius: Look.radiusCard - 3
                                     color: Look.field; border.width: 1; border.color: Look.hairline
                                     Glyph { anchors.centerIn: parent; name: kcard.modelData.id === "radio" ? "radio" : kcard.modelData.id === "pi" ? "cpu" : kcard.modelData.id === "home" ? "home" : "backpack"
                                             size: 20; stroke: 1.8; color: Look.textSecondary }

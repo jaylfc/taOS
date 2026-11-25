@@ -84,7 +84,7 @@ TaosWindow {
                 Layout.leftMargin: Look.space2
                 spacing: Look.space3
                 Rectangle {
-                    width: 32; height: 32; radius: 9
+                    width: 32; height: 32; radius: Look.radiusCard - 5
                     color: Look.tint(Look.accent, 0.16); border.width: 1; border.color: Look.tint(Look.accent, 0.30)
                     Glyph { anchors.centerIn: parent; name: "compass"; size: 18; stroke: 1.8; color: Look.accent }
                 }

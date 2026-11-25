@@ -32,3 +32,4 @@ ProgressTrack 1.0 ProgressTrack.qml
 BottomTabBar 1.0 BottomTabBar.qml
 ListRow 1.0 ListRow.qml
 StudioAgentPanel 1.0 StudioAgentPanel.qml
+StableModel 1.0 StableModel.qml

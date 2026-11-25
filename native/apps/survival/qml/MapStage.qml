@@ -9,6 +9,8 @@ import Taos.Survival 1.0
 // position and the attribution. Used by Map and by taOStak, which is the same map with more on it.
 FocusScope {
     id: stage
+    objectName: "mapStage"
+    activeFocusOnTab: true
     property bool narrow: false
     property bool takMode: false
     property bool pickingMe: false          // the next tap sets "my position"
@@ -48,6 +50,7 @@ FocusScope {
 
     MapView {
         id: mv
+        objectName: "mapView"
         anchors.fill: parent
         visible: stage.engine.loaded
         engine: stage.engine
@@ -132,7 +135,7 @@ FocusScope {
             strong: true
             Layout.fillWidth: true
             implicitHeight: 40
-            radius: 12
+            radius: Look.radiusCard - 2
             TaosField {
                 id: searchField
                 objectName: "mapSearch"
@@ -154,7 +157,7 @@ FocusScope {
             visible: searchField.text.trim() !== ""
             Layout.fillWidth: true
             implicitHeight: Math.min(264, Math.max(64, resultList.contentHeight + 12))
-            radius: 12
+            radius: Look.radiusCard - 2
             ListView {
                 id: resultList
                 anchors { fill: parent; margins: 6 }
@@ -189,7 +192,7 @@ FocusScope {
         spacing: Look.space2
         GlassPanel {
             strong: true
-            implicitWidth: 40; implicitHeight: 80; radius: 12
+            implicitWidth: 40; implicitHeight: 80; radius: Look.radiusCard - 2
             ColumnLayout {
                 anchors.fill: parent
                 spacing: 0
@@ -201,13 +204,13 @@ FocusScope {
         }
         GlassPanel {
             strong: true
-            implicitWidth: 40; implicitHeight: 40; radius: 12
+            implicitWidth: 40; implicitHeight: 40; radius: Look.radiusCard - 2
             TaosButton { anchors.fill: parent; glyph: "compass"; variant: "ghost"; accessibleName: qsTr("Show the whole map pack"); onClicked: mv.resetView() }
         }
         GlassPanel {
             strong: true
             visible: stage.takMode && stage.engine.hasMe
-            implicitWidth: 40; implicitHeight: 40; radius: 12
+            implicitWidth: 40; implicitHeight: 40; radius: Look.radiusCard - 2
             TaosButton { anchors.fill: parent; glyph: "locate"; variant: "ghost"; accessibleName: qsTr("Centre on my position")
                          onClicked: mv.flyTo(stage.engine.meLon, stage.engine.meLat, Math.max(mv.zoom, 10)) }
         }
@@ -218,7 +221,7 @@ FocusScope {
         id: pickCard
         visible: stage.pick !== null && !stage.pickingMe
         strong: true
-        radius: 12
+        radius: Look.radiusCard - 2
         width: 244
         implicitHeight: pickCol.implicitHeight + Look.space3 * 2
         x: stage.pick ? Math.max(Look.space2, Math.min(stage.width - width - Look.space2, stage.pick.x - width / 2)) : 0
@@ -243,7 +246,7 @@ FocusScope {
         readonly property var m: { stage.engine.markers; for (const k of stage.engine.markers) if (k.id === stage.selectedMarker) return k; return null }
         visible: m !== null
         strong: true
-        radius: 12
+        radius: Look.radiusCard - 2
         width: 260
         implicitHeight: markerCol.implicitHeight + Look.space3 * 2
         anchors { horizontalCenter: stage.narrow ? parent.horizontalCenter : undefined; bottom: parent.bottom; bottomMargin: Look.space6 + 8 }
@@ -277,7 +280,7 @@ FocusScope {
     GlassPanel {
         visible: stage.pickingMe
         strong: true
-        radius: 20
+        radius: height / 2
         implicitWidth: pickRow.implicitWidth + Look.space5
         implicitHeight: 40
         anchors { horizontalCenter: parent.horizontalCenter; top: parent.top; topMargin: Look.space3 + (stage.narrow ? 48 : 0) }

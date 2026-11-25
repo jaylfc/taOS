@@ -16,18 +16,19 @@ get_filename_component(TAOS_ZIM_LIBDIR ${TAOS_ZIM_LIBRARY} DIRECTORY)
 # The engines: no Qt Quick, shared by the window, the CLI and the tests.
 add_library(taos_survival_core STATIC
   engine/zimarchive.cpp engine/articlehtml.cpp engine/packmanager.cpp engine/radiodetector.cpp engine/pmtiles.cpp
-  engine/mapdata.cpp engine/kit.cpp engine/statestore.cpp engine/paths.cpp)
+  engine/mapdata.cpp engine/kit.cpp engine/statestore.cpp engine/paths.cpp engine/meshinterface.h)
 target_include_directories(taos_survival_core PUBLIC engine ${TAOS_ZIM_INCLUDE_DIR})
 target_link_libraries(taos_survival_core PUBLIC Qt6::Core Qt6::Gui Qt6::Network Qt6::Concurrent ${TAOS_ZIM_LIBRARY} ZLIB::ZLIB)
 set_target_properties(taos_survival_core PROPERTIES POSITION_INDEPENDENT_CODE ON)
 # libzim pulls in libxapian; when libzim sits outside the system path (a private copy) the linker needs to see it
 function(taos_survival_rpath target)
   # $ORIGIN/../lib is where install-apps.sh puts a private copy of libzim and libxapian
-  set_target_properties(${target} PROPERTIES BUILD_RPATH "\$ORIGIN/../lib;${TAOS_ZIM_LIBDIR}")
-  # DT_RPATH (not RUNPATH) so that it also finds libxapian for libzim
-  target_link_options(${target} PRIVATE "LINKER:--disable-new-dtags")
-  if(NOT TAOS_ZIM_LIBDIR MATCHES "^/usr/lib")
-    target_link_options(${target} PRIVATE "LINKER:-rpath-link,${TAOS_ZIM_LIBDIR}")
+  if(TAOS_ZIM_LIBDIR MATCHES "^/usr/lib")
+    set_target_properties(${target} PROPERTIES BUILD_RPATH "\$ORIGIN/../lib")
+  else()
+    # a private copy: DT_RPATH (not RUNPATH) so that it also finds libxapian for libzim, and the linker must see it
+    set_target_properties(${target} PROPERTIES BUILD_RPATH "\$ORIGIN/../lib;${TAOS_ZIM_LIBDIR}")
+    target_link_options(${target} PRIVATE "LINKER:--disable-new-dtags" "LINKER:-rpath-link,${TAOS_ZIM_LIBDIR}")
   endif()
 endfunction()
 

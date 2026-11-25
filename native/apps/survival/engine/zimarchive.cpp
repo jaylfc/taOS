@@ -106,6 +106,8 @@ QList<ZimHit> ZimArchive::search(const QString &text, int limit) const
 {
     // Titles first (what a person usually means), then full text hits that are not already there.
     QList<ZimHit> out = suggest(text, limit);
+    if (out.size() >= limit)
+        return out;   // titles fill the list: no full text pass
     QSet<QString> seen;
     for (const ZimHit &h : std::as_const(out))
         seen.insert(h.path);

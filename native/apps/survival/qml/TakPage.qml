@@ -114,11 +114,13 @@ StagePage {
                         title: qsTr("No radio connected")
                         detail: qsTr("Plug a Meshtastic radio into a USB port. It shows up here within a few seconds. Nothing is sent or changed on it.")
                     }
+                    StableModel { id: radioIds; source: page.radios.radios.map(r => r.device) }
                     Repeater {
-                        model: page.radios.radios
+                        model: radioIds.value
                         delegate: GlassPanel {
                             id: rcard
-                            required property var modelData
+                            required property string modelData
+                            readonly property var rd: { page.radios.radios; for (const r of page.radios.radios) if (r.device === modelData) return r; return ({}) }
                             Layout.fillWidth: true
                             Layout.topMargin: Look.space2
                             implicitHeight: rcol.implicitHeight + Look.space3 * 2
@@ -130,45 +132,45 @@ StagePage {
                                     spacing: Look.space3
                                     Rectangle {
                                         Layout.alignment: Qt.AlignTop
-                                        width: 36; height: 36; radius: 10
-                                        color: rcard.modelData.protocol !== "" ? Look.tint(Look.success, 0.14) : Look.field
-                                        border.width: 1; border.color: rcard.modelData.protocol !== "" ? Look.tint(Look.success, 0.3) : Look.hairline
-                                        Glyph { anchors.centerIn: parent; name: "radio"; size: 18; stroke: 1.8; color: rcard.modelData.protocol !== "" ? Look.success : Look.textSecondary }
+                                        width: 36; height: 36; radius: Look.radiusCard - 4
+                                        color: rcard.rd.protocol !== "" ? Look.tint(Look.success, 0.14) : Look.field
+                                        border.width: 1; border.color: rcard.rd.protocol !== "" ? Look.tint(Look.success, 0.3) : Look.hairline
+                                        Glyph { anchors.centerIn: parent; name: "radio"; size: 18; stroke: 1.8; color: rcard.rd.protocol !== "" ? Look.success : Look.textSecondary }
                                     }
                                     ColumnLayout {
                                         Layout.fillWidth: true; spacing: 2
-                                        TaosText { text: rcard.modelData.name !== "" ? rcard.modelData.name : qsTr("USB serial device"); Layout.fillWidth: true; elide: Text.ElideRight
+                                        TaosText { text: rcard.rd.name !== "" ? rcard.rd.name : qsTr("USB serial device"); Layout.fillWidth: true; elide: Text.ElideRight
                                                    font.pixelSize: Look.bodyMedium; font.weight: Font.DemiBold }
-                                        TaosText { text: rcard.modelData.device + "  " + rcard.modelData.usbId; Layout.fillWidth: true; elide: Text.ElideRight
+                                        TaosText { text: rcard.rd.device + "  " + rcard.rd.usbId; Layout.fillWidth: true; elide: Text.ElideRight
                                                    font.pixelSize: Look.small; color: Look.textSecondary; font.family: "monospace" }
                                     }
                                 }
                                 Flow {
                                     Layout.fillWidth: true; spacing: Look.space2
-                                    Chip { visible: rcard.modelData.protocol === ""; text: rcard.modelData.confidence === "possible" ? qsTr("Possible radio") : qsTr("Unlikely a radio"); tone: rcard.modelData.confidence === "possible" ? "accent" : "neutral" }
-                                    Chip { visible: rcard.modelData.protocol !== ""; text: qsTr("Meshtastic"); tone: "success"; glyph: "check" }
-                                    Chip { visible: rcard.modelData.firmware !== ""; text: rcard.modelData.firmware; mono: true }
-                                    Chip { visible: rcard.modelData.inUse; text: qsTr("In use by another program"); tone: "warning" }
+                                    Chip { visible: rcard.rd.protocol === ""; text: rcard.rd.confidence === "possible" ? qsTr("Possible radio") : qsTr("Unlikely a radio"); tone: rcard.rd.confidence === "possible" ? "accent" : "neutral" }
+                                    Chip { visible: rcard.rd.protocol !== ""; text: qsTr("Meshtastic"); tone: "success"; glyph: "check" }
+                                    Chip { visible: rcard.rd.firmware !== ""; text: rcard.rd.firmware; mono: true }
+                                    Chip { visible: rcard.rd.inUse; text: qsTr("In use by another program"); tone: "warning" }
                                 }
                                 TaosText {
-                                    visible: rcard.modelData.chip !== ""
+                                    visible: rcard.rd.chip !== ""
                                     Layout.fillWidth: true; wrapMode: Text.Wrap; font.pixelSize: Look.small; color: Look.textSecondary
-                                    text: rcard.modelData.chip + (rcard.modelData.boards !== "" ? " - " + rcard.modelData.boards : "")
+                                    text: rcard.rd.chip + (rcard.rd.boards !== "" ? " - " + rcard.rd.boards : "")
                                 }
-                                TaosText { visible: rcard.modelData.note !== ""; Layout.fillWidth: true; wrapMode: Text.Wrap; font.pixelSize: Look.small
-                                           color: rcard.modelData.protocol !== "" ? Look.success : Look.textSecondary; text: rcard.modelData.note }
+                                TaosText { visible: rcard.rd.note !== ""; Layout.fillWidth: true; wrapMode: Text.Wrap; font.pixelSize: Look.small
+                                           color: rcard.rd.protocol !== "" ? Look.success : Look.textSecondary; text: rcard.rd.note }
                                 TaosText {
-                                    visible: !rcard.modelData.probed
+                                    visible: !rcard.rd.probed
                                     Layout.fillWidth: true; wrapMode: Text.Wrap; font.pixelSize: Look.small; color: Look.textTertiary
                                     text: qsTr("A USB ID only tells the chip, not what runs on it. Checking opens the port and asks for its configuration; some boards restart when a port is opened. It never transmits.")
                                 }
                                 PillButton {
                                     Layout.alignment: Qt.AlignRight
                                     compact: true
-                                    text: rcard.modelData.probing ? qsTr("Checking...") : rcard.modelData.probed ? qsTr("Check again") : qsTr("Check this device")
-                                    enabled: !rcard.modelData.inUse && page.radios.probing === ""
-                                    accessibleName: qsTr("Check whether %1 is a Meshtastic radio").arg(rcard.modelData.device)
-                                    onClicked: page.radios.probe(rcard.modelData.device)
+                                    text: rcard.rd.probing ? qsTr("Checking...") : rcard.rd.probed ? qsTr("Check again") : qsTr("Check this device")
+                                    enabled: !rcard.rd.inUse && page.radios.probing === ""
+                                    accessibleName: qsTr("Check whether %1 is a Meshtastic radio").arg(rcard.rd.device)
+                                    onClicked: page.radios.probe(rcard.rd.device)
                                 }
                             }
                         }

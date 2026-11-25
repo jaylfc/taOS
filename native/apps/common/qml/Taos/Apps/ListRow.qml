@@ -40,7 +40,7 @@ C.ItemDelegate {
             visible: root.glyph !== ""
             Layout.leftMargin: Look.space3
             Layout.alignment: Qt.AlignVCenter
-            width: 36; height: 36; radius: 10
+            width: 36; height: 36; radius: Look.radiusCard - 4
             color: root.tone === "neutral" ? Look.field : Look.tint(Look.tone(root.tone), 0.14)
             border.width: 1
             border.color: root.tone === "neutral" ? Look.hairline : Look.tint(Look.tone(root.tone), 0.30)

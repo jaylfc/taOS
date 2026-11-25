@@ -604,12 +604,12 @@ void KitEngine::refresh()
     ctx.freeBytes = st.isValid() ? st.bytesAvailable() : -1;
 #ifdef TAOS_SURVIVAL_POSITIONING
     // a source that can be created is one that can give a position; a plugin that is only installed is not
-    if (auto *probe = QGeoPositionInfoSource::createDefaultSource(nullptr)) {
-        ctx.positionSources = 1;
+    static const int probed = [] {   // asked once: creating a source is not free
+        auto *probe = QGeoPositionInfoSource::createDefaultSource(nullptr);
         delete probe;
-    } else {
-        ctx.positionSources = 0;
-    }
+        return probe ? 1 : 0;
+    }();
+    ctx.positionSources = probed;
 #endif
     ctx.arch = QSysInfo::currentCpuArchitecture();
     const QJsonDocument d = QJsonDocument::fromJson(bundledCatalog(u"kits.json"_s));
