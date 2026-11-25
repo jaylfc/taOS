@@ -133,6 +133,24 @@ class TestUdevMeshRadioRuleInstall:
         assert PHONE_RULE.read_bytes() == RULE_SRC.read_bytes(), "phone rule differs from desktop source"
         assert stat.S_IMODE(PHONE_RULE.stat().st_mode) == 0o644
 
+    def test_phone_rule_install_from_postmarketos_packaging(self, tmp_path: Path) -> None:
+        """Simulate postmarketOS packaging installing the phone rule from
+        packaging/postmarketos/. This verifies the rule file is ready for
+        the taOSmobile build to install on the phone."""
+        root = tmp_path / "root"
+        root.mkdir()
+        rule_dest = root / "etc" / "udev" / "rules.d" / RULE_NAME
+        rule_dest.parent.mkdir(parents=True)
+        # Simulate APKBUILD-style install: install -Dm644
+        shutil.copy2(PHONE_RULE, rule_dest)
+        rule_dest.chmod(0o644)
+        assert rule_dest.exists(), "phone rule not installed"
+        mode = stat.S_IMODE(rule_dest.stat().st_mode)
+        assert mode == 0o644, f"expected mode 0644, got {oct(mode)}"
+        assert rule_dest.read_bytes() == PHONE_RULE.read_bytes(), "installed phone rule content differs"
+        assert rule_dest.read_bytes() == RULE_SRC.read_bytes(), "installed phone rule differs from desktop source"
+        assert RULE_NAME < SEAT_LATE, f"{RULE_NAME} must sort before {SEAT_LATE}"
+
     def test_rule_vendors_covered(self) -> None:
         text = RULE_SRC.read_text()
         for vendor in ("303a", "10c4", "1a86", "239a", "2886", "1915"):
