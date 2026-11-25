@@ -46,6 +46,15 @@ class TestChatAgentAuthorBinding:
         """A bound agent's token forces author_id/author_type to the bound name,
         ignoring any caller-supplied values."""
         ch = await _create_channel_dm(app)
+        # A per-agent token acts for the agent's registry owner; give agent-a one.
+        registry = app.state.agent_registry
+        if registry._db is None:
+            await registry.init()
+        row = await registry.register(
+            framework="claude-code", display_name="agent-a",
+            user_id=app.state.auth.get_primary_user()["id"],
+        )
+        app.state.config.agents.append({"name": "agent-a", "registry_canonical_id": row["canonical_id"]})
         async with _bound_client(app, "agent-a") as c:
             resp = await c.post("/api/chat/messages", json={
                 "channel_id": ch["id"],
@@ -53,6 +62,7 @@ class TestChatAgentAuthorBinding:
                 "author_type": "agent",
                 "content": "impersonation attempt",
             })
+        await registry.close()
         assert resp.status_code == 200
         body = resp.json()
         assert body["author_id"] == "agent-a"

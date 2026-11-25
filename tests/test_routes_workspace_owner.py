@@ -19,6 +19,13 @@ def _add_agent(app, name: str) -> None:
     })
 
 
+async def _add_owned_agent(app, name: str, user_id: str) -> None:
+    """An agent with a registry owner, so its own token acts for that owner."""
+    _add_agent(app, name)
+    row = await app.state.agent_registry.register(framework="claude-code", display_name=name, user_id=user_id)
+    app.state.config.agents[-1]["registry_canonical_id"] = row["canonical_id"]
+
+
 def _add_member(app, username: str, password: str) -> str:
     invite = app.state.auth.add_user_invite(username, "admin")
     app.state.auth.complete_invite(username, invite, username.title(), f"{username}@test.com", password)
@@ -105,7 +112,7 @@ class TestWorkspaceMessagesOwnership:
 
     @pytest.mark.asyncio
     async def test_agent_token_reads_only_its_own_agent(self, owner_clients, app):
-        _add_agent(app, "beta")
+        await _add_owned_agent(app, "beta", app.state.auth.get_primary_user()["id"])
         async with _bearer(app, "beta") as beta:
             assert (await beta.get("/api/agents/beta/messages")).status_code == 200
             assert (await beta.get("/api/agents/alpha/messages")).status_code == 403
@@ -114,7 +121,7 @@ class TestWorkspaceMessagesOwnership:
 
     @pytest.mark.asyncio
     async def test_agent_token_cannot_spoof_sender(self, owner_clients, app):
-        _add_agent(app, "beta")
+        await _add_owned_agent(app, "beta", app.state.auth.get_primary_user()["id"])
         async with _bearer(app, "beta") as beta:
             resp = await beta.post("/api/agents/alpha/messages", json={"from_agent": "gamma", "message": "spoof"})
             assert resp.status_code == 403

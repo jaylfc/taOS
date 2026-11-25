@@ -234,17 +234,31 @@ class TestAgentSearch:
         assert "error" in resp.json()
 
     async def test_agent_search_with_permission(self, client, user_memory):
-        """Grant an agent can_read_user_memory and verify 200."""
-        config = client._transport.app.state.config
-        new_agent = {"name": "memory-agent", "host": "127.0.0.1", "can_read_user_memory": True}
-        config.agents.append(new_agent)
-        resp = await client.get(
-            "/api/user-memory/agent-search?q=test&agent_name=memory-agent",
-        )
-        assert resp.status_code == 200
-        data = resp.json()
-        assert "results" in data
-        assert data["agent"] == "memory-agent"
+        """An agent with can_read_user_memory searches its owner's memory with its own token."""
+        from httpx import ASGITransport, AsyncClient
+
+        app = client._transport.app
+        registry = app.state.agent_registry
+        if registry._db is None:
+            await registry.init()
+        try:
+            row = await registry.register(framework="none", display_name="Memory Agent", user_id=user_memory.uid)
+            app.state.config.agents.append({
+                "name": "memory-agent", "host": "127.0.0.1", "can_read_user_memory": True,
+                "registry_canonical_id": row["canonical_id"],
+            })
+            token = app.state.auth.mint_agent_local_token("memory-agent")
+            async with AsyncClient(
+                transport=ASGITransport(app=app), base_url="http://test",
+                headers={"Authorization": f"Bearer {token}"},
+            ) as agent:
+                resp = await agent.get("/api/user-memory/agent-search?q=test&agent_name=memory-agent")
+            assert resp.status_code == 200
+            data = resp.json()
+            assert "results" in data
+            assert data["agent"] == "memory-agent"
+        finally:
+            await registry.close()
 
     async def test_agent_search_missing_agent(self, client, user_memory):
         resp = await client.get(
