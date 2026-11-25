@@ -734,7 +734,8 @@ Result runStep(Engine::Impl *d, const QString &ct, const Manifest &m, const Step
         return {};
     }
     if (s.op == u"download-tar"_s || s.op == u"download-deb"_s) {
-        const QString tmp = u"/var/tmp/taos-dl-"_s + m.id;
+        // apt only accepts a local package whose name ends in .deb
+        const QString tmp = u"/var/tmp/taos-dl-"_s + m.id + (s.op == u"download-deb"_s ? u".deb"_s : QString());
         if (!d->exec(ct, {u"curl"_s, u"-fL"_s, u"--retry"_s, u"3"_s, u"-o"_s, tmp, a.value(u"url"_s).toString()}, log).ok())
             return fail(u"the download failed"_s);
         const Proc sum = d->exec(ct, {u"sha256sum"_s, tmp}, {});
@@ -1367,7 +1368,7 @@ Result Engine::update(const QString &appId, bool checkOnly, const Progress &p)
         if (checkOnly || !available)
             return r;
         d->step(u"Downloading %1 %2"_s.arg(m.name, doc.value(u"version"_s).toString()));
-        const QString tmp = u"/var/tmp/taos-dl-"_s + appId;
+        const QString tmp = u"/var/tmp/taos-dl-"_s + appId + u".deb"_s;
         if (!d->exec(ct, {u"curl"_s, u"-fL"_s, u"--retry"_s, u"3"_s, u"-o"_s, tmp, entry.value(u"url"_s).toString()}, log).ok())
             return Result::fail(ExitStep, u"the download failed (log: %1)"_s.arg(log));
         const Proc sum = d->exec(ct, {u"sha256sum"_s, tmp});

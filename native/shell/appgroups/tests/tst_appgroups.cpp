@@ -372,7 +372,7 @@ private slots:
         QVERIFY(!QFileInfo::exists(xdgData + u"/applications/taos-appgroups-kilo-desktop.desktop"_s));
         const Run r = cli({u"install"_s, u"kilo-desktop"_s, u"--accept-licence"_s, u"kilo-desktop"_s}, kiloEnv());
         QVERIFY2(r.code == 0, qPrintable(r.raw + r.err));
-        QVERIFY(callsLog().contains(u"apt-get install -y /var/tmp/taos-dl-kilo-desktop"_s));
+        QVERIFY(callsLog().contains(u"apt-get install -y /var/tmp/taos-dl-kilo-desktop.deb"_s));
     }
     void removingADebAppRemovesItsPackage()
     {
