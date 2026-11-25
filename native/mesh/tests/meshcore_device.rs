@@ -42,13 +42,16 @@ fn channel_info(i: u8, name: &str) -> Vec<u8> {
 fn device_info_self_info_and_channels_are_read() {
     let mut d = MeshcoreDriver::new("t");
     let (_, cmds) = d.feed_frame(device_info());
-    // read-only follow-up: one channel query per slot (at most 8)
-    assert_eq!(cmds.len(), 8);
-    assert_eq!(cmds[0], vec![CMD_GET_CHANNEL, 0]);
+    // read-only follow-up, one command at a time: slot 0 now, each next slot after the previous answer (at most 8)
+    assert_eq!(cmds, vec![vec![CMD_GET_CHANNEL, 0]]);
     let _ = d.feed_frame(self_info());
-    let _ = d.feed_frame(channel_info(0, "Public"));
-    let _ = d.feed_frame(channel_info(1, "crew"));
+    let (_, next) = d.feed_frame(channel_info(0, "Public"));
+    assert_eq!(next, vec![vec![CMD_GET_CHANNEL, 1]]);
+    let (_, next) = d.feed_frame(channel_info(1, "crew"));
+    assert_eq!(next, vec![vec![CMD_GET_CHANNEL, 2]]);
     let _ = d.feed_frame(channel_info(2, ""));
+    let (_, last) = d.feed_frame(channel_info(7, ""));
+    assert!(last.is_empty(), "no slot past the eighth is asked for");
     let v = d.device.snapshot();
     assert_eq!(v["network"], "meshcore");
     assert_eq!(v["hardware"], "Heltec V3");
@@ -61,5 +64,9 @@ fn device_info_self_info_and_channels_are_read() {
     let ch = v["channels"].as_array().unwrap();
     assert_eq!(ch.len(), 2, "an unnamed slot is not a channel");
     assert_eq!(ch[1]["name"], "crew");
-    assert_eq!(v["writable"], serde_json::json!([]), "MeshCore settings are read only for now");
+    assert_eq!(
+        v["writable"],
+        serde_json::json!([]),
+        "MeshCore settings are read only for now"
+    );
 }

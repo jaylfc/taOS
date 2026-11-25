@@ -74,7 +74,9 @@ C.ScrollView {
                         Chip { visible: card.r.battery >= 0; text: qsTr("Battery %1%").arg(card.r.battery); glyph: "battery" }
                         Chip { visible: card.r.saved; text: qsTr("Opens again after a restart"); tone: "success"; glyph: "check" }
                     }
-                    TaosText { visible: card.r.state === "detected" && card.r.network === ""; objectName: "notConnectedNote"; Layout.fillWidth: true; wrapMode: Text.Wrap; font.pixelSize: Look.small; color: Look.textSecondary
+                    TaosText { visible: card.r.kind === "ble"; objectName: "bleNote"; Layout.fillWidth: true; wrapMode: Text.Wrap; font.pixelSize: Look.small; color: Look.textSecondary
+                               text: qsTr("Bluetooth radios are listed here but the mesh engine cannot connect them yet. Use a USB cable.") }
+                    TaosText { visible: card.r.state === "detected" && card.r.network === "" && card.r.kind !== "ble"; objectName: "notConnectedNote"; Layout.fillWidth: true; wrapMode: Text.Wrap; font.pixelSize: Look.small; color: Look.textSecondary
                                text: card.r.boardGuess !== "" ? qsTr("Looks like a %1. Connect to read which network it runs and its firmware version. Connecting only reads; nothing is sent over the air.").arg(card.r.boardGuess)
                                                               : qsTr("Connect to read which network it runs and its firmware version. Connecting only reads; nothing is sent over the air.") }
                     TaosText { visible: card.r.busy; objectName: "handshake-" + card.r.key; Layout.fillWidth: true; wrapMode: Text.Wrap; font.pixelSize: Look.small; color: Look.textSecondary

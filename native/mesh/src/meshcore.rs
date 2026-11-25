@@ -229,11 +229,14 @@ impl MeshcoreDriver {
         }
         let code = f[0];
         self.device.observe(&f);
-        if code == RESP_DEVICE_INFO {
-            // read-only: ask for each channel slot the radio says it has (at most 8 are listed)
-            for i in 0..self.device.max_channels.unwrap_or(0).min(8) {
-                cmds.push(vec![CMD_GET_CHANNEL, i]);
-            }
+        // The protocol is one command at a time, each waits for its answer: ask for channel slot 0 after the device info,
+        // and for the next slot after each channel answer (read-only; at most 8 slots are listed).
+        let slots = self.device.max_channels.unwrap_or(0).min(8);
+        if code == RESP_DEVICE_INFO && slots > 0 {
+            cmds.push(vec![CMD_GET_CHANNEL, 0]);
+        }
+        if code == RESP_CHANNEL_INFO && f.len() >= 2 && f[1] + 1 < slots {
+            cmds.push(vec![CMD_GET_CHANNEL, f[1] + 1]);
         }
         let inb = match code {
             RESP_SELF_INFO => self.self_info(f),
@@ -470,7 +473,9 @@ pub struct McDevice {
 }
 
 fn cstr(b: &[u8]) -> String {
-    String::from_utf8_lossy(b.split(|c| *c == 0).next().unwrap_or(&[])).trim().to_string()
+    String::from_utf8_lossy(b.split(|c| *c == 0).next().unwrap_or(&[]))
+        .trim()
+        .to_string()
 }
 
 impl McDevice {
@@ -484,11 +489,22 @@ impl McDevice {
             }
             Some(RESP_SELF_INFO) if f.len() >= 58 => {
                 self.tx_power = Some(f[2]);
-                self.radio = Some((f64::from(u32le(&f[48..])) / 1000.0, f64::from(u32le(&f[52..])) / 1000.0, f[56], f[57]));
-                self.name = Some(String::from_utf8_lossy(&f[58..]).trim_end_matches('\0').to_string()).filter(|s| !s.is_empty());
+                self.radio = Some((
+                    f64::from(u32le(&f[48..])) / 1000.0,
+                    f64::from(u32le(&f[52..])) / 1000.0,
+                    f[56],
+                    f[57],
+                ));
+                self.name = Some(
+                    String::from_utf8_lossy(&f[58..])
+                        .trim_end_matches('\0')
+                        .to_string(),
+                )
+                .filter(|s| !s.is_empty());
             }
             Some(RESP_CHANNEL_INFO) if f.len() >= 50 => {
-                self.channels.insert(f[1], (cstr(&f[2..34]), f[34..50].to_vec()));
+                self.channels
+                    .insert(f[1], (cstr(&f[2..34]), f[34..50].to_vec()));
             }
             _ => {}
         }

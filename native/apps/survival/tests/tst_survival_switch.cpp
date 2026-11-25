@@ -131,14 +131,13 @@ private Q_SLOTS:
         QVERIFY(r->sw->profileSaved());
         // order: the settings were read, then the port let go, only then the flash, and the reconnect came last
         const auto &reqs = r->eng->requests;
-        const int cfg = firstIndex(reqs, u"device.config"_s), rel = firstIndex(reqs, u"radios.release"_s), con = firstIndex(reqs, u"radios.connect"_s);
-        QVERIFY(cfg >= 0 && rel > cfg && con > rel);
-        const auto &fwr = r->fw->requests;
-        int run = -1;
-        for (int i = 0; i < fwr.size(); ++i)
-            if (fwr[i].path == u"/v1/flash/run"_s)
-                run = i;
-        QVERIFY(run >= 0);
+        auto seqOf = [&](const QString &m) { const int i = firstIndex(reqs, m); return i < 0 ? -1 : reqs[i].value(u"_seq"_s).toInt(); };
+        const int cfg = seqOf(u"device.config"_s), rel = seqOf(u"radios.release"_s), con = seqOf(u"radios.connect"_s);
+        int run = -1;   // the flash goes to the OTHER engine: the order is proved with the counter both stand-ins share
+        for (const auto &q : r->fw->requests)
+            if (q.path == u"/v1/flash/run"_s)
+                run = q.seq;
+        QVERIFY(cfg > 0 && rel > cfg && run > rel && con > run);
         QCOMPARE(r->fw->count(u"POST"_s, u"/v1/flash/run"_s), 1);
         QCOMPARE(r->eng->released, QStringList{kPort});
         QCOMPARE(r->fw->mints.size(), 1);
@@ -183,6 +182,66 @@ private Q_SLOTS:
         QVERIFY(!ch.contains(u"owner.long_name"_s));   // already the same: not rewritten
         // and the MeshCore side was kept for the next switch
         QVERIFY(r->profiles->has(kDevice, u"meshcore"_s));
+    }
+
+    void a_fresh_radio_without_the_old_channels_still_gets_the_rest_back_and_the_switch_is_a_success()
+    {
+        auto r = rig(radio(u"a1b2c3d4e5f6"_s, u"meshcore"_s, u"v1.9.1"_s), mcConfig());
+        QVERIFY(r);
+        QTRY_VERIFY_WITH_TIMEOUT(r->backend->available() && r->backend->radios().size() == 1, 5000);
+        // saved earlier: channel 1 "crew" and region US; the fresh Meshtastic firmware only has channel 0
+        QJsonObject saved = mtConfig(u"US"_s, u"MEDIUM_FAST"_s, u"crew"_s);
+        QVERIFY(r->profiles->save(kDevice, u"meshtastic"_s, saved.toVariantMap(), u"Heltec V3"_s, u"2.7.15"_s));
+        r->eng->onConnect = [e = r->eng.get()](const QString &) {
+            QJsonObject fresh = mtConfig(u"EU_868"_s, u"LONG_FAST"_s, QString());
+            fresh.insert(u"channels"_s, QJsonArray{QJsonObject{{u"index"_s, 0}, {u"name"_s, QString()}, {u"role"_s, u"PRIMARY"_s}, {u"psk_b64"_s, u"AQ=="_s}}});
+            e->radiosJson = QJsonArray{radio(u"!a1b2c3d4"_s, u"meshtastic"_s, u"2.7.15"_s)};
+            e->cfgByRadio.insert(u"!a1b2c3d4"_s, fresh);
+        };
+        r->sw->start(req(u"meshcore"_s, u"meshtastic"_s));
+        QTRY_VERIFY_WITH_TIMEOUT(!r->sw->running(), 30000);
+        QVERIFY2(r->sw->step() == RadioSwitch::Step::Done, qPrintable(r->sw->error()));
+        const QJsonObject ch = r->eng->last(u"device.apply"_s).value(u"params"_s).toObject().value(u"changes"_s).toObject();
+        QCOMPARE(ch.value(u"lora.region"_s).toString(), u"US"_s);               // the region is put back
+        QVERIFY(!ch.contains(u"channels.1.name"_s));                              // the channel the radio lacks is left out, not an error
+        QVERIFY(r->sw->notes().join(u' ').contains(u"do not exist on this radio yet"_s));
+    }
+
+    void a_receive_only_engine_means_the_earlier_settings_are_kept_but_the_switch_still_succeeds()
+    {
+        auto r = rig(radio(u"a1b2c3d4e5f6"_s, u"meshcore"_s, u"v1.9.1"_s), mcConfig());
+        QVERIFY(r);
+        QTRY_VERIFY_WITH_TIMEOUT(r->backend->available() && r->backend->radios().size() == 1, 5000);
+        QVERIFY(r->profiles->save(kDevice, u"meshtastic"_s, mtConfig(u"US"_s, u"MEDIUM_FAST"_s, u"crew"_s).toVariantMap(), u"Heltec V3"_s, u"2.7.15"_s));
+        r->eng->onConnect = [e = r->eng.get()](const QString &) {
+            e->radiosJson = QJsonArray{radio(u"!a1b2c3d4"_s, u"meshtastic"_s, u"2.7.15"_s)};
+            e->cfgByRadio.insert(u"!a1b2c3d4"_s, mtConfig(u"EU_868"_s, u"LONG_FAST"_s, u"family"_s));
+            e->receiveOnly = true;   // the health read after the connect says writes are off
+        };
+        r->sw->start(req(u"meshcore"_s, u"meshtastic"_s));
+        QTRY_VERIFY_WITH_TIMEOUT(!r->sw->running(), 30000);
+        QVERIFY2(r->sw->step() == RadioSwitch::Step::Done, qPrintable(r->sw->error()));
+        QCOMPARE(r->eng->count(u"device.apply"_s), 0);
+        QVERIFY(r->sw->notes().join(u' ').contains(u"receive-only"_s));
+        QVERIFY(r->profiles->has(kDevice, u"meshtastic"_s));                      // nothing was thrown away
+    }
+
+    void a_radio_that_takes_a_while_to_answer_is_connected_once_not_every_few_seconds()
+    {
+        auto r = rig(radio(u"!a1b2c3d4"_s, u"meshtastic"_s, u"2.7.15"_s), mtConfig(u"EU_868"_s, u"LONG_FAST"_s, u"family"_s));
+        QVERIFY(r);
+        QTRY_VERIFY_WITH_TIMEOUT(r->backend->available() && r->backend->radios().size() == 1, 5000);
+        r->eng->onConnect = [e = r->eng.get()](const QString &) {
+            QJsonObject slow = radio(u"a1b2c3d4e5f6"_s, u"meshcore"_s, u"v1.9.1"_s);
+            slow.insert(u"state"_s, u"connecting"_s);
+            e->radiosJson = QJsonArray{slow};
+            e->cfgByRadio.insert(u"a1b2c3d4e5f6"_s, mcConfig());
+            QTimer::singleShot(6000, e, [e] { e->radiosJson = QJsonArray{radio(u"a1b2c3d4e5f6"_s, u"meshcore"_s, u"v1.9.1"_s)}; });
+        };
+        r->sw->start(req(u"meshtastic"_s, u"meshcore"_s));
+        QTRY_VERIFY_WITH_TIMEOUT(!r->sw->running(), 40000);
+        QVERIFY2(r->sw->step() == RadioSwitch::Step::Done, qPrintable(r->sw->error()));
+        QCOMPARE(r->eng->count(u"radios.connect"_s), 1);   // 6 seconds of "connecting" did not make it ask again
     }
 
     void a_refused_flash_stops_the_sequence_and_says_how_to_get_the_board_back()
@@ -286,6 +345,22 @@ private Q_SLOTS:
         QVERIFY2(e.contains(u"MeshCore"_s), qPrintable(e));
         QTest::qWait(300);
         QCOMPARE(r->eng->count(u"app.send"_s), 1);
+    }
+
+    void a_channel_the_radio_has_is_a_conversation_before_anyone_has_spoken_on_it()
+    {
+        auto r = rig(radio(u"!a1b2c3d4"_s, u"meshtastic"_s, u"2.7.15"_s), mtConfig(u"EU_868"_s, u"LONG_FAST"_s, u"family"_s));
+        QVERIFY(r);
+        QTRY_VERIFY_WITH_TIMEOUT(r->backend->available() && r->backend->radios().size() == 1, 5000);
+        auto find = [&](const QString &id) { for (const QVariant &v : r->tak->threads()) if (v.toMap().value(u"id"_s).toString() == id) return v.toMap(); return QVariantMap(); };
+        QVERIFY(!find(u"ch:meshtastic:0"_s).isEmpty());       // the one that was heard
+        QVERIFY(find(u"ch:meshtastic:1"_s).isEmpty());        // settings not read yet: no stub
+        r->tak->requestConfig(u"!a1b2c3d4"_s);
+        QTRY_VERIFY_WITH_TIMEOUT(!find(u"ch:meshtastic:1"_s).isEmpty(), 5000);
+        const QVariantMap t = find(u"ch:meshtastic:1"_s);
+        QVERIFY(t.value(u"title"_s).toString().contains(u"family"_s));   // named by the radio's own channel name
+        QCOMPARE(t.value(u"count"_s).toInt(), 0);
+        QCOMPARE(find(u"ch:meshtastic:0"_s).value(u"count"_s).toInt(), 1);
     }
 
     void missing_pieces_are_refused_before_anything_happens()

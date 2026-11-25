@@ -20,7 +20,9 @@ const PRIORITY_RELIABLE: u64 = 70;
 /// A friendly board name from the hardware enum: HELTEC_V3 is "Heltec V3".
 pub fn hw_label(n: u32) -> String {
     let name = HW_MODELS.iter().find(|(k, _)| *k == n).map(|(_, v)| *v);
-    let Some(name) = name else { return format!("Unknown board ({n})") };
+    let Some(name) = name else {
+        return format!("Unknown board ({n})");
+    };
     if name == "UNSET" {
         return "Unknown board".into();
     }
@@ -30,7 +32,9 @@ pub fn hw_label(n: u32) -> String {
                 w.to_string()
             } else {
                 let mut c = w.chars();
-                c.next().map(|f| f.to_string() + &c.as_str().to_lowercase()).unwrap_or_default()
+                c.next()
+                    .map(|f| f.to_string() + &c.as_str().to_lowercase())
+                    .unwrap_or_default()
             }
         })
         .collect::<Vec<_>>()
@@ -38,7 +42,9 @@ pub fn hw_label(n: u32) -> String {
 }
 
 fn name_of(t: &[(u32, &str)], n: u32) -> Option<String> {
-    t.iter().find(|(k, _)| *k == n).map(|(_, v)| (*v).to_string())
+    t.iter()
+        .find(|(k, _)| *k == n)
+        .map(|(_, v)| (*v).to_string())
 }
 fn num_of(t: &[(u32, &str)], s: &str) -> Option<u32> {
     t.iter().find(|(_, v)| *v == s).map(|(k, _)| *k)
@@ -52,7 +58,9 @@ pub fn b64(b: &[u8], url: bool) -> String {
     };
     let mut o = String::new();
     for c in b.chunks(3) {
-        let n = (u32::from(c[0]) << 16) | (u32::from(*c.get(1).unwrap_or(&0)) << 8) | u32::from(*c.get(2).unwrap_or(&0));
+        let n = (u32::from(c[0]) << 16)
+            | (u32::from(*c.get(1).unwrap_or(&0)) << 8)
+            | u32::from(*c.get(2).unwrap_or(&0));
         o.push(t[(n >> 18) as usize & 63] as char);
         o.push(t[(n >> 12) as usize & 63] as char);
         if c.len() > 1 {
@@ -98,10 +106,13 @@ pub fn patch(raw: &[u8], edits: &[Edit]) -> Vec<u8> {
             Edit::Varint(n, v) => (*n, (*v != 0).then_some(Field::Varint(*v))),
             Edit::Bytes(n, b) => (*n, Some(Field::Len(b.clone()))),
             Edit::Nested(n, inner) => {
-                let old = fields.iter().find(|(k, _)| k == n).and_then(|(_, f)| match f {
-                    Field::Len(b) => Some(b.clone()),
-                    _ => None,
-                });
+                let old = fields
+                    .iter()
+                    .find(|(k, _)| k == n)
+                    .and_then(|(_, f)| match f {
+                        Field::Len(b) => Some(b.clone()),
+                        _ => None,
+                    });
                 (*n, Some(Field::Len(patch(&old.unwrap_or_default(), inner))))
             }
         };
@@ -135,13 +146,19 @@ enum Field {
 }
 
 fn get_len(raw: &[u8], field: u32) -> Option<Vec<u8>> {
-    Fields::new(raw).flatten().find(|(n, _)| *n == field).and_then(|(_, v)| match v {
-        Val::Len(b) => Some(b.to_vec()),
-        _ => None,
-    })
+    Fields::new(raw)
+        .flatten()
+        .find(|(n, _)| *n == field)
+        .and_then(|(_, v)| match v {
+            Val::Len(b) => Some(b.to_vec()),
+            _ => None,
+        })
 }
 fn get_varint(raw: &[u8], field: u32) -> Option<u64> {
-    Fields::new(raw).flatten().find(|(n, _)| *n == field).map(|(_, v)| v.as_u64())
+    Fields::new(raw)
+        .flatten()
+        .find(|(n, _)| *n == field)
+        .map(|(_, v)| v.as_u64())
 }
 fn get_str(raw: &[u8], field: u32) -> Option<String> {
     get_len(raw, field).map(|b| String::from_utf8_lossy(&b).into_owned())
@@ -182,7 +199,8 @@ impl DeviceState {
                             self.long_name = get_str(&u, 2).filter(|s| !s.is_empty());
                             self.short_name = get_str(&u, 3).filter(|s| !s.is_empty());
                             if self.hw_model.is_none() {
-                                self.hw_model = get_varint(&u, 5).map(|x| x as u32).filter(|x| *x != 0);
+                                self.hw_model =
+                                    get_varint(&u, 5).map(|x| x as u32).filter(|x| *x != 0);
                             }
                         }
                     }
@@ -249,7 +267,10 @@ impl DeviceState {
             return None;
         }
         w.bytes(2, lora);
-        Some(format!("https://meshtastic.org/e/#{}", b64(&w.finish(), true)))
+        Some(format!(
+            "https://meshtastic.org/e/#{}",
+            b64(&w.finish(), true)
+        ))
     }
 
     /// The `device.config` values (docs/DEVICE-SETTINGS.md). A section the radio did not send is absent.
@@ -284,12 +305,22 @@ impl DeviceState {
             );
         }
         if let Some(d) = &self.device {
-            m.insert("device".into(), json!({"role": name_of(ROLES, get_varint(d, 1).unwrap_or(0) as u32)}));
+            m.insert(
+                "device".into(),
+                json!({"role": name_of(ROLES, get_varint(d, 1).unwrap_or(0) as u32)}),
+            );
         }
         if let Some(p) = &self.position {
-            m.insert("position".into(), json!({"broadcast_secs": get_varint(p, 1).unwrap_or(0)}));
+            m.insert(
+                "position".into(),
+                json!({"broadcast_secs": get_varint(p, 1).unwrap_or(0)}),
+            );
         }
-        let mut chans: Vec<Value> = self.channels.iter().filter_map(|(i, r)| self.channel_json(*i, r)).collect();
+        let mut chans: Vec<Value> = self
+            .channels
+            .iter()
+            .filter_map(|(i, r)| self.channel_json(*i, r))
+            .collect();
         if let Some(u) = self.share_url() {
             for c in chans.iter_mut() {
                 c["share_url"] = json!(u);
@@ -320,7 +351,11 @@ impl DeviceState {
 
     /// Turn requested changes into ToRadio payloads (unframed): begin, the sets, commit. Nothing is sent here.
     /// `next_id` supplies packet ids. Errors say what is wrong in plain words; no partial plan is returned.
-    pub fn plan_apply(&self, changes: &Map<String, Value>, mut next_id: impl FnMut() -> u32) -> Result<(Vec<Vec<u8>>, Vec<String>), String> {
+    pub fn plan_apply(
+        &self,
+        changes: &Map<String, Value>,
+        mut next_id: impl FnMut() -> u32,
+    ) -> Result<(Vec<Vec<u8>>, Vec<String>), String> {
         let my = self.my_node.ok_or("the radio has not said who it is yet")?;
         if !self.complete {
             return Err("the radio has not finished sending its settings yet".into());
@@ -335,22 +370,33 @@ impl DeviceState {
             let s = val.as_str();
             match path.as_str() {
                 "owner.long_name" | "owner.short_name" => {
-                    let t = s.map(str::trim).filter(|t| !t.is_empty()).ok_or(format!("{path}: a name cannot be empty"))?;
-                    let (max, field) = if path.ends_with("long_name") { (39, &mut long) } else { (4, &mut short) };
+                    let t = s
+                        .map(str::trim)
+                        .filter(|t| !t.is_empty())
+                        .ok_or(format!("{path}: a name cannot be empty"))?;
+                    let (max, field) = if path.ends_with("long_name") {
+                        (39, &mut long)
+                    } else {
+                        (4, &mut short)
+                    };
                     if t.len() > max {
                         return Err(format!("{path}: at most {max} bytes"));
                     }
                     *field = Some(t.to_string());
                 }
                 "lora.region" => {
-                    let n = s.and_then(|x| num_of(REGIONS, x)).ok_or(format!("{path}: not a region this firmware knows"))?;
+                    let n = s
+                        .and_then(|x| num_of(REGIONS, x))
+                        .ok_or(format!("{path}: not a region this firmware knows"))?;
                     if self.lora.is_none() {
                         return Err("the radio has not sent its radio settings yet".into());
                     }
                     lora.push(Edit::Varint(7, u64::from(n)));
                 }
                 "lora.modem_preset" => {
-                    let n = s.and_then(|x| num_of(MODEM_PRESETS, x)).ok_or(format!("{path}: not a modem preset this firmware knows"))?;
+                    let n = s
+                        .and_then(|x| num_of(MODEM_PRESETS, x))
+                        .ok_or(format!("{path}: not a modem preset this firmware knows"))?;
                     if self.lora.is_none() {
                         return Err("the radio has not sent its radio settings yet".into());
                     }
@@ -359,31 +405,48 @@ impl DeviceState {
                     lora.push(Edit::Varint(2, u64::from(n)));
                 }
                 "device.role" => {
-                    let n = s.and_then(|x| num_of(ROLES, x)).ok_or(format!("{path}: not a role this firmware knows"))?;
+                    let n = s
+                        .and_then(|x| num_of(ROLES, x))
+                        .ok_or(format!("{path}: not a role this firmware knows"))?;
                     if self.device.is_none() {
                         return Err("the radio has not sent its device settings yet".into());
                     }
                     dev.push(Edit::Varint(1, u64::from(n)));
                 }
                 "position.broadcast_secs" => {
-                    let n = val.as_u64().or_else(|| s.and_then(|x| x.trim().parse().ok())).filter(|n| *n <= 86_400 * 7).ok_or(format!("{path}: a whole number of seconds"))?;
+                    let n = val
+                        .as_u64()
+                        .or_else(|| s.and_then(|x| x.trim().parse().ok()))
+                        .filter(|n| *n <= 86_400 * 7)
+                        .ok_or(format!("{path}: a whole number of seconds"))?;
                     if self.position.is_none() {
                         return Err("the radio has not sent its position settings yet".into());
                     }
                     pos.push(Edit::Varint(1, n));
                 }
                 p if p.starts_with("channels.") && p.ends_with(".name") => {
-                    let idx: u32 = p["channels.".len()..p.len() - ".name".len()].parse().map_err(|_| format!("{p}: not a channel number"))?;
+                    let idx: u32 = p["channels.".len()..p.len() - ".name".len()]
+                        .parse()
+                        .map_err(|_| format!("{p}: not a channel number"))?;
                     let name = s.ok_or(format!("{p}: a name"))?.trim();
                     if name.len() > 11 {
                         return Err(format!("{p}: at most 11 bytes"));
                     }
-                    if !self.channels.get(&idx).is_some_and(|r| get_varint(r, 3).unwrap_or(0) != 0) {
+                    if !self
+                        .channels
+                        .get(&idx)
+                        .is_some_and(|r| get_varint(r, 3).unwrap_or(0) != 0)
+                    {
                         return Err(format!("{p}: that channel is not set up on this radio"));
                     }
                     chans.insert(idx, name.to_string());
                 }
-                other => return Err(format!("{other}: this setting cannot be written yet (writable: {})", Self::WRITABLE.join(", "))),
+                other => {
+                    return Err(format!(
+                        "{other}: this setting cannot be written yet (writable: {})",
+                        Self::WRITABLE.join(", ")
+                    ))
+                }
             }
             applied.push(path.clone());
         }
@@ -403,7 +466,11 @@ impl DeviceState {
             a.bytes(32, &u.finish());
             out.push(toradio_admin(my, next_id(), &a.finish()));
         }
-        for (sect, edits, base) in [(1u32, &dev, &self.device), (2, &pos, &self.position), (6, &lora, &self.lora)] {
+        for (sect, edits, base) in [
+            (1u32, &dev, &self.device),
+            (2, &pos, &self.position),
+            (6, &lora, &self.lora),
+        ] {
             if edits.is_empty() {
                 continue;
             }
@@ -416,7 +483,10 @@ impl DeviceState {
         }
         for (idx, name) in chans {
             let raw = &self.channels[&idx];
-            let new = patch(raw, &[Edit::Nested(2, vec![Edit::Bytes(3, name.into_bytes())])]);
+            let new = patch(
+                raw,
+                &[Edit::Nested(2, vec![Edit::Bytes(3, name.into_bytes())])],
+            );
             let mut a = Writer::new();
             a.bytes(33, &new);
             out.push(toradio_admin(my, next_id(), &a.finish()));
@@ -452,7 +522,9 @@ pub fn toradio_admin(to: u32, id: u32, admin: &[u8]) -> Vec<u8> {
 
 /// A ToRadio payload with the MeshPacket id removed.
 pub fn without_packet_id(toradio: &[u8]) -> Vec<u8> {
-    let Some(pkt) = get_len(toradio, 1) else { return toradio.to_vec() };
+    let Some(pkt) = get_len(toradio, 1) else {
+        return toradio.to_vec();
+    };
     let mut w = Writer::new();
     w.bytes(1, &patch_remove(&pkt, 6));
     w.finish()

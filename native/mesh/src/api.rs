@@ -36,7 +36,9 @@ pub fn set_radios_file(p: Option<std::path::PathBuf>) {
 
 /// The remembered radios: `[{"device": "/dev/ttyACM0", "network": null}]`.
 pub fn saved_radios() -> Vec<Value> {
-    let Some(p) = RADIOS_FILE.lock().unwrap().clone() else { return vec![] };
+    let Some(p) = RADIOS_FILE.lock().unwrap().clone() else {
+        return vec![];
+    };
     std::fs::read_to_string(p)
         .ok()
         .and_then(|s| serde_json::from_str::<Value>(&s).ok())
@@ -45,9 +47,15 @@ pub fn saved_radios() -> Vec<Value> {
 }
 
 fn write_saved(list: &[Value]) -> Result<(), String> {
-    let Some(p) = RADIOS_FILE.lock().unwrap().clone() else { return Ok(()) };
+    let Some(p) = RADIOS_FILE.lock().unwrap().clone() else {
+        return Ok(());
+    };
     let tmp = p.with_extension("json.tmp");
-    std::fs::write(&tmp, serde_json::to_string_pretty(&json!({"devices": list})).unwrap()).map_err(|e| format!("cannot save the radio list: {e}"))?;
+    std::fs::write(
+        &tmp,
+        serde_json::to_string_pretty(&json!({"devices": list})).unwrap(),
+    )
+    .map_err(|e| format!("cannot save the radio list: {e}"))?;
     std::fs::rename(&tmp, &p).map_err(|e| format!("cannot save the radio list: {e}"))
 }
 
@@ -156,7 +164,10 @@ impl Daemon {
                 }
             });
         }
-        self.releases.lock().unwrap_or_else(|p| p.into_inner()).insert(label.clone(), own.clone());
+        self.releases
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .insert(label.clone(), own.clone());
         let sup = supervisor::Supervised {
             engine: self.engine.clone(),
             connector,
@@ -176,17 +187,28 @@ impl Daemon {
     /// Close a radio's link and stop reconnecting it, so another program (the firmware flasher) can have the port.
     /// The saved entry goes too: it is not opened again at the next start.
     pub fn release_spec(&self, spec: &str) -> Result<Value, String> {
-        let flag = self.releases.lock().unwrap_or_else(|p| p.into_inner()).remove(spec);
+        let flag = self
+            .releases
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .remove(spec);
         let was_open = flag.is_some();
         if let Some(f) = &flag {
             f.store(true, Ordering::Relaxed);
         }
-        let list: Vec<Value> = saved_radios().into_iter().filter(|d| d["device"] != spec).collect();
+        let list: Vec<Value> = saved_radios()
+            .into_iter()
+            .filter(|d| d["device"] != spec)
+            .collect();
         write_saved(&list)?;
         if was_open {
             let end = std::time::Instant::now() + Duration::from_secs(6);
             loop {
-                let open = self.engine.radios().iter().any(|r| r.link == spec && r.connected);
+                let open = self
+                    .engine
+                    .radios()
+                    .iter()
+                    .any(|r| r.link == spec && r.connected);
                 if !open {
                     break;
                 }
@@ -222,6 +244,22 @@ impl Daemon {
             });
             let name = self.attach_supervised(c, &net, None);
             return Ok(json!({"radio": name, "network": net}));
+        }
+        // already open and still supervised: opening it again would open the port twice and replace the release flag
+        let alive = self
+            .releases
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .get(spec)
+            .is_some_and(|f| !f.load(Ordering::Relaxed));
+        if alive {
+            let net = self
+                .engine
+                .radios()
+                .iter()
+                .find(|r| r.link == spec)
+                .map(|r| r.network.clone());
+            return Ok(json!({"radio": spec, "network": net, "already_open": true}));
         }
         let connector: Arc<dyn Connector> = if let Some(a) = spec.strip_prefix("tcp:") {
             Arc::new(TcpConnector(a.to_string()))
@@ -320,7 +358,11 @@ impl Daemon {
                 }
                 let spec = try_p!(need(p, "device"));
                 if spec.starts_with("ble:") {
-                    return err(&id, "connect_failed", "Bluetooth radios cannot be opened by this engine yet");
+                    return err(
+                        &id,
+                        "connect_failed",
+                        "Bluetooth radios cannot be opened by this engine yet",
+                    );
                 }
                 match self.connect_spec(spec, s(p, "network")) {
                     Ok(v) => {
@@ -342,12 +384,17 @@ impl Daemon {
                     return e;
                 }
                 let spec = try_p!(need(p, "device"));
-                let list: Vec<Value> = saved_radios().into_iter().filter(|d| d["device"] != spec).collect();
+                let list: Vec<Value> = saved_radios()
+                    .into_iter()
+                    .filter(|d| d["device"] != spec)
+                    .collect();
                 if let Err(m) = write_saved(&list) {
                     return err(&id, "store_error", &m);
                 }
                 // forgetting stops it being opened again; the open session ends when the engine restarts
-                ok!(json!({"device": spec, "forgotten": true, "closes": "at the next engine start"}))
+                ok!(
+                    json!({"device": spec, "forgotten": true, "closes": "at the next engine start"})
+                )
             }
             "radios.release" => {
                 if let Some(e) = owner_only(&id) {
@@ -378,9 +425,17 @@ impl Daemon {
                 }
                 let radio = try_p!(need(p, "radio"));
                 let Some(changes) = p.get("changes").and_then(|c| c.as_object()) else {
-                    return err(&id, "invalid", "changes: an object of setting path to new value");
+                    return err(
+                        &id,
+                        "invalid",
+                        "changes: an object of setting path to new value",
+                    );
                 };
-                ok!(eng!(self.engine.device_apply(radio, changes, self.receive_only)))
+                ok!(eng!(self.engine.device_apply(
+                    radio,
+                    changes,
+                    self.receive_only
+                )))
             }
             "app.radios" => ok!(eng!(crate::appview::radios(&self.engine, who))),
             "app.identities" => ok!(eng!(crate::appview::identities(&self.engine, who))),

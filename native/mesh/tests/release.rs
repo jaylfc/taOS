@@ -44,7 +44,10 @@ fn release_closes_the_radio_and_it_is_not_reconnected() {
         }
         s
     });
-    let c = Arc::new(Fake { link, opens: AtomicUsize::new(0) });
+    let c = Arc::new(Fake {
+        link,
+        opens: AtomicUsize::new(0),
+    });
     d.attach_supervised(c.clone(), "meshtastic", None);
     let end = Instant::now() + Duration::from_secs(5);
     while !engine.radios().iter().any(|r| r.connected && r.ready) {
@@ -54,10 +57,18 @@ fn release_closes_the_radio_and_it_is_not_reconnected() {
     let r = d.handle_trusted(&json!({"id": 1, "method": "radios.release", "principal": "owner", "params": {"device": "/dev/ttyFAKE0"}}).to_string());
     assert_eq!(r["ok"], true, "{r}");
     assert_eq!(r["result"]["was_open"], true);
-    assert!(engine.radios().is_empty(), "the stale entry is gone: {:?}", engine.radios().len());
+    assert!(
+        engine.radios().is_empty(),
+        "the stale entry is gone: {:?}",
+        engine.radios().len()
+    );
     let opens = c.opens.load(Ordering::SeqCst);
     std::thread::sleep(Duration::from_millis(1500));
-    assert_eq!(c.opens.load(Ordering::SeqCst), opens, "a released radio is never reopened");
+    assert_eq!(
+        c.opens.load(Ordering::SeqCst),
+        opens,
+        "a released radio is never reopened"
+    );
 }
 
 #[test]
@@ -67,4 +78,33 @@ fn only_the_owner_may_release() {
     let d = Daemon::new(engine, false);
     let r = d.handle_trusted(&json!({"id": 1, "method": "radios.release", "principal": "agent:scout", "params": {"device": "/dev/ttyFAKE0"}}).to_string());
     assert_eq!(r["ok"], false);
+}
+
+#[test]
+fn connecting_a_port_that_is_already_open_does_not_open_it_twice() {
+    let t = TmpDir::new("release3");
+    std::env::set_var("XDG_DATA_HOME", t.path());
+    let engine = Engine::open(&t.path().join("data"), "person:jay").unwrap();
+    let d = Arc::new(Daemon::new(engine.clone(), false));
+    let fx = fixture("meshtastic_device.json");
+    let link = FakeLink::new("/dev/ttyFAKE0");
+    link.reply_on_write(&frame(&frame_named(&fx, "my_info")));
+    let c = Arc::new(Fake {
+        link,
+        opens: AtomicUsize::new(0),
+    });
+    d.attach_supervised(c.clone(), "meshtastic", None);
+    let end = Instant::now() + Duration::from_secs(5);
+    while !engine.radios().iter().any(|r| r.connected) {
+        assert!(Instant::now() < end, "radio never connected");
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    let r = d.handle_trusted(&json!({"id": 1, "method": "connect", "principal": "owner", "params": {"device": "/dev/ttyFAKE0", "network": "meshtastic"}}).to_string());
+    assert_eq!(r["ok"], true, "{r}");
+    assert_eq!(r["result"]["already_open"], true);
+    assert_eq!(
+        c.opens.load(Ordering::SeqCst),
+        1,
+        "the port was opened once"
+    );
 }

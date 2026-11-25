@@ -18,6 +18,9 @@
 
 namespace FakeEngines {
 
+/// One counter shared by both stand-in engines, so a test can prove the order of requests that went to different engines.
+inline int g_fakeSeq = 0;
+
 inline QJsonValue fixture(const QString &dir, const QString &name, bool envelope = true)
 {
     QFile f(dir + QLatin1Char('/') + name + QStringLiteral(".json"));
@@ -78,6 +81,8 @@ public:
     std::function<void(const QString &)> onConnect;
     std::function<void(const QString &)> onRelease;   // called with the port when radios.release arrives   // called with the port when radios.connect arrives
     QStringList released;
+    bool refuseApply = false;                 // device.apply answers with a refusal (receive-only engine)
+    int connectingMs = 0;                     // a radio opened by radios.connect stays "connecting" this long
     QJsonArray textMessages, identitiesJson;   // when scripted and not empty, answer these (full engine records / app identities)
     int delayMs = 0;
     QList<QJsonObject> requests;
@@ -112,7 +117,9 @@ private:
         while ((nl = m_buf[c].indexOf('\n')) >= 0) {
             const QJsonObject req = QJsonDocument::fromJson(m_buf[c].left(nl)).object();
             m_buf[c].remove(0, nl + 1);
-            requests << req;
+            QJsonObject stamped = req;
+            stamped.insert(QStringLiteral("_seq"), ++g_fakeSeq);
+            requests << stamped;
             if (req.value(QStringLiteral("method")).toString() == QLatin1String("subscribe")) {
                 m_subs << c;
                 c->write(QJsonDocument(QJsonObject{{QStringLiteral("id"), req.value(QStringLiteral("id"))}, {QStringLiteral("ok"), true}, {QStringLiteral("result"), QJsonObject{{QStringLiteral("subscribed"), true}}}}).toJson(QJsonDocument::Compact) + '\n');
@@ -158,6 +165,8 @@ private:
                 return err(QStringLiteral("no_radio"), QStringLiteral("no radio ") + id);
             return ok(QJsonObject{{QStringLiteral("radio"), id}, {QStringLiteral("state"), QStringLiteral("ok")}, {QStringLiteral("note"), QString()}, {QStringLiteral("values"), cfgByRadio.value(id)}});
         }
+        if (scripted && m == QLatin1String("device.apply") && refuseApply)
+            return err(QStringLiteral("forbidden"), QStringLiteral("the engine is in receive-only mode: it writes nothing to a radio"));
         if (scripted && m == QLatin1String("device.apply"))
             return ok(QJsonObject{{QStringLiteral("applied"), QJsonArray::fromStringList(p.value(QStringLiteral("changes")).toObject().keys())}});
         if (m == QLatin1String("radios.release")) {
@@ -220,7 +229,7 @@ class FakeFirmware : public QObject
 {
     Q_OBJECT
 public:
-    struct Req { QString method, path; QJsonObject body; QByteArray auth; };
+    struct Req { QString method, path; QJsonObject body; QByteArray auth; int seq = 0; };
     FakeFirmware(QString fixtures, QString dataDir, QObject *parent = nullptr, quint16 fixedPort = 0) : QObject(parent), m_fx(std::move(fixtures))
     {
         QDir().mkpath(dataDir);
@@ -282,6 +291,7 @@ private:
         for (const QByteArray &l : head.split('\n'))
             if (l.toLower().startsWith("authorization:"))
                 r.auth = l.mid(14).trimmed();
+        r.seq = ++g_fakeSeq;
         requests << r;
         QJsonValue out;
         int code = 200;

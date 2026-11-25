@@ -462,6 +462,24 @@ QVariantList TakEngine::threads() const
         if (!m.outgoing && m.timeMs > m_prefs.lastRead(m.threadId))
             ++t.unread;
     }
+    // a channel the connected radios have is a conversation even before anyone has said anything on it: the first message
+    // has to be writable somewhere
+    for (const MeshRadio &r : m_b->radios()) {
+        if (r.state == u"offline"_s)
+            continue;
+        const MeshDeviceConfig c = m_b->deviceConfig(r.id);
+        if (c.state != u"ok"_s)
+            continue;
+        for (const QVariant &ch : c.values.value(u"channels"_s).toList()) {
+            const QString id = u"ch:%1:%2"_s.arg(r.transport, ch.toMap().value(u"index"_s).toString());
+            if (!by.contains(id)) {
+                T &t = by[id];
+                t.id = id;
+                t.network = r.transport;
+                t.text = tr("No messages yet");
+            }
+        }
+    }
     QList<T> list = by.values();
     std::sort(list.begin(), list.end(), [](const T &a, const T &b) { return a.last > b.last; });
     QVariantList out;
@@ -469,7 +487,7 @@ QVariantList TakEngine::threads() const
         if (!m_filter.isEmpty() && t.network != m_filter)
             continue;
         out.append(thread(t.id).isEmpty() ? QVariantMap() : QVariantMap{{u"id"_s, t.id}, {u"title"_s, thread(t.id).value(u"title"_s)}, {u"kind"_s, thread(t.id).value(u"kind"_s)},
-                                                                        {u"subtitle"_s, t.text}, {u"lastMs"_s, double(t.last)}, {u"ago"_s, ago(double(t.last))},
+                                                                        {u"subtitle"_s, t.text}, {u"lastMs"_s, double(t.last)}, {u"ago"_s, t.last > 0 ? ago(double(t.last)) : QString()},
                                                                         {u"unread"_s, t.unread}, {u"count"_s, t.count}, {u"network"_s, networkName(t.network)}, {u"networkId"_s, t.network}});
     }
     return out;
@@ -482,7 +500,13 @@ QVariantMap TakEngine::thread(const QString &id) const
     if (id.startsWith(u"ch:"_s)) {
         const QStringList p = id.split(QLatin1Char(':'));
         const QString net = p.value(1), idx = p.value(2);
-        return {{u"id"_s, id}, {u"kind"_s, u"channel"_s}, {u"title"_s, tr("%1 channel %2").arg(networkName(net), idx)}};
+        QString name;   // the channel's own name, when a connected radio has said it
+        for (const MeshRadio &r : m_b->radios())
+            if (r.transport == net)
+                for (const QVariant &ch : m_b->deviceConfig(r.id).values.value(u"channels"_s).toList())
+                    if (ch.toMap().value(u"index"_s).toString() == idx && name.isEmpty())
+                        name = ch.toMap().value(u"name"_s).toString();
+        return {{u"id"_s, id}, {u"kind"_s, u"channel"_s}, {u"title"_s, name.isEmpty() ? tr("%1 channel %2").arg(networkName(net), idx) : tr("%1 (%2 channel %3)").arg(name, networkName(net), idx)}};
     }
     return {{u"id"_s, id}, {u"kind"_s, u"direct"_s}, {u"title"_s, displayName(id)}, {u"node"_s, id}};
 }
@@ -662,7 +686,18 @@ QString SwitchEngine::previousEntry(const QString &rowKey) const
         if (v.contains(fw) || fw.contains(v))
             return m.value(u"id"_s).toString();
     }
-    return {};
+    // the exact version is not stored: the newest stored one for the same network is the way back (USB build first)
+    QString best;
+    for (const QVariant &e : m_fw->library()) {
+        const QVariantMap m = e.toMap();
+        if (m.value(u"network"_s).toString() != net || (!cands.isEmpty() && !cands.contains(m.value(u"board"_s))))
+            continue;
+        if (m.value(u"variant"_s).toString() == u"ble"_s)
+            continue;
+        best = m.value(u"id"_s).toString();
+        break;   // the library is newest first within a board
+    }
+    return best;
 }
 
 QString SwitchEngine::begin(const QString &rowKey, const QString &entryId, const QString &typedName, bool ackUnsigned)

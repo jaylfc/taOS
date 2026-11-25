@@ -169,9 +169,17 @@ fn main() -> ExitCode {
                     eprintln!("taos-mesh: {kv}: expected path=value");
                     return ExitCode::from(2);
                 };
-                ch.insert(k.into(), v.parse::<u64>().map(|n| json!(n)).unwrap_or_else(|_| json!(v)));
+                ch.insert(
+                    k.into(),
+                    v.parse::<u64>()
+                        .map(|n| json!(n))
+                        .unwrap_or_else(|_| json!(v)),
+                );
             }
-            c("device.apply", json!({"radio": a.pos.get(1), "changes": ch}))
+            c(
+                "device.apply",
+                json!({"radio": a.pos.get(1), "changes": ch}),
+            )
         }
         "listen" => listen(&socket),
         "messages" => {

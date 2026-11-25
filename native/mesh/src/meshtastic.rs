@@ -450,6 +450,8 @@ fn telemetry_json(b: &[u8]) -> Result<(Option<u64>, String, serde_json::Value), 
 pub struct MeshtasticDriver {
     stream: StreamDecoder,
     pub device: crate::mt_device::DeviceState,
+    /// Set when the radio said it restarted: it forgot the session, so the handshake must be sent again.
+    pub rebooted: bool,
     pub my_node: Option<u32>,
     pub config_complete: bool,
     pub decode_errors: u64,
@@ -466,6 +468,7 @@ impl MeshtasticDriver {
         MeshtasticDriver {
             stream: StreamDecoder::new(),
             device: Default::default(),
+            rebooted: false,
             my_node: None,
             config_complete: false,
             decode_errors: 0,
@@ -523,7 +526,13 @@ impl MeshtasticDriver {
                 self.config_complete = true;
                 Inbound::control(payload, "config_complete")
             }
-            FromRadioMsg::Rebooted => Inbound::control(payload, "rebooted"),
+            FromRadioMsg::Rebooted => {
+                // what the radio told us before it restarted is stale until it sends its configuration again
+                self.rebooted = true;
+                self.config_complete = false;
+                self.device = Default::default();
+                Inbound::control(payload, "rebooted")
+            }
             FromRadioMsg::Other { field } => {
                 Inbound::control(payload, &format!("radio_message_{field}"))
             }

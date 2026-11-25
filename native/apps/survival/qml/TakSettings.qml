@@ -159,9 +159,8 @@ C.ScrollView {
             }
         }
 
-        // ---- Meshtastic channels
+        // ---- channels (both networks; MeshCore ones are read only)
         ColumnLayout {
-            visible: root.network !== "meshcore"
             Layout.fillWidth: true; spacing: Look.space2
             TakLabel { text: qsTr("Channels") }
             TaosText { visible: !root.ok || !(root.vals.channels && root.vals.channels.length > 0); Layout.fillWidth: true; wrapMode: Text.Wrap; font.pixelSize: Look.small; color: Look.textTertiary

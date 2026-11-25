@@ -974,33 +974,54 @@ impl Engine {
     /// `device.config`: what the radio itself said. `state` is `loading` until it has said anything.
     pub fn device_config(&self, radio: &str) -> Result<serde_json::Value, EngineError> {
         let g = self.lock();
-        let r = g.radios.get(radio).ok_or_else(|| EngineError::NoRadio(format!("no radio {radio}")))?;
+        let r = g
+            .radios
+            .get(radio)
+            .ok_or_else(|| EngineError::NoRadio(format!("no radio {radio}")))?;
         Ok(match &r.cfg {
             Some(c) if matches!(c, DeviceCfg::Meshtastic(d) if !d.complete) => {
                 serde_json::json!({"radio": radio, "state": "loading", "note": "the radio is still sending its settings", "values": c.snapshot()})
             }
-            Some(c) => serde_json::json!({"radio": radio, "state": "ok", "note": "", "values": c.snapshot()}),
-            None => serde_json::json!({"radio": radio, "state": "loading", "note": "the radio has not said anything yet", "values": {}}),
+            Some(c) => {
+                serde_json::json!({"radio": radio, "state": "ok", "note": "", "values": c.snapshot()})
+            }
+            None => {
+                serde_json::json!({"radio": radio, "state": "loading", "note": "the radio has not said anything yet", "values": {}})
+            }
         })
     }
 
     /// `device.apply`: plan the writes, queue them for the session. Nothing is queued when any change is refused.
-    pub fn device_apply(&self, radio: &str, changes: &serde_json::Map<String, serde_json::Value>, receive_only: bool) -> Result<serde_json::Value, EngineError> {
+    pub fn device_apply(
+        &self,
+        radio: &str,
+        changes: &serde_json::Map<String, serde_json::Value>,
+        receive_only: bool,
+    ) -> Result<serde_json::Value, EngineError> {
         if receive_only {
-            return Err(EngineError::Forbidden("the engine is in receive-only mode: it writes nothing to a radio".into()));
+            return Err(EngineError::Forbidden(
+                "the engine is in receive-only mode: it writes nothing to a radio".into(),
+            ));
         }
         let mut g = self.lock();
         g.seq += 1;
         let mut seed = (now_ms() as u32) ^ (g.seq as u32).wrapping_mul(0x9E37_79B1);
-        let r = g.radios.get_mut(radio).ok_or_else(|| EngineError::NoRadio(format!("no radio {radio}")))?;
+        let r = g
+            .radios
+            .get_mut(radio)
+            .ok_or_else(|| EngineError::NoRadio(format!("no radio {radio}")))?;
         if !r.connected || !r.ready {
             return Err(EngineError::NoRadio(format!("{radio} is not connected")));
         }
         let Some(cfg) = &r.cfg else {
-            return Err(EngineError::Invalid("the radio has not said anything about its settings yet".into()));
+            return Err(EngineError::Invalid(
+                "the radio has not said anything about its settings yet".into(),
+            ));
         };
         let DeviceCfg::Meshtastic(d) = cfg else {
-            return Err(EngineError::Invalid("changing the settings of a MeshCore radio is not supported yet".into()));
+            return Err(EngineError::Invalid(
+                "changing the settings of a MeshCore radio is not supported yet".into(),
+            ));
         };
         let (payloads, applied) = d
             .plan_apply(changes, || {
@@ -1011,18 +1032,28 @@ impl Engine {
         for p in payloads {
             r.admin.push_back(crate::meshtastic::frame(&p));
         }
-        Ok(serde_json::json!({"radio": radio, "applied": applied, "note": "Sent to the radio. It may restart to apply some settings and will reconnect by itself."}))
+        Ok(
+            serde_json::json!({"radio": radio, "applied": applied, "note": "Sent to the radio. It may restart to apply some settings and will reconnect by itself."}),
+        )
     }
 
     fn take_admin(&self, id: &str) -> Vec<Vec<u8>> {
         let mut g = self.lock();
-        g.radios.get_mut(id).map(|r| r.admin.drain(..).collect()).unwrap_or_default()
+        g.radios
+            .get_mut(id)
+            .map(|r| r.admin.drain(..).collect())
+            .unwrap_or_default()
     }
 
     /// Drop a radio's entry (after it was released): only when it is not connected.
     pub fn forget_radio(&self, link: &str) -> usize {
         let mut g = self.lock();
-        let ids: Vec<String> = g.radios.values().filter(|r| r.link == link && !r.connected).map(|r| r.id.clone()).collect();
+        let ids: Vec<String> = g
+            .radios
+            .values()
+            .filter(|r| r.link == link && !r.connected)
+            .map(|r| r.id.clone())
+            .collect();
         for i in &ids {
             g.radios.remove(i);
         }
@@ -1283,6 +1314,13 @@ impl Session {
                         first_err.get_or_insert(e);
                     }
                 }
+            }
+        }
+        // the radio restarted (a settings change can do that): it needs its handshake again to talk to us
+        if let DriverKind::Meshtastic(d) = &mut self.driver {
+            if std::mem::take(&mut d.rebooted) {
+                let hs = d.handshake(0x7a05_0002);
+                self.write(&hs).map_err(|e| self.link_failed(e))?;
             }
         }
         // what the radio said about itself, for device.config

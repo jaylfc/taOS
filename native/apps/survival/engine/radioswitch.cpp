@@ -240,10 +240,19 @@ void RadioSwitch::reconnect()
 {
     go(Step::Reconnecting);
     const quint64 run = m_run;
-    auto opened = std::make_shared<bool>(false);
+    auto inflight = std::make_shared<bool>(false);     // a connect is being answered: do not send another
     auto lastTry = std::make_shared<qint64>(-100000);
+    auto lastPoll = std::make_shared<qint64>(0);
     auto port = std::make_shared<QString>(m_req.port);
-    waitFor([this, run, opened, lastTry, port] {
+    // a connect that ended (opened or refused) frees the next try; only a refusal makes another one necessary
+    auto conn = std::make_shared<QMetaObject::Connection>();
+    *conn = connect(m_b, &MeshBackend::actionDone, this, [inflight, lastTry, this](const QString &what, bool, const QString &) {
+        if (what.startsWith(u"connect:"_s)) {
+            *inflight = false;
+            *lastTry = m_clock.elapsed();
+        }
+    });
+    waitFor([this, run, inflight, lastTry, lastPoll, port] {
         if (run != m_run)
             return true;
         if (!port->isEmpty()) {
@@ -253,7 +262,17 @@ void RadioSwitch::reconnect()
                     return true;
                 }
         }
-        if (!*opened || m_clock.elapsed() - *lastTry > 4000) {
+        // a radio finishing its handshake is not announced as an event: ask for the lists again every two seconds
+        if (m_clock.elapsed() - *lastPoll > 2000) {
+            *lastPoll = m_clock.elapsed();
+            m_b->refresh();
+        }
+        // a radio the engine already has but is still shaking hands with ("connecting") is waited for, not asked for again
+        bool handshaking = false;
+        for (const MeshRadio &x : m_b->radios())
+            if (x.port == *port && !port->isEmpty() && x.state == u"connecting"_s)
+                handshaking = true;
+        if (!*inflight && !handshaking && m_clock.elapsed() - *lastTry > 4000) {
             m_b->discoverDevices();
             // the board may have come back on another port: take the same one if it is there, else the one new USB port
             QStringList usb, fresh;
@@ -270,13 +289,14 @@ void RadioSwitch::reconnect()
                 pick = fresh.first();
             if (!pick.isEmpty()) {
                 *port = pick;
-                *opened = true;
+                *inflight = true;
                 *lastTry = m_clock.elapsed();
                 m_b->connectDevice(pick, QString());   // no network named: the engine's read-only handshake finds out
             }
         }
         return false;
-    }, m_reconnectMs, [this, run, port](bool ok) {
+    }, m_reconnectMs, [this, run, port, conn](bool ok) {
+        disconnect(*conn);
         if (run != m_run)
             return;
         if (!ok || m_newRadio.isEmpty()) {
@@ -319,6 +339,7 @@ void RadioSwitch::restore()
         }
         const QVariantMap saved = profile.value(u"values"_s).toMap();
         QVariantMap changes;
+        int skipped = 0;
         for (const QVariant &w : c.values.value(u"writable"_s).toList()) {
             QStringList paths;
             const QString t = w.toString();
@@ -330,12 +351,25 @@ void RadioSwitch::restore()
             }
             for (const QString &p : paths) {
                 const QVariant want = valueAt(saved, p), have = valueAt(c.values, p);
-                if (want.isValid() && !want.toString().isEmpty() && want.toString() != have.toString())
+                if (!want.isValid() || want.toString().isEmpty())
+                    continue;
+                if (!have.isValid()) {   // e.g. a channel the fresh firmware does not have: the rest is still put back
+                    ++skipped;
+                    continue;
+                }
+                if (want.toString() != have.toString())
                     changes.insert(p, want);
             }
         }
         if (c.values.value(u"writable"_s).toList().isEmpty()) {
             note(tr("The earlier settings are kept. This radio's settings cannot be written from here yet, so they were not put back."));
+            finish();
+            return;
+        }
+        if (skipped > 0)
+            note(tr("%n earlier setting(s) do not exist on this radio yet (for example a channel) and were left out.", "", skipped));
+        if (!m_b->deviceConfigWritable()) {
+            note(tr("The earlier settings are kept, but the mesh engine is receive-only (or too old), so they were not put back."));
             finish();
             return;
         }
@@ -351,8 +385,9 @@ void RadioSwitch::restore()
             disconnect(*conn);
             if (run != m_run)
                 return;
-            if (!ok) {
-                fail(tr("The earlier settings could not be put back: %1").arg(err));
+            if (!ok) {   // the radio is already on the new network: this is a note, not a failed switch
+                note(tr("The earlier settings are kept, but could not be put back: %1").arg(err));
+                finish();
                 return;
             }
             m_restored = n;

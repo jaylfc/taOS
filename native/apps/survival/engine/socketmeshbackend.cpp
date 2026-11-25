@@ -542,7 +542,12 @@ void SocketMeshBackend::applyDeviceConfig(const QString &radioId, const QVariant
         return;
     }
     m_client->request(u"device.apply"_s, QJsonObject{{u"radio"_s, radioId}, {u"changes"_s, QJsonObject::fromVariantMap(changes)}}, this,
-                      [this](const MeshReply &r) { done(u"device"_s, r); });
+                      [this, radioId](const MeshReply &r) {
+                          done(u"device"_s, r);
+                          // the radio may restart to use the change: read its settings again once it is back
+                          if (r.ok)
+                              QTimer::singleShot(2500, this, [this, radioId] { requestDeviceConfig(radioId); });
+                      });
 }
 
 } // namespace Taos::Survival

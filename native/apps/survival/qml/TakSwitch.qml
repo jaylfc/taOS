@@ -30,17 +30,24 @@ C.ScrollView {
     Component.onCompleted: { fw.reload(); fw.detect(); tak.discover() }
     function networkName(n) { return n === "meshtastic" ? "Meshtastic" : n === "meshcore" ? "MeshCore" : n === "rnode" ? "RNode (Reticulum)" : n }
     // one choice per network and variant: the newest stored version that fits this board, other than what it runs now
+    // the boards this radio can be: the one it reported when it has said (the USB id alone cannot tell a Heltec V3 from a T-Beam)
+    readonly property var boardIds: {
+        const cands = row.candidates || []
+        if (row.hardware) { const m = cands.filter(c => fw.boardName(c) === row.hardware); if (m.length > 0) return m }
+        return cands
+    }
     readonly property var choices: {
         const best = {}
-        const cands = row.candidates || []
         for (const e of fw.library) {
             if (e.network === "rnode" || e.network === row.network) continue
-            if (cands.length > 0 && cands.indexOf(e.board) < 0) continue
+            if (boardIds.length > 0 && boardIds.indexOf(e.board) < 0) continue
             const k = e.network + "|" + e.board + "|" + e.variant
             if (!best[k]) best[k] = e
         }
-        return Object.keys(best).sort().map(k => best[k])
+        // by network and board, the USB build before the Bluetooth one (a Bluetooth build cannot be reconnected here)
+        return Object.keys(best).map(k => best[k]).sort((a, b) => (a.network + a.board + (a.variant === "ble" ? "1" : "0")) < (b.network + b.board + (b.variant === "ble" ? "1" : "0")) ? -1 : 1)
     }
+    readonly property bool manyBoards: { const s = {}; for (const c of choices) s[c.board] = 1; return Object.keys(s).length > 1 }
     // scripted states for pictures (only with TAOS_SURVIVAL_DEMO): --demo swstep=review;entry=<id>;typed=<text>
     onNavChanged: if (nav && nav.demo.swstep !== undefined) demoTimer.start()
     Timer {
@@ -90,8 +97,8 @@ C.ScrollView {
                     Layout.fillWidth: true
                     objectName: "choice-" + modelData.id
                     glyph: "radio"
-                    title: root.networkName(modelData.network) + (modelData.variant !== "" ? " (" + modelData.variant.toUpperCase() + ")" : "")
-                    subtitle: qsTr("Version %1, %2").arg(modelData.version).arg(root.fw.sizeText(modelData.sizeBytes))
+                    title: root.networkName(modelData.network) + (modelData.variant === "usb" ? qsTr(" (USB)") : modelData.variant === "ble" ? qsTr(" (Bluetooth build)") : "") + (root.manyBoards ? " - " + root.fw.boardName(modelData.board) : "")
+                    subtitle: qsTr("Version %1, %2").arg(modelData.version).arg(root.fw.sizeText(modelData.sizeBytes)) + (modelData.variant === "ble" ? qsTr(". taOS cannot connect a Bluetooth radio yet, so it cannot reconnect it afterwards.") : "")
                     onClicked: { root.entryId = modelData.id; root.fw.planFlash(root.row.fwDeviceId, modelData.id); root.chosen = "review" }
                     trailing: Component { Glyph { name: "chevron-right"; size: 16; stroke: 2; color: Look.textTertiary } }
                 }
@@ -123,7 +130,7 @@ C.ScrollView {
                     model: [
                         qsTr("This radio stops being a %1 radio and becomes a %2 radio (%3). People on %1 will no longer hear it.").arg(root.row.networkName || qsTr("current-network")).arg(root.networkName(root.toNetwork)).arg(root.entry ? root.entry.version : ""),
                         root.row.network !== "" && root.row.engineRadioId !== ""
-                            ? qsTr("Its %1 settings (names, region, channels and their keys) are saved on this device first, in a private file. Switching back puts them back.").arg(root.row.networkName)
+                            ? qsTr("Its %1 settings (names, region, preset and channels with their keys) are saved on this device first, in a private file. Switching back puts the names, region and preset back. Channel keys stay in the file but cannot be written back yet, so share each channel's key again.").arg(root.row.networkName)
                             : qsTr("The mesh engine has no open connection to this board, so its settings cannot be read. The firmware manager still backs up what it can."),
                         root.hasEarlier ? qsTr("Settings you saved earlier for %1 are put back once the radio is up.").arg(root.networkName(root.toNetwork))
                                         : qsTr("No settings were saved for %1 before, so it starts with the new firmware's own defaults.").arg(root.networkName(root.toNetwork)),

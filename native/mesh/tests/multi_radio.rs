@@ -30,9 +30,13 @@ fn a_send_goes_only_to_the_radio_of_its_network() {
     let e = Engine::open(&t.path().join("data"), "person:jay").unwrap();
     let d = Arc::new(Daemon::new(e.clone(), false));
     let mt = FakeLink::new("fake-mt");
-    mt.reply_on_write(&frame(&frame_named(&fixture("meshtastic_device.json"), "my_info")));
+    mt.reply_on_write(&frame(&frame_named(
+        &fixture("meshtastic_device.json"),
+        "my_info",
+    )));
     let mc = FakeLink::new("fake-mc");
-    d.attach(Box::new(mt.clone()), "meshtastic", vec![]).unwrap();
+    d.attach(Box::new(mt.clone()), "meshtastic", vec![])
+        .unwrap();
     d.attach(Box::new(mc.clone()), "meshcore", vec![]).unwrap();
     let end = Instant::now() + Duration::from_secs(5);
     while e.radios().len() < 2 {
@@ -40,17 +44,39 @@ fn a_send_goes_only_to_the_radio_of_its_network() {
         std::thread::sleep(Duration::from_millis(20));
     }
     let nets: Vec<String> = e.radios().iter().map(|r| r.network.clone()).collect();
-    assert!(nets.contains(&"meshtastic".to_string()) && nets.contains(&"meshcore".to_string()), "{nets:?}");
+    assert!(
+        nets.contains(&"meshtastic".to_string()) && nets.contains(&"meshcore".to_string()),
+        "{nets:?}"
+    );
     std::thread::sleep(Duration::from_millis(300));
     let (b_mt, b_mc) = (mt.written_bytes().len(), mc.written_bytes().len());
-    let r = call(&d, "app.send", json!({"thread": "ch:meshcore:0", "text": "to the hill"}));
+    let r = call(
+        &d,
+        "app.send",
+        json!({"thread": "ch:meshcore:0", "text": "to the hill"}),
+    );
     assert_eq!(r["result"]["accepted"], true, "{r}");
     let n_mc = wait_new(&mc, b_mc);
     assert!(n_mc > b_mc, "the MeshCore radio got the send");
-    assert_eq!(mt.written_bytes().len(), b_mt, "the Meshtastic radio got nothing");
+    assert_eq!(
+        mt.written_bytes().len(),
+        b_mt,
+        "the Meshtastic radio got nothing"
+    );
     let (b_mt, b_mc) = (mt.written_bytes().len(), mc.written_bytes().len());
-    let r = call(&d, "app.send", json!({"thread": "ch:meshtastic:0", "text": "to the ridge"}));
+    let r = call(
+        &d,
+        "app.send",
+        json!({"thread": "ch:meshtastic:0", "text": "to the ridge"}),
+    );
     assert_eq!(r["result"]["accepted"], true, "{r}");
-    assert!(wait_new(&mt, b_mt) > b_mt, "the Meshtastic radio got the send");
-    assert_eq!(mc.written_bytes().len(), b_mc, "the MeshCore radio got nothing");
+    assert!(
+        wait_new(&mt, b_mt) > b_mt,
+        "the Meshtastic radio got the send"
+    );
+    assert_eq!(
+        mc.written_bytes().len(),
+        b_mc,
+        "the MeshCore radio got nothing"
+    );
 }
