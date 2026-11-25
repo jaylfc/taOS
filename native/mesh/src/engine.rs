@@ -997,6 +997,7 @@ impl Engine {
         radio: &str,
         changes: &serde_json::Map<String, serde_json::Value>,
         receive_only: bool,
+        confirm_region: bool,
     ) -> Result<serde_json::Value, EngineError> {
         if receive_only {
             return Err(EngineError::Forbidden(
@@ -1024,7 +1025,7 @@ impl Engine {
             ));
         };
         let (payloads, applied) = d
-            .plan_apply(changes, || {
+            .plan_apply(changes, confirm_region, || {
                 seed = seed.wrapping_add(0x6D2B_79F5);
                 seed | 1
             })

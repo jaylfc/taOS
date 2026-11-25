@@ -169,7 +169,7 @@ fn apply_writes_the_reference_encoded_admin_frames_in_one_transaction() {
     let u = up(false);
     let _ = config(&u.sock);
     let before = written(&u.link).len();
-    let r = call(&u.sock, "device.apply", "owner", json!({"radio": "!a1b2c3d4", "changes": {"lora.region": "US", "lora.modem_preset": "MEDIUM_FAST"}})).unwrap();
+    let r = call(&u.sock, "device.apply", "owner", json!({"radio": "!a1b2c3d4", "confirm_region": true, "changes": {"lora.region": "US", "lora.modem_preset": "MEDIUM_FAST"}})).unwrap();
     assert_eq!(r["ok"], true, "{r}");
     assert_eq!(r["result"]["applied"].as_array().unwrap().len(), 2);
     let new = wait_new(&u.link, before);
@@ -287,4 +287,84 @@ fn a_restarted_radio_is_handshaken_again_and_its_old_settings_are_not_kept() {
     );
     // and the radio, answering it, makes the settings readable again
     let _ = config(&u.sock);
+}
+
+fn apply(u: &Up, changes: Value) -> Value {
+    call(
+        &u.sock,
+        "device.apply",
+        "owner",
+        json!({"radio": "!a1b2c3d4", "changes": changes}),
+    )
+    .unwrap()
+}
+
+#[test]
+fn a_region_change_needs_an_explicit_confirmation_in_the_engine() {
+    let u = up(false);
+    let _ = config(&u.sock);
+    let before = written(&u.link).len();
+    let r = apply(&u, json!({"lora.region": "US"}));
+    assert_eq!(r["ok"], false, "{r}");
+    assert!(
+        r["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("confirm_region"),
+        "{r}"
+    );
+    assert_eq!(
+        written(&u.link).len(),
+        before,
+        "nothing written without the confirmation"
+    );
+    let r = call(
+        &u.sock,
+        "device.apply",
+        "owner",
+        json!({"radio": "!a1b2c3d4", "confirm_region": true, "changes": {"lora.region": "US"}}),
+    )
+    .unwrap();
+    assert_eq!(r["ok"], true, "{r}");
+}
+
+#[test]
+fn unset_and_unknown_regions_are_refused_even_when_confirmed() {
+    let u = up(false);
+    let _ = config(&u.sock);
+    let before = written(&u.link).len();
+    for region in ["UNSET", "MOON", "", "us"] {
+        let r = call(&u.sock, "device.apply", "owner", json!({"radio": "!a1b2c3d4", "confirm_region": true, "changes": {"lora.region": region}})).unwrap();
+        assert_eq!(r["ok"], false, "{region} must be refused: {r}");
+    }
+    assert_eq!(written(&u.link).len(), before);
+}
+
+#[test]
+fn the_cli_needs_confirm_region_for_a_region() {
+    let u = up(false);
+    let _ = config(&u.sock);
+    let run = |args: &[&str]| {
+        std::process::Command::new(env!("CARGO_BIN_EXE_taos-mesh"))
+            .arg("--socket")
+            .arg(&u.sock)
+            .args(args)
+            .output()
+            .unwrap()
+    };
+    let o = run(&["device-apply", "!a1b2c3d4", "lora.region=US"]);
+    assert_eq!(o.status.code(), Some(1), "refused without the flag");
+    assert!(String::from_utf8_lossy(&o.stderr).contains("confirm_region"));
+    let o = run(&[
+        "device-apply",
+        "!a1b2c3d4",
+        "lora.region=US",
+        "--confirm-region",
+    ]);
+    assert_eq!(
+        o.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&o.stderr)
+    );
 }

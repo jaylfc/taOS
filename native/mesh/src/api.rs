@@ -90,6 +90,9 @@ fn need<'a>(p: &'a Value, k: &str) -> Result<&'a str, String> {
     s(p, k).ok_or_else(|| format!("missing parameter {k}"))
 }
 
+/// (stop flag, alive flag) of one supervised radio.
+type Supervision = (Arc<AtomicBool>, Arc<AtomicBool>);
+
 pub struct Daemon {
     pub engine: Arc<Engine>,
     pub receive_only: bool,
@@ -99,7 +102,9 @@ pub struct Daemon {
     /// Verifies capability tokens for non-owner principals; None refuses them all.
     pub verifier: Option<crate::auth::TokenVerifier>,
     /// One stop flag per supervised radio, by the connector's label: `radios.release` sets it.
-    releases: std::sync::Mutex<std::collections::HashMap<String, Arc<AtomicBool>>>,
+    releases: std::sync::Mutex<std::collections::HashMap<String, Supervision>>,
+    /// Ports a `connect` is working on right now (the probe takes seconds): a release waits for them.
+    connecting: std::sync::Mutex<std::collections::HashSet<String>>,
 }
 
 impl Daemon {
@@ -113,6 +118,7 @@ impl Daemon {
             owner_uid: nix::unistd::geteuid().as_raw(),
             verifier: None,
             releases: Default::default(),
+            connecting: Default::default(),
         }
     }
 
@@ -164,10 +170,11 @@ impl Daemon {
                 }
             });
         }
+        let alive = Arc::new(AtomicBool::new(true));
         self.releases
             .lock()
             .unwrap_or_else(|p| p.into_inner())
-            .insert(label.clone(), own.clone());
+            .insert(label.clone(), (own.clone(), alive.clone()));
         let sup = supervisor::Supervised {
             engine: self.engine.clone(),
             connector,
@@ -179,7 +186,8 @@ impl Daemon {
         };
         let stop = sup.stop.clone();
         std::thread::spawn(move || {
-            supervisor::run(sup, &|d| supervisor::sleep_unless_stopped(&stop, d))
+            supervisor::run(sup, &|d| supervisor::sleep_unless_stopped(&stop, d));
+            alive.store(false, Ordering::SeqCst); // the link is dropped: the port is closed
         });
         label
     }
@@ -187,31 +195,37 @@ impl Daemon {
     /// Close a radio's link and stop reconnecting it, so another program (the firmware flasher) can have the port.
     /// The saved entry goes too: it is not opened again at the next start.
     pub fn release_spec(&self, spec: &str) -> Result<Value, String> {
-        let flag = self
+        // a connect that is probing this port right now would open it after we return: wait for it to end first
+        let end = std::time::Instant::now() + Duration::from_secs(15);
+        while self
+            .connecting
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .contains(spec)
+        {
+            if std::time::Instant::now() > end {
+                return Err(format!("{spec}: a connect is still in progress, try again"));
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        let entry = self
             .releases
             .lock()
             .unwrap_or_else(|p| p.into_inner())
             .remove(spec);
-        let was_open = flag.is_some();
-        if let Some(f) = &flag {
-            f.store(true, Ordering::Relaxed);
+        let was_open = entry.is_some();
+        if let Some((stop, _)) = &entry {
+            stop.store(true, Ordering::Relaxed);
         }
         let list: Vec<Value> = saved_radios()
             .into_iter()
             .filter(|d| d["device"] != spec)
             .collect();
         write_saved(&list)?;
-        if was_open {
-            let end = std::time::Instant::now() + Duration::from_secs(6);
-            loop {
-                let open = self
-                    .engine
-                    .radios()
-                    .iter()
-                    .any(|r| r.link == spec && r.connected);
-                if !open {
-                    break;
-                }
+        if let Some((_, alive)) = &entry {
+            // the supervisor thread ends only after its session (and so the port) is dropped
+            let end = std::time::Instant::now() + Duration::from_secs(10);
+            while alive.load(Ordering::SeqCst) {
                 if std::time::Instant::now() > end {
                     return Err(format!("{spec}: the radio did not close in time"));
                 }
@@ -224,6 +238,25 @@ impl Daemon {
 
     /// `spec` is a serial path, `tcp:host:port` or `ble:ADDRESS`.
     pub fn connect_spec(&self, spec: &str, network: Option<&str>) -> Result<Value, String> {
+        struct Busy<'a>(&'a Daemon, String);
+        impl Drop for Busy<'_> {
+            fn drop(&mut self) {
+                self.0
+                    .connecting
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner())
+                    .remove(&self.1);
+            }
+        }
+        self.connecting
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .insert(spec.to_string());
+        let _busy = Busy(self, spec.to_string());
+        self.connect_spec_inner(spec, network)
+    }
+
+    fn connect_spec_inner(&self, spec: &str, network: Option<&str>) -> Result<Value, String> {
         if let Some(addr) = spec.strip_prefix("ble:") {
             let net = match network {
                 Some(n) => n.to_string(),
@@ -251,7 +284,7 @@ impl Daemon {
             .lock()
             .unwrap_or_else(|p| p.into_inner())
             .get(spec)
-            .is_some_and(|f| !f.load(Ordering::Relaxed));
+            .is_some_and(|(stop, _)| !stop.load(Ordering::Relaxed));
         if alive {
             let net = self
                 .engine
@@ -434,7 +467,8 @@ impl Daemon {
                 ok!(eng!(self.engine.device_apply(
                     radio,
                     changes,
-                    self.receive_only
+                    self.receive_only,
+                    p.get("confirm_region").and_then(|v| v.as_bool()) == Some(true)
                 )))
             }
             "app.radios" => ok!(eng!(crate::appview::radios(&self.engine, who))),

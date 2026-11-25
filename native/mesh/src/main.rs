@@ -17,7 +17,7 @@ const USAGE: &str = "taos-mesh: mesh radio engine
   taos-mesh messages [--identity I] [--channel N] [--network N] [--kind K] [--since MS] [--until MS] [--limit N] [--as WHO]
   taos-mesh send --network N --text T [--to NODE] [--channel N] [--radio R] [--as PRINCIPAL]
   taos-mesh positions [--as WHO]
-  taos-mesh release DEVICE | device-config RADIO | device-apply RADIO path=value ...
+  taos-mesh release DEVICE | device-config RADIO | device-apply RADIO path=value ... [--confirm-region]
   taos-mesh identities
   taos-mesh identities assign NODE IDENTITY [--name NAME] | unassign NODE
   taos-mesh identities contact NAME [--notes TEXT] | told CONTACT [--date YYYY-MM-DD] | untold CONTACT
@@ -62,7 +62,7 @@ fn parse(args: Vec<String>) -> Args {
     let mut it = args.into_iter().peekable();
     while let Some(x) = it.next() {
         if let Some(k) = x.strip_prefix("--") {
-            if k == "receive-only" {
+            if k == "receive-only" || k == "confirm-region" {
                 a.flags.push(k.into());
             } else if let Some(v) = it.next() {
                 a.opts.push((k.into(), v));
@@ -178,7 +178,7 @@ fn main() -> ExitCode {
             }
             c(
                 "device.apply",
-                json!({"radio": a.pos.get(1), "changes": ch}),
+                json!({"radio": a.pos.get(1), "changes": ch, "confirm_region": a.flags.iter().any(|f| f == "confirm-region")}),
             )
         }
         "listen" => listen(&socket),

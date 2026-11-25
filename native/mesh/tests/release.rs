@@ -108,3 +108,33 @@ fn connecting_a_port_that_is_already_open_does_not_open_it_twice() {
         "the port was opened once"
     );
 }
+
+#[test]
+fn a_release_during_an_in_flight_connect_leaves_the_port_closed() {
+    // a radio that accepts the connection and says nothing: the engine's probe waits for it
+    let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = l.local_addr().unwrap().to_string();
+    let t = TmpDir::new("release4");
+    std::env::set_var("XDG_DATA_HOME", t.path());
+    let engine = Engine::open(&t.path().join("data"), "person:jay").unwrap();
+    let d = Arc::new(Daemon::new(engine.clone(), false));
+    let spec = format!("tcp:{addr}");
+    let (d2, s2) = (d.clone(), spec.clone());
+    let conn = std::thread::spawn(move || {
+        d2.handle_trusted(&json!({"id": 1, "method": "connect", "principal": "owner", "params": {"device": s2, "network": "meshtastic"}}).to_string());
+    });
+    std::thread::sleep(Duration::from_millis(100));
+    let _hold = std::thread::spawn(move || {
+        let _ = l.accept();
+        std::thread::sleep(Duration::from_secs(8));
+    });
+    let r = d.handle_trusted(&json!({"id": 2, "method": "radios.release", "principal": "owner", "params": {"device": spec}}).to_string());
+    assert_eq!(r["ok"], true, "{r}");
+    conn.join().unwrap();
+    std::thread::sleep(Duration::from_millis(1500));
+    assert!(
+        !engine.radios().iter().any(|x| x.connected),
+        "the port was opened after the release returned: {:?}",
+        engine.radios().len()
+    );
+}

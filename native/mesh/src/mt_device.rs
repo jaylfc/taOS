@@ -354,6 +354,7 @@ impl DeviceState {
     pub fn plan_apply(
         &self,
         changes: &Map<String, Value>,
+        confirm_region: bool,
         mut next_id: impl FnMut() -> u32,
     ) -> Result<(Vec<Vec<u8>>, Vec<String>), String> {
         let my = self.my_node.ok_or("the radio has not said who it is yet")?;
@@ -385,9 +386,15 @@ impl DeviceState {
                     *field = Some(t.to_string());
                 }
                 "lora.region" => {
-                    let n = s
+                    // the region sets which frequencies the radio transmits on: unknown and UNSET are never written, and a change
+                    // needs the caller's explicit confirmation, so no screen is the only guard
+                    let name = s.filter(|x| *x != "UNSET");
+                    let n = name
                         .and_then(|x| num_of(REGIONS, x))
-                        .ok_or(format!("{path}: not a region this firmware knows"))?;
+                        .ok_or(format!("{path}: not a region that can be set (UNSET and unknown names are refused)"))?;
+                    if !confirm_region {
+                        return Err(format!("{path}: a region change needs confirm_region: true (the frequencies the radio transmits on change)"));
+                    }
                     if self.lora.is_none() {
                         return Err("the radio has not sent its radio settings yet".into());
                     }
