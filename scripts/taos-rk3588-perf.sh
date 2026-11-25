@@ -41,10 +41,18 @@ is_rockchip() {
 # $1 = governor file, $2 = state file, $3 = value to write.
 # Records the file's current value into $2 first (first record wins, so
 # a repeated start cannot record "performance" as the previous value).
+# The governor is only changed once a non-empty record exists: without
+# one, stop would restore the fallback instead of the real previous
+# value, so a failed recording leaves the governor untouched.
 record_and_set() {
     if [ -w "$1" ]; then
-        if [ ! -f "$2" ]; then
+        if [ ! -s "$2" ]; then
             cat "$1" > "$2" 2>/dev/null || true
+        fi
+        if [ ! -s "$2" ]; then
+            rm -f "$2"
+            echo "  $1: could not record current governor — leaving it unchanged" >&2
+            return 1
         fi
         echo "$3" > "$1" 2>/dev/null || true
         echo "  $1: $(cat "$2" 2>/dev/null || echo '?') -> $(cat "$1" 2>/dev/null || echo '?')"
@@ -52,15 +60,22 @@ record_and_set() {
 }
 
 # $1 = governor file, $2 = state file, $3 = fallback when unrecorded.
+# The record is deleted only once the value is actually written back:
+# on a failed write it stays, so a later stop retries with the real
+# previous value instead of the fallback, and the failure propagates.
 restore() {
     if [ -w "$1" ]; then
         prev="$(cat "$2" 2>/dev/null || true)"
         if [ -z "$prev" ]; then
             prev="$3"
         fi
-        echo "$prev" > "$1" 2>/dev/null || true
-        rm -f "$2"
-        echo "  $1: restored $prev"
+        if echo "$prev" > "$1" 2>/dev/null; then
+            rm -f "$2"
+            echo "  $1: restored $prev"
+        else
+            echo "  $1: FAILED to restore $prev — recorded value kept" >&2
+            return 1
+        fi
     fi
 }
 
@@ -102,14 +117,26 @@ do_start() {
 }
 
 do_stop() {
+    # Same hardware guard as start: on other boards start recorded
+    # nothing, and restoring would write the fallback governors over
+    # whatever the board is actually running.
+    if ! is_rockchip; then
+        echo "taos-rk3588-perf: not a Rockchip board — exiting"
+        exit 0
+    fi
     echo "taos-rk3588-perf: restoring recorded governors"
-    devfreq_domains | while read -r domain; do
-        restore "$domain/governor" "$STATE_DIR/devfreq.$(basename "$domain")" "simple_ondemand"
+    failed=0
+    for domain in $(devfreq_domains); do
+        restore "$domain/governor" "$STATE_DIR/devfreq.$(basename "$domain")" "simple_ondemand" || failed=1
     done
-    cpu_policies | while read -r policy; do
-        restore "$policy/scaling_governor" "$STATE_DIR/cpu.$(basename "$policy")" "schedutil"
+    for policy in $(cpu_policies); do
+        restore "$policy/scaling_governor" "$STATE_DIR/cpu.$(basename "$policy")" "schedutil" || failed=1
     done
     rmdir "$STATE_DIR" 2>/dev/null || true
+    if [ "$failed" -ne 0 ]; then
+        echo "taos-rk3588-perf: some governors could not be restored — recorded values kept for a retry" >&2
+        exit 1
+    fi
     echo "taos-rk3588-perf: governors restored"
 }
 

@@ -54,9 +54,17 @@ grep -q 'action.lookup("unit") == "taos-rk3588-perf.service"' "$RULE"
 echo "test: polkit rule is scoped to the controller user only"
 grep -q 'subject.user == "taos"' "$RULE"
 
-echo "test: polkit rule covers the two systemd1 actions the Settings toggle needs"
+echo "test: polkit rule grants the manage-units action the Settings toggle needs"
 grep -q "org.freedesktop.systemd1.manage-units" "$RULE"
-grep -q "org.freedesktop.systemd1.manage-unit-files" "$RULE"
+
+echo "test: polkit rule does not grant the unit-files action (it carries no unit detail to scope by)"
+if grep -q "org.freedesktop.systemd1.manage-unit-files" "$RULE"; then
+    echo "FAIL: polkit rule grants the unit-files action, which cannot be scoped to one unit" >&2
+    exit 1
+fi
+
+echo "test: unit gates boot start on the persisted toggle flag"
+grep -q "ConditionPathExists=/var/lib/taos-rk3588-perf/enabled" "$UNIT"
 
 # ── Functional: fake sysfs ──────────────────────────────────────────
 # Seeded "previous" governors are deliberately NOT the stop fallbacks
@@ -146,5 +154,43 @@ printf 'raspberrypi,5-model-b\0' > "$COMPAT"
 run_perf start
 expect "$SYS/class/devfreq/fdab0000.npu/governor" powersave
 expect "$SYS/devices/system/cpu/cpufreq/policy0/scaling_governor" ondemand
+
+echo "test: stop on a non-Rockchip board writes nothing"
+seed_tree
+rm -rf "$FAKE/run"
+printf 'raspberrypi,5-model-b\0' > "$COMPAT"
+run_perf stop
+expect "$SYS/class/devfreq/fdab0000.npu/governor" powersave
+expect "$SYS/devices/system/cpu/cpufreq/policy0/scaling_governor" ondemand
+expect "$SYS/devices/system/cpu/cpufreq/policy4/scaling_governor" powersave
+
+echo "test: start changes no governor when recording the previous value fails"
+printf 'rockchip,rk3588\0' > "$COMPAT"
+seed_tree
+rm -rf "$FAKE/run"
+touch "$FAKE/state-blocker"
+TAOS_PERF_SYSFS_ROOT="$SYS" \
+TAOS_PERF_STATE_DIR="$FAKE/state-blocker/state" \
+TAOS_PERF_COMPATIBLE_FILE="$COMPAT" \
+    sh "$SCRIPT" start > /dev/null
+expect "$SYS/class/devfreq/fdab0000.npu/governor" powersave
+expect "$SYS/devices/system/cpu/cpufreq/policy0/scaling_governor" ondemand
+expect "$SYS/devices/system/cpu/cpufreq/policy4/scaling_governor" powersave
+
+echo "test: stop keeps the recorded governor and fails when the restore write fails"
+seed_tree
+rm -rf "$FAKE/run"
+run_perf start
+expect "$SYS/devices/system/cpu/cpufreq/policy0/scaling_governor" performance
+rm "$SYS/devices/system/cpu/cpufreq/policy0/scaling_governor"
+mkdir "$SYS/devices/system/cpu/cpufreq/policy0/scaling_governor"
+rc=0
+run_perf stop || rc=$?
+if [ "$rc" -eq 0 ]; then
+    echo "FAIL: stop reported success although a restore write failed" >&2
+    exit 1
+fi
+expect "$STATE/cpu.policy0" ondemand
+expect "$SYS/class/devfreq/fdab0000.npu/governor" powersave
 
 echo "all tests passed"
