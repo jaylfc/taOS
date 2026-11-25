@@ -11,6 +11,8 @@ paths so a test never touches the machine's real /etc or /proc.
 from __future__ import annotations
 
 import pytest
+from httpx import ASGITransport, AsyncClient
+from taos_test_csrf import csrf_event_hooks
 
 import tinyagentos.routes.settings as settings_mod
 
@@ -196,4 +198,100 @@ async def test_put_rejects_non_bool_enabled(client, perf_env, monkeypatch):
     resp = await client.put("/api/settings/rk3588-performance", json={"enabled": "yes"})
 
     assert resp.status_code == 400
+    assert fake.calls == []
+
+
+# ---------------------------------------------------------------------------
+# Non-admin refusal (jaylfc, PR #4506): the toggle is admin-only. A
+# signed-in member session is refused by the settings router's admin
+# gate with 403; an agent's registry JWT is refused even earlier --
+# AuthMiddleware only admits registry JWTs on their allowlisted routes
+# and answers 401 elsewhere (anti-enumeration), so the toggle never
+# sees it. Both callers must dispatch no systemctl call.
+# ---------------------------------------------------------------------------
+
+
+async def _member_client(app) -> AsyncClient:
+    """CSRF-armed client for a non-admin member session on *app*.
+
+    Mirrors tests/test_settings_authz.py's helper; the CSRF hooks make
+    the client behave like the real SPA so the request reaches the
+    admin gate itself instead of stopping at the CSRF check (both
+    answer 403, but only the gate is under test here). Requires the
+    admin created by the ``client`` fixture.
+    """
+    auth_mgr = app.state.auth
+    invite_code = auth_mgr.add_user_invite("perfmember", "admin")
+    auth_mgr.complete_invite(
+        "perfmember", invite_code, "Perf Member", "", "perfmemberpass123"
+    )
+    member = auth_mgr.find_user("perfmember")
+    token = auth_mgr.create_session(member["id"])
+    return AsyncClient(
+        transport=ASGITransport(app=app),
+        base_url="http://test",
+        cookies={"taos_session": token},
+        event_hooks=csrf_event_hooks(),
+    )
+
+
+@pytest.mark.asyncio
+async def test_put_member_session_is_403_and_dispatches_nothing(
+    client, app, perf_env, monkeypatch
+):
+    unit_path, compat_path = perf_env
+    _install_unit(unit_path)
+    _set_board(compat_path, b"rockchip,rk3588\x00")
+    fake = FakeSystemctl()
+    monkeypatch.setattr(settings_mod, "_systemctl", fake)
+
+    member_client = await _member_client(app)
+    try:
+        resp = await member_client.put(
+            "/api/settings/rk3588-performance", json={"enabled": True}
+        )
+    finally:
+        await member_client.aclose()
+
+    assert resp.status_code == 403
+    assert fake.calls == []
+
+
+@pytest.mark.asyncio
+async def test_put_agent_token_is_refused_and_dispatches_nothing(
+    client, app, perf_env, monkeypatch
+):
+    from tinyagentos.agent_registry_store import mint_registry_token
+
+    unit_path, compat_path = perf_env
+    _install_unit(unit_path)
+    _set_board(compat_path, b"rockchip,rk3588\x00")
+    fake = FakeSystemctl()
+    monkeypatch.setattr(settings_mod, "_systemctl", fake)
+
+    # A genuine agent credential: a registered agent's registry JWT.
+    registry = app.state.agent_registry
+    await registry.init()
+    owner = app.state.auth.find_user("admin")["id"]
+    rec = await registry.register(
+        framework="hermes", display_name="perf-agent", user_id=owner
+    )
+    priv, _pub = app.state.agent_registry_keypair
+    token = mint_registry_token(rec["canonical_id"], priv, user_id=owner)
+
+    bare_client = AsyncClient(
+        transport=ASGITransport(app=app), base_url="http://test"
+    )
+    try:
+        resp = await bare_client.put(
+            "/api/settings/rk3588-performance",
+            json={"enabled": True},
+            headers={"Authorization": f"Bearer {token}"},
+        )
+    finally:
+        await bare_client.aclose()
+
+    # Refused at the middleware (401: registry JWTs are allowlist-only
+    # and this route is not on it) -- never reaches the toggle handler.
+    assert resp.status_code == 401
     assert fake.calls == []
