@@ -263,6 +263,7 @@ class SurvivalBackend : public QObject
     Q_PROPERTY(QObject *radios READ radios CONSTANT)
     Q_PROPERTY(QObject *kits READ kits CONSTANT)
     Q_PROPERTY(QObject *catalog READ catalog CONSTANT)
+    Q_PROPERTY(QObject *gear READ gear CONSTANT)
     Q_PROPERTY(QObject *collections READ collections CONSTANT)
     Q_PROPERTY(QObject *mapPacks READ mapPacks CONSTANT)
     Q_PROPERTY(QObject *edu READ edu CONSTANT)
@@ -278,6 +279,7 @@ public:
     QObject *radios() { return &m_radios; }
     QObject *kits() { return &m_kits; }
     QObject *catalog() { return m_catalog; }
+    QObject *gear() { return m_gear; }
     QObject *collections() { return m_collections; }
     QObject *mapPacks() { return m_mapPacks; }
     QObject *edu() { return m_edu; }
@@ -303,7 +305,7 @@ private:
     RadioEngine m_radios;
     KitEngine m_kits;
     ContainerExec m_exec;
-    QObject *m_catalog = nullptr, *m_collections = nullptr, *m_mapPacks = nullptr, *m_edu = nullptr, *m_models = nullptr;
+    QObject *m_gear = nullptr, *m_catalog = nullptr, *m_collections = nullptr, *m_mapPacks = nullptr, *m_edu = nullptr, *m_models = nullptr;
     FakeMeshBackend m_fakeMesh;
     MeshBackend *m_mesh = &m_fakeMesh;
 };

@@ -17,7 +17,7 @@ get_filename_component(TAOS_ZIM_LIBDIR ${TAOS_ZIM_LIBRARY} DIRECTORY)
 add_library(taos_survival_core STATIC
   engine/zimarchive.cpp engine/articlehtml.cpp engine/packmanager.cpp engine/radiodetector.cpp engine/pmtiles.cpp
   engine/mapdata.cpp engine/kit.cpp engine/statestore.cpp engine/paths.cpp engine/meshinterface.h
-  engine/kiwixcatalog.cpp engine/containerexec.cpp engine/mapextract.cpp engine/education.cpp)
+  engine/gear.cpp engine/kiwixcatalog.cpp engine/containerexec.cpp engine/mapextract.cpp engine/education.cpp)
 target_include_directories(taos_survival_core PUBLIC engine ${TAOS_ZIM_INCLUDE_DIR})
 target_link_libraries(taos_survival_core PUBLIC Qt6::Core Qt6::Gui Qt6::Network Qt6::Concurrent ${TAOS_ZIM_LIBRARY} ZLIB::ZLIB)
 set_target_properties(taos_survival_core PROPERTIES POSITION_INDEPENDENT_CODE ON)
@@ -38,7 +38,7 @@ set(TAOS_SURVIVAL_CATALOG catalog/packs.json catalog/kits.json)
 function(taos_survival_catalog target)
   qt_add_resources(${target} "${target}_catalog" PREFIX "/taos-survival/catalog" BASE ${TAOS_SURVIVAL_DIR}/catalog
                    FILES ${TAOS_SURVIVAL_DIR}/catalog/packs.json ${TAOS_SURVIVAL_DIR}/catalog/kits.json
-         ${TAOS_SURVIVAL_DIR}/catalog/collections.json ${TAOS_SURVIVAL_DIR}/catalog/regions.json ${TAOS_SURVIVAL_DIR}/catalog/models.json)
+         ${TAOS_SURVIVAL_DIR}/catalog/scenarios.json ${TAOS_SURVIVAL_DIR}/catalog/collections.json ${TAOS_SURVIVAL_DIR}/catalog/regions.json ${TAOS_SURVIVAL_DIR}/catalog/models.json)
 endfunction()
 
 add_executable(taos-survival-cli cli/survival_cli.cpp)
@@ -47,12 +47,12 @@ taos_survival_rpath(taos-survival-cli)
 taos_survival_catalog(taos-survival-cli)
 
 # ---- the app ---------------------------------------------------------------------------------------------------
-set(TAOS_SURVIVAL_QML Main.qml PackBrowser.qml InstalledPage.qml BrowsePage.qml CollectionsPage.qml MapsPage.qml LearnPage.qml ModelsPage.qml PackList.qml ArticleView.qml LibraryPage.qml MapStage.qml StagePage.qml MapPage.qml TakPage.qml KitPage.qml)
+set(TAOS_SURVIVAL_QML Main.qml PackBrowser.qml InstalledPage.qml BrowsePage.qml CollectionsPage.qml MapsPage.qml LearnPage.qml ModelsPage.qml PackList.qml ArticleView.qml LibraryPage.qml MapStage.qml StagePage.qml MapPage.qml TakPage.qml KitPage.qml KitDetail.qml ItemForm.qml DevicesView.qml)
 set(TAOS_SURVIVAL_QML_ABS)
 foreach(f ${TAOS_SURVIVAL_QML})
   list(APPEND TAOS_SURVIVAL_QML_ABS ${CMAKE_CURRENT_SOURCE_DIR}/qml/${f})
 endforeach()
-add_library(taos_survival_faces STATIC src/backend.cpp src/mapview.cpp src/content.cpp)
+add_library(taos_survival_faces STATIC src/backend.cpp src/mapview.cpp src/content.cpp src/gearengine.cpp)
 target_include_directories(taos_survival_faces PUBLIC src)
 target_link_libraries(taos_survival_faces PUBLIC taos_survival_core Qt6::Quick Qt6::Qml)
 if(TARGET Qt6::Positioning)

@@ -24,6 +24,14 @@ add_test(NAME apps_tst_survival_packs COMMAND ${CMAKE_COMMAND} -E env QT_QPA_PLA
          TAOS_SURVIVAL_ALLOW_FILE_URLS=1 $<TARGET_FILE:tst_survival_packs>)
 set_tests_properties(apps_tst_survival_packs PROPERTIES TIMEOUT 300)
 
+add_executable(tst_survival_gear tst_survival_gear.cpp)
+target_link_libraries(tst_survival_gear PRIVATE taos_survival_core Qt6::Test)
+target_compile_definitions(tst_survival_gear PRIVATE SURVIVAL_CLI="$<TARGET_FILE:taos-survival-cli>" SURVIVAL_CATALOG_DIR="${CMAKE_CURRENT_SOURCE_DIR}/../catalog" SURVIVAL_TEST_DATA="${CMAKE_CURRENT_SOURCE_DIR}/data")
+add_dependencies(tst_survival_gear taos-survival-cli)
+taos_survival_rpath(tst_survival_gear)
+add_test(NAME apps_tst_survival_gear COMMAND ${CMAKE_COMMAND} -E env QT_QPA_PLATFORM=offscreen $<TARGET_FILE:tst_survival_gear>)
+set_tests_properties(apps_tst_survival_gear PROPERTIES TIMEOUT 120)
+
 if(PYTHON3)
   add_executable(tst_survival_ui tst_survival_ui.cpp)
   target_link_libraries(tst_survival_ui PRIVATE taosqt Qt6::Test Qt6::Quick Qt6::QuickControls2 Qt6::Qml taos_survival_faces)

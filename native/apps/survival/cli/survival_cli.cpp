@@ -18,6 +18,7 @@
 #include "articlehtml.h"
 #include "containerexec.h"
 #include "education.h"
+#include "gear.h"
 #include "kiwixcatalog.h"
 #include "mapextract.h"
 #include "kit.h"
@@ -59,6 +60,12 @@ int usage()
            "  maps extract <area id> <zoom> [--dry-run]   cut a map out of the newest Protomaps build (runs pmtiles via TAOS_SURVIVAL_EXEC)\n"
            "  edu list                     Kolibri education channels\n"
            "  edu install <channel id>     import a channel into Kolibri (via TAOS_SURVIVAL_EXEC)\n"
+           "  gear kits|household|readiness|reminders [--as <person>]   the gear manager (a person's view)\n"
+           "  gear lists                   the scenario lists and where each comes from\n"
+           "  gear kit-add <gobag|car|home|firstaid> <name> [--shared]   |   gear from <list id> [name]\n"
+           "  gear item-add <kit id> <name> <category> <qty> [unit] [yyyy-mm-dd]\n"
+           "  gear audit <kit id> <list id>      what is missing for this household\n"
+           "  gear shop propose <kit id> <list id> | list | approve <id>   an agent proposes a draft, a person approves\n"
            "  markers                      the saved markers\n"
            "  markers add <name> <lon> <lat> [note]\n"
            "  markers remove <id>\n"
@@ -330,6 +337,102 @@ int main(int argc, char **argv)
             if (!imp.start(a.value(2), &e)) { err << e << "\n"; return 1; }
             loop.exec();
             return rc;
+        }
+        return usage();
+    }
+    if (cmd == QLatin1String("gear")) {
+        GearStore gs(survivalDataDir());
+        if (!gs.load()) { err << "The gear file is damaged; it was not changed.\n"; return 1; }
+        QString e3;
+        const ScenarioSet set = loadScenarios(bundledCatalog(QStringLiteral("scenarios.json")), &e3);
+        QString person;
+        for (int i = 0; i + 1 < a.size(); ++i) if (a[i] == QStringLiteral("--as")) person = a[i + 1];
+        if (person.isEmpty()) person = qEnvironmentVariable("TAOS_SURVIVAL_PERSON");
+        if (person.isEmpty()) person = gs.defaultPerson();
+        const QDate today = QDate::fromString(qEnvironmentVariable("TAOS_SURVIVAL_TODAY"), Qt::ISODate).isValid()
+            ? QDate::fromString(qEnvironmentVariable("TAOS_SURVIVAL_TODAY"), Qt::ISODate) : QDate::currentDate();
+        const QString actor = qEnvironmentVariable("TAOS_SURVIVAL_ACTOR");
+        auto saveOk = [&]() { if (!gs.save(&e3)) { err << e3 << "\n"; return false; } return true; };
+        auto kitJson = [&](const GearKit &k) {
+            QJsonArray items;
+            for (const GearItem &i : k.items)
+                items.append(QJsonObject{{QStringLiteral("id"), i.id}, {QStringLiteral("name"), i.name}, {QStringLiteral("category"), i.category}, {QStringLiteral("qty"), i.qty},
+                                         {QStringLiteral("unit"), i.unit}, {QStringLiteral("expires"), i.expires}, {QStringLiteral("private"), i.isPrivate}});
+            return QJsonObject{{QStringLiteral("id"), k.id}, {QStringLiteral("name"), k.name}, {QStringLiteral("type"), k.type}, {QStringLiteral("owner"), k.owner},
+                               {QStringLiteral("shared"), k.shared}, {QStringLiteral("weightG"), k.weightG()}, {QStringLiteral("items"), items}};
+        };
+        if (sub == QLatin1String("household")) {
+            QJsonArray ppl;
+            for (const GearPerson &p : gs.household().people) ppl.append(QJsonObject{{QStringLiteral("id"), p.id}, {QStringLiteral("name"), p.name}, {QStringLiteral("kind"), p.kind}});
+            print(QJsonObject{{QStringLiteral("people"), ppl}, {QStringLiteral("pets"), gs.household().pets}});
+            return 0;
+        }
+        if (sub == QLatin1String("kits")) { QJsonArray arr; for (const GearKit &k : gs.kitsFor(person)) arr.append(kitJson(k)); print(arr); return 0; }
+        if (sub == QLatin1String("lists")) {
+            QJsonArray arr;
+            for (const Scenario &s2 : set.scenarios) {
+                QJsonArray src;
+                for (const QString &sid : s2.sources) if (const ScenarioSource *x = set.source(sid))
+                    src.append(QJsonObject{{QStringLiteral("title"), x->title}, {QStringLiteral("publisher"), x->publisher}, {QStringLiteral("url"), x->url}, {QStringLiteral("terms"), x->terms}});
+                arr.append(QJsonObject{{QStringLiteral("id"), s2.id}, {QStringLiteral("title"), s2.title}, {QStringLiteral("kitType"), s2.kitType}, {QStringLiteral("sources"), src}});
+            }
+            print(arr);
+            return 0;
+        }
+        if (sub == QLatin1String("readiness")) { print(gs.readiness(set, person, today)); return 0; }
+        if (sub == QLatin1String("reminders")) {
+            QJsonArray arr;
+            for (const Reminder &r : gs.reminders(person, today))
+                arr.append(QJsonObject{{QStringLiteral("kind"), r.kind}, {QStringLiteral("title"), r.title}, {QStringLiteral("body"), r.body}, {QStringLiteral("due"), r.due}, {QStringLiteral("daysLeft"), r.daysLeft}});
+            print(arr);
+            return 0;
+        }
+        if (sub == QLatin1String("kit-add")) { out << gs.addKit(a.value(3), a.value(2), person, a.contains(QStringLiteral("--shared"))) << "\n"; return saveOk() ? 0 : 1; }
+        if (sub == QLatin1String("from")) {
+            const QString id = gs.createKitFromScenario(set, a.value(2), a.value(3), person, false);
+            if (id.isEmpty()) { err << "Unknown list. See: gear lists\n"; return 1; }
+            out << id << "\n";
+            return saveOk() ? 0 : 1;
+        }
+        if (sub == QLatin1String("item-add")) {
+            GearItem it;
+            it.name = a.value(3); it.category = a.value(4); it.qty = a.value(5).toDouble(); it.unit = a.value(6); it.expires = a.value(7);
+            if (!it.expires.isEmpty() && !QDate::fromString(it.expires, Qt::ISODate).isValid()) { err << "Write the date as yyyy-mm-dd.\n"; return 1; }
+            if (!gearCategories().contains(it.category)) { err << "Unknown category. Use: " << gearCategories().join(QStringLiteral(", ")) << "\n"; return 1; }
+            const QString id = gs.addItem(a.value(2), it);
+            if (id.isEmpty()) { err << "No such kit.\n"; return 1; }
+            out << id << "\n";
+            return saveOk() ? 0 : 1;
+        }
+        if (sub == QLatin1String("audit")) {
+            const Audit au = gs.audit(set, a.value(2), a.value(3), person, today);
+            if (au.rows.isEmpty()) { err << "Nothing to audit: check the kit and list ids.\n"; return 1; }
+            QJsonArray rows;
+            for (const AuditRow &r : au.rows)
+                rows.append(QJsonObject{{QStringLiteral("name"), r.name}, {QStringLiteral("status"), r.status}, {QStringLiteral("needed"), r.needed}, {QStringLiteral("have"), r.have}, {QStringLiteral("unit"), r.unit}});
+            print(QJsonObject{{QStringLiteral("score"), au.score}, {QStringLiteral("missing"), au.missing}, {QStringLiteral("short"), au.shortCount}, {QStringLiteral("rows"), rows}});
+            return 0;
+        }
+        if (sub == QLatin1String("shop")) {
+            const QString what = a.value(2);
+            if (what == QLatin1String("propose")) {
+                const QString id = gs.proposeShopping(set, a.value(3), a.value(4), QStringLiteral("agent:") + (actor.isEmpty() ? QStringLiteral("cli") : actor), person, today);
+                if (id.isEmpty()) { err << "Nothing is missing, or the kit or list is unknown.\n"; return 1; }
+                out << id << "\n";
+                return saveOk() ? 0 : 1;
+            }
+            if (what == QLatin1String("approve")) {
+                if (!gs.approveShopping(a.value(3), actor.startsWith(QStringLiteral("agent")) ? actor : person, &e3)) { err << e3 << "\n"; return 1; }
+                return saveOk() ? 0 : 1;
+            }
+            QJsonArray arr;
+            for (const ShoppingList &l : gs.shopping()) {
+                QJsonArray items;
+                for (const ShoppingItem &i : l.items) items.append(QJsonObject{{QStringLiteral("name"), i.name}, {QStringLiteral("qty"), i.qty}, {QStringLiteral("unit"), i.unit}});
+                arr.append(QJsonObject{{QStringLiteral("id"), l.id}, {QStringLiteral("status"), l.status}, {QStringLiteral("createdBy"), l.createdBy}, {QStringLiteral("items"), items}});
+            }
+            print(arr);
+            return 0;
         }
         return usage();
     }

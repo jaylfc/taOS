@@ -98,6 +98,13 @@ done
 for svg in "$here"/icons/hicolor/scalable/apps/*.svg; do
     install -m 0644 "$svg" "$prefix/share/icons/hicolor/scalable/apps/$(basename "$svg")"
 done
+# bitmap sizes of icons that have them (Survival Studio): <prefix>/share/icons/hicolor/<N>x<N>/apps/
+for png in "$here"/icons/hicolor/*/apps/*.png; do
+    [ -e "$png" ] || continue
+    sz=$(basename "$(dirname "$(dirname "$png")")")
+    mkdir -p "$prefix/share/icons/hicolor/$sz/apps"
+    install -m 0644 "$png" "$prefix/share/icons/hicolor/$sz/apps/$(basename "$png")"
+done
 if [ "$icon_cache" -eq 1 ] && command -v gtk-update-icon-cache >/dev/null 2>&1; then
     gtk-update-icon-cache -q -t -f "$prefix/share/icons/hicolor" 2>/dev/null || true
 fi

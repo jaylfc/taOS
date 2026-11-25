@@ -1,0 +1,2 @@
+{"sources":[{"id":"s","title":"t","url":"https://x","terms":"t"}],"scenarios":[{"id":"x","title":"X","kitType":"gobag","sources":["s"],
+          "rules":[{"key":"a","name":"A","category":"nonsense","fixed":1,"source":"s"},{"key":"b","name":"B","category":"water","fixed":1,"source":"nope"},{"key":"c","name":"C","category":"water","fixed":1,"source":"s"}]}]}
