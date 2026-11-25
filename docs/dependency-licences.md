@@ -32,3 +32,14 @@ offers an extra that would pull in something copyleft.
 `tests/test_config_slugify.py::TestTheGplUnidecodeIsNeverInstalled` enforces the
 blocked row mechanically against `pyproject.toml` and `uv.lock`, so the rule
 fails CI rather than relying on a reviewer noticing it.
+
+## How `scripts/check_install_licences.py` classifies a licence
+
+It reads PyPI classifiers (`License :: OSI Approved :: ...`), SPDX ids and SPDX
+expressions. AND needs every operand allowed (a non-allowed operand blocks);
+OR passes when one side is allowed; WITH is checked against a list of
+permission-adding exceptions (Commons Clause blocks). Allowed: permissive
+licences, LGPL, MPL-2.0, GPL-2.0-or-later, GPL-3.0, AGPL-3.0. Blocked:
+GPL-2.0-only, proprietary or `LicenseRef-`, non-commercial, no-derivatives,
+SSPL, BSL, Elastic. Anything else fails as `unknown-licence`; add it to the
+table in the script (and here) once a person has decided it is acceptable.
