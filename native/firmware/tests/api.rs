@@ -306,7 +306,11 @@ fn dump_app_fixtures_when_asked() {
     put("licences_pending", &c("GET", "/v1/licences", None));
     put(
         "refresh_licence_required",
-        &c("POST", "/v1/library/refresh", Some(json!({"network":"meshtastic"}))),
+        &c(
+            "POST",
+            "/v1/library/refresh",
+            Some(json!({"network":"meshtastic"})),
+        ),
     );
     for n in ["meshtastic", "meshcore", "rnode"] {
         c(
@@ -316,18 +320,28 @@ fn dump_app_fixtures_when_asked() {
         );
     }
     put("licences_accepted", &c("GET", "/v1/licences", None));
-    put("refresh_ok", &c("POST", "/v1/library/refresh", Some(json!({}))));
+    put(
+        "refresh_ok",
+        &c("POST", "/v1/library/refresh", Some(json!({}))),
+    );
     put("library", &c("GET", "/v1/library", None));
     put("devices", &c("GET", "/v1/devices", None));
     put("devices_probed", &c("GET", "/v1/devices?probe=1", None));
     put(
         "device_firmware",
-        &c("GET", "/v1/devices/usb-10c4-ea60-SN1-1-1/firmware?probe=1", None),
+        &c(
+            "GET",
+            "/v1/devices/usb-10c4-ea60-SN1-1-1/firmware?probe=1",
+            None,
+        ),
     );
     let body =
         json!({"device":"usb-10c4-ea60-SN1-1-1","entry":"meshtastic:heltec-v3:2.7.26.54e0d8d"});
     put("plan", &c("POST", "/v1/flash/plan", Some(body.clone())));
-    put("run_unconfirmed", &c("POST", "/v1/flash/run", Some(body.clone())));
+    put(
+        "run_unconfirmed",
+        &c("POST", "/v1/flash/run", Some(body.clone())),
+    );
     let mut run = body;
     run["confirm"] = "Heltec V3".into();
     put("run_done", &c("POST", "/v1/flash/run", Some(run)));
