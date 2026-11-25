@@ -155,7 +155,8 @@
    * A fallback for the value shapes app state actually carries: plain
    * objects and arrays (cycles included), Date, RegExp, Map, Set,
    * ArrayBuffer and typed-array views, and the primitive wrappers.
-   * Anything the platform clone would reject (functions, symbols) throws,
+   * Anything the platform clone would reject (functions, symbols,
+   * WeakMap, WeakSet, Promise) throws,
    * as do host objects this fallback cannot reproduce (Blob, File, …) —
    * failing loudly beats silently returning a wrong-shaped copy. */
   function dataCloneError() {
@@ -194,12 +195,15 @@
       return copy;
     }
     if (typeof ArrayBuffer !== "undefined" && ArrayBuffer.isView(value)) {
+      // Views clone over the clone of their backing buffer (through the
+      // seen map, so a buffer shared with the view stays shared) and keep
+      // their byte offset and length. Constructing from the view itself
+      // would copy the elements into a fresh buffer and lose both.
+      var clonedBuffer = cloneValue(value.buffer, seen);
       if (value instanceof DataView) {
-        var bytes = new Uint8Array(value.buffer, value.byteOffset, value.byteLength).slice();
-        copy = new DataView(bytes.buffer);
+        copy = new DataView(clonedBuffer, value.byteOffset, value.byteLength);
       } else {
-        // Typed arrays: constructing from a same-kind array copies elements.
-        copy = new value.constructor(value);
+        copy = new value.constructor(clonedBuffer, value.byteOffset, value.length);
       }
       seen.set(value, copy);
       return copy;
@@ -238,6 +242,15 @@
     if (typeof Blob !== "undefined" && value instanceof Blob) {
       throw dataCloneError();
     }
+    if (
+      (typeof WeakMap !== "undefined" && value instanceof WeakMap) ||
+      (typeof WeakSet !== "undefined" && value instanceof WeakSet) ||
+      (typeof Promise !== "undefined" && value instanceof Promise)
+    ) {
+      // The platform clone rejects these; letting them fall through to
+      // the object fallback would silently return {} for them.
+      throw dataCloneError();
+    }
     // Arrays and plain objects. Structured clone drops the prototype, so
     // a fresh {} / [] is the right shape for class instances too. Object
     // .keys covers indices plus extra own props and preserves holes.
@@ -245,7 +258,15 @@
     seen.set(value, copy);
     keys = Object.keys(value);
     for (i = 0; i < keys.length; i++) {
-      copy[keys[i]] = cloneValue(value[keys[i]], seen);
+      // defineProperty, not assignment: an own "__proto__" key (e.g. from
+      // JSON.parse) must land as an own data property on the clone, not
+      // invoke the inherited setter and mutate the clone's prototype.
+      Object.defineProperty(copy, keys[i], {
+        value: cloneValue(value[keys[i]], seen),
+        writable: true,
+        enumerable: true,
+        configurable: true,
+      });
     }
     return copy;
   }

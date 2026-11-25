@@ -167,4 +167,92 @@ describe("built compat.js webview shim (#2082)", () => {
     expect(after).toBe(before);
     expect(after).toContain("sentinelHasOwn");
   });
+
+  it("clones typed-array and DataView views over the cloned backing buffer", () => {
+    const sandbox = makeWindow();
+    vm.runInContext("structuredClone = undefined;", sandbox);
+    vm.runInContext(compat, sandbox);
+    const results = vm.runInContext(
+      `(function () {
+        var buffer = new ArrayBuffer(6);
+        var all = new Uint8Array(buffer);
+        all[2] = 7; all[3] = 8;
+        var src = { buffer: buffer, view: new Uint8Array(buffer, 2, 2), dv: new DataView(buffer, 1, 3) };
+        var copy = structuredClone(src);
+        return {
+          bufferCloned: copy.buffer !== buffer && copy.buffer.byteLength === 6,
+          viewSharesClonedBuffer: copy.view.buffer === copy.buffer,
+          viewBounds: copy.view.byteOffset === 2 && copy.view.length === 2,
+          viewData: copy.view[0] === 7 && copy.view[1] === 8,
+          dvSharesClonedBuffer: copy.dv.buffer === copy.buffer,
+          dvBounds: copy.dv.byteOffset === 1 && copy.dv.byteLength === 3,
+        };
+      })()`,
+      sandbox,
+    ) as Record<string, boolean>;
+    expect(results).toEqual({
+      bufferCloned: true,
+      viewSharesClonedBuffer: true,
+      viewBounds: true,
+      viewData: true,
+      dvSharesClonedBuffer: true,
+      dvBounds: true,
+    });
+  });
+
+  it("throws DataCloneError for WeakMap, WeakSet and Promise values", () => {
+    const sandbox = makeWindow();
+    vm.runInContext("structuredClone = undefined;", sandbox);
+    vm.runInContext(compat, sandbox);
+    const results = vm.runInContext(
+      `(function () {
+        function throwsDataCloneError(value) {
+          try {
+            structuredClone(value);
+            return false;
+          } catch (e) {
+            return !!e && e.name === "DataCloneError";
+          }
+        }
+        function Foo() { this.x = 1; }
+        var instance = structuredClone(new Foo());
+        return {
+          weakMap: throwsDataCloneError(new WeakMap()),
+          weakSet: throwsDataCloneError(new WeakSet()),
+          promise: throwsDataCloneError(Promise.resolve(1)),
+          classInstanceStillClones: !!instance && instance.x === 1,
+        };
+      })()`,
+      sandbox,
+    ) as Record<string, boolean>;
+    expect(results).toEqual({
+      weakMap: true,
+      weakSet: true,
+      promise: true,
+      classInstanceStillClones: true,
+    });
+  });
+
+  it("clones an own __proto__ key as a data property, not a prototype change", () => {
+    const sandbox = makeWindow();
+    vm.runInContext("structuredClone = undefined;", sandbox);
+    vm.runInContext(compat, sandbox);
+    const results = vm.runInContext(
+      `(function () {
+        var src = JSON.parse('{"__proto__":{"flag":true}}');
+        var copy = structuredClone(src);
+        return {
+          ownProperty: Object.prototype.hasOwnProperty.call(copy, "__proto__"),
+          valueCloned: !!copy["__proto__"] && copy["__proto__"].flag === true,
+          prototypeIntact: Object.getPrototypeOf(copy) === Object.prototype && copy.flag === undefined,
+        };
+      })()`,
+      sandbox,
+    ) as Record<string, boolean>;
+    expect(results).toEqual({
+      ownProperty: true,
+      valueCloned: true,
+      prototypeIntact: true,
+    });
+  });
 });
