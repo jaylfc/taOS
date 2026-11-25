@@ -59,6 +59,7 @@ interface Agent {
   display_name?: string;
   handle?: string;
   framework?: string;
+  registry_canonical_id?: string;
 }
 
 interface JournalEntry {
@@ -85,6 +86,28 @@ interface Deliverable {
 }
 
 const PA_KEY = "taos.assistantStudio.pa";
+
+/* Mirror the PA pick into the server-side preference store so the agent
+   directory (#2119) can mark the PA from the SAME selection this app owns
+   -- the directory reads the `assistant_studio` preference namespace and
+   never invents its own notion of who the PA is. localStorage stays this
+   app's source of truth; the sync is best-effort (offline or a non-admin
+   session just leaves the directory marker unset). The pick is synced as
+   a canonical id, the registry's key: agent names can be reused, canonical
+   ids cannot. An agent with no registry link syncs an empty id, which
+   clears the marker rather than pointing it at the wrong identity. */
+const syncPaSelection = (name: string, list: Agent[]) => {
+  const chosen = list.find((a) => a.name === name);
+  void fetch("/api/preferences/assistant_studio", {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      pa_canonical_id: chosen?.registry_canonical_id || "",
+    }),
+  }).catch(() => {
+    /* best effort: see above */
+  });
+};
 const nsKey = (pa: string, kind: string) => `taos.assistantStudio.${pa}.${kind}`;
 
 function loadJSON<T>(key: string, fallback: T): T {
@@ -143,6 +166,7 @@ export function AssistantStudioApp({ windowId: _windowId }: { windowId: string }
           const chosen = (hermes || first).name;
           setPa(chosen);
           localStorage.setItem(PA_KEY, chosen);
+          syncPaSelection(chosen, list);
         }
       } catch {
         /* offline / no agents: keep the current PA */
@@ -158,6 +182,7 @@ export function AssistantStudioApp({ windowId: _windowId }: { windowId: string }
   const choosePa = (name: string) => {
     setPa(name);
     localStorage.setItem(PA_KEY, name);
+    syncPaSelection(name, agents);
   };
 
   const labelFor = useCallback(
