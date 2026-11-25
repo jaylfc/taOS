@@ -304,3 +304,23 @@ async def test_conversion_still_works_after_recall_has_read_the_store(booted):
     # and recall keeps working afterwards: the next call reopens the converted store
     again = await taosmd.answer_context("hello from 0.4.0", agent="tester", data_dir=data, budget_tokens=2000)
     assert again["hits_total"] >= 1
+
+
+@pytest.mark.asyncio
+async def test_a_token_holder_cannot_answer_the_consent_card(booted):
+    """Only a signed-in owner or admin session may approve: never the local token that asked for it."""
+    app, data = booted
+    async with _client(app) as c:
+        await _owner(c, login=False)
+        token = app.state.auth.get_local_token()
+        bearer = {"Authorization": f"Bearer {token}"}
+        asked = await c.post("/api/memory-store/convert", json={"confirm": True}, headers=bearer)
+        did = asked.json()["decision_id"]
+        for value in ("approve", "deny"):
+            r = await c.post(f"/api/decisions/{did}/answer", json={"value": value}, headers=bearer)
+            assert r.status_code == 403, (value, r.status_code, r.text)
+        assert (await app.state.decision_store.get(did))["status"] == "pending"
+        await asyncio.sleep(1)
+    status = await guard.probe(data)
+    assert any(d["db"] == "vector_memory" and d["state"] == "old" for d in status.databases)
+    assert getattr(app.state, "memory_store_last_convert", None) is None

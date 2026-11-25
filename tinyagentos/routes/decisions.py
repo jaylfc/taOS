@@ -628,6 +628,17 @@ async def answer_decision(
     if existing is None or (not user.is_admin and existing["user_id"] != user.user_id):
         return JSONResponse({"error": "not found"}, status_code=404)
 
+    # A memory store conversion is the owner's explicit act: only a signed-in
+    # owner or admin session may answer its card, never a token (the local
+    # token, an agent or service token, a device) that could also have asked.
+    if (existing.get("metadata") or {}).get("kind") == "memory_store_convert" and not (
+        getattr(request.state, "via", None) == "session" and getattr(request.state, "is_admin", False)
+    ):
+        return JSONResponse(
+            {"error": "this card can only be answered from a signed-in owner or admin session"},
+            status_code=403,
+        )
+
     # Device bearers must not answer gate-kind decisions: the phone is a
     # notification surface, not an approval channel for privileged grants.
     # INVARIANT (c) in device_auth.py: request.state.user_id is None on this
