@@ -38,10 +38,21 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 SERVER_EXTRAS: tuple[str, ...] = ()
 
 # Licence expressions/classifiers that must never reach the shipped venv.
+#
+# taOS ships under AGPL-3.0-or-later only (no commercial licence) since
+# 2026-10-01, so a dependency is acceptable when its licence is compatible with
+# AGPL-3.0-or-later as shipped. That means permissive, LGPL, MPL-2.0,
+# GPL-3.0(-or-later) and AGPL-3.0(-or-later) are all fine: ``agpl`` was a
+# blocker during the old dual-licence period and is deliberately absent now.
+# What remains here are the licences that cannot be combined into an AGPL-3.0
+# work or cannot be redistributed at all: GPL-2.0-only, proprietary, non-
+# commercial, unlicensed, SSPL, the Business Source License, Elastic License
+# 2.0, and similar source-available grants.
+#
 # ``LicenseRef-`` is SPDX's escape hatch for a licence with no SPDX id, which in
 # practice means a bespoke proprietary grant we cannot pass on.
 #
-# These are substrings, not word-bounded — that is a deliberate choice, not an
+# These are substrings, not word-bounded -- that is a deliberate choice, not an
 # oversight: erring toward a false positive here costs a minute of by-hand
 # triage, while a false negative ships a BLOCKER licence straight into the
 # shipped venv. Commons Clause is handled separately below because its real-
@@ -50,10 +61,16 @@ SERVER_EXTRAS: tuple[str, ...] = ()
 BLOCKING_PATTERNS = (
     "licenseref-",
     "proprietary",
-    "agpl",
+    "gpl-2.0-only",
+    "non-commercial",
+    "noncommercial",
+    "non commercial",
+    "unlicensed",
     "sspl",
     "business source",
     "busl",
+    "elv2",
+    "elastic license",
 )
 
 # Matches "Commons Clause" and "Commons-Clause" (SPDX-adjacent text spells it
