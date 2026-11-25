@@ -67,12 +67,13 @@ StagePage {
                     }
                 }
             }
-            C.ScrollView {
+            PackBrowser {
                 visible: page.tab === "packs"
                 Layout.fillWidth: true; Layout.fillHeight: true
-                contentWidth: availableWidth
-                clip: true
-                PackList { x: Look.space3; width: parent.width - Look.space3 * 2; kind: "map"; compact: true; onOpenRequested: (id) => page.map.openPack(id) }
+                Layout.leftMargin: Look.space3; Layout.rightMargin: Look.space3
+                narrow: true
+                tab: "maps"
+                onOpenRequested: (id) => page.map.openPack(id)
             }
         }
     }

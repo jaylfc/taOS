@@ -1,0 +1,7 @@
+{"regions":[
+          {"id":"a","title":"Box","group":"G","west":-5,"south":50,"east":2,"north":58},
+          {"id":"b","title":"Inverted","group":"G","west":5,"south":50,"east":2,"north":58},
+          {"id":"c","title":"Off the globe","group":"G","west":-200,"south":50,"east":2,"north":58},
+          {"id":"d","title":"Ready","group":"G","url":"https://example.org/d.pmtiles","bytes":1000,"sizeApprox":true,"version":"2025-12"},
+          {"id":"e","title":"Ready over http","group":"G","url":"http://example.org/e.pmtiles","bytes":1000},
+          {"id":"f","title":"Ready no size","group":"G","url":"https://example.org/f.pmtiles"}]}

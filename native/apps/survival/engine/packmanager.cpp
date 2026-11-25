@@ -10,6 +10,7 @@
 #include <QJsonDocument>
 #include <QNetworkReply>
 #include <QNetworkRequest>
+#include <QRegularExpression>
 #include <QStorageInfo>
 #include <QtConcurrent>
 #include <algorithm>
@@ -111,15 +112,80 @@ void PackManager::rescan()
             const QJsonObject o = QJsonDocument::fromJson(rec.readAll()).object();
             if (!o.value(QStringLiteral("title")).toString().isEmpty()) p.title = o.value(QStringLiteral("title")).toString();
             p.sha256 = o.value(QStringLiteral("sha256")).toString();
+            if (!o.value(QStringLiteral("series")).toString().isEmpty()) {   // a pack installed from a catalogue: keeps what it was
+                p.id = o.value(QStringLiteral("id")).toString(p.id);
+                p.local = false;
+                p.description = o.value(QStringLiteral("description")).toString();
+                p.language = o.value(QStringLiteral("language")).toString();
+                p.licence = o.value(QStringLiteral("licence")).toString();
+                p.licenceUrl = o.value(QStringLiteral("licenceUrl")).toString();
+                p.attribution = o.value(QStringLiteral("attribution")).toString();
+                p.source = o.value(QStringLiteral("source")).toString();
+                p.series = o.value(QStringLiteral("series")).toString();
+                p.version = o.value(QStringLiteral("version")).toString();
+                p.bytes = qint64(o.value(QStringLiteral("bytes")).toDouble());
+                p.needsAcceptance = o.value(QStringLiteral("restrictive")).toBool();
+                p.unverified = o.value(QStringLiteral("unverified")).toBool();
+                p.url = QUrl(o.value(QStringLiteral("url")).toString());
+            }
         }
-        m_local.insert(p.id, p);
+        if (!m_remote.contains(p.id))
+            m_local.insert(p.id, p);
     }
     Q_EMIT changed();
 }
 
+PackInfo PackManager::base(const QString &id) const
+{
+    if (m_catalogue.contains(id)) return m_catalogue.value(id);
+    if (m_remote.contains(id)) return m_remote.value(id);
+    return m_local.value(id);
+}
+PackInfo *PackManager::entry(const QString &id)
+{
+    if (m_catalogue.contains(id)) return &m_catalogue[id];
+    if (m_remote.contains(id)) return &m_remote[id];
+    if (m_local.contains(id)) return &m_local[id];
+    return nullptr;
+}
+void PackManager::addRemote(const PackInfo &p)
+{
+    if (p.id.isEmpty() || !safeFileName(p.file) || m_catalogue.contains(p.id))
+        return;
+    m_remote.insert(p.id, p);
+}
+void PackManager::setLatest(const QList<PackInfo> &newest)
+{
+    m_newest.clear();
+    for (const PackInfo &n : newest) {
+        addRemote(n);
+        for (const PackInfo &have : packs())
+            if (have.installed && !have.series.isEmpty() && have.series == n.series && n.version > have.version && n.id != have.id) {
+                const PackInfo cur = m_newest.value(have.id);
+                if (cur.id.isEmpty() || n.version > cur.version)
+                    m_newest.insert(have.id, n);
+            }
+    }
+    Q_EMIT changed();
+}
+bool PackManager::update(const QString &id, QString *error)
+{
+    if (!m_newest.contains(id)) {
+        if (error) *error = QStringLiteral("There is no newer version of this pack.");
+        return false;
+    }
+    const PackInfo n = m_newest.value(id);
+    m_replaces.insert(n.id, id);
+    if (!download(n.id, error)) {
+        m_replaces.remove(n.id);
+        return false;
+    }
+    return true;
+}
+
 PackInfo PackManager::pack(const QString &id) const
 {
-    PackInfo p = m_catalogue.contains(id) ? m_catalogue.value(id) : m_local.value(id);
+    PackInfo p = base(id);
     if (p.id.isEmpty())
         return p;
     const QFileInfo fi(packsDir() + QLatin1Char('/') + p.file);
@@ -137,6 +203,12 @@ PackInfo PackManager::pack(const QString &id) const
         p.received = m_jobs.value(id).resumeFrom;
         if (m_jobs.value(id).file)
             p.received = m_jobs.value(id).file->size();
+    }
+    p.unverified = p.unverified || (p.installed && p.sha256.isEmpty() && p.noChecksum);
+    if (p.installed && m_newest.contains(id)) {
+        p.updateAvailable = true;
+        p.updateVersion = m_newest.value(id).version;
+        p.updateId = m_newest.value(id).id;
     }
     if (m_state.contains(id))
         p.state = m_state.value(id);
@@ -159,6 +231,14 @@ QList<PackInfo> PackManager::packs() const
     locals.sort();
     for (const QString &id : std::as_const(locals))
         out.append(pack(id));
+    // packs chosen from a catalogue in this session that are installed or on their way
+    QStringList remotes = m_remote.keys();
+    remotes.sort();
+    for (const QString &id : std::as_const(remotes)) {
+        const PackInfo p = pack(id);
+        if (p.installed || p.state != QStringLiteral("available") || !p.error.isEmpty())
+            out.append(p);
+    }
     return out;
 }
 
@@ -167,7 +247,7 @@ bool PackManager::licenceAccepted(const QString &id) const
     QFile f(m_dir + QStringLiteral("/licences.json"));
     if (!f.open(QIODevice::ReadOnly))
         return false;
-    const PackInfo p = m_catalogue.value(id);
+    const PackInfo p = base(id);
     const QJsonObject o = QJsonDocument::fromJson(f.readAll()).object().value(id).toObject();
     return !o.isEmpty() && o.value(QStringLiteral("licence")).toString() == p.licence
         && o.value(QStringLiteral("version")).toString() == p.version;
@@ -175,9 +255,9 @@ bool PackManager::licenceAccepted(const QString &id) const
 
 void PackManager::acceptLicence(const QString &id)
 {
-    if (!m_catalogue.contains(id))
+    if (base(id).id.isEmpty())
         return;
-    const PackInfo p = m_catalogue.value(id);
+    const PackInfo p = base(id);
     const QString path = m_dir + QStringLiteral("/licences.json");
     QJsonObject all;
     QFile f(path);
@@ -231,7 +311,11 @@ void PackManager::writeRecord(const PackInfo &p, const QString &sha) const
 {
     QJsonObject o{{QStringLiteral("id"), p.id}, {QStringLiteral("title"), p.title}, {QStringLiteral("sha256"), sha},
                   {QStringLiteral("licence"), p.licence}, {QStringLiteral("version"), p.version},
-                  {QStringLiteral("verifiedAt"), QDateTime::currentDateTimeUtc().toString(Qt::ISODate)}};
+                  {QStringLiteral("verifiedAt"), QDateTime::currentDateTimeUtc().toString(Qt::ISODate)},
+                  {QStringLiteral("description"), p.description}, {QStringLiteral("kind"), p.kind}, {QStringLiteral("language"), p.language},
+                  {QStringLiteral("licenceUrl"), p.licenceUrl}, {QStringLiteral("attribution"), p.attribution}, {QStringLiteral("source"), p.source},
+                  {QStringLiteral("series"), p.series}, {QStringLiteral("bytes"), double(p.bytes)}, {QStringLiteral("restrictive"), p.needsAcceptance},
+                  {QStringLiteral("unverified"), sha.isEmpty()}, {QStringLiteral("url"), p.url.toString()}};
     QFile f(recordPath(p.file));
     if (f.open(QIODevice::WriteOnly | QIODevice::Truncate))
         f.write(QJsonDocument(o).toJson());
@@ -240,13 +324,15 @@ void PackManager::writeRecord(const PackInfo &p, const QString &sha) const
 bool PackManager::download(const QString &id, QString *error)
 {
     auto fail = [&](const QString &m) { if (error) *error = m; return false; };
-    if (!m_catalogue.contains(id))
+    const PackInfo p = base(id);
+    if (p.id.isEmpty())
         return fail(QStringLiteral("This pack is not in the catalogue."));
-    const PackInfo p = m_catalogue.value(id);
-    if (m_jobs.contains(id))
+    if (m_jobs.contains(id) || m_state.value(id) == QStringLiteral("preparing"))
         return fail(QStringLiteral("This pack is already downloading."));
     if (pack(id).installed)
         return fail(QStringLiteral("This pack is already installed."));
+    if (m_local.contains(id) && !m_remote.contains(id) && !m_catalogue.contains(id))
+        return fail(QStringLiteral("This is your own file, not a catalogue pack."));
     // file: addresses exist for the tests only; a catalogue from outside can never make the app read a local file
     const bool fileOk = p.url.scheme() == QStringLiteral("file") && qEnvironmentVariableIsSet("TAOS_SURVIVAL_ALLOW_FILE_URLS");
     if (p.url.isEmpty())
@@ -256,7 +342,8 @@ bool PackManager::download(const QString &id, QString *error)
         return fail(QStringLiteral("Packs are only downloaded over https."));
     if (p.bytes <= 0)
         return fail(QStringLiteral("This pack does not say how big it is, so the download cannot be limited. Download refused."));
-    if (p.sha256.isEmpty())
+    const bool shaUrlOk = p.sha256Url.scheme() == QStringLiteral("https") || (p.sha256Url.scheme() == QStringLiteral("file") && qEnvironmentVariableIsSet("TAOS_SURVIVAL_ALLOW_FILE_URLS"));
+    if (p.sha256.isEmpty() && !p.noChecksum && !(shaUrlOk && !p.sha256Url.isEmpty()))
         return fail(QStringLiteral("This pack has no checksum, so it cannot be verified. Download refused."));
     if (p.needsAcceptance && !licenceAccepted(id))
         return fail(QStringLiteral("Read and accept the licence first."));
@@ -267,18 +354,85 @@ bool PackManager::download(const QString &id, QString *error)
         return fail(QStringLiteral("Not enough free space for this pack."));
     m_errors.remove(id);
     m_state.remove(id);
+    if (p.sizeApprox) {
+        // a rounded size cannot be a byte cap: ask the publisher for the real one first, and refuse a wild difference
+        m_state.insert(id, QStringLiteral("preparing"));
+        QNetworkRequest req(p.url);
+        req.setAttribute(QNetworkRequest::RedirectPolicyAttribute, QNetworkRequest::NoLessSafeRedirectPolicy);
+        req.setTransferTimeout(30 * 1000);
+        QNetworkReply *r = m_nam.head(req);
+        connect(r, &QNetworkReply::finished, this, [this, r, id] {
+            const qint64 len = r->header(QNetworkRequest::ContentLengthHeader).toLongLong();
+            const bool ok = r->error() == QNetworkReply::NoError;
+            r->deleteLater();
+            m_state.remove(id);
+            PackInfo *e = entry(id);
+            if (!e || !ok || len <= 0 || len > e->bytes * 3 || len < e->bytes / 3) {
+                m_errors.insert(id, QStringLiteral("The publisher did not give a believable size for this file, so the download was not started."));
+                m_state.insert(id, QStringLiteral("failed"));
+                Q_EMIT finished(id, false, m_errors.value(id));
+                Q_EMIT changed();
+                return;
+            }
+            e->bytes = len;
+            e->sizeApprox = false;
+            QString err;
+            if (!download(id, &err)) {
+                m_errors.insert(id, err);
+                m_state.insert(id, QStringLiteral("failed"));
+                Q_EMIT finished(id, false, err);
+                Q_EMIT changed();
+            }
+        });
+        Q_EMIT changed();
+        return true;
+    }
+    if (p.sha256.isEmpty() && !p.sha256Url.isEmpty()) {
+        // the publisher's checksum, read first; if it cannot be read the download does not start
+        m_state.insert(id, QStringLiteral("preparing"));
+        QNetworkRequest req(p.sha256Url);
+        req.setAttribute(QNetworkRequest::RedirectPolicyAttribute, QNetworkRequest::NoLessSafeRedirectPolicy);
+        req.setTransferTimeout(30 * 1000);
+        QNetworkReply *r = m_nam.get(req);
+        connect(r, &QNetworkReply::readyRead, r, [r] { if (r->bytesAvailable() > 4096) r->abort(); });
+        connect(r, &QNetworkReply::finished, this, [this, r, id] {
+            const QByteArray body = r->readAll().left(4096);
+            const bool ok = r->error() == QNetworkReply::NoError;
+            r->deleteLater();
+            m_state.remove(id);
+            const QString hex = QString::fromLatin1(body.simplified().left(64)).toLower();
+            static const QRegularExpression re(QStringLiteral("^[0-9a-f]{64}$"));
+            if (!ok || !re.match(hex).hasMatch()) {
+                m_errors.insert(id, QStringLiteral("The publisher's checksum could not be read, so the download was not started."));
+                m_state.insert(id, QStringLiteral("failed"));
+                Q_EMIT finished(id, false, m_errors.value(id));
+                Q_EMIT changed();
+                return;
+            }
+            if (PackInfo *e = entry(id)) e->sha256 = hex;
+            beginJob(id);
+        });
+        Q_EMIT changed();
+        return true;
+    }
+    beginJob(id);
+    return true;
+}
+
+void PackManager::beginJob(const QString &id)
+{
+    const PackInfo p = base(id);
     Job j;
-    j.partPath = part;
+    j.partPath = packsDir() + QLatin1Char('/') + p.file + QStringLiteral(".part");
     m_jobs.insert(id, j);
     startRequest(id);
     Q_EMIT changed();
-    return true;
 }
 
 void PackManager::startRequest(const QString &id)
 {
     Job &j = m_jobs[id];
-    const PackInfo p = m_catalogue.value(id);
+    const PackInfo p = base(id);
     auto *file = new QFile(j.partPath, this);
     const qint64 have = QFileInfo(j.partPath).exists() ? QFileInfo(j.partPath).size() : 0;
     if (!file->open(QIODevice::WriteOnly | QIODevice::Append)) {
@@ -310,7 +464,7 @@ void PackManager::startRequest(const QString &id)
         if (jj.file && status != 416 && (status == 0 || status < 400))
             jj.file->write(r->readAll());
         // never more than the catalogue says plus a small margin: a server that keeps sending is cut off
-        if (jj.file && jj.file->size() > m_catalogue.value(id).bytes + kSizeMargin(m_catalogue.value(id).bytes)) {
+        if (jj.file && jj.file->size() > base(id).bytes + kSizeMargin(base(id).bytes)) {
             QFile::remove(jj.partPath);
             r->setProperty("overflow", true);
             r->abort();
@@ -318,9 +472,9 @@ void PackManager::startRequest(const QString &id)
     });
     connect(r, &QNetworkReply::downloadProgress, this, [this, id](qint64 got, qint64 total) {
         if (!m_jobs.contains(id)) return;
-        const qint64 base = m_jobs.value(id).resumeFrom;
-        m_jobs[id].total = total > 0 ? total + base : 0;
-        Q_EMIT progress(id, base + got, total > 0 ? total + base : m_catalogue.value(id).bytes);
+        const qint64 from = m_jobs.value(id).resumeFrom;
+        m_jobs[id].total = total > 0 ? total + from : 0;
+        Q_EMIT progress(id, from + got, total > 0 ? total + from : base(id).bytes);
     });
     connect(r, &QNetworkReply::finished, this, [this, id] { finishDownload(id); });
 }
@@ -348,7 +502,7 @@ void PackManager::finishDownload(const QString &id)
     const qint64 status = r->attribute(QNetworkRequest::HttpStatusCodeAttribute).toLongLong();
     if (j.file && r->bytesAvailable() > 0 && (status == 0 || status < 400))
         j.file->write(r->readAll());
-    if (j.file && j.file->size() > m_catalogue.value(id).bytes + kSizeMargin(m_catalogue.value(id).bytes)) {
+    if (j.file && j.file->size() > base(id).bytes + kSizeMargin(base(id).bytes)) {
         j.file->close();
         QFile::remove(j.partPath);
         failJob(id, QStringLiteral("The server sent more than the pack should hold (larger than the catalogue says), so the download was deleted."));
@@ -373,7 +527,7 @@ void PackManager::finishDownload(const QString &id)
         failJob(id, QStringLiteral("The download stopped: %1. It resumes where it left off.").arg(errText));
         return;
     }
-    const PackInfo p = m_catalogue.value(id);
+    const PackInfo p = base(id);
     const QString part = j.partPath;
     m_state.insert(id, QStringLiteral("verifying"));
     Q_EMIT changed();
@@ -404,13 +558,24 @@ void PackManager::finishDownload(const QString &id)
             Q_EMIT changed();
             return;
         }
-        writeRecord(p, p.sha256);
+        writeRecord(p, base(id).sha256);
+        if (m_replaces.contains(id)) {   // an update: the old version goes only now that the new one is verified and in place
+            const QString old = m_replaces.take(id);
+            QString e;
+            remove(old, &e);
+        }
         m_errors.remove(id);
         Q_EMIT finished(id, true, QStringLiteral("Installed."));
         Q_EMIT changed();
     });
     const QString expected = p.sha256;
-    w->setFuture(QtConcurrent::run([part, expected] { return PackManager::verifyFile(part, expected); }));
+    const qint64 wantBytes = p.bytes;
+    w->setFuture(QtConcurrent::run([part, expected, wantBytes] {
+        // no publisher checksum: the size must match the catalogue exactly (the only check there is)
+        if (expected.isEmpty())
+            return QFileInfo(part).size() == wantBytes ? VerifyResult::Ok : VerifyResult::Mismatch;
+        return PackManager::verifyFile(part, expected);
+    }));
 }
 
 void PackManager::cancel(const QString &id)
@@ -474,6 +639,21 @@ bool PackManager::importFile(const QString &source, const QString &expectedSha25
     p.title = si.completeBaseName();
     p.file = si.fileName();
     writeRecord(p, normSha(expectedSha256).isEmpty() ? sha256Of(dest) : normSha(expectedSha256));
+    rescan();
+    return true;
+}
+
+bool PackManager::adoptFile(const PackInfo &meta, QString *error)
+{
+    const QString full = packsDir() + QLatin1Char('/') + meta.file;
+    if (!safeFileName(meta.file) || !QFileInfo(full).isFile() || QFileInfo(full).size() <= 0) {
+        if (error) *error = QStringLiteral("There is no finished file to register.");
+        return false;
+    }
+    PackInfo p = meta;
+    p.bytes = QFileInfo(full).size();
+    addRemote(p);
+    writeRecord(p, sha256Of(full));
     rescan();
     return true;
 }

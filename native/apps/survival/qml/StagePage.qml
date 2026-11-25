@@ -44,7 +44,7 @@ Item {
                 detail: sp.map.error !== "" ? sp.map.error : qsTr("Import or download a map pack and the map works offline from then on.")
                 tone: sp.map.error !== "" ? "error" : "neutral"
             }
-            PackList { Layout.fillWidth: true; kind: "map"; compact: sp.narrow; onOpenRequested: (id) => sp.map.openPack(id) }
+            PackBrowser { Layout.fillWidth: true; Layout.preferredHeight: 700; narrow: sp.narrow; tab: "maps"; onOpenRequested: (id) => sp.map.openPack(id) }
         }
     }
 

@@ -52,6 +52,8 @@ TaosWindow {
             else if (section === "map") mapPage.tab = tab
             else if (section === "taostak") takPage.tab = tab
         }
+        const ptab = argValue(args, "--pack-tab")
+        if (ptab !== "") { section = "library"; libraryPage.mode = "packs"; libraryPage.packTab = ptab }
         const art = argValue(args, "--article")
         if (art !== "") { section = "library"; if (Survival.library.packId === "" && libraryPage.installed.length > 0) Survival.library.open(libraryPage.installed[0].id); Survival.library.openArticle(art); libraryPage.mode = "read"; libraryPage.reading = true }
         const pk = argValue(args, "--open-pack")

@@ -7,12 +7,19 @@
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <QNetworkAccessManager>
+#include <QNetworkReply>
+#include <QTimer>
 #include <QStandardPaths>
 #include <QStorageInfo>
 #include <QTextStream>
 #include <iostream>
 
 #include "articlehtml.h"
+#include "containerexec.h"
+#include "education.h"
+#include "kiwixcatalog.h"
+#include "mapextract.h"
 #include "kit.h"
 #include "mapdata.h"
 #include "packmanager.h"
@@ -25,6 +32,7 @@ using namespace Taos::Survival;
 
 namespace {
 QTextStream out(stdout);
+QTextStream &out_ = out;
 QTextStream err(stderr);
 void print(const QJsonValue &v)
 {
@@ -45,6 +53,12 @@ int usage()
            "  kits                         grab-and-go kits checked against this machine\n"
            "  map info <pack>              map pack details\n"
            "  map search <pack> <text>     place names in a map pack\n  map tile <pack> <z> <x> <y>  what a tile holds (debugging a style)\n"
+           "  catalog search <text> [lang] [category]   the whole Kiwix library (lang is ISO 639-3, e.g. eng)\n"
+           "  catalog get <file name>      download one pack from the catalogue (e.g. wikipedia_en_medicine_mini_2026-10.zim)\n"
+           "  maps regions                 areas that can be cut out; ready-made files\n"
+           "  maps extract <area id> <zoom> [--dry-run]   cut a map out of the newest Protomaps build (runs pmtiles via TAOS_SURVIVAL_EXEC)\n"
+           "  edu list                     Kolibri education channels\n"
+           "  edu install <channel id>     import a channel into Kolibri (via TAOS_SURVIVAL_EXEC)\n"
            "  markers                      the saved markers\n"
            "  markers add <name> <lon> <lat> [note]\n"
            "  markers remove <id>\n"
@@ -67,7 +81,7 @@ int main(int argc, char **argv)
     if (a.isEmpty())
         return usage();
     PackManager pm(survivalDataDir());
-    QString e;
+    QString e, e2;
     pm.loadCatalogue(bundledCatalog(QStringLiteral("packs.json")), &e);
     const QString cmd = a[0];
     const QString sub = a.value(1);
@@ -196,6 +210,126 @@ int main(int argc, char **argv)
                 arr.append(QJsonObject{{QStringLiteral("name"), p.name}, {QStringLiteral("kind"), p.kind}, {QStringLiteral("lon"), p.lon}, {QStringLiteral("lat"), p.lat}});
             print(arr);
             return 0;
+        }
+        return usage();
+    }
+    if (cmd == QLatin1String("catalog")) {
+        KiwixCatalog cat;
+        QEventLoop loop;
+        int rc = 0;
+        CatalogPage page;
+        QObject::connect(&cat, &KiwixCatalog::searchDone, &loop, [&](int, const CatalogPage &p) { page = p; loop.quit(); });
+        QObject::connect(&cat, &KiwixCatalog::searchFailed, &loop, [&](int, const QString &m) { err << m << "\n"; rc = 1; loop.quit(); });
+        if (sub == QLatin1String("search")) {
+            cat.search(a.value(2), a.value(3), a.value(4), 0, 50);
+            loop.exec();
+            if (rc) return rc;
+            QJsonArray arr;
+            for (const CatalogEntry &e : std::as_const(page.entries)) {
+                const PackInfo p = packFromEntry(e);
+                arr.append(QJsonObject{{QStringLiteral("file"), e.fileName()}, {QStringLiteral("title"), e.title}, {QStringLiteral("flavour"), e.flavour},
+                    {QStringLiteral("language"), e.language}, {QStringLiteral("category"), e.category}, {QStringLiteral("bytes"), double(e.bytes)},
+                    {QStringLiteral("licence"), p.licence}, {QStringLiteral("restrictive"), p.needsAcceptance}, {QStringLiteral("version"), e.version()}});
+            }
+            print(QJsonObject{{QStringLiteral("total"), page.total}, {QStringLiteral("entries"), arr}});
+            return 0;
+        }
+        if (sub == QLatin1String("get")) {
+            const QString file = a.value(2);
+            cat.search(QString(), QString(), QString(), 0, 100, catalogNameOfSeries(seriesOfFile(file)));
+            loop.exec();
+            if (rc) return rc;
+            for (const CatalogEntry &e : std::as_const(page.entries)) {
+                if (e.fileName() != file) continue;
+                PackInfo p = packFromEntry(e);
+                pm.addRemote(p);
+                if (p.needsAcceptance && !a.contains(QStringLiteral("--accept-licence"))) {
+                    err << "This pack is under " << p.licence << ", which restricts use. Read it, then run again with --accept-licence.\n";
+                    return 1;
+                }
+                if (p.needsAcceptance) pm.acceptLicence(p.id);
+                if (!pm.download(p.id, &e2)) { err << e2 << "\n"; return 1; }
+                QEventLoop dl;
+                int drc = 1;
+                QObject::connect(&pm, &PackManager::finished, &dl, [&](const QString &, bool ok, const QString &msg) { drc = ok ? 0 : 1; err << msg << "\n"; dl.quit(); });
+                QObject::connect(&pm, &PackManager::progress, &dl, [](const QString &, qint64 got, qint64 total) {
+                    err << "\r" << got / (1024 * 1024) << " of " << total / (1024 * 1024) << " MB" << Qt::flush; });
+                dl.exec();
+                return drc;
+            }
+            err << "That file is not in the catalogue.\n";
+            return 1;
+        }
+        return usage();
+    }
+    if (cmd == QLatin1String("maps")) {
+        const QList<MapRegion> regions = loadMapRegions(bundledCatalog(QStringLiteral("regions.json")));
+        if (sub == QLatin1String("regions")) {
+            QJsonArray arr;
+            for (const MapRegion &r : regions)
+                arr.append(QJsonObject{{QStringLiteral("id"), r.id}, {QStringLiteral("title"), r.title}, {QStringLiteral("group"), r.group},
+                    {QStringLiteral("readyMade"), !r.url.isEmpty()}, {QStringLiteral("bytes"), double(r.bytes)}});
+            print(arr);
+            return 0;
+        }
+        if (sub == QLatin1String("extract")) {
+            for (const MapRegion &r : regions) {
+                if (r.id != a.value(2) || !r.url.isEmpty()) continue;
+                QNetworkAccessManager nam;
+                QEventLoop loop;
+                QNetworkReply *rep = nam.get(QNetworkRequest(QUrl(QStringLiteral("https://build-metadata.protomaps.dev/builds.json"))));
+                QObject::connect(rep, &QNetworkReply::finished, &loop, &QEventLoop::quit);
+                loop.exec();
+                const QUrl build = latestProtomapsBuild(rep->read(4 * 1024 * 1024));
+                if (build.isEmpty()) { err << "The newest map build could not be found.\n"; return 1; }
+                ContainerExec exec;
+                MapExtractor ex(&exec);
+                const bool dry = a.contains(QStringLiteral("--dry-run"));
+                const QString out = pm.packsDir() + QStringLiteral("/protomaps-") + r.id + QStringLiteral("-z") + a.value(3) + QStringLiteral("-") + build.fileName().chopped(8) + QStringLiteral(".pmtiles");
+                int rc = 1;
+                QObject::connect(&ex, &MapExtractor::finished, &loop, [&](bool ok, bool, qint64 bytes, const QString &msg) {
+                    rc = ok ? 0 : 1;
+                    if (!ok) err << msg << "\n"; else out_ << bytes << "\n";
+                    loop.quit();
+                });
+                if (!ex.start(build.toString(), r, a.value(3).toInt(), out, dry, &e)) { err << e << "\n"; return 1; }
+                loop.exec();
+                if (rc == 0 && !dry) {
+                    PackInfo p; p.id = QStringLiteral("map:extract-") + r.id + QStringLiteral("-z") + a.value(3); p.title = r.title; p.kind = QStringLiteral("map");
+                    p.file = QFileInfo(out).fileName(); p.licence = QStringLiteral("ODbL-1.0"); p.series = QStringLiteral("protomaps-") + r.id;
+                    p.attribution = QStringLiteral("Map data (c) OpenStreetMap contributors (ODbL). Basemap by Protomaps.");
+                    if (!pm.adoptFile(p, &e)) { err << e << "\n"; return 1; }
+                }
+                return rc;
+            }
+            err << "Unknown area. List them with: maps regions\n";
+            return 1;
+        }
+        return usage();
+    }
+    if (cmd == QLatin1String("edu")) {
+        if (sub == QLatin1String("list")) {
+            QNetworkAccessManager nam;
+            QEventLoop loop;
+            QNetworkReply *rep = nam.get(QNetworkRequest(QUrl(QStringLiteral("https://kolibri-catalog-en.learningequality.org/api/public/v1/channels/?format=json"))));
+            QObject::connect(rep, &QNetworkReply::finished, &loop, &QEventLoop::quit);
+            loop.exec();
+            QJsonArray arr;
+            for (const EduChannel &c : parseKolibriChannels(rep->read(32 * 1024 * 1024)))
+                arr.append(QJsonObject{{QStringLiteral("id"), c.id}, {QStringLiteral("name"), c.name}, {QStringLiteral("language"), c.language},
+                    {QStringLiteral("bytes"), double(c.bytes)}, {QStringLiteral("resources"), c.resources}});
+            print(arr);
+            return 0;
+        }
+        if (sub == QLatin1String("install")) {
+            ContainerExec exec;
+            ChannelImporter imp(&exec);
+            QEventLoop loop;
+            int rc = 1;
+            QObject::connect(&imp, &ChannelImporter::finished, &loop, [&](const QString &, bool ok, const QString &msg) { rc = ok ? 0 : 1; if (!ok) err << msg << "\n"; loop.quit(); });
+            if (!imp.start(a.value(2), &e)) { err << e << "\n"; return 1; }
+            loop.exec();
+            return rc;
         }
         return usage();
     }

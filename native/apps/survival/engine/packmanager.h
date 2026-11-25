@@ -36,6 +36,17 @@ struct PackInfo
     QString publisher;
     QString version;
     bool needsAcceptance = false;
+    // where it comes from and how it is checked
+    QUrl sha256Url;            // the publisher posts the checksum beside the file: fetched when the download starts
+    QString source;            // host the file comes from, shown to the person
+    QString series;            // the file name without its date: the same series in a newer version is an update
+    bool sizeApprox = false;   // the catalogue size is rounded: the real size is read from the publisher (HEAD) before the transfer
+    bool noChecksum = false;   // the publisher posts none: the size is checked, and the pack says so
+    bool unverified = false;   // installed without a publisher checksum
+    // updates
+    bool updateAvailable = false;
+    QString updateVersion;
+    QString updateId;
     // device state
     bool installed = false;
     bool local = false;        // a file the catalogue does not know (imported or copied in by hand)
@@ -59,6 +70,14 @@ public:
 
     bool loadCatalogue(const QByteArray &json, QString *error = nullptr);
     bool loadCatalogueFile(const QString &path, QString *error = nullptr);
+    /// Entries that are not in the bundled catalogue (the Kiwix library, regions): known to the manager from now on.
+    void addRemote(const PackInfo &p);
+    /// Tells the manager the newest versions that exist; installed packs of the same series show an update.
+    void setLatest(const QList<PackInfo> &newest);
+    /// Downloads the newer version of an installed pack; the old file is deleted once the new one is verified.
+    bool update(const QString &id, QString *error = nullptr);
+    /// Registers a file already in the packs folder (made by an extraction) with the given details.
+    bool adoptFile(const PackInfo &meta, QString *error = nullptr);
     /// Re-reads the packs folder (call after copying a file in by hand).
     void rescan();
 
@@ -98,6 +117,9 @@ private:
         QString partPath;
     };
     QString recordPath(const QString &file) const { return packsDir() + QLatin1Char('/') + file + QStringLiteral(".taospack.json"); }
+    PackInfo base(const QString &id) const;
+    PackInfo *entry(const QString &id);
+    void beginJob(const QString &id);
     void startRequest(const QString &id);
     void finishDownload(const QString &id);
     void failJob(const QString &id, const QString &message);
@@ -106,6 +128,9 @@ private:
     QHash<QString, PackInfo> m_catalogue;
     QStringList m_order;
     QHash<QString, PackInfo> m_local;
+    QHash<QString, PackInfo> m_remote;
+    QHash<QString, PackInfo> m_newest;     // installed id -> the newer pack
+    QHash<QString, QString> m_replaces;    // new id -> installed id to delete after verification
     QHash<QString, Job> m_jobs;
     QHash<QString, QString> m_errors;
     QHash<QString, QString> m_state;     // verifying | failed

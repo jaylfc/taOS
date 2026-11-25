@@ -12,7 +12,7 @@ C.CheckBox {
     property bool mono: false
     hoverEnabled: true
     focusPolicy: Qt.StrongFocus
-    implicitHeight: 26
+    implicitHeight: Math.max(26, contentItem.implicitHeight + 4)
     Accessible.name: accessibleName
     Accessible.role: Accessible.CheckBox
     indicator: Rectangle {
@@ -27,6 +27,7 @@ C.CheckBox {
     }
     contentItem: TaosText {
         leftPadding: 24
+        wrapMode: Text.Wrap
         verticalAlignment: Text.AlignVCenter
         text: root.text
         font.family: root.mono ? "monospace" : Look.family

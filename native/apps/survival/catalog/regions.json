@@ -1,0 +1,843 @@
+{
+ "version": 1,
+ "note": "Boxes are approximate and include some neighbouring land. Ready files: Project N.O.M.A.D.'s maps repository (ODbL data, no checksum published). Extraction: Protomaps builds (ODbL, attribution required).",
+ "regions": [
+  {
+   "id": "x-world",
+   "title": "World overview (zoom 0 to 5)",
+   "group": "World",
+   "west": -180,
+   "south": -85,
+   "east": 180,
+   "north": 85
+  },
+  {
+   "id": "x-gb",
+   "title": "Great Britain and Northern Ireland",
+   "group": "Europe",
+   "west": -8.7,
+   "south": 49.8,
+   "east": 1.9,
+   "north": 60.95
+  },
+  {
+   "id": "x-ie",
+   "title": "Ireland",
+   "group": "Europe",
+   "west": -10.7,
+   "south": 51.3,
+   "east": -5.9,
+   "north": 55.5
+  },
+  {
+   "id": "x-fr",
+   "title": "France",
+   "group": "Europe",
+   "west": -5.3,
+   "south": 41.3,
+   "east": 9.7,
+   "north": 51.2
+  },
+  {
+   "id": "x-de",
+   "title": "Germany",
+   "group": "Europe",
+   "west": 5.8,
+   "south": 47.2,
+   "east": 15.1,
+   "north": 55.1
+  },
+  {
+   "id": "x-es",
+   "title": "Spain and Portugal",
+   "group": "Europe",
+   "west": -9.6,
+   "south": 35.9,
+   "east": 4.4,
+   "north": 43.9
+  },
+  {
+   "id": "x-it",
+   "title": "Italy",
+   "group": "Europe",
+   "west": 6.6,
+   "south": 35.4,
+   "east": 18.6,
+   "north": 47.2
+  },
+  {
+   "id": "x-nl",
+   "title": "Netherlands and Belgium",
+   "group": "Europe",
+   "west": 2.5,
+   "south": 49.4,
+   "east": 7.3,
+   "north": 53.6
+  },
+  {
+   "id": "x-ch",
+   "title": "Switzerland and Austria",
+   "group": "Europe",
+   "west": 5.9,
+   "south": 45.8,
+   "east": 17.2,
+   "north": 49.1
+  },
+  {
+   "id": "x-pl",
+   "title": "Poland and Czechia",
+   "group": "Europe",
+   "west": 12.0,
+   "south": 48.5,
+   "east": 24.2,
+   "north": 54.9
+  },
+  {
+   "id": "x-no",
+   "title": "Norway",
+   "group": "Europe",
+   "west": 4.4,
+   "south": 57.9,
+   "east": 31.3,
+   "north": 71.3
+  },
+  {
+   "id": "x-se",
+   "title": "Sweden",
+   "group": "Europe",
+   "west": 10.9,
+   "south": 55.3,
+   "east": 24.2,
+   "north": 69.1
+  },
+  {
+   "id": "x-fi",
+   "title": "Finland",
+   "group": "Europe",
+   "west": 19.0,
+   "south": 59.7,
+   "east": 31.7,
+   "north": 70.2
+  },
+  {
+   "id": "x-dk",
+   "title": "Denmark",
+   "group": "Europe",
+   "west": 8.0,
+   "south": 54.5,
+   "east": 15.3,
+   "north": 57.8
+  },
+  {
+   "id": "x-is",
+   "title": "Iceland",
+   "group": "Europe",
+   "west": -24.6,
+   "south": 63.3,
+   "east": -13.4,
+   "north": 66.6
+  },
+  {
+   "id": "x-gr",
+   "title": "Greece",
+   "group": "Europe",
+   "west": 19.3,
+   "south": 34.7,
+   "east": 28.3,
+   "north": 41.8
+  },
+  {
+   "id": "x-tr",
+   "title": "Turkey",
+   "group": "Europe and Asia",
+   "west": 25.6,
+   "south": 35.8,
+   "east": 44.9,
+   "north": 42.2
+  },
+  {
+   "id": "x-ua",
+   "title": "Ukraine",
+   "group": "Europe",
+   "west": 22.1,
+   "south": 44.3,
+   "east": 40.3,
+   "north": 52.4
+  },
+  {
+   "id": "x-us",
+   "title": "United States (contiguous)",
+   "group": "North America",
+   "west": -125.0,
+   "south": 24.4,
+   "east": -66.9,
+   "north": 49.4
+  },
+  {
+   "id": "x-ak",
+   "title": "Alaska",
+   "group": "North America",
+   "west": -170.0,
+   "south": 51.2,
+   "east": -129.9,
+   "north": 71.5
+  },
+  {
+   "id": "x-hi",
+   "title": "Hawaii",
+   "group": "North America",
+   "west": -160.3,
+   "south": 18.8,
+   "east": -154.7,
+   "north": 22.3
+  },
+  {
+   "id": "x-ca",
+   "title": "Canada",
+   "group": "North America",
+   "west": -141.0,
+   "south": 41.7,
+   "east": -52.6,
+   "north": 70.0
+  },
+  {
+   "id": "x-mx",
+   "title": "Mexico",
+   "group": "North America",
+   "west": -118.5,
+   "south": 14.5,
+   "east": -86.7,
+   "north": 32.8
+  },
+  {
+   "id": "x-br",
+   "title": "Brazil",
+   "group": "South America",
+   "west": -74.0,
+   "south": -33.8,
+   "east": -34.7,
+   "north": 5.3
+  },
+  {
+   "id": "x-ar",
+   "title": "Argentina",
+   "group": "South America",
+   "west": -73.6,
+   "south": -55.1,
+   "east": -53.6,
+   "north": -21.8
+  },
+  {
+   "id": "x-cl",
+   "title": "Chile",
+   "group": "South America",
+   "west": -75.7,
+   "south": -56.0,
+   "east": -66.4,
+   "north": -17.5
+  },
+  {
+   "id": "x-co",
+   "title": "Colombia",
+   "group": "South America",
+   "west": -79.1,
+   "south": -4.3,
+   "east": -66.8,
+   "north": 12.5
+  },
+  {
+   "id": "x-pe",
+   "title": "Peru",
+   "group": "South America",
+   "west": -81.4,
+   "south": -18.4,
+   "east": -68.7,
+   "north": -0.0
+  },
+  {
+   "id": "x-au",
+   "title": "Australia",
+   "group": "Oceania",
+   "west": 112.9,
+   "south": -43.7,
+   "east": 153.7,
+   "north": -10.5
+  },
+  {
+   "id": "x-nz",
+   "title": "New Zealand",
+   "group": "Oceania",
+   "west": 166.3,
+   "south": -47.4,
+   "east": 178.6,
+   "north": -34.3
+  },
+  {
+   "id": "x-jp",
+   "title": "Japan",
+   "group": "Asia",
+   "west": 122.9,
+   "south": 24.0,
+   "east": 146.0,
+   "north": 45.6
+  },
+  {
+   "id": "x-kr",
+   "title": "South Korea",
+   "group": "Asia",
+   "west": 125.0,
+   "south": 33.0,
+   "east": 131.0,
+   "north": 38.7
+  },
+  {
+   "id": "x-in",
+   "title": "India",
+   "group": "Asia",
+   "west": 68.1,
+   "south": 6.7,
+   "east": 97.4,
+   "north": 35.7
+  },
+  {
+   "id": "x-id",
+   "title": "Indonesia",
+   "group": "Asia",
+   "west": 95.0,
+   "south": -11.1,
+   "east": 141.0,
+   "north": 6.1
+  },
+  {
+   "id": "x-ph",
+   "title": "Philippines",
+   "group": "Asia",
+   "west": 116.9,
+   "south": 4.6,
+   "east": 126.7,
+   "north": 21.2
+  },
+  {
+   "id": "x-th",
+   "title": "Thailand",
+   "group": "Asia",
+   "west": 97.3,
+   "south": 5.6,
+   "east": 105.7,
+   "north": 20.5
+  },
+  {
+   "id": "x-vn",
+   "title": "Vietnam",
+   "group": "Asia",
+   "west": 102.1,
+   "south": 8.4,
+   "east": 109.6,
+   "north": 23.4
+  },
+  {
+   "id": "x-za",
+   "title": "South Africa",
+   "group": "Africa",
+   "west": 16.4,
+   "south": -34.9,
+   "east": 32.9,
+   "north": -22.1
+  },
+  {
+   "id": "x-ke",
+   "title": "Kenya",
+   "group": "Africa",
+   "west": 33.9,
+   "south": -4.7,
+   "east": 41.9,
+   "north": 5.0
+  },
+  {
+   "id": "x-ng",
+   "title": "Nigeria",
+   "group": "Africa",
+   "west": 2.7,
+   "south": 4.2,
+   "east": 14.7,
+   "north": 13.9
+  },
+  {
+   "id": "x-eg",
+   "title": "Egypt",
+   "group": "Africa",
+   "west": 24.7,
+   "south": 22.0,
+   "east": 36.9,
+   "north": 31.7
+  },
+  {
+   "id": "x-ma",
+   "title": "Morocco",
+   "group": "Africa",
+   "west": -13.2,
+   "south": 27.6,
+   "east": -0.9,
+   "north": 35.9
+  },
+  {
+   "id": "x-et",
+   "title": "Ethiopia",
+   "group": "Africa",
+   "west": 32.9,
+   "south": 3.4,
+   "east": 48.0,
+   "north": 14.9
+  },
+  {
+   "id": "ready-alaska",
+   "title": "Alaska",
+   "group": "United States: Pacific Region",
+   "url": "https://github.com/Crosstalk-Solutions/project-nomad-maps/raw/refs/heads/master/pmtiles/alaska_2025-12.pmtiles",
+   "bytes": 684000000,
+   "sizeApprox": true,
+   "version": "2025-12"
+  },
+  {
+   "id": "ready-california",
+   "title": "California",
+   "group": "United States: Pacific Region",
+   "url": "https://github.com/Crosstalk-Solutions/project-nomad-maps/raw/refs/heads/master/pmtiles/california_2025-12.pmtiles",
+   "bytes": 1100000000,
+   "sizeApprox": true,
+   "version": "2025-12"
+  },
+  {
+   "id": "ready-hawaii",
+   "title": "Hawaii",
+   "group": "United States: Pacific Region",
+   "url": "https://github.com/Crosstalk-Solutions/project-nomad-maps/raw/refs/heads/master/pmtiles/hawaii_2025-12.pmtiles",
+   "bytes": 28000000,
+   "sizeApprox": true,
+   "version": "2025-12"
+  },
+  {
+   "id": "ready-oregon",
+   "title": "Oregon",
+   "group": "United States: Pacific Region",
+   "url": "https://github.com/Crosstalk-Solutions/project-nomad-maps/raw/refs/heads/master/pmtiles/oregon_2025-12.pmtiles",
+   "bytes": 379000000,
+   "sizeApprox": true,
+   "version": "2025-12"
+  },
+  {
+   "id": "ready-washington",
+   "title": "Washington",
+   "group": "United States: Pacific Region",
+   "url": "https://github.com/Crosstalk-Solutions/project-nomad-maps/raw/refs/heads/master/pmtiles/washington_2025-12.pmtiles",
+   "bytes": 466000000,
+   "sizeApprox": true,
+   "version": "2025-12"
+  },
+  {
+   "id": "ready-arizona",
+   "title": "Arizona",
+   "group": "United States: Mountain Region",
+   "url": "https://github.com/Crosstalk-Solutions/project-nomad-maps/raw/refs/heads/master/pmtiles/arizona_2025-12.pmtiles",
+   "bytes": 400000000,
+   "sizeApprox": true,
+   "version": "2025-12"
+  },
+  {
+   "id": "ready-colorado",
+   "title": "Colorado",
+   "group": "United States: Mountain Region",
+   "url": "https://github.com/Crosstalk-Solutions/project-nomad-maps/raw/refs/heads/master/pmtiles/colorado_2025-12.pmtiles",
+   "bytes": 450000000,
+   "sizeApprox": true,
+   "version": "2025-12"
+  },
+  {
+   "id": "ready-idaho",
+   "title": "Idaho",
+   "group": "United States: Mountain Region",
+   "url": "https://github.com/Crosstalk-Solutions/project-nomad-maps/raw/refs/heads/master/pmtiles/idaho_2025-12.pmtiles",
+   "bytes": 220000000,
+   "sizeApprox": true,
+   "version": "2025-12"
+  },
+  {
+   "id": "ready-montana",
+   "title": "Montana",
+   "group": "United States: Mountain Region",
+   "url": "https://github.com/Crosstalk-Solutions/project-nomad-maps/raw/refs/heads/master/pmtiles/montana_2025-12.pmtiles",
+   "bytes": 270000000,
+   "sizeApprox": true,
+   "version": "2025-12"
+  },
+  {
+   "id": "ready-nevada",
+   "title": "Nevada",
+   "group": "United States: Mountain Region",
+   "url": "https://github.com/Crosstalk-Solutions/project-nomad-maps/raw/refs/heads/master/pmtiles/nevada_2025-12.pmtiles",
+   "bytes": 200000000,
+   "sizeApprox": true,
+   "version": "2025-12"
+  },
+  {
+   "id": "ready-new_mexico",
+   "title": "New Mexico",
+   "group": "United States: Mountain Region",
+   "url": "https://github.com/Crosstalk-Solutions/project-nomad-maps/raw/refs/heads/master/pmtiles/new_mexico_2025-12.pmtiles",
+   "bytes": 230000000,
+   "sizeApprox": true,
+   "version": "2025-12"
+  },
+  {
+   "id": "ready-utah",
+   "title": "Utah",
+   "group": "United States: Mountain Region",
+   "url": "https://github.com/Crosstalk-Solutions/project-nomad-maps/raw/refs/heads/master/pmtiles/utah_2025-12.pmtiles",
+   "bytes": 240000000,
+   "sizeApprox": true,
+   "version": "2025-12"
+  },
+  {
+   "id": "ready-wyoming",
+   "title": "Wyoming",
+   "group": "United States: Mountain Region",
+   "url": "https://github.com/Crosstalk-Solutions/project-nomad-maps/raw/refs/heads/master/pmtiles/wyoming_2025-12.pmtiles",
+   "bytes": 210000000,
+   "sizeApprox": true,
+   "version": "2025-12"
+  },
+  {
+   "id": "ready-arkansas",
+   "title": "Arkansas",
+   "group": "United States: West South Central",
+   "url": "https://github.com/Crosstalk-Solutions/project-nomad-maps/raw/refs/heads/master/pmtiles/arkansas_2025-12.pmtiles",
+   "bytes": 400000000,
+   "sizeApprox": true,
+   "version": "2025-12"
+  },
+  {
+   "id": "ready-oklahoma",
+   "title": "Oklahoma",
+   "group": "United States: West South Central",
+   "url": "https://github.com/Crosstalk-Solutions/project-nomad-maps/raw/refs/heads/master/pmtiles/oklahoma_2025-12.pmtiles",
+   "bytes": 400000000,
+   "sizeApprox": true,
+   "version": "2025-12"
+  },
+  {
+   "id": "ready-louisiana",
+   "title": "Louisiana",
+   "group": "United States: West South Central",
+   "url": "https://github.com/Crosstalk-Solutions/project-nomad-maps/raw/refs/heads/master/pmtiles/louisiana_2025-12.pmtiles",
+   "bytes": 400000000,
+   "sizeApprox": true,
+   "version": "2025-12"
+  },
+  {
+   "id": "ready-texas",
+   "title": "Texas",
+   "group": "United States: West South Central",
+   "url": "https://github.com/Crosstalk-Solutions/project-nomad-maps/raw/refs/heads/master/pmtiles/texas_2025-12.pmtiles",
+   "bytes": 400000000,
+   "sizeApprox": true,
+   "version": "2025-12"
+  },
+  {
+   "id": "ready-alabama",
+   "title": "Alabama",
+   "group": "United States: East South Central",
+   "url": "https://github.com/Crosstalk-Solutions/project-nomad-maps/raw/refs/heads/master/pmtiles/alabama_2025-12.pmtiles",
+   "bytes": 400000000,
+   "sizeApprox": true,
+   "version": "2025-12"
+  },
+  {
+   "id": "ready-kentucky",
+   "title": "Kentucky",
+   "group": "United States: East South Central",
+   "url": "https://github.com/Crosstalk-Solutions/project-nomad-maps/raw/refs/heads/master/pmtiles/kentucky_2025-12.pmtiles",
+   "bytes": 400000000,
+   "sizeApprox": true,
+   "version": "2025-12"
+  },
+  {
+   "id": "ready-mississippi",
+   "title": "Mississippi",
+   "group": "United States: East South Central",
+   "url": "https://github.com/Crosstalk-Solutions/project-nomad-maps/raw/refs/heads/master/pmtiles/mississippi_2025-12.pmtiles",
+   "bytes": 400000000,
+   "sizeApprox": true,
+   "version": "2025-12"
+  },
+  {
+   "id": "ready-tennessee",
+   "title": "Tennessee",
+   "group": "United States: East South Central",
+   "url": "https://github.com/Crosstalk-Solutions/project-nomad-maps/raw/refs/heads/master/pmtiles/tennessee_2025-12.pmtiles",
+   "bytes": 400000000,
+   "sizeApprox": true,
+   "version": "2025-12"
+  },
+  {
+   "id": "ready-delaware",
+   "title": "Delaware",
+   "group": "United States: South Atlantic",
+   "url": "https://github.com/Crosstalk-Solutions/project-nomad-maps/raw/refs/heads/master/pmtiles/delaware_2025-12.pmtiles",
+   "bytes": 400000000,
+   "sizeApprox": true,
+   "version": "2025-12"
+  },
+  {
+   "id": "ready-florida",
+   "title": "Florida",
+   "group": "United States: South Atlantic",
+   "url": "https://github.com/Crosstalk-Solutions/project-nomad-maps/raw/refs/heads/master/pmtiles/florida_2025-12.pmtiles",
+   "bytes": 400000000,
+   "sizeApprox": true,
+   "version": "2025-12"
+  },
+  {
+   "id": "ready-georgia",
+   "title": "Georgia",
+   "group": "United States: South Atlantic",
+   "url": "https://github.com/Crosstalk-Solutions/project-nomad-maps/raw/refs/heads/master/pmtiles/georgia_2025-12.pmtiles",
+   "bytes": 400000000,
+   "sizeApprox": true,
+   "version": "2025-12"
+  },
+  {
+   "id": "ready-maryland",
+   "title": "Maryland",
+   "group": "United States: South Atlantic",
+   "url": "https://github.com/Crosstalk-Solutions/project-nomad-maps/raw/refs/heads/master/pmtiles/maryland_2025-12.pmtiles",
+   "bytes": 400000000,
+   "sizeApprox": true,
+   "version": "2025-12"
+  },
+  {
+   "id": "ready-north_carolina",
+   "title": "North_Carolina",
+   "group": "United States: South Atlantic",
+   "url": "https://github.com/Crosstalk-Solutions/project-nomad-maps/raw/refs/heads/master/pmtiles/north_carolina_2025-12.pmtiles",
+   "bytes": 400000000,
+   "sizeApprox": true,
+   "version": "2025-12"
+  },
+  {
+   "id": "ready-south_carolina",
+   "title": "South_Carolina",
+   "group": "United States: South Atlantic",
+   "url": "https://github.com/Crosstalk-Solutions/project-nomad-maps/raw/refs/heads/master/pmtiles/south_carolina_2025-12.pmtiles",
+   "bytes": 400000000,
+   "sizeApprox": true,
+   "version": "2025-12"
+  },
+  {
+   "id": "ready-virginia",
+   "title": "Virginia",
+   "group": "United States: South Atlantic",
+   "url": "https://github.com/Crosstalk-Solutions/project-nomad-maps/raw/refs/heads/master/pmtiles/virginia_2025-12.pmtiles",
+   "bytes": 400000000,
+   "sizeApprox": true,
+   "version": "2025-12"
+  },
+  {
+   "id": "ready-west_virginia",
+   "title": "West_Virginia",
+   "group": "United States: South Atlantic",
+   "url": "https://github.com/Crosstalk-Solutions/project-nomad-maps/raw/refs/heads/master/pmtiles/west_virginia_2025-12.pmtiles",
+   "bytes": 400000000,
+   "sizeApprox": true,
+   "version": "2025-12"
+  },
+  {
+   "id": "ready-iowa",
+   "title": "Iowa",
+   "group": "United States: West North Central",
+   "url": "https://github.com/Crosstalk-Solutions/project-nomad-maps/raw/refs/heads/master/pmtiles/iowa_2025-12.pmtiles",
+   "bytes": 400000000,
+   "sizeApprox": true,
+   "version": "2025-12"
+  },
+  {
+   "id": "ready-kansas",
+   "title": "Kansas",
+   "group": "United States: West North Central",
+   "url": "https://github.com/Crosstalk-Solutions/project-nomad-maps/raw/refs/heads/master/pmtiles/kansas_2025-12.pmtiles",
+   "bytes": 400000000,
+   "sizeApprox": true,
+   "version": "2025-12"
+  },
+  {
+   "id": "ready-minnesota",
+   "title": "Minnesota",
+   "group": "United States: West North Central",
+   "url": "https://github.com/Crosstalk-Solutions/project-nomad-maps/raw/refs/heads/master/pmtiles/minnesota_2025-12.pmtiles",
+   "bytes": 400000000,
+   "sizeApprox": true,
+   "version": "2025-12"
+  },
+  {
+   "id": "ready-missouri",
+   "title": "Missouri",
+   "group": "United States: West North Central",
+   "url": "https://github.com/Crosstalk-Solutions/project-nomad-maps/raw/refs/heads/master/pmtiles/missouri_2025-12.pmtiles",
+   "bytes": 400000000,
+   "sizeApprox": true,
+   "version": "2025-12"
+  },
+  {
+   "id": "ready-nebraska",
+   "title": "Nebraska",
+   "group": "United States: West North Central",
+   "url": "https://github.com/Crosstalk-Solutions/project-nomad-maps/raw/refs/heads/master/pmtiles/nebraska_2025-12.pmtiles",
+   "bytes": 400000000,
+   "sizeApprox": true,
+   "version": "2025-12"
+  },
+  {
+   "id": "ready-north_dakota",
+   "title": "North_Dakota",
+   "group": "United States: West North Central",
+   "url": "https://github.com/Crosstalk-Solutions/project-nomad-maps/raw/refs/heads/master/pmtiles/north_dakota_2025-12.pmtiles",
+   "bytes": 400000000,
+   "sizeApprox": true,
+   "version": "2025-12"
+  },
+  {
+   "id": "ready-south_dakota",
+   "title": "South_Dakota",
+   "group": "United States: West North Central",
+   "url": "https://github.com/Crosstalk-Solutions/project-nomad-maps/raw/refs/heads/master/pmtiles/south_dakota_2025-12.pmtiles",
+   "bytes": 400000000,
+   "sizeApprox": true,
+   "version": "2025-12"
+  },
+  {
+   "id": "ready-illinois",
+   "title": "Illinois",
+   "group": "United States: East North Central",
+   "url": "https://github.com/Crosstalk-Solutions/project-nomad-maps/raw/refs/heads/master/pmtiles/illinois_2025-12.pmtiles",
+   "bytes": 400000000,
+   "sizeApprox": true,
+   "version": "2025-12"
+  },
+  {
+   "id": "ready-indiana",
+   "title": "Indiana",
+   "group": "United States: East North Central",
+   "url": "https://github.com/Crosstalk-Solutions/project-nomad-maps/raw/refs/heads/master/pmtiles/indiana_2025-12.pmtiles",
+   "bytes": 400000000,
+   "sizeApprox": true,
+   "version": "2025-12"
+  },
+  {
+   "id": "ready-michigan",
+   "title": "Michigan",
+   "group": "United States: East North Central",
+   "url": "https://github.com/Crosstalk-Solutions/project-nomad-maps/raw/refs/heads/master/pmtiles/michigan_2025-12.pmtiles",
+   "bytes": 400000000,
+   "sizeApprox": true,
+   "version": "2025-12"
+  },
+  {
+   "id": "ready-ohio",
+   "title": "Ohio",
+   "group": "United States: East North Central",
+   "url": "https://github.com/Crosstalk-Solutions/project-nomad-maps/raw/refs/heads/master/pmtiles/ohio_2025-12.pmtiles",
+   "bytes": 400000000,
+   "sizeApprox": true,
+   "version": "2025-12"
+  },
+  {
+   "id": "ready-wisconsin",
+   "title": "Wisconsin",
+   "group": "United States: East North Central",
+   "url": "https://github.com/Crosstalk-Solutions/project-nomad-maps/raw/refs/heads/master/pmtiles/wisconsin_2025-12.pmtiles",
+   "bytes": 400000000,
+   "sizeApprox": true,
+   "version": "2025-12"
+  },
+  {
+   "id": "ready-new_jersey",
+   "title": "New_Jersey",
+   "group": "United States: Mid-Atlantic",
+   "url": "https://github.com/Crosstalk-Solutions/project-nomad-maps/raw/refs/heads/master/pmtiles/new_jersey_2025-12.pmtiles",
+   "bytes": 400000000,
+   "sizeApprox": true,
+   "version": "2025-12"
+  },
+  {
+   "id": "ready-new_york",
+   "title": "New_York",
+   "group": "United States: Mid-Atlantic",
+   "url": "https://github.com/Crosstalk-Solutions/project-nomad-maps/raw/refs/heads/master/pmtiles/new_york_2025-12.pmtiles",
+   "bytes": 400000000,
+   "sizeApprox": true,
+   "version": "2025-12"
+  },
+  {
+   "id": "ready-pennsylvania",
+   "title": "Pennsylvania",
+   "group": "United States: Mid-Atlantic",
+   "url": "https://github.com/Crosstalk-Solutions/project-nomad-maps/raw/refs/heads/master/pmtiles/pennsylvania_2025-12.pmtiles",
+   "bytes": 400000000,
+   "sizeApprox": true,
+   "version": "2025-12"
+  },
+  {
+   "id": "ready-connecticut",
+   "title": "Connecticut",
+   "group": "United States: New England",
+   "url": "https://github.com/Crosstalk-Solutions/project-nomad-maps/raw/refs/heads/master/pmtiles/connecticut_2025-12.pmtiles",
+   "bytes": 400000000,
+   "sizeApprox": true,
+   "version": "2025-12"
+  },
+  {
+   "id": "ready-maine",
+   "title": "Maine",
+   "group": "United States: New England",
+   "url": "https://github.com/Crosstalk-Solutions/project-nomad-maps/raw/refs/heads/master/pmtiles/maine_2025-12.pmtiles",
+   "bytes": 400000000,
+   "sizeApprox": true,
+   "version": "2025-12"
+  },
+  {
+   "id": "ready-massachusetts",
+   "title": "Massachusetts",
+   "group": "United States: New England",
+   "url": "https://github.com/Crosstalk-Solutions/project-nomad-maps/raw/refs/heads/master/pmtiles/massachusetts_2025-12.pmtiles",
+   "bytes": 400000000,
+   "sizeApprox": true,
+   "version": "2025-12"
+  },
+  {
+   "id": "ready-new_hampshire",
+   "title": "New_Hampshire",
+   "group": "United States: New England",
+   "url": "https://github.com/Crosstalk-Solutions/project-nomad-maps/raw/refs/heads/master/pmtiles/new_hampshire_2025-12.pmtiles",
+   "bytes": 400000000,
+   "sizeApprox": true,
+   "version": "2025-12"
+  },
+  {
+   "id": "ready-rhode_island",
+   "title": "Rhode_Island",
+   "group": "United States: New England",
+   "url": "https://github.com/Crosstalk-Solutions/project-nomad-maps/raw/refs/heads/master/pmtiles/rhode_island_2025-12.pmtiles",
+   "bytes": 400000000,
+   "sizeApprox": true,
+   "version": "2025-12"
+  },
+  {
+   "id": "ready-vermont",
+   "title": "Vermont",
+   "group": "United States: New England",
+   "url": "https://github.com/Crosstalk-Solutions/project-nomad-maps/raw/refs/heads/master/pmtiles/vermont_2025-12.pmtiles",
+   "bytes": 400000000,
+   "sizeApprox": true,
+   "version": "2025-12"
+  }
+ ]
+}
