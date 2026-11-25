@@ -533,6 +533,8 @@ Installs the taOS default local LLM backend (router mode) on port **7835**, serv
 
 Linux uses a two-phase install. Phase 1 runs on the bare host; phase 2 runs inside the `taos-worker` LXC.
 
+The controller URL argument may be omitted on an interactive run: the controller advertises itself on the LAN via mDNS (`_tinyagentos._tcp`, with its URL, hub identity fingerprint, and hardware tier), and at pairing time the installer scans for it and offers a list of discovered controllers to pick from. When none are found it falls back to manual URL entry. Non-interactive runs still require the URL argument.
+
 | Where | What |
 |---|---|
 | `taos-worker` LXC | Privileged incus container created on the bare host during phase 1. All worker software lives inside it. |
