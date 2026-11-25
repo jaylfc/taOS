@@ -83,8 +83,16 @@ describe("built compat.js webview shim (#2082)", () => {
   });
 
   it("is loaded by every shell before its module entry", () => {
+    // Match the emitted <script> tag, not the first mention of the URL
+    // anywhere in the document: the shells' explanatory comments mention
+    // these URLs too (index.html's boot.js comment literally says the build
+    // rewrites it to `/desktop/boot.js`), the build preserves comments, and
+    // that sentence sits before the compat tag — a bare indexOf() reports a
+    // load order the tags do not have (CI: compat string at 2713 vs boot
+    // string at 1959, while the tags are in compat -> boot order).
+    const compatTag = '<script src="/desktop/compat.js"';
     for (const [name, html] of Object.entries(shells)) {
-      const compatAt = html.indexOf("/desktop/compat.js");
+      const compatAt = html.indexOf(compatTag);
       const moduleAt = html.indexOf('type="module"');
       expect(compatAt, `${name} references compat.js`).toBeGreaterThanOrEqual(0);
       expect(moduleAt, `${name} has a module entry`).toBeGreaterThanOrEqual(0);
@@ -93,7 +101,9 @@ describe("built compat.js webview shim (#2082)", () => {
     // The desktop shell also loads the pre-paint boot script; the shim the
     // bundle depends on must run before it too.
     const index = shells["index.html"];
-    expect(index.indexOf("/desktop/compat.js")).toBeLessThan(index.indexOf("/desktop/boot.js"));
+    const bootAt = index.indexOf('<script src="/desktop/boot.js"');
+    expect(bootAt, "index.html loads boot.js").toBeGreaterThanOrEqual(0);
+    expect(index.indexOf(compatTag), "index.html loads compat.js before boot.js").toBeLessThan(bootAt);
   });
 
   it("is precached by the service worker, like boot.js", () => {
