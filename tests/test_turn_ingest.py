@@ -456,3 +456,161 @@ async def test_bridge_final_reply_is_queued_for_the_agents_shelf(tmp_path):
     assert turn["session_id"] == "chan" and turn["turn_index"] == 0
     await st.close()
     await q.close()
+
+
+# ---------------------------------------------- review round: safety and wake
+
+def _add_user(app, username):
+    users = app.state.auth._read_users()
+    rec = {"id": f"id-{username}", "username": username, "full_name": username,
+           "email": "", "password_hash": "x", "created_at": 0, "is_admin": False,
+           "capabilities": []}
+    users["users"].append(rec)
+    app.state.auth._write_users(users)
+    return rec["id"]
+
+
+@pytest.mark.asyncio
+async def test_row_is_marked_inflight_before_send_and_recovered_by_taosmd_version(
+        tmp_path, caplog, monkeypatch):
+    from tinyagentos import turn_ingest as ti
+    q = ti.TurnIngestQueue(tmp_path / "q.db")
+    await q.init()
+    await q.enqueue("chat:1|agent-a", "agent-a", {"role": "user", "content": "x"})
+    seen = []
+
+    async def send(shelf, turn, source_id):
+        row = await (await q._db.execute("SELECT state FROM turn_ingest")).fetchone()
+        seen.append(row[0])
+
+    await ti.TurnIngestWorker(q, send, rate_per_sec=0).drain_once()
+    assert seen == ["inflight"]  # marked before the send, done after
+    assert (await q.counts())["done"] == 1
+
+    # a crash between send and mark_done leaves it in flight
+    await q.enqueue("chat:2|agent-a", "agent-a", {"role": "user", "content": "y"})
+    await q._db.execute("UPDATE turn_ingest SET state = 'inflight' WHERE key = 'chat:2|agent-a'")
+    await q._db.commit()
+    sent = []
+
+    async def send2(shelf, turn, source_id):
+        sent.append(source_id)
+
+    # taOSmd without source_id dedup: re-sending could duplicate, so it is closed
+    # out as done, with a warning
+    monkeypatch.setattr(ti, "source_id_dedup_supported", lambda: False)
+    with caplog.at_level(logging.WARNING):
+        await ti.TurnIngestWorker(q, send2, rate_per_sec=0).recover_inflight()
+    assert (await q.counts())["done"] == 2 and sent == []
+    assert any("maybe" in r.getMessage() for r in caplog.records)
+
+    # taOSmd that dedups on source_id: safe to send again
+    await q.enqueue("chat:3|agent-a", "agent-a", {"role": "user", "content": "z"})
+    await q._db.execute("UPDATE turn_ingest SET state = 'inflight' WHERE key = 'chat:3|agent-a'")
+    await q._db.commit()
+    monkeypatch.setattr(ti, "source_id_dedup_supported", lambda: True)
+    w = ti.TurnIngestWorker(q, send2, rate_per_sec=0)
+    await w.recover_inflight()
+    await w.drain_once()
+    assert sent == ["chat:3|agent-a"]
+    await q.close()
+
+
+@pytest.mark.asyncio
+async def test_backfill_cli_only_enqueues_never_delivers(client, monkeypatch):
+    import httpx
+
+    from tinyagentos.turn_backfill import main
+    app = client._transport.app
+    _agents(app, "agent-a")
+    ch = await _dm(app, "agent-a", _admin(app))
+    for i in range(3):
+        await app.state.chat_messages.send_message(
+            channel_id=ch, author_id="agent-a", author_type="agent", content=f"old {i}")
+
+    def boom(*a, **k):
+        raise AssertionError("the backfill CLI must not talk to taOSmd")
+
+    monkeypatch.setattr(httpx, "AsyncClient", boom)
+    data_dir = app.state.config_path.parent
+    cfg = yaml.safe_load((data_dir / "config.yaml").read_text()) or {}
+    cfg["agents"] = [{"name": "agent-a", "host": "127.0.0.1"}]  # the CLI reads the file
+    (data_dir / "config.yaml").write_text(yaml.dump(cfg))
+    code = await asyncio.to_thread(main, ["--data-dir", str(data_dir), "--rate", "0"])
+    assert code == 0
+    counts = await app.state.turn_ingest.counts()
+    assert counts["pending"] == 3 and counts["done"] == 0  # the server's worker delivers
+
+
+@pytest.mark.asyncio
+async def test_worker_drains_promptly_and_in_a_loop(tmp_path):
+    from tinyagentos.turn_ingest import TurnIngestQueue, TurnIngestWorker
+    q = TurnIngestQueue(tmp_path / "q.db")
+    await q.init()
+    sent = []
+
+    async def send(shelf, turn, source_id):
+        sent.append(source_id)
+
+    w = TurnIngestWorker(q, send, rate_per_sec=0)
+    assert w.poll_seconds <= 5  # a backfill from another process is noticed quickly
+    w.start()
+    for i in range(120):  # more than one drain batch
+        await q.enqueue(f"chat:{i}|agent-a", "agent-a", {"role": "user", "content": str(i)})
+    for _ in range(100):
+        if len(sent) == 120:
+            break
+        await asyncio.sleep(0.05)
+    await w.stop()
+    assert len(sent) == 120
+    await q.close()
+
+
+@pytest.mark.asyncio
+async def test_person_shelf_uses_the_authenticated_principal_not_the_body_author(client, taosmd):
+    from tinyagentos.user_memory import user_namespace
+    app = client._transport.app
+    store = app.state.user_memory
+    if store._db is None:
+        await store.init()
+    _agents(app, "agent-a")
+    me, bob = _admin(app), _add_user(app, "bob")
+    ch = await _dm(app, "agent-a", me)
+    # the local token (the install owner's) claims to speak as bob
+    await _say(app, ch, "claimed to be bob", bob, "user")
+    await _settle(app)
+    rows = await (await app.state.turn_ingest._db.execute("SELECT shelf FROM turn_ingest")).fetchall()
+    shelves = {r[0] for r in rows}
+    assert user_namespace(me) in shelves
+    assert user_namespace(bob) not in shelves
+    await store.close()
+
+
+@pytest.mark.asyncio
+async def test_backfill_legacy_user_turns_follow_only_a_single_person_install(client):
+    from tinyagentos.turn_backfill import backfill
+    from tinyagentos.turn_ingest import TurnIngestQueue
+    from tinyagentos.user_memory import user_namespace
+    app = client._transport.app
+    _agents(app, "agent-a")
+    me = _admin(app)
+    ch = await _dm(app, "agent-a", me)
+    await app.state.chat_messages.send_message(
+        channel_id=ch, author_id="user", author_type="user", content="legacy words")
+    data_dir = app.state.config_path.parent
+
+    async def run(name):
+        q = TurnIngestQueue(data_dir / f"{name}.db")
+        await q.init()
+        result = await backfill(data_dir, app.state.config, q, rate=0)
+        shelves = {r[0] for r in await (await q._db.execute("SELECT shelf FROM turn_ingest")).fetchall()}
+        await q.close()
+        return result, shelves
+
+    result, shelves = await run("single")  # one person: the legacy author is the owner
+    assert user_namespace(me) in shelves and result["legacy_user_skipped"] == 0
+
+    _add_user(app, "bob")
+    result, shelves = await run("multi")  # several people: do not guess whose it was
+    assert user_namespace(me) not in shelves and "agent-a" in shelves
+    assert result["legacy_user_skipped"] == 1

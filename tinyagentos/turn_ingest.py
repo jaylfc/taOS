@@ -42,6 +42,24 @@ _BACKOFF_BASE = 5.0
 _BACKOFF_CAP = 3600.0
 
 
+# First taOSmd release whose /ingest stores a repeated ``source_id`` once.
+SOURCE_ID_DEDUP_MIN = (0, 5, 25)
+
+
+def source_id_dedup_supported() -> bool:
+    """True when the installed taOSmd honours ``source_id`` on ingest."""
+    try:
+        import taosmd
+        parts = []
+        for piece in str(taosmd.__version__).split(".")[:3]:
+            digits = "".join(c for c in piece if c.isdigit())
+            parts.append(int(digits or 0))
+        return tuple(parts) >= SOURCE_ID_DEDUP_MIN
+    except Exception:
+        logger.warning("taosmd version unreadable: assuming no source_id dedup", exc_info=True)
+        return False
+
+
 def role_for(author_type: str | None) -> str:
     """taOSmd role of a taOS author type."""
     if author_type == "user":
@@ -142,6 +160,30 @@ class TurnIngestQueue(BaseStore):
             for r in await cur.fetchall()
         ]
 
+    async def mark_inflight(self, key: str) -> None:
+        """Record that a send is about to start.  A crash from here until
+        ``mark_done`` leaves the row in flight: it may or may not have been sent."""
+        assert self._db is not None
+        await self._db.execute(
+            "UPDATE turn_ingest SET state = 'inflight' WHERE key = ?", (key,))
+        await self._db.commit()
+
+    async def settle_inflight(self, *, resend: bool) -> int:
+        """Resolve rows left in flight by a crash; returns how many.
+
+        ``resend`` puts them back in the queue; otherwise they are closed out as
+        done (they were probably sent, and sending again could duplicate).
+        """
+        assert self._db is not None
+        cur = await self._db.execute(
+            "UPDATE turn_ingest SET state = ?, done_at = ? WHERE state = 'inflight'",
+            ("pending" if resend else "done", time.time()),
+        )
+        await self._db.commit()
+        if cur.rowcount and resend:
+            self.wake.set()
+        return cur.rowcount
+
     async def mark_done(self, key: str) -> None:
         assert self._db is not None
         await self._db.execute(
@@ -183,7 +225,7 @@ class TurnIngestQueue(BaseStore):
     async def counts(self) -> dict:
         assert self._db is not None
         cur = await self._db.execute("SELECT state, COUNT(*) FROM turn_ingest GROUP BY state")
-        out = {"pending": 0, "done": 0, "failed": 0}
+        out = {"pending": 0, "inflight": 0, "done": 0, "failed": 0}
         out.update({r[0]: r[1] for r in await cur.fetchall()})
         return out
 
@@ -242,7 +284,7 @@ class TurnIngestWorker:
     """Drains the queue into taOSmd, rate limited, with retry and backoff."""
 
     def __init__(self, queue: TurnIngestQueue, send, *, rate_per_sec: float = 20.0,
-                 poll_seconds: float = 30.0):
+                 poll_seconds: float = 5.0):
         self.queue = queue
         self.send = send  # async (shelf, turn, source_id) -> None, raises on failure
         self.min_gap = 1.0 / rate_per_sec if rate_per_sec > 0 else 0.0
@@ -254,6 +296,7 @@ class TurnIngestWorker:
         """Send every due turn once; returns how many were delivered."""
         delivered = 0
         for item in await self.queue.due(50):
+            await self.queue.mark_inflight(item["key"])
             try:
                 await self.send(item["shelf"], item["turn"], item["key"])
             except Exception as exc:
@@ -269,10 +312,29 @@ class TurnIngestWorker:
                 await asyncio.sleep(self.min_gap)
         return delivered
 
+    async def recover_inflight(self) -> int:
+        """Settle rows a crash left in flight (see ``settle_inflight``)."""
+        resend = source_id_dedup_supported()
+        settled = await self.queue.settle_inflight(resend=resend)
+        if settled:
+            logger.warning(
+                "%d turn(s) were in flight at the last stop and are maybe sent; "
+                "%s", settled,
+                "sending again (taOSmd dedups on source_id)" if resend else
+                "marked done without re-sending (this taOSmd would store a repeat)")
+        return settled
+
     async def _run(self) -> None:
+        try:
+            await self.recover_inflight()
+        except Exception:
+            logger.error("turn ingest recovery failed", exc_info=True)
         while not self._stop:
             try:
-                await self.drain_once()
+                # Keep going while anything is due (a backfill can queue
+                # thousands); the rate limit paces each send.
+                while await self.drain_once():
+                    pass
             except Exception:
                 logger.error("turn ingest worker error", exc_info=True)
             self.queue.wake.clear()

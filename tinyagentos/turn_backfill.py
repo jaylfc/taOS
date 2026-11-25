@@ -1,19 +1,25 @@
 """Backfill existing chat turns into taOSmd's ingest (owner-run).
 
     python -m tinyagentos.turn_backfill --data-dir <data dir> [--rate 20]
-        [--limit N] [--enqueue-only] [--requeue-failed] [--taosmd-url URL]
+        [--limit N] [--requeue-failed]
 
-Reads the chat store read-only, queues every message that has not been queued
-(same turn id as the live path, ``chat:<message id>``, so a turn is never
-queued twice), then delivers the queue to taOSmd at ``--rate`` turns a second.
+Reads the chat store read-only and queues every message that has not been
+queued (same turn id as the live path, ``chat:<message id>``, so a turn is
+never queued twice).  It only enqueues: the running server's worker is the one
+sender, and notices the new rows within seconds, so the two never deliver
+concurrently.  Run it against a stopped install and the rows wait for the next
+start.
 
 * Resumable: a per-channel cursor is saved after each batch, and queued or
   delivered turns are skipped by key, so an interrupted run continues where it
   stopped and a repeat run does nothing.
-* Rate limited: both the queueing and the delivery stop to keep to ``--rate``.
+* Rate limited: the queueing pauses to keep to ``--rate`` turns a second.
 * A turn's index is its position in its channel (oldest first, deleted
   messages keep their place), which is where the live counter's one-time seed
   puts the next new turn.
+* A message authored by the legacy single-user id ``user`` goes to the install
+  owner's shelf only when the install has exactly one person; with several it
+  is skipped (and counted), since whose it was cannot be told.
 * Run it as the install owner against the data directory of the install; it
   never writes to the chat store.
 """
@@ -27,15 +33,11 @@ import sqlite3
 import sys
 from pathlib import Path
 
-import httpx
-
 from tinyagentos.session_turns import UNKNOWN, session_date
 from tinyagentos.turn_ingest import (
     TurnIngestQueue,
-    TurnIngestWorker,
     agent_shelves,
     enqueue_turn,
-    http_sender,
     role_for,
 )
 from tinyagentos.user_memory import DEFAULT_SETTINGS, LEGACY_USER_ID, user_namespace
@@ -69,16 +71,19 @@ async def backfill(
     chat = sqlite3.connect(f"file:{data_dir / 'chat.db'}?mode=ro", uri=True)
     um_path = data_dir / "user_memory.db"
     um = sqlite3.connect(f"file:{um_path}?mode=ro", uri=True) if um_path.exists() else None
-    owner_id = None
+    known_users: set[str] = set()
+    sole_user: str | None = None
     try:
         from tinyagentos.auth import AuthManager
-        primary = AuthManager(data_dir).get_primary_user()
-        owner_id = primary["id"] if primary else None
+        people = AuthManager(data_dir).list_users()
+        known_users = {str(u["id"]) for u in people}
+        sole_user = str(people[0]["id"]) if len(people) == 1 else None
     except Exception:
-        logger.warning("install owner unknown: legacy 'user' authored turns get no person shelf",
+        logger.warning("install users unreadable: no person shelves are filled",
                        exc_info=True)
+    owner_id = sole_user
     gap = 1.0 / rate if rate > 0 else 0.0
-    seen = queued = skipped = 0
+    seen = queued = skipped = legacy_skipped = 0
     capture_cache: dict[str, bool] = {}
     try:
         channels = chat.execute("SELECT id, members FROM chat_channels ORDER BY created_at").fetchall()
@@ -105,12 +110,20 @@ async def backfill(
                         continue
                     shelves = agent_shelves(config, channel)
                     if author_type == "user" and author_id:
-                        uid = owner_id if author_id == LEGACY_USER_ID and owner_id else author_id
-                        if uid not in capture_cache:
-                            capture_cache[uid] = (
-                                _capture_conversations(um, uid, owner_id) if um else True)
-                        if capture_cache[uid]:
-                            shelves.append(user_namespace(str(uid)))
+                        uid = author_id
+                        if author_id == LEGACY_USER_ID:
+                            uid = sole_user
+                            if uid is None:
+                                legacy_skipped += 1
+                                logger.warning(
+                                    "turn %s authored by legacy 'user' on a multi-person "
+                                    "install: not put on any person's shelf", mid)
+                        if uid in known_users:
+                            if uid not in capture_cache:
+                                capture_cache[uid] = (
+                                    _capture_conversations(um, uid, owner_id) if um else True)
+                            if capture_cache[uid]:
+                                shelves.append(user_namespace(str(uid)))
                     fields = {
                         "session_id": channel_id,
                         "turn_index": index,
@@ -125,13 +138,14 @@ async def backfill(
                     if limit is not None and queued >= limit:
                         await queue.set_cursor(source, str(ordinal))
                         return {"seen": seen, "queued": queued, "skipped": skipped,
-                                "stopped": "limit"}
+                                "legacy_user_skipped": legacy_skipped, "stopped": "limit"}
                 await queue.set_cursor(source, str(ordinal))
     finally:
         chat.close()
         if um:
             um.close()
-    return {"seen": seen, "queued": queued, "skipped": skipped, "stopped": "complete"}
+    return {"seen": seen, "queued": queued, "skipped": skipped,
+            "legacy_user_skipped": legacy_skipped, "stopped": "complete"}
 
 
 async def _main(args) -> int:
@@ -146,20 +160,12 @@ async def _main(args) -> int:
             print(f"requeued failed: {await queue.requeue_failed()}")
         result = await backfill(data_dir, config, queue, rate=args.rate, limit=args.limit)
         print(f"backfill: {result}")
-        if not args.enqueue_only:
-            base = args.taosmd_url or getattr(config, "memory_url", "") or "http://localhost:7900"
-            async with httpx.AsyncClient(timeout=30) as client:
-                worker = TurnIngestWorker(
-                    queue, http_sender(lambda: client, lambda: base), rate_per_sec=args.rate)
-                while True:
-                    delivered = await worker.drain_once()
-                    counts = await queue.counts()
-                    print(f"delivered {delivered}; queue {counts}")
-                    if counts["pending"] == 0 or delivered == 0:
-                        break
+        if result["legacy_user_skipped"]:
+            print(f"note: {result['legacy_user_skipped']} turn(s) authored by the legacy "
+                  "'user' id were not put on a person's shelf (several people on this install)")
         counts = await queue.counts()
-        print(f"queue: {counts}")
-        return 0 if counts["failed"] == 0 else 1
+        print(f"queue: {counts} (the running server delivers it)")
+        return 0
     finally:
         await queue.close()
 
@@ -169,9 +175,7 @@ def main(argv=None) -> int:
     ap.add_argument("--data-dir", required=True)
     ap.add_argument("--rate", type=float, default=20.0, help="turns per second")
     ap.add_argument("--limit", type=int, default=None, help="stop after queueing N turns")
-    ap.add_argument("--enqueue-only", action="store_true")
     ap.add_argument("--requeue-failed", action="store_true")
-    ap.add_argument("--taosmd-url", default=None)
     args = ap.parse_args(argv)
     logging.basicConfig(level=logging.INFO)
     return asyncio.run(_main(args))

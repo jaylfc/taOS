@@ -18,7 +18,7 @@ from tinyagentos.auth_context import (
 )
 from tinyagentos.chat.reactions import maybe_trigger_semantic
 from tinyagentos.device_auth import current_user_or_device
-from tinyagentos.session_turns import session_date, stamp_turn
+from tinyagentos.session_turns import UNKNOWN, session_date, stamp_turn
 from tinyagentos.turn_ingest import agent_shelves, enqueue_turn, role_for
 from tinyagentos.user_memory import user_namespace
 
@@ -136,18 +136,23 @@ async def _ingest_chat_turn(app, channel: dict | None, message: dict, fields: di
     try:
         shelves = agent_shelves(getattr(app.state, "config", None), channel)
         author_type = message.get("author_type")
-        author_id = message.get("author_id")
+        # The person is the authenticated principal recorded when the turn was
+        # written (turn_owner), never the request-supplied author_id: a caller
+        # cannot put a turn on another person's shelf.
+        person = fields.get("turn_owner")
         user_memory = getattr(app.state, "user_memory", None)
-        if author_type == "user" and author_id and user_memory:
+        auth = getattr(app.state, "auth", None)
+        if (author_type == "user" and user_memory and auth is not None
+                and person and person != UNKNOWN and auth.get_user_by_id(str(person))):
             try:
-                settings = await user_memory.get_settings(str(author_id))
+                settings = await user_memory.get_settings(str(person))
             except Exception:
                 logger.warning(
                     "person shelf skipped for turn %s: settings unreadable",
                     message.get("id"), exc_info=True)
                 settings = {}
             if settings.get("capture_conversations"):
-                shelves.append(user_namespace(str(author_id)))
+                shelves.append(user_namespace(str(person)))
         await enqueue_turn(
             getattr(app.state, "turn_ingest", None),
             turn_id=f"chat:{message.get('id')}" if message.get("id") else None,
