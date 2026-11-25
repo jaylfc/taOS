@@ -45,6 +45,7 @@ from tinyagentos.auth_context import (
 from tinyagentos.otel.trace_context import build_trace_context_headers
 from tinyagentos.qmd_service import make_index_dir, qmd_honours_dbpath
 from tinyagentos.routes.delegation import _resolve_agent_name
+from tinyagentos.taosmd_client import AnswerContextResult, TaOSmdClient, calculate_agent_budget, get_taosmd_client
 
 logger = logging.getLogger(__name__)
 
@@ -318,12 +319,21 @@ async def memory_search(request: Request, body: SearchRequest):
     is intentionally not supported here -- agents do not share memory.
     Aggregating across agents is a separate concern that belongs in a
     future ``/api/memory/all`` endpoint, gated by user permission.
+
+    For agent callers (local token or registry JWT), uses taOSmd
+    answer_context to build assembled memory context with token budget
+    and dropped counts. For human callers, uses raw qmd search.
     """
     # Check for local token FIRST (before check_agent_scope which treats any Bearer as registry JWT)
     is_local, bound_agent = _local_token_caller(request)
+    agent_caller = False
+    agent_name = None
+
     if is_local:
         if bound_agent is not None:
             # Bound agent: fence to own namespace
+            agent_caller = True
+            agent_name = bound_agent
             if body.agent is not None and body.agent != bound_agent:
                 raise HTTPException(status_code=403, detail="Agent can only search its own memory")
             body.agent = bound_agent
@@ -334,9 +344,11 @@ async def memory_search(request: Request, body: SearchRequest):
         
         # For registry-JWT agents, restrict to own namespace
         if agent_canonical_id is not None:
+            agent_caller = True
             # If an agent name was provided in the body, ensure it matches the calling agent's own
             # First resolve the canonical_id to the config agent name
             agent_config_name = await _resolve_agent_name(request, agent_canonical_id) or agent_canonical_id
+            agent_name = agent_config_name
             
             if body.agent is not None and body.agent != agent_config_name:
                 raise HTTPException(status_code=403, detail="Agent can only search its own memory")
@@ -346,6 +358,38 @@ async def memory_search(request: Request, body: SearchRequest):
             # Signed-in session: owner or admin only
             await _require_session_agent_access(request, body.agent)
 
+    # If called by an agent, use answer_context for assembled memory context
+    if agent_caller and agent_name:
+        taosmd_client = get_taosmd_client(request)
+        config = request.app.state.config
+        agents = getattr(config, "agents", None)
+        if agents is None and isinstance(config, dict):
+            agents = config.get("agents", [])
+        agents = agents or []
+        agent = next((a for a in agents if a.get("name") == agent_name), None)
+        registry = getattr(request.app.state, "registry", None)
+        budget_tokens = calculate_agent_budget(agent, registry) if agent and registry else 4000
+
+        result: AnswerContextResult = await taosmd_client.answer_context(
+            query=body.query,
+            agent=agent_name,
+            budget_tokens=budget_tokens,
+            now=datetime.now(UTC),
+            reasoning_reserve=1024,
+        )
+
+        return {
+            "context": result.context,
+            "dropped": result.dropped,
+            "layers": result.layers,
+            "total_tokens": result.total_tokens,
+            "intent": result.intent,
+            "latency_ms": result.latency_ms,
+            "query": body.query,
+            "agent": agent_name,
+        }
+
+    # Human caller or no agent: use raw qmd search
     await _require_qmd_dbpath(request)
     db_path = _agent_db_path(request, body.agent)
     search_fn = _qmd_vsearch if body.mode == "semantic" else _qmd_search

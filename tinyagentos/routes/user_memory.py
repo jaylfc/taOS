@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import logging
+from datetime import datetime, timezone
 
 import httpx
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import JSONResponse
 
 from tinyagentos.auth_context import require_admin
+from tinyagentos.taosmd_client import AnswerContextResult, TaOSmdClient, calculate_agent_budget, get_taosmd_client
 
 logger = logging.getLogger(__name__)
 
@@ -107,7 +109,11 @@ async def search(request: Request, q: str, collection: str | None = None, limit:
 
 @router.get("/api/user-memory/agent-search")
 async def agent_search(request: Request, q: str, agent_name: str, limit: int = 10):
-    """Read-only search endpoint for agents with user memory permission."""
+    """Read-only search endpoint for agents with user memory permission.
+
+    Uses taOSmd answer_context to build assembled memory context for the
+    agent's query, respecting token budget and returning dropped counts.
+    """
     config = request.app.state.config
     agents = getattr(config, "agents", None)
     if agents is None and isinstance(config, dict):
@@ -119,8 +125,33 @@ async def agent_search(request: Request, q: str, agent_name: str, limit: int = 1
             {"error": "Agent does not have user memory access"},
             status_code=403,
         )
-    results = await _store(request).search(USER_ID, q, limit=limit)
-    return JSONResponse({"results": results, "query": q, "agent": agent_name})
+
+    # Get taOSmd client
+    taosmd_client = get_taosmd_client(request)
+
+    # Calculate budget from agent's model context window
+    registry = getattr(request.app.state, "registry", None)
+    budget_tokens = calculate_agent_budget(agent, registry) if registry else 4000
+
+    # Call answer_context
+    result: AnswerContextResult = await taosmd_client.answer_context(
+        query=q,
+        agent=agent_name,
+        budget_tokens=budget_tokens,
+        now=datetime.now(timezone.utc),
+        reasoning_reserve=1024,
+    )
+
+    return JSONResponse({
+        "context": result.context,
+        "dropped": result.dropped,
+        "layers": result.layers,
+        "total_tokens": result.total_tokens,
+        "intent": result.intent,
+        "latency_ms": result.latency_ms,
+        "query": q,
+        "agent": agent_name,
+    })
 
 
 @router.get("/api/user-memory/browse")

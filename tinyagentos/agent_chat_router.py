@@ -3,10 +3,12 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+from datetime import datetime, timezone
 from typing import Any
 
 from tinyagentos.agent_loop import AgentLoop, LoopAction
 from tinyagentos.task_utils import _create_supervised_task
+from tinyagentos.taosmd_client import AnswerContextResult, TaOSmdClient, calculate_agent_budget, get_taosmd_client
 
 logger = logging.getLogger(__name__)
 
@@ -225,73 +227,58 @@ class AgentChatRouter:
         bridge = getattr(self._state, "bridge_sessions", None)
         policy = getattr(self._state, "group_policy", None)
 
-        # Build the context window once per routed message, not per recipient.
-        # Budget for the smallest known model context among recipients so no
-        # recipient overflows (#1740). Unknown windows keep the 4000 default.
-        context = []
+        # Build memory context via taOSmd answer_context for each recipient.
+        # This replaces the old build_context_window which only used chat history.
+        # answer_context assembles dated session blocks (oldest first, original turn
+        # order), respects token budget, never cuts mid-item, and reports dropped counts.
+        agent_contexts: dict[str, AnswerContextResult] = {}
         if hasattr(self._state, "chat_messages"):
             try:
-                from tinyagentos.chat.context_window import (
-                    DEFAULT_HISTORY_MAX_TOKENS,
-                    build_context_window,
-                    history_token_budget,
-                )
                 from tinyagentos.chat.guest_agents import resolve_guest
-                from tinyagentos.cluster.model_resolver import _find_model_manifest
-
-                known_windows: list[int] = []
-                any_unknown = False
                 registry = getattr(self._state, "registry", None)
+
                 for agent_name in recipients:
                     agent = find_agent(config, agent_name)
+                    is_guest = False
                     if agent is None:
-                        # A registry guest has no model: unknown window.
+                        # A registry guest has no model: use default budget.
                         if await resolve_guest(self._state, agent_name):
-                            any_unknown = True
-                        continue
-                    model_id = agent.get("model") or ""
-                    if not model_id:
-                        any_unknown = True
-                        continue
-                    try:
-                        manifest = _find_model_manifest(registry, model_id)
-                        ctx = (
-                            int(getattr(manifest, "context_window", 0) or 0)
-                            if manifest
-                            else 0
-                        )
-                        if ctx > 0:
-                            known_windows.append(ctx)
+                            is_guest = True
                         else:
-                            any_unknown = True
-                    except Exception:  # noqa: BLE001 - advisory lookup only
-                        any_unknown = True
-                        continue
-                min_window = min(known_windows) if known_windows else 0
-                max_tokens = history_token_budget(min_window)
-                # A recipient whose window we cannot read (aliased/cloud model or
-                # missing manifest) may have a small real window, so never let a
-                # known large-window recipient raise the shared budget above the
-                # historical default for it.
-                if any_unknown and known_windows:
-                    max_tokens = min(max_tokens, DEFAULT_HISTORY_MAX_TOKENS)
+                            continue
+                    if not is_guest:
+                        # Calculate budget from agent's model context window (share, not whole window)
+                        budget_tokens = calculate_agent_budget(agent, registry) if registry else 4000
+                    else:
+                        budget_tokens = 4000
 
-                if thread_id:
-                    recent = await self._state.chat_messages.get_thread_messages(
-                        channel_id=channel["id"], parent_id=thread_id, limit=30,
+                    # The query is the current user message content
+                    query = message.get("content", "")
+                    taosmd_client = get_taosmd_client(self._state)
+                    result = await taosmd_client.answer_context(
+                        query=query,
+                        agent=agent_name,
+                        budget_tokens=budget_tokens,
+                        now=datetime.now(timezone.utc),
+                        reasoning_reserve=1024,
                     )
-                    # Prepend the parent as the root turn.
-                    parent = await self._state.chat_messages.get_message(thread_id)
-                    if parent:
-                        recent = [parent] + list(recent)
-                else:
-                    recent = await self._state.chat_messages.get_messages(
-                        channel_id=channel["id"], limit=30,
-                    )
-                context = build_context_window(recent, limit=20, max_tokens=max_tokens)
+                    agent_contexts[agent_name] = result
+
+                    # Surface dropped count in agent trace
+                    if result.dropped > 0 and self._state.trace_registry:
+                        try:
+                            store = await self._state.trace_registry.get(agent_name)
+                            await store.record(
+                                "memory_truncated",
+                                trace_id=message.get("id"),
+                                channel_id=channel.get("id"),
+                                payload={"dropped": result.dropped, "budget_tokens": budget_tokens},
+                            )
+                        except Exception:
+                            logger.debug("Failed to record memory_truncated trace for %s", agent_name)
             except Exception:
-                logger.warning("context fetch failed for channel %s", channel.get("id"), exc_info=True)
-                context = []
+                logger.warning("taOSmd answer_context failed for channel %s", channel.get("id"), exc_info=True)
+                agent_contexts = {}
 
         leads = list((settings.get("leads") or []))  # post-PR #291
         from tinyagentos.agent_manual import build_manual
@@ -342,7 +329,14 @@ class AgentChatRouter:
                 task.add_done_callback(self._acp_tasks.discard)
             else:
                 manual_text = build_manual(channel, agent_name, leads)
-                agent_context = [{"role": "system", "content": manual_text}, *context]
+                # Use taOSmd answer_context result for memory context
+                ac_result = agent_contexts.get(agent_name)
+                memory_context = ac_result.context if ac_result else ""
+                # Combine manual + memory context as system message
+                combined_content = manual_text
+                if memory_context:
+                    combined_content = f"{manual_text}\n\n---\n\n{memory_context}"
+                agent_context = [{"role": "system", "content": combined_content}]
                 await bridge.enqueue_user_message(
                     agent_name,
                     {

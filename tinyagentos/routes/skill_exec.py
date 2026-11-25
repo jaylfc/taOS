@@ -12,12 +12,14 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
 
 from tinyagentos.routes.decisions import SERVER_RAISED_KEY
+from tinyagentos.taosmd_client import AnswerContextResult, TaOSmdClient, calculate_agent_budget, get_taosmd_client
 
 logger = logging.getLogger(__name__)
 
@@ -63,17 +65,48 @@ def _is_admin_or_local_token(request: Request) -> bool:
 
 
 async def _skill_memory_search(args: dict, request: Request) -> dict:
-    """Search agent memory via QMD.
+    """Search agent memory via taOSmd answer_context.
 
-    Agents have their own QMD — this is a stub that would proxy to the agent's
-    QMD_SERVER. For now, return an empty result with a hint.
+    Uses taOSmd's answer_context to build assembled memory context for the
+    agent's query, respecting token budget and returning dropped counts.
     """
-    _ = args.get("query", "")
-    _ = args.get("limit", 10)
+    query = args.get("query", "")
+    limit = args.get("limit", 10)
+    agent_name = getattr(request.state, "agent_name", None)
+    if not agent_name:
+        return {"status": "error", "error": "agent identity not found in credentials"}
+
+    # Get taOSmd client
+    taosmd_client = get_taosmd_client(request)
+
+    # Calculate budget from agent's model context window
+    config = request.app.state.config
+    agents = getattr(config, "agents", None)
+    if agents is None and isinstance(config, dict):
+        agents = config.get("agents", [])
+    agents = agents or []
+    agent = next((a for a in agents if a.get("name") == agent_name), None)
+
+    registry = getattr(request.app.state, "registry", None)
+    budget_tokens = calculate_agent_budget(agent, registry) if agent and registry else 4000
+
+    # Call answer_context
+    result: AnswerContextResult = await taosmd_client.answer_context(
+        query=query,
+        agent=agent_name,
+        budget_tokens=budget_tokens,
+        now=datetime.now(timezone.utc),
+        reasoning_reserve=1024,
+    )
+
     return {
         "status": "ok",
-        "results": [],
-        "note": "Route queries via agent's QMD_SERVER",
+        "context": result.context,
+        "dropped": result.dropped,
+        "layers": result.layers,
+        "total_tokens": result.total_tokens,
+        "intent": result.intent,
+        "latency_ms": result.latency_ms,
     }
 
 
