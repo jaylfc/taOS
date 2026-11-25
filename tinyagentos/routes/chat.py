@@ -71,6 +71,27 @@ def _spawn_background(coro) -> asyncio.Task:
     return task
 
 
+# Per-conversation monotonic turn index written to the taOSmd archive.
+# Keyed by conversation (channel) id; 0-based and incremented on every turn.
+# In-memory for the MVP; a restart reseeds from the message store later.
+_TURN_INDEX_BY_CHANNEL: dict[str, int] = {}
+
+
+def _session_date_iso(created_at: float | int | str | None) -> str:
+    """Format a turn's own timestamp (epoch seconds) as ISO 8601 UTC.
+
+    Never uses ingest time. Returns ``""`` when no timestamp is available.
+    """
+    if created_at is None:
+        return ""
+    from datetime import datetime, timezone
+
+    try:
+        return datetime.fromtimestamp(float(created_at), tz=timezone.utc).isoformat()
+    except (TypeError, ValueError):
+        return ""
+
+
 async def _capture_user_memory(
     user_memory,
     *,
@@ -470,14 +491,22 @@ async def post_message(request: Request, user: CurrentUser = Depends(current_use
     archive = getattr(request.app.state, "archive", None)
     if archive:
         try:
+            turn_index = _TURN_INDEX_BY_CHANNEL.get(channel_id, 0)
+            _TURN_INDEX_BY_CHANNEL[channel_id] = turn_index + 1
             await archive.record(
-                "conversation",
-                {
+                event_type="conversation",
+                data={
                     "content": content,
                     "channel_id": channel_id,
                     "message_id": message.get("id"),
                     "author_id": body["author_id"],
                     "author_type": body.get("author_type", "agent"),
+                    # session_id / turn_index / session_date let taOSmd's
+                    # answer_context widen a hit into its neighbours and date
+                    # it correctly (taosmd PR #783).
+                    "session_id": channel_id,
+                    "turn_index": turn_index,
+                    "session_date": _session_date_iso(message.get("created_at")),
                 },
                 agent_name=body["author_id"] if body.get("author_type") == "agent" else None,
                 summary=content[:100],
