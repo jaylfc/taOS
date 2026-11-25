@@ -17,6 +17,8 @@
 #   --root DIR          install into DIR instead of / (a fake root for testing; the validation then reads
 #                       DIR/etc/taos/sway/config). Without it the script must run as root.
 #   --check-only        validate and stage, install nothing
+#   --uninstall         remove the installed udev rule for LoRa mesh radios
+#                       (/etc/udev/rules.d/71-taos-mesh-radios.rules). Run as root, or with --root DIR.
 #   --without-notifyd   remove taos-notifyd from the session components. Without either flag an install keeps
 #                       whatever the person chose: it stays in TAOS_SHELL_COMPONENTS if it is already there
 #   --with-notifyd      also start taos-notifyd (the notification server) with the session. Off by default: it has no
@@ -32,6 +34,9 @@
 #   /etc/taos/sway/config               ONLY the line `$mod+space floating toggle` moves to `$mod+Shift+space`
 #   /etc/taos/shell.env                 TAOS_SHELL_COMPONENTS="taos-bar taos-overview taos-dock taos-launcher taos-frame"
 #                                       (add taos-notifyd with --with-notifyd; off by default until a popup exists)
+#   /etc/udev/rules.d/71-taos-mesh-radios.rules
+#                                       the udev rule tagging common LoRa mesh radio USB serial devices with
+#                                       uaccess, so the person at the seat can open them without the dialout group
 # Backups, timestamped, next to what they back up: <dir>.bak-<stamp> for /opt/taos/shell/bin,
 # /opt/taos/apps/bin and /etc/taos/sway.d, and <file>.bak-<stamp> for the two edited files. The last lines
 # printed are the rollback command.
@@ -45,6 +50,7 @@ shell_build=""
 apps_builds=""
 check_only=0
 with_notifyd=0   # 1 = add, 0 = leave as it is, -1 = remove
+uninstall=0
 while [ $# -gt 0 ]; do
     case $1 in
         --root) root=${2:?}; shift 2 ;;
@@ -53,6 +59,7 @@ while [ $# -gt 0 ]; do
         --shell-build) shell_build=${2:?}; shift 2 ;;
         --apps-build) apps_builds="$apps_builds ${2:?}"; shift 2 ;;
         --check-only) check_only=1; shift ;;
+        --uninstall) uninstall=1; shift ;;
         --with-notifyd) with_notifyd=1; shift ;;
         --without-notifyd) with_notifyd=-1; shift ;;
         -h|--help) sed -n '2,37p' "$0"; exit 0 ;;
@@ -60,6 +67,18 @@ while [ $# -gt 0 ]; do
     esac
 done
 die() { echo "install-desktop: $*" >&2; exit 1; }
+if [ "$uninstall" -eq 1 ]; then
+    [ -z "$root" ] && [ "$(id -u)" -ne 0 ] && die "run as root (or use --root DIR for a fake root)"
+    if [ -n "$root" ]; then mkdir -p "$root"; root=$(cd "$root" && pwd); fi
+    R=${root:-/}
+    rule=$R/etc/udev/rules.d/71-taos-mesh-radios.rules
+    if [ -e "$rule" ]; then rm -f "$rule"; echo "removed $rule"; else echo "absent $rule"; fi
+    if [ -z "$root" ] && command -v udevadm >/dev/null 2>&1; then
+        udevadm control --reload-rules 2>/dev/null || true
+        echo "udev rules reloaded"
+    fi
+    exit 0
+fi
 [ -n "$sway" ] || die "--sway <path to the compositor binary> is required"
 [ -x "$sway" ] || die "$sway is not an executable"
 [ -z "$sway_fallback" ] || [ -x "$sway_fallback" ] || die "$sway_fallback is not an executable"
@@ -296,6 +315,14 @@ else
 fi
 put "$stage/shell.env" "$shell_env" 0644
 echo "TAOS_SHELL_COMPONENTS=\"$components\" in $shell_env"
+
+# ---------------------------------------------------------------- udev rule: LoRa mesh radios
+rule_src=$here/udev/71-taos-mesh-radios.rules
+[ -r "$rule_src" ] || die "missing udev rule $rule_src"
+put "$rule_src" "$R/etc/udev/rules.d/71-taos-mesh-radios.rules" 0644
+if [ -z "$root" ] && command -v udevadm >/dev/null 2>&1; then
+    udevadm control --reload-rules 2>/dev/null && echo "udev rules reloaded" || true
+fi
 
 # ---------------------------------------------------------------- 3b. what applies how
 apps_changed=$(diff "$stage/apps-before" "$stage/apps-after" 2>/dev/null | sed -n 's/^> [0-9a-f]*  *//p' | tr '\n' ' ')

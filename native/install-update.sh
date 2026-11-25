@@ -32,6 +32,7 @@ while [ $# -gt 0 ]; do
         --restart-pieces) restart=1; shift ;;
         --reload) reload=1; shift ;;
         --shell-build|--apps-build|--validate-with) add "$1" "${2:?}"; shift 2 ;;
+        --uninstall) add --uninstall; shift ;;
         --check-only) add --check-only; shift ;;
         -h|--help) sed -n '2,19p' "$0"; exit 0 ;;
         *) echo "install-update: unknown option $1" >&2; exit 2 ;;
