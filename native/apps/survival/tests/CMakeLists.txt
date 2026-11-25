@@ -63,3 +63,9 @@ add_test(NAME apps_tst_survival_switch COMMAND ${CMAKE_COMMAND} -E env QT_QPA_PL
          XDG_RUNTIME_DIR=${CMAKE_CURRENT_BINARY_DIR}/rt_switch HOME=${CMAKE_CURRENT_BINARY_DIR}/home_switch TMPDIR=${CMAKE_CURRENT_BINARY_DIR}
          $<TARGET_FILE:tst_survival_switch>)
 set_tests_properties(apps_tst_survival_switch PROPERTIES TIMEOUT 300)
+
+# Stand-in engines for pictures (shots.sh) and for running the app without radios. Never installed.
+add_executable(fake-survival-engines fake_engines_main.cpp fakemesh.h)
+target_link_libraries(fake-survival-engines PRIVATE Qt6::Test Qt6::Network Qt6::Core)
+target_include_directories(fake-survival-engines PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+target_compile_definitions(fake-survival-engines PRIVATE MESH_FIXTURES_DIR="${CMAKE_CURRENT_SOURCE_DIR}/fixtures")

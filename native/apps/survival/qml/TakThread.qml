@@ -14,7 +14,8 @@ ColumnLayout {
     property string threadId: ""
     readonly property var tak: Survival.tak
     readonly property var msgs: { tak.threads; return tak.messages(threadId) }
-    readonly property string blocked: { tak.threads; return tak.sendBlocked }
+    readonly property string blocked: { tak.threads; tak.radios; return tak.sendBlockedFor(threadId) }
+    readonly property string via: { tak.threads; tak.radios; return tak.sendVia(threadId) }
     spacing: 0
     Component.onCompleted: tak.markRead(threadId)
     onMsgsChanged: Qt.callLater(() => tak.markRead(threadId))
@@ -89,6 +90,7 @@ ColumnLayout {
             compact: true; text: qsTr("Turn sending on"); glyph: "send"
             onClicked: root.tak.sendingOn = true
         }
+        TaosText { visible: root.blocked === "" && root.via !== ""; objectName: "sendVia"; Layout.fillWidth: true; wrapMode: Text.Wrap; font.pixelSize: Look.small; color: Look.textSecondary; text: root.via }
         RowLayout {
             Layout.fillWidth: true; spacing: Look.space2
             TaosField {

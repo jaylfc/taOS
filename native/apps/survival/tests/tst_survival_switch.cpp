@@ -15,6 +15,7 @@
 #include "radioprofile.h"
 #include "radioswitch.h"
 #include "socketmeshbackend.h"
+#include "takengine.h"
 
 using namespace Taos::Survival;
 using namespace FakeEngines;
@@ -59,6 +60,8 @@ class TstSurvivalSwitch : public QObject
         std::unique_ptr<FirmwareClient> fc;
         std::unique_ptr<RadioProfiles> profiles;
         std::unique_ptr<RadioSwitch> sw;
+        std::unique_ptr<TakEngine> tak;
+        std::unique_ptr<FirmwareEngine> fe;
     };
     std::unique_ptr<Rig> rig(const QJsonObject &startRadio, const QJsonObject &startCfg)
     {
@@ -83,6 +86,9 @@ class TstSurvivalSwitch : public QObject
         r->profiles = std::make_unique<RadioProfiles>(r->dir.path() + u"/data"_s);
         r->sw = std::make_unique<RadioSwitch>(r->backend.get(), r->fc.get(), r->profiles.get());
         r->sw->setTimeouts(3000, 15000);
+        r->tak = std::make_unique<TakEngine>(r->backend.get(), r->dir.path() + u"/data"_s);
+        r->fe = std::make_unique<FirmwareEngine>(r->fc.get(), u"Test Owner"_s);
+        r->tak->setFirmware(r->fe.get());
         r->client->start();
         return r;
     }
@@ -210,6 +216,75 @@ private Q_SLOTS:
         QCOMPARE(sw.failedAt(), RadioSwitch::Step::Releasing);
         QCOMPARE(r->fw->count(u"POST"_s, u"/v1/flash/run"_s), 0);
         QCOMPARE(r->fw->mints.size(), 0);
+    }
+
+    void one_row_per_radio_joins_the_engine_the_port_list_and_the_firmware_manager()
+    {
+        auto r = rig(radio(u"!a1b2c3d4"_s, u"meshtastic"_s, u"2.7.15"_s), mtConfig(u"EU_868"_s, u"LONG_FAST"_s, u"family"_s));
+        QVERIFY(r);
+        // a second board is plugged in but not open: the engine lists its port, the manager does not know it
+        r->eng->serialDevices = QJsonArray{QJsonObject{{u"path"_s, kPort}, {u"vid"_s, 0x10c4}, {u"pid"_s, 0xea60}, {u"product"_s, u"Heltec V3"_s}},
+                                           QJsonObject{{u"path"_s, u"/dev/ttyACM0"_s}, {u"vid"_s, 0x303a}, {u"pid"_s, 0x1001}, {u"product"_s, u"ESP32-S3"_s}}};
+        r->fe->reload();
+        r->fe->detect();
+        QTRY_VERIFY_WITH_TIMEOUT(r->backend->available() && r->fe->state() == u"ready"_s && !r->fe->devices().isEmpty() && !r->fe->library().isEmpty(), 5000);
+        r->backend->discoverDevices();
+        QTRY_VERIFY_WITH_TIMEOUT(r->tak->radioRows().size() == 2, 5000);
+        const QVariantMap open = r->tak->radioRow(kPort);
+        QCOMPARE(open.value(u"state"_s).toString(), u"connected"_s);
+        QCOMPARE(open.value(u"hardware"_s).toString(), u"Heltec V3"_s);
+        QCOMPARE(open.value(u"firmware"_s).toString(), u"2.7.15"_s);          // read from the radio, not guessed
+        QCOMPARE(open.value(u"networkName"_s).toString(), u"Meshtastic"_s);
+        QCOMPARE(open.value(u"fwDeviceId"_s).toString(), kDevice);            // joined on the port
+        QVERIFY(open.value(u"canSwitch"_s).toBool());
+        QVERIFY(open.value(u"canSettings"_s).toBool());
+        const QVariantMap bare = r->tak->radioRow(u"/dev/ttyACM0"_s);
+        QCOMPARE(bare.value(u"state"_s).toString(), u"detected"_s);
+        QVERIFY(bare.value(u"canConnect"_s).toBool());
+        QVERIFY(!bare.value(u"canSwitch"_s).toBool());                          // the manager does not see it: no switch, and the row says why
+        QVERIFY(bare.value(u"firmware"_s).toString().isEmpty());                // unknown stays unknown
+        QCOMPARE(r->eng->count(u"radios.connect"_s), 0);                       // listing never opened anything
+    }
+
+    void two_radios_one_per_network_are_merged_filtered_and_routed()
+    {
+        auto r = rig(radio(u"!a1b2c3d4"_s, u"meshtastic"_s, u"2.7.15"_s), mtConfig(u"EU_868"_s, u"LONG_FAST"_s, u"family"_s));
+        QVERIFY(r);
+        QJsonObject mc = radio(u"a1b2c3d4e5f6"_s, u"meshcore"_s, u"v1.9.1"_s);
+        mc.insert(u"port"_s, u"/dev/ttyACM0"_s);
+        r->eng->radiosJson.append(mc);
+        r->eng->identitiesJson = QJsonArray{QJsonObject{{u"id"_s, u"!28af67cc"_s}, {u"callsign"_s, u"Sam"_s}, {u"owner"_s, QString()}, {u"isSelf"_s, false}, {u"hasPosition"_s, false}, {u"lon"_s, 0}, {u"lat"_s, 0}, {u"lastHeardMs"_s, 1795581844099.0}},
+                                            QJsonObject{{u"id"_s, u"7ed23c00aabb"_s}, {u"callsign"_s, u"Ria"_s}, {u"owner"_s, QString()}, {u"isSelf"_s, false}, {u"hasPosition"_s, false}, {u"lon"_s, 0}, {u"lat"_s, 0}, {u"lastHeardMs"_s, 1795581844099.0}}};
+        r->eng->receiveOnly = false;
+        QTRY_VERIFY_WITH_TIMEOUT(r->backend->available() && r->backend->radios().size() == 2 && r->backend->identities().size() == 2, 5000);
+        QCOMPARE(r->tak->networks().size(), 2);
+        const QVariantList all = r->tak->people();
+        QCOMPARE(all.size(), 2);
+        QSet<QString> nets;
+        for (const QVariant &p : all)
+            nets << p.toMap().value(u"network"_s).toString();
+        QCOMPARE(nets, QSet<QString>({u"meshtastic"_s, u"meshcore"_s}));        // each person carries their network
+        r->tak->setNetworkFilter(u"meshcore"_s);
+        QCOMPARE(r->tak->people().size(), 1);
+        QCOMPARE(r->tak->people().first().toMap().value(u"name"_s).toString(), u"Ria"_s);
+        r->tak->setNetworkFilter(QString());
+        QCOMPARE(r->tak->people().size(), 2);
+        // a send goes to the network the thread belongs to; the engine picks that network's radio
+        r->tak->setSendingOn(true);
+        QCOMPARE(r->tak->sendBlockedFor(u"ch:meshcore:0"_s), QString());
+        QVERIFY(r->tak->sendVia(u"ch:meshcore:0"_s).contains(u"MeshCore"_s));
+        QVERIFY(r->tak->sendVia(u"!28af67cc"_s).contains(u"Meshtastic"_s));
+        QVERIFY(r->tak->send(u"ch:meshcore:0"_s, u"hello"_s).isEmpty());
+        QTRY_VERIFY_WITH_TIMEOUT(r->eng->count(u"app.send"_s) == 1, 3000);
+        QCOMPARE(r->eng->last(u"app.send"_s).value(u"params"_s).toObject().value(u"thread"_s).toString(), u"ch:meshcore:0"_s);
+        // with no MeshCore radio the message is refused here, in words, and never reaches the engine
+        r->eng->radiosJson = QJsonArray{radio(u"!a1b2c3d4"_s, u"meshtastic"_s, u"2.7.15"_s)};
+        r->backend->refresh();
+        QTRY_COMPARE_WITH_TIMEOUT(r->backend->radios().size(), 1, 5000);
+        const QString e = r->tak->send(u"ch:meshcore:0"_s, u"hello"_s);
+        QVERIFY2(e.contains(u"MeshCore"_s), qPrintable(e));
+        QTest::qWait(300);
+        QCOMPARE(r->eng->count(u"app.send"_s), 1);
     }
 
     void missing_pieces_are_refused_before_anything_happens()

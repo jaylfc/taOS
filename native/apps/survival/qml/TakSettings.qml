@@ -37,6 +37,26 @@ C.ScrollView {
         staged = s
     }
     function current(path) { return staged[path] !== undefined ? staged[path] : getPath(vals, path) }
+    // which settings taOS can write on this radio: the engine's own list (a path with <n> stands for every channel)
+    function canWrite(path) {
+        const w = vals.writable
+        if (!w) return false
+        for (const t of w) {
+            if (t === path) return true
+            if (t.indexOf("<n>") >= 0 && new RegExp("^" + t.replace(/[.]/g, "\\.").replace("<n>", "[0-9]+") + "$").test(path)) return true
+        }
+        return false
+    }
+    function warnings() {
+        const out = []
+        if (staged["lora.region"] !== undefined)
+            out.push(qsTr("Region sets the radio frequencies. Choose the one that is legal where you are. A radio on another region cannot hear this one."))
+        if (staged["lora.modem_preset"] !== undefined)
+            out.push(qsTr("The modem preset must match the other radios on your mesh, or you will not hear each other."))
+        for (const k of Object.keys(staged)) if (k.indexOf("channels.") === 0 && k.slice(-5) === ".name")
+            out.push(qsTr("Renaming a channel changes the name other radios must also use to join it."))
+        return out.filter((v, i, a) => a.indexOf(v) === i)
+    }
     function opts(name) { return vals.options && vals.options[name] ? vals.options[name] : [] }
     readonly property var specs: network === "meshcore" ? [
         {title: qsTr("Name"), fields: [{path: "name", label: qsTr("Node name"), type: "text"}]},
@@ -108,12 +128,14 @@ C.ScrollView {
                                     visible: fr.known && root.ok && fr.modelData.type === "text"
                                     Layout.fillWidth: true
                                     text: fr.known ? String(fr.v) : ""
+                                    enabled: root.canWrite(fr.modelData.path)
                                     accessibleName: fr.modelData.label
                                     onEditingFinished: root.stage(fr.modelData.path, text)
                                 }
                                 TaosCombo {
                                     visible: fr.known && root.ok && fr.modelData.type === "combo"
                                     Layout.fillWidth: true
+                                    enabled: root.canWrite(fr.modelData.path)
                                     accessibleName: fr.modelData.label
                                     model: root.opts(fr.modelData.opt || "").length > 0 ? root.opts(fr.modelData.opt) : (fr.known ? [String(fr.v)] : [])
                                     currentIndex: Math.max(0, model.indexOf(String(fr.v)))
@@ -122,6 +144,7 @@ C.ScrollView {
                                 TaosCheck {
                                     visible: fr.known && root.ok && fr.modelData.type === "toggle"
                                     checked: fr.known && fr.v === true
+                                    enabled: root.canWrite(fr.modelData.path)
                                     text: checked ? qsTr("On") : qsTr("Off")
                                     onToggled: root.stage(fr.modelData.path, checked)
                                 }
@@ -167,7 +190,7 @@ C.ScrollView {
                             Layout.fillWidth: true; spacing: Look.space2
                             PillButton { objectName: "pskShow-" + ch.index; compact: true; text: root.shown[ch.index] ? qsTr("Hide key") : qsTr("Show key")
                                          onClicked: { const s = Object.assign({}, root.shown); s[ch.index] = !s[ch.index]; root.shown = s } }
-                            PillButton { objectName: "pskRotate-" + ch.index; compact: true; text: root.staged["channels." + ch.index + ".psk"] === "rotate" ? qsTr("Rotation staged") : qsTr("Rotate key"); glyph: "refresh"
+                            PillButton { objectName: "pskRotate-" + ch.index; compact: true; visible: root.canWrite("channels." + ch.index + ".psk"); text: root.staged["channels." + ch.index + ".psk"] === "rotate" ? qsTr("Rotation staged") : qsTr("Rotate key"); glyph: "refresh"
                                          onClicked: root.stage("channels." + ch.index + ".psk", "rotate") }
                             PillButton { objectName: "pskShare-" + ch.index; compact: true; text: root.qrChannel === ch.index ? qsTr("Hide QR") : qsTr("Share as QR"); glyph: "grid"
                                          enabled: ch.modelData.share_url !== undefined && ch.modelData.share_url !== ""
@@ -221,9 +244,18 @@ C.ScrollView {
                 TaosText { font.pixelSize: Look.bodyMedium; font.weight: Font.DemiBold
                            text: root.stagedCount === 0 ? qsTr("No changes") : (root.stagedCount === 1 ? qsTr("1 change ready to apply") : qsTr("%1 changes ready to apply").arg(root.stagedCount)) }
                 TaosText { objectName: "applyReason"; Layout.fillWidth: true; wrapMode: Text.Wrap; font.pixelSize: Look.small; color: Look.textSecondary
-                           text: !root.tak.configWritable ? qsTr("Will apply when a radio is connected and you confirm. This engine does not write radio settings yet, so nothing can be changed from here.")
+                           text: !root.tak.configWritable ? qsTr("Will apply when a radio is connected and you confirm. The mesh engine is receive-only or too old to write settings, so nothing can be changed from here.")
                                  : !(root.radio && root.radio.state === "connected") ? qsTr("Will apply when a radio is connected and you confirm.")
                                  : qsTr("Review the changes, then confirm. The radio may restart.") }
+                Repeater {
+                    model: root.warnings()
+                    delegate: RowLayout {
+                        required property string modelData
+                        Layout.fillWidth: true; spacing: Look.space2
+                        Glyph { name: "alert"; size: 14; stroke: 2; color: Look.warning; Layout.alignment: Qt.AlignTop }
+                        TaosText { objectName: "settingWarning"; Layout.fillWidth: true; wrapMode: Text.Wrap; font.pixelSize: Look.small; color: Look.warning; text: modelData }
+                    }
+                }
                 ColumnLayout {
                     visible: root.confirming
                     Layout.fillWidth: true; spacing: Look.space1

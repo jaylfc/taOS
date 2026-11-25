@@ -77,6 +77,7 @@ public:
     QJsonArray serialDevices;               // what `discover` lists when scripted
     std::function<void(const QString &)> onConnect;   // called with the port when radios.connect arrives
     QStringList released;
+    QJsonArray textMessages, identitiesJson;   // when scripted and not empty, answer these (full engine records / app identities)
     int delayMs = 0;
     QList<QJsonObject> requests;
     int count(const QString &method) const { int n = 0; for (const auto &r : requests) n += r.value(QStringLiteral("method")).toString() == method; return n; }
@@ -140,6 +141,10 @@ private:
         }
         if (m == QLatin1String("messages") && refuseMessages)
             return err(QStringLiteral("invalid"), QStringLiteral("bad filter: unknown field"));
+        if (scripted && m == QLatin1String("messages") && !textMessages.isEmpty() && p.value(QStringLiteral("filter")).toObject().value(QStringLiteral("kind")).toString() != QLatin1String("position"))
+            return ok(textMessages);
+        if (scripted && m == QLatin1String("app.identities") && !identitiesJson.isEmpty())
+            return ok(identitiesJson);
         if (m == QLatin1String("messages"))
             return ok(fixture(m_fx, p.value(QStringLiteral("filter")).toObject().value(QStringLiteral("kind")).toString() == QLatin1String("position") ? QStringLiteral("messages.position") : QStringLiteral("messages.text")));
         if (m == QLatin1String("contacts.create"))
@@ -213,7 +218,7 @@ class FakeFirmware : public QObject
     Q_OBJECT
 public:
     struct Req { QString method, path; QJsonObject body; QByteArray auth; };
-    FakeFirmware(QString fixtures, QString dataDir, QObject *parent = nullptr) : QObject(parent), m_fx(std::move(fixtures))
+    FakeFirmware(QString fixtures, QString dataDir, QObject *parent = nullptr, quint16 fixedPort = 0) : QObject(parent), m_fx(std::move(fixtures))
     {
         QDir().mkpath(dataDir);
         QFile t(dataDir + QStringLiteral("/api-token"));
@@ -222,7 +227,7 @@ public:
             while (QTcpSocket *s = m_srv.nextPendingConnection())
                 connect(s, &QTcpSocket::readyRead, this, [this, s] { read(s); });
         });
-        m_srv.listen(QHostAddress::LocalHost, 0);
+        m_srv.listen(QHostAddress::LocalHost, fixedPort);
         // the owner socket: mints a nonce per request, like the engine's 0600 socket (which also checks the peer uid)
         QLocalServer::removeServer(dataDir + QStringLiteral("/owner.sock"));
         m_owner.listen(dataDir + QStringLiteral("/owner.sock"));
@@ -245,6 +250,8 @@ public:
     QStringList used;
     QList<Req> requests;
     QString mode = QStringLiteral("ready");   // ready | pending
+    int runDelayMs = 0;                       // how long /v1/flash/run takes to answer (pictures of a flash in progress)
+    QString runName = QStringLiteral("Heltec V3");   // the board name /v1/flash/run accepts
     int count(const QString &method, const QString &path) const { int n = 0; for (const auto &r : requests) n += r.method == method && r.path == path; return n; }
     Req last(const QString &path) const { for (int i = requests.size() - 1; i >= 0; --i) if (requests[i].path == path) return requests[i]; return {}; }
 
@@ -295,8 +302,12 @@ private:
         } else if (r.auth != "Bearer test-token") { out = QJsonObject{{QStringLiteral("ok"), false}, {QStringLiteral("error"), QStringLiteral("unauthorized")}}; code = 401; }
         else out = route(r);
         const QByteArray payload = QJsonDocument(out.toObject()).toJson(QJsonDocument::Compact);
-        s->write("HTTP/1.1 " + QByteArray::number(code) + " OK\r\nContent-Type: application/json\r\nContent-Length: " + QByteArray::number(payload.size()) + "\r\nConnection: close\r\n\r\n" + payload);
-        s->disconnectFromHost();
+        const QByteArray reply = "HTTP/1.1 " + QByteArray::number(code) + " OK\r\nContent-Type: application/json\r\nContent-Length: " + QByteArray::number(payload.size()) + "\r\nConnection: close\r\n\r\n" + payload;
+        auto answer = [s, reply] { if (s->state() == QAbstractSocket::ConnectedState) { s->write(reply); s->disconnectFromHost(); } };
+        if (r.path == QLatin1String("/v1/flash/run") && runDelayMs > 0)
+            QTimer::singleShot(runDelayMs, s, answer);
+        else
+            answer();
     }
     QJsonValue route(const Req &r)
     {
@@ -313,7 +324,7 @@ private:
             && !r.body.value(QStringLiteral("actor")).toString().startsWith(QLatin1String("agent:")))
             return QJsonObject{{QStringLiteral("ok"), false}, {QStringLiteral("stage"), QStringLiteral("refused")}, {QStringLiteral("code"), QStringLiteral("consent_required")}, {QStringLiteral("message"), QStringLiteral("actor must be person or agent:<id>")}};
         if (r.path == QLatin1String("/v1/flash/run")) {
-            if (r.body.value(QStringLiteral("confirm")).toString() != QLatin1String("Heltec V3"))
+            if (r.body.value(QStringLiteral("confirm")).toString() != runName)
                 return fx(QStringLiteral("run_unconfirmed"));
             if (!r.body.value(QStringLiteral("ack_unsigned")).toBool())
                 return fx(QStringLiteral("run_unacknowledged"));

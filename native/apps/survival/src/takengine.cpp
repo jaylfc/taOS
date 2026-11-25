@@ -29,7 +29,7 @@ QString networkName(const QString &n)
 }
 } // namespace
 
-TakEngine::TakEngine(MeshBackend *backend, const QString &dataDir, QObject *parent) : QObject(parent), m_b(backend), m_prefs(dataDir)
+TakEngine::TakEngine(MeshBackend *backend, const QString &dataDir, QObject *parent) : QObject(parent), m_b(backend), m_prefs(dataDir), m_profiles(dataDir)
 {
     if (!m_prefs.load())
         setNotice(tr("The saved mesh settings could not be read, so sending stays off."), true);
@@ -202,6 +202,14 @@ QVariantList TakEngine::people() const
             }
         if (name.isEmpty())
             name = i.id;
+        QString net = networkOfNode(i.id);
+        for (const MeshPlace &p : places)
+            if (p.node == i.id && !p.network.isEmpty())
+                net = p.network;
+        if (!m_filter.isEmpty() && net != m_filter)
+            continue;
+        m.insert(u"network"_s, net);
+        m.insert(u"networkName"_s, networkName(net));
         m.insert(u"name"_s, name);
         m.insert(u"identity"_s, identity);
         m.insert(u"kind"_s, identity.isEmpty() ? u"none"_s : kindOf(identity));
@@ -262,6 +270,158 @@ void TakEngine::connectDevice(const QString &id)
     m_b->connectDevice(id, QString());
 }
 
+QString TakEngine::networkOfNode(const QString &node) const
+{
+    if (node.startsWith(u"ch:"_s))
+        return node.section(QLatin1Char(':'), 1, 1);
+    return node.startsWith(u'!') ? u"meshtastic"_s : u"meshcore"_s;
+}
+
+QString TakEngine::sendBlockedFor(const QString &threadId) const
+{
+    const QString general = sendBlocked();
+    if (!general.isEmpty())
+        return general;
+    const QString net = networkOfNode(threadId);
+    for (const MeshRadio &r : m_b->radios())
+        if (r.transport == net && r.state != u"offline"_s)
+            return {};   // a radio still connecting keeps the message queued in the engine
+    return tr("No %1 radio is connected, so this message cannot be sent. Connect one on the Radios page.").arg(networkName(net));
+}
+
+QString TakEngine::sendVia(const QString &threadId) const
+{
+    const QString net = networkOfNode(threadId);
+    for (const MeshRadio &r : m_b->radios())
+        if (r.transport == net && r.state != u"offline"_s)
+            return tr("Sends from %1 on %2").arg(r.name.isEmpty() ? r.id : r.name, networkName(net));
+    return {};
+}
+
+void TakEngine::setNetworkFilter(const QString &n)
+{
+    if (n == m_filter)
+        return;
+    m_filter = n;
+    Q_EMIT changed();
+}
+
+void TakEngine::setFirmware(FirmwareEngine *fw)
+{
+    m_fw = fw;
+    if (fw)
+        connect(fw, &FirmwareEngine::changed, this, &TakEngine::changed);
+}
+
+QVariantList TakEngine::networks() const
+{
+    QMap<QString, QPair<int, int>> by;   // radios, people
+    for (const MeshRadio &r : m_b->radios())
+        by[r.transport].first++;
+    const QString keep = m_filter;
+    for (const MeshIdentity &i : m_b->identities())
+        by[networkOfNode(i.id)].second++;
+    for (const MeshMessage &m : m_b->messages())
+        if (!m.network.isEmpty() && !by.contains(m.network))
+            by[m.network] = {0, 0};
+    QVariantList out;
+    for (auto it = by.cbegin(); it != by.cend(); ++it)
+        out.append(QVariantMap{{u"id"_s, it.key()}, {u"name"_s, networkName(it.key())}, {u"radios"_s, it.value().first}, {u"people"_s, it.value().second}});
+    Q_UNUSED(keep);
+    return out;
+}
+
+QVariantMap TakEngine::radioRow(const QString &key) const
+{
+    for (const QVariant &v : radioRows())
+        if (v.toMap().value(u"key"_s).toString() == key)
+            return v.toMap();
+    return {};
+}
+
+QVariantList TakEngine::radioRows() const
+{
+    // The firmware manager's boards, by port; the engine's open radios, by port; the ports the engine lists. A radio is one
+    // row however many of those see it.
+    QVariantList fwDevices = m_fw ? m_fw->devices() : QVariantList();
+    auto fwFor = [&](const QString &port) -> QVariantMap {
+        for (const QVariant &d : fwDevices)
+            if (!port.isEmpty() && d.toMap().value(u"port"_s).toString() == port)
+                return d.toMap();
+        return {};
+    };
+    const bool fwReady = m_fw && m_fw->state() == u"ready"_s;
+    const bool haveLibrary = m_fw && !m_fw->library().isEmpty();
+    auto candidates = [&](const QVariantMap &fd) {
+        QStringList names;
+        for (const QVariant &c : fd.value(u"candidates"_s).toList())
+            names << (m_fw ? m_fw->boardName(c.toString()) : c.toString());
+        return names;
+    };
+    const auto assigns = m_b->assignments();
+    QVariantList out;
+    QSet<QString> seen;
+    for (const MeshRadio &r : m_b->radios()) {
+        const QString key = r.port.isEmpty() ? r.id : r.port;
+        seen << key;
+        const QVariantMap fd = fwFor(r.port);
+        QString identity, who;
+        for (const MeshAssignment &a : assigns)
+            if (a.node == r.id) {
+                identity = a.identity;
+                who = nameForIdentity(a.identity);
+            }
+        const QString fwId = fd.value(u"id"_s).toString();
+        QVariantList saved = fwId.isEmpty() ? QVariantList() : m_profiles.list(fwId);
+        QVariantMap row{{u"key"_s, key}, {u"kind"_s, r.link.isEmpty() ? u"usb"_s : r.link}, {u"port"_s, r.port}, {u"engineRadioId"_s, r.id}, {u"fwDeviceId"_s, fwId},
+                        {u"title"_s, r.hardware.isEmpty() ? (r.name.isEmpty() ? r.id : r.name) : r.hardware}, {u"name"_s, r.name}, {u"hardware"_s, r.hardware},
+                        {u"boardGuess"_s, candidates(fd).join(u" or "_s)}, {u"network"_s, r.transport}, {u"networkName"_s, networkName(r.transport)},
+                        {u"firmware"_s, r.firmware}, {u"state"_s, r.state}, {u"battery"_s, r.batteryPercent}, {u"candidates"_s, fd.value(u"candidates"_s)},
+                        {u"assignedName"_s, who}, {u"assignedKind"_s, identity.isEmpty() ? u"none"_s : kindOf(identity)}, {u"identity"_s, identity},
+                        {u"canConnect"_s, false}, {u"canSettings"_s, r.state == u"connected"_s}, {u"saved"_s, false}, {u"error"_s, QString()}, {u"busy"_s, false},
+                        {u"canSwitch"_s, fwReady && haveLibrary && !fwId.isEmpty()}, {u"profiles"_s, saved}};
+        if (!fwReady)
+            row.insert(u"switchWhy"_s, tr("The firmware manager is not running."));
+        else if (fwId.isEmpty())
+            row.insert(u"switchWhy"_s, tr("The firmware manager does not see a board on this port, so it cannot switch it."));
+        else if (!haveLibrary)
+            row.insert(u"switchWhy"_s, tr("No firmware is stored yet. Open the firmware library and refresh it first."));
+        out.append(row);
+    }
+    for (const MeshDevice &d : m_b->devices()) {
+        if (seen.contains(d.id))
+            continue;
+        seen << d.id;
+        const QVariantMap fd = d.kind == u"usb"_s ? fwFor(d.id) : QVariantMap();
+        const QString fwId = fd.value(u"id"_s).toString();
+        const QString guess = candidates(fd).join(u" or "_s);
+        QVariantMap row{{u"key"_s, d.id}, {u"kind"_s, d.kind}, {u"port"_s, d.kind == u"usb"_s ? d.id : QString()}, {u"engineRadioId"_s, QString()}, {u"fwDeviceId"_s, fwId},
+                        {u"title"_s, guess.isEmpty() ? d.label : guess}, {u"name"_s, d.label}, {u"hardware"_s, QString()}, {u"boardGuess"_s, guess}, {u"network"_s, QString()},
+                        {u"networkName"_s, QString()}, {u"firmware"_s, QString()}, {u"state"_s, u"detected"_s}, {u"battery"_s, -1}, {u"candidates"_s, fd.value(u"candidates"_s)},
+                        {u"assignedName"_s, QString()}, {u"assignedKind"_s, u"none"_s}, {u"identity"_s, QString()}, {u"detail"_s, d.detail}, {u"hint"_s, d.hint},
+                        {u"canConnect"_s, d.supported && m_b->canConnect()}, {u"canSettings"_s, false}, {u"saved"_s, d.saved}, {u"error"_s, m_connectErrors.value(d.id).toString()},
+                        {u"busy"_s, d.id == m_connecting}, {u"canSwitch"_s, fwReady && haveLibrary && !fwId.isEmpty()}, {u"profiles"_s, fwId.isEmpty() ? QVariantList() : m_profiles.list(fwId)}};
+        if (!d.supported)
+            row.insert(u"switchWhy"_s, tr("Bluetooth radios cannot be switched from here."));
+        out.append(row);
+    }
+    // a board only the firmware manager sees (the mesh engine is not running, or it does not list the port)
+    for (const QVariant &v : fwDevices) {
+        const QVariantMap fd = v.toMap();
+        const QString port = fd.value(u"port"_s).toString();
+        if (port.isEmpty() || seen.contains(port))
+            continue;
+        const QString guess = candidates(fd).join(u" or "_s);
+        out.append(QVariantMap{{u"key"_s, port}, {u"kind"_s, u"usb"_s}, {u"port"_s, port}, {u"engineRadioId"_s, QString()}, {u"fwDeviceId"_s, fd.value(u"id"_s)},
+                               {u"title"_s, guess.isEmpty() ? fd.value(u"product"_s).toString() : guess}, {u"name"_s, fd.value(u"product"_s).toString()}, {u"hardware"_s, QString()},
+                               {u"boardGuess"_s, guess}, {u"network"_s, QString()}, {u"networkName"_s, QString()}, {u"firmware"_s, QString()}, {u"state"_s, u"detected"_s}, {u"battery"_s, -1},
+                               {u"candidates"_s, fd.value(u"candidates"_s)}, {u"assignedName"_s, QString()}, {u"assignedKind"_s, u"none"_s}, {u"identity"_s, QString()},
+                               {u"detail"_s, port}, {u"hint"_s, QString()}, {u"canConnect"_s, m_b->canConnect()}, {u"canSettings"_s, false}, {u"saved"_s, false}, {u"error"_s, QString()},
+                               {u"busy"_s, false}, {u"canSwitch"_s, fwReady && haveLibrary}, {u"profiles"_s, m_profiles.list(fd.value(u"id"_s).toString())}});
+    }
+    return out;
+}
+
 QVariantList TakEngine::devices() const
 {
     QVariantList out;
@@ -283,7 +443,7 @@ QVariantList TakEngine::radios() const
                 who = nameForIdentity(a.identity);
             }
         out.append(QVariantMap{{u"id"_s, r.id}, {u"name"_s, r.name}, {u"transport"_s, r.transport}, {u"networkName"_s, networkName(r.transport)}, {u"link"_s, r.link},
-                               {u"state"_s, r.state}, {u"firmware"_s, r.firmware}, {u"battery"_s, r.batteryPercent}, {u"identity"_s, identity},
+                               {u"state"_s, r.state}, {u"firmware"_s, r.firmware}, {u"hardware"_s, r.hardware}, {u"port"_s, r.port}, {u"battery"_s, r.batteryPercent}, {u"identity"_s, identity},
                                {u"assignedName"_s, who}, {u"assignedKind"_s, identity.isEmpty() ? u"none"_s : kindOf(identity)}});
     }
     return out;
@@ -305,10 +465,13 @@ QVariantList TakEngine::threads() const
     QList<T> list = by.values();
     std::sort(list.begin(), list.end(), [](const T &a, const T &b) { return a.last > b.last; });
     QVariantList out;
-    for (const T &t : list)
+    for (const T &t : list) {
+        if (!m_filter.isEmpty() && t.network != m_filter)
+            continue;
         out.append(thread(t.id).isEmpty() ? QVariantMap() : QVariantMap{{u"id"_s, t.id}, {u"title"_s, thread(t.id).value(u"title"_s)}, {u"kind"_s, thread(t.id).value(u"kind"_s)},
                                                                         {u"subtitle"_s, t.text}, {u"lastMs"_s, double(t.last)}, {u"ago"_s, ago(double(t.last))},
-                                                                        {u"unread"_s, t.unread}, {u"count"_s, t.count}, {u"network"_s, networkName(t.network)}});
+                                                                        {u"unread"_s, t.unread}, {u"count"_s, t.count}, {u"network"_s, networkName(t.network)}, {u"networkId"_s, t.network}});
+    }
     return out;
 }
 
@@ -372,7 +535,7 @@ QString TakEngine::send(const QString &threadId, const QString &text)
 {
     if (text.trimmed().isEmpty())
         return tr("Type a message first.");
-    const QString blocked = sendBlocked();
+    const QString blocked = sendBlockedFor(threadId);
     if (!blocked.isEmpty())
         return blocked;   // nothing reaches the engine
     const MeshSendResult r = m_b->send(threadId, text.trimmed());
@@ -434,6 +597,106 @@ QStringList TakEngine::qr(const QString &text) const
 }
 
 // ============================================================================================================ firmware
+
+SwitchEngine::SwitchEngine(TakEngine *tak, FirmwareEngine *fw, FirmwareClient *client, QObject *parent) : QObject(parent), m_tak(tak), m_fw(fw), m_c(client), m_tick(new QTimer(this))
+{
+    m_tick->setInterval(1000);
+    connect(m_tick, &QTimer::timeout, this, [this] { if (running()) Q_EMIT changed(); });
+    m_tick->start();
+}
+
+QVariantList SwitchEngine::stages() const
+{
+    struct S { const char *id; QString label; };
+    const QList<S> all{{"saving", tr("Save this radio's settings")}, {"releasing", tr("Let go of the port")}, {"flashing", tr("Write the new firmware")},
+                       {"reconnecting", tr("Reconnect in the new mode")}, {"restoring", tr("Put back earlier settings")}};
+    const QString cur = step();
+    QVariantList out;
+    bool before = true;
+    const bool failed = cur == u"failed"_s, done = cur == u"done"_s;
+    const QString at = failed ? failedAt() : cur;
+    for (const S &s : all) {
+        QString state = u"pending"_s;
+        if (done)
+            state = u"done"_s;
+        else if (QLatin1String(s.id) == at)
+            state = failed ? u"failed"_s : u"active"_s;
+        else if (before && cur != u"idle"_s)
+            state = u"done"_s;
+        if (QLatin1String(s.id) == at)
+            before = false;
+        out.append(QVariantMap{{u"id"_s, QLatin1String(s.id)}, {u"label"_s, s.label}, {u"state"_s, state}});
+    }
+    return out;
+}
+
+QString SwitchEngine::elapsed() const
+{
+    const qint64 s = m_sw ? m_sw->elapsedMs() / 1000 : 0;
+    return u"%1:%2"_s.arg(s / 60).arg(s % 60, 2, 10, QLatin1Char('0'));
+}
+
+void SwitchEngine::reset()
+{
+    if (running())
+        return;
+    m_sw.reset();
+    Q_EMIT changed();
+}
+
+QString SwitchEngine::previousEntry(const QString &rowKey) const
+{
+    const QVariantMap row = m_tak->radioRow(rowKey);
+    const QString fw = row.value(u"firmware"_s).toString().section(QLatin1Char(' '), 0, 0).remove(QLatin1Char('v'));
+    const QString net = row.value(u"network"_s).toString();
+    if (fw.isEmpty() || net.isEmpty() || !m_fw)
+        return {};
+    const QVariantList cands = row.value(u"candidates"_s).toList();
+    for (const QVariant &e : m_fw->library()) {
+        const QVariantMap m = e.toMap();
+        if (m.value(u"network"_s).toString() != net)
+            continue;
+        if (!cands.isEmpty() && !cands.contains(m.value(u"board"_s)))
+            continue;
+        const QString v = m.value(u"version"_s).toString();
+        if (v.contains(fw) || fw.contains(v))
+            return m.value(u"id"_s).toString();
+    }
+    return {};
+}
+
+QString SwitchEngine::begin(const QString &rowKey, const QString &entryId, const QString &typedName, bool ackUnsigned)
+{
+    if (running())
+        return tr("A switch is already running.");
+    const QVariantMap row = m_tak->radioRow(rowKey);
+    if (row.isEmpty())
+        return tr("That radio is no longer listed.");
+    if (row.value(u"fwDeviceId"_s).toString().isEmpty())
+        return tr("The firmware manager does not see this board.");
+    QString network;
+    for (const QVariant &e : m_fw->library())
+        if (e.toMap().value(u"id"_s).toString() == entryId)
+            network = e.toMap().value(u"network"_s).toString();
+    if (network.isEmpty())
+        return tr("That firmware is not in the library.");
+    SwitchRequest q;
+    q.port = row.value(u"port"_s).toString();
+    q.radioId = row.value(u"engineRadioId"_s).toString();
+    q.deviceId = row.value(u"fwDeviceId"_s).toString();
+    q.entryId = entryId;
+    q.fromNetwork = row.value(u"network"_s).toString();
+    q.toNetwork = network;
+    q.typedName = typedName;
+    q.ackUnsigned = ackUnsigned;
+    q.previousEntryId = previousEntry(rowKey);
+    m_previous = q.previousEntryId;
+    m_sw = std::make_unique<RadioSwitch>(m_tak->backend(), m_c, m_tak->profiles());
+    connect(m_sw.get(), &RadioSwitch::changed, this, &SwitchEngine::changed);
+    m_sw->start(q);
+    Q_EMIT changed();
+    return {};
+}
 
 FirmwareEngine::FirmwareEngine(FirmwareClient *client, const QString &account, QObject *parent) : QObject(parent), m_c(client), m_account(account) {}
 

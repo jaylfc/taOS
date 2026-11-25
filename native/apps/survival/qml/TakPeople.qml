@@ -36,6 +36,7 @@ C.ScrollView {
             PillButton { visible: root.map.meSource === "manual"; compact: true; text: qsTr("Clear"); onClicked: root.map.clearMe() }
         }
         TakLabel { text: qsTr("On the mesh"); Layout.topMargin: Look.space4; Layout.leftMargin: Look.space3 }
+        NetworkFilter { Layout.fillWidth: true; Layout.leftMargin: Look.space3; Layout.rightMargin: Look.space3; Layout.bottomMargin: Look.space2 }
         Repeater {
             model: root.tak.people
             delegate: ListRow {
@@ -46,7 +47,7 @@ C.ScrollView {
                 tone: modelData.kind === "none" ? "neutral" : "accent"
                 title: modelData.name + (modelData.isSelf ? qsTr(" (your radio)") : "")
                 subtitle: modelData.hasPosition ? qsTr("Seen %1").arg(modelData.positionAgo) : qsTr("Last heard %1, no position").arg(modelData.heardAgo)
-                detail: (modelData.kind === "none" ? qsTr("Nobody assigned to this radio yet") : modelData.kind === "agent" ? qsTr("An agent") : modelData.kind === "person" ? qsTr("A taOS person")
+                detail: (root.tak.networks.length > 1 ? modelData.networkName + "  -  " : "") + (modelData.kind === "none" ? qsTr("Nobody assigned to this radio yet") : modelData.kind === "agent" ? qsTr("An agent") : modelData.kind === "person" ? qsTr("A taOS person")
                         : modelData.linkedAccount !== "" ? qsTr("Contact, linked to a taOS account") : qsTr("Contact")) + (modelData.hasPosition ? "  -  " + modelData.coords : "")
                 onClicked: root.nav.open("person", modelData.node)
                 trailing: Component { Glyph { name: "chevron-right"; size: 16; stroke: 2; color: Look.textTertiary } }

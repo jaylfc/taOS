@@ -47,7 +47,7 @@ taos_survival_catalog(taos-survival-cli)
 
 # ---- the app ---------------------------------------------------------------------------------------------------
 set(TAOS_SURVIVAL_QML Main.qml PackList.qml ArticleView.qml LibraryPage.qml MapStage.qml StagePage.qml MapPage.qml TakPage.qml KitPage.qml
-    TakLabel.qml QrCode.qml TakBanner.qml TakAssign.qml TakPeople.qml TakPerson.qml TakRadios.qml TakMessages.qml TakThread.qml TakSettings.qml TakFirmware.qml)
+    TakLabel.qml QrCode.qml TakBanner.qml TakAssign.qml TakPeople.qml TakPerson.qml TakRadios.qml TakMessages.qml TakThread.qml TakSettings.qml TakFirmware.qml TakSwitch.qml NetworkFilter.qml)
 set(TAOS_SURVIVAL_QML_ABS)
 foreach(f ${TAOS_SURVIVAL_QML})
   list(APPEND TAOS_SURVIVAL_QML_ABS ${CMAKE_CURRENT_SOURCE_DIR}/qml/${f})

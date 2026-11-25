@@ -11,6 +11,7 @@ ColumnLayout {
     property var nav
     readonly property var tak: Survival.tak
     spacing: 0
+    NetworkFilter { Layout.fillWidth: true; Layout.margins: Look.space3; Layout.bottomMargin: 0 }
     C.ScrollView {
         Layout.fillWidth: true; Layout.fillHeight: true
         contentWidth: availableWidth

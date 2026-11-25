@@ -259,6 +259,7 @@ class SurvivalBackend : public QObject
     Q_PROPERTY(QObject *kits READ kits CONSTANT)
     Q_PROPERTY(QObject *tak READ tak CONSTANT)
     Q_PROPERTY(QObject *firmware READ firmware CONSTANT)
+    Q_PROPERTY(QObject *switcher READ switcher CONSTANT)
     Q_PROPERTY(QObject *mesh READ mesh NOTIFY meshChanged)
     Q_PROPERTY(bool meshAvailable READ meshAvailable NOTIFY meshChanged)
     Q_PROPERTY(QString meshReason READ meshReason NOTIFY meshChanged)
@@ -271,6 +272,8 @@ public:
     QObject *kits() { return &m_kits; }
     QObject *tak() { return &m_tak; }
     QObject *firmware() { return &m_firmware; }
+    QObject *switcher() { return &m_switch; }
+    SwitchEngine *switchEngine() { return &m_switch; }
     TakEngine *takEngine() { return &m_tak; }
     FirmwareEngine *firmwareEngine() { return &m_firmware; }
     QObject *mesh() { return m_mesh; }
@@ -300,6 +303,7 @@ private:
     TakEngine m_tak;
     FirmwareClient m_fwClient;
     FirmwareEngine m_firmware;
+    SwitchEngine m_switch;
     QTimer m_meshWatch;
 };
 

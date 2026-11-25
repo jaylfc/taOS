@@ -13,12 +13,12 @@ StagePage {
     takMode: true
     pageTitle: qsTr("taOStak")
     property string tab: "people"
-    property string view: ""             // "" (the tab) | person | thread | settings | firmware
+    property string view: ""             // "" (the tab) | person | thread | settings | firmware | switch
     property string viewArg: ""
     property var demo: ({})
     readonly property var radios: Survival.radios
     readonly property var tak: Survival.tak
-    readonly property bool wideView: view === "settings" || view === "firmware"
+    readonly property bool wideView: view === "settings" || view === "firmware" || view === "switch"
     panelWidth: wideView ? 440 : 340
     tall: view !== ""
     function focusSearch() { stage.focusSearch() }
@@ -29,6 +29,7 @@ StagePage {
         if (view === "thread") { tak.people; const t = tak.thread(viewArg); return t.title || viewArg }
         if (view === "settings") return qsTr("Radio settings")
         if (view === "firmware") return qsTr("Firmware")
+        if (view === "switch") return qsTr("Switch network")
         return qsTr("taOStak")
     }
     Component.onCompleted: { map.startPosition(); radios.scan() }
@@ -72,7 +73,7 @@ StagePage {
                 id: body
                 Layout.fillWidth: true; Layout.fillHeight: true
                 sourceComponent: page.view === "person" ? personC : page.view === "thread" ? threadC : page.view === "settings" ? settingsC
-                               : page.view === "firmware" ? firmwareC : page.tab === "people" ? peopleC : page.tab === "radios" ? radiosC : messagesC
+                               : page.view === "firmware" ? firmwareC : page.view === "switch" ? switchC : page.tab === "people" ? peopleC : page.tab === "radios" ? radiosC : messagesC
                 onLoaded: item.nav = page
             }
             Component { id: peopleC; TakPeople {} }
@@ -82,6 +83,7 @@ StagePage {
             Component { id: threadC; TakThread { threadId: page.viewArg } }
             Component { id: settingsC; TakSettings { radioId: page.viewArg } }
             Component { id: firmwareC; TakFirmware {} }
+            Component { id: switchC; TakSwitch { rowKey: page.viewArg } }
         }
     }
 }
