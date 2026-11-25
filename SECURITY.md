@@ -8,6 +8,9 @@ Report vulnerabilities privately through GitHub's "Report a vulnerability"
 button under the repository's **Security** tab (Security Advisories). This
 opens a private channel visible only to the maintainers.
 
+If you cannot use GitHub, email info@taos.my instead. Automated scanner
+reports (for example Anthropic's OSS Scanner) also go to that address.
+
 When reporting, please include:
 
 - A description of the issue and the impact you think it has
