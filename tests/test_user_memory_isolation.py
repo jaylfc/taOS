@@ -11,7 +11,6 @@ import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
 
 from taos_test_csrf import csrf_event_hooks
-from tinyagentos.user_memory import LEGACY_USER_ID, UserMemoryStore
 
 
 @pytest_asyncio.fixture
@@ -60,44 +59,91 @@ async def test_member_cannot_read_search_or_delete_the_owners_memory(client, app
 
 
 @pytest.mark.asyncio
-async def test_settings_are_per_user(client, app, store):
+async def test_settings_are_per_user_and_changing_them_needs_an_admin(client, app, store):
     member, _ = await _member(app)
     try:
         r = await member.put("/api/user-memory/settings", json={"capture_searches": True})
+        assert r.status_code == 403, r.text
+        assert (await member.get("/api/user-memory/settings")).json()["capture_searches"] is False
+        r = await client.put("/api/user-memory/settings", json={"capture_searches": True})
         assert r.status_code == 200
-        assert (await member.get("/api/user-memory/settings")).json()["capture_searches"] is True
-        assert (await client.get("/api/user-memory/settings")).json()["capture_searches"] is False
+        # The owner's change is the owner's alone.
+        assert (await member.get("/api/user-memory/settings")).json()["capture_searches"] is False
     finally:
         await member.aclose()
 
 
-@pytest.mark.asyncio
-async def test_agent_search_is_fenced_to_the_agents_owner(client, app, store):
+async def _agent_env(app, store, *, can_read=True):
     owner_id = app.state.auth.get_primary_user()["id"]
     reg = app.state.agent_registry
     if reg._db is None:
         await reg.init()
+    row = await reg.register(framework="none", display_name="Helper", user_id=owner_id)
+    app.state.config.agents.append({
+        "name": "helper", "registry_canonical_id": row["canonical_id"],
+        "can_read_user_memory": can_read,
+    })
+    token = app.state.auth.mint_agent_local_token("helper")
+    c = AsyncClient(
+        transport=ASGITransport(app=app), base_url="http://test",
+        headers={"Authorization": f"Bearer {token}"}, event_hooks=csrf_event_hooks(),
+    )
+    return owner_id, reg, c
+
+
+@pytest.mark.asyncio
+async def test_agent_search_answers_only_the_agents_own_token_for_its_owner(client, app, store):
+    owner_id, reg, agent = await _agent_env(app, store)
     try:
-        row = await reg.register(framework="none", display_name="Helper", user_id=owner_id)
-        app.state.config.agents.append({
-            "name": "helper", "registry_canonical_id": row["canonical_id"],
-            "can_read_user_memory": True,
-        })
         await store.save_chunk(owner_id, "pineapple notes", "n", "notes")
         member, _ = await _member(app)
         try:
-            denied = await member.get("/api/user-memory/agent-search?q=pineapple&agent_name=helper")
-            assert denied.status_code == 403
+            # A member (or even the owner) naming the agent is refused: the agent's own token is required.
+            assert (await member.get("/api/user-memory/agent-search?q=pineapple&agent_name=helper")).status_code == 403
+            assert (await client.get("/api/user-memory/agent-search?q=pineapple&agent_name=helper")).status_code == 403
         finally:
             await member.aclose()
-        ok = await client.get("/api/user-memory/agent-search?q=pineapple&agent_name=helper")
+        ok = await agent.get("/api/user-memory/agent-search?q=pineapple&agent_name=helper")
         assert ok.status_code == 200 and len(ok.json()["results"]) == 1
+        other = await agent.get("/api/user-memory/agent-search?q=pineapple&agent_name=someone-else")
+        assert other.status_code == 403
     finally:
+        await agent.aclose()
+        await reg.close()
+
+
+@pytest.mark.asyncio
+async def test_agent_search_refused_without_the_permission_flag(client, app, store):
+    owner_id, reg, agent = await _agent_env(app, store, can_read=False)
+    try:
+        await store.save_chunk(owner_id, "pineapple notes", "n", "notes")
+        r = await agent.get("/api/user-memory/agent-search?q=pineapple&agent_name=helper")
+        assert r.status_code == 403
+    finally:
+        await agent.aclose()
+        await reg.close()
+
+
+@pytest.mark.asyncio
+async def test_agent_token_cannot_use_the_person_routes(client, app, store):
+    owner_id, reg, agent = await _agent_env(app, store, can_read=False)
+    try:
+        h = await store.save_chunk(owner_id, "private note", "n", "notes")
+        assert (await agent.get("/api/user-memory/browse")).status_code == 403
+        assert (await agent.get("/api/user-memory/search?q=private")).status_code == 403
+        assert (await agent.get("/api/user-memory/stats")).status_code == 403
+        assert (await agent.post("/api/user-memory/save", json={"content": "x"})).status_code == 403
+        assert (await agent.delete(f"/api/user-memory/chunk/{h}")).status_code == 403
+        assert len(await store.browse(owner_id)) == 1
+    finally:
+        await agent.aclose()
         await reg.close()
 
 
 @pytest.mark.asyncio
 async def test_legacy_shared_rows_move_to_the_owner_and_are_idempotent(tmp_path):
+    from tinyagentos.user_memory import LEGACY_USER_ID, UserMemoryStore
+
     s = UserMemoryStore(tmp_path / "um.db")
     await s.init()
     try:

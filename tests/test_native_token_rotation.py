@@ -86,3 +86,14 @@ async def test_rotated_out_native_token_no_longer_acts_as_the_owner(env):
     resp = await env.post(
         "/api/desktop/command", json=BODY, headers={"Authorization": f"Bearer {old}"})
     assert env.owner not in env.emitted, "a superseded token drove the owner's desktop"
+
+
+@pytest.mark.asyncio
+async def test_rotated_out_native_token_is_refused_on_skill_exec(env):
+    fresh = await env.get(
+        "/api/skill-exec/tools", headers={"Authorization": f"Bearer {env.mint()}"})
+    assert fresh.status_code == 200, fresh.text
+    old = env.mint()
+    await env.registry.bump_token_min_iat(env.cid, int(time.time()) + 3600)
+    stale = await env.get("/api/skill-exec/tools", headers={"Authorization": f"Bearer {old}"})
+    assert stale.status_code in (401, 403), stale.text

@@ -12,7 +12,6 @@ from httpx import ASGITransport, AsyncClient
 from taos_test_csrf import csrf_event_hooks
 from tinyagentos.agent_registry_store import AgentRegistryStore
 from tinyagentos.chat.channel_store import ChatChannelStore
-from tinyagentos.migrations.agent_dm_owner import backfill_agent_dm_owners
 
 
 class _Cfg:
@@ -35,6 +34,8 @@ async def _member(app, username):
 
 @pytest.mark.asyncio
 async def test_backfill_stamps_owner_on_agent_dm_and_is_idempotent(tmp_path):
+    from tinyagentos.migrations.agent_dm_owner import backfill_agent_dm_owners
+
     registry = AgentRegistryStore(tmp_path / "r.db")
     await registry.init()
     channels = ChatChannelStore(tmp_path / "c.db")
@@ -80,3 +81,59 @@ async def test_owner_reads_their_agent_dm_and_another_member_does_not(client, ap
     finally:
         await owner.aclose()
         await other.aclose()
+
+
+@pytest.mark.asyncio
+async def test_deploy_stamps_the_deployer_as_dm_owner(client, app, monkeypatch):
+    async def fake_deploy(req):
+        return {"success": True, "name": req.name, "ip": "10.0.0.43", "llm_key": None,
+                "steps": ["deployment_complete"], "container": f"taos-agent-{req.name}"}
+    monkeypatch.setattr("tinyagentos.deployer.deploy_agent", fake_deploy)
+    resp = await client.post("/api/agents/deploy", json={"name": "dmstamp", "framework": "none", "color": "#112233"})
+    assert resp.status_code == 200, resp.text
+    import asyncio
+    await asyncio.sleep(0.3)
+    agent = (await client.get("/api/agents/dmstamp")).json()
+    ch = await app.state.chat_channels.get_channel(agent["chat_channel_id"])
+    assert ch["settings"]["owner_user_id"] == app.state.auth.get_primary_user()["id"]
+
+
+@pytest.mark.asyncio
+async def test_startup_upgrades_an_existing_install(tmp_path):
+    """Old state: an agent DM listing "user", and memory filed under the shared id."""
+    import yaml
+    from tinyagentos.auth import AuthManager
+    from tinyagentos.user_memory import UserMemoryStore
+
+    auth = AuthManager(tmp_path)
+    auth.setup_user("admin", "Admin", "", "adminpass")
+    owner_id = auth.get_primary_user()["id"]
+
+    registry = AgentRegistryStore(tmp_path / "agent_registry.db")
+    await registry.init()
+    row = await registry.register(framework="none", display_name="Bot", user_id=owner_id)
+    await registry.close()
+    channels = ChatChannelStore(tmp_path / "chat.db")
+    await channels.init()
+    dm = await channels.create_channel(name="bot", type="dm", created_by="user", members=["user", "bot"])
+    await channels.close()
+    mem = UserMemoryStore(tmp_path / "user_memory.db")
+    await mem.init()
+    await mem.save_chunk("user", "old shared note", "t", "notes")
+    await mem.close()
+    (tmp_path / "config.yaml").write_text(yaml.dump({
+        "server": {"host": "0.0.0.0", "port": 6969}, "backends": [],
+        "qmd": {"url": "http://localhost:7832"},
+        "agents": [{"name": "bot", "registry_canonical_id": row["canonical_id"]}],
+        "metrics": {"poll_interval": 30, "retention_days": 30},
+    }))
+    (tmp_path / ".setup_complete").touch()
+
+    from tinyagentos.app import create_app
+
+    app = create_app(data_dir=tmp_path)
+    async with app.router.lifespan_context(app):
+        ch = await app.state.chat_channels.get_channel(dm["id"])
+        assert ch["settings"]["owner_user_id"] == owner_id
+        assert len(await app.state.user_memory.browse(owner_id)) == 1
+        assert await app.state.user_memory.browse("user") == []
