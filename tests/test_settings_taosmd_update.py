@@ -13,7 +13,9 @@ The contract under test:
 """
 
 import contextlib
+import json
 import types
+from pathlib import Path
 
 import httpx
 import pytest
@@ -57,14 +59,27 @@ class _FakeHttpClient:
 
 
 def _fake_request(resp=None, exc=None, memory_url="http://localhost:7900",
-                  taosmd_dir="", taosmd_restart_cmd=""):
+                  taosmd_dir="", taosmd_restart_cmd="", data_dir=None):
     config = types.SimpleNamespace(
         memory_url=memory_url,
         taosmd_dir=taosmd_dir,
         taosmd_restart_cmd=taosmd_restart_cmd,
     )
-    state = types.SimpleNamespace(config=config, http_client=_FakeHttpClient(resp, exc))
+    if data_dir is None:
+        import tempfile
+        data_dir = Path(tempfile.mkdtemp())
+    state = types.SimpleNamespace(config=config, http_client=_FakeHttpClient(resp, exc), data_dir=data_dir)
     return types.SimpleNamespace(app=types.SimpleNamespace(state=state))
+
+
+def _patch_probe_current():
+    """Return a patch that fakes the probe subprocess returning exit 0 (current)."""
+    fake_proc = MagicMock()
+    fake_proc.returncode = 0
+    fake_proc.communicate = AsyncMock(return_value=(b'{"status": "current"}', b""))
+    fake_proc.kill = MagicMock()
+    fake_proc.wait = AsyncMock()
+    return patch("asyncio.create_subprocess_exec", new=AsyncMock(return_value=fake_proc))
 
 
 class TestVerifyTaosmdRunning:
@@ -120,19 +135,22 @@ class TestUpdateLocalTaosmd:
     async def test_skips_when_memory_url_remote(self):
         req = _fake_request(memory_url="http://192.168.1.50:7900",
                             taosmd_dir="/somewhere", taosmd_restart_cmd="true")
-        report = await _update_local_taosmd(req)
+        with _patch_probe_current():
+            report = await _update_local_taosmd(req)
         assert "not local" in report["skipped"]
 
     @pytest.mark.asyncio
     async def test_skips_when_dir_not_configured(self):
         req = _fake_request()
-        report = await _update_local_taosmd(req)
+        with _patch_probe_current():
+            report = await _update_local_taosmd(req)
         assert report["skipped"] == "taosmd_dir not configured"
 
     @pytest.mark.asyncio
     async def test_errors_when_dir_is_not_a_git_checkout(self, tmp_path):
         req = _fake_request(taosmd_dir=str(tmp_path), taosmd_restart_cmd="true")
-        report = await _update_local_taosmd(req)
+        with _patch_probe_current():
+            report = await _update_local_taosmd(req)
         assert "not a git checkout" in report["error"]
 
     @pytest.mark.asyncio
@@ -140,7 +158,8 @@ class TestUpdateLocalTaosmd:
         """A pull the running service never loads is a silent half-update."""
         (tmp_path / ".git").mkdir()
         req = _fake_request(taosmd_dir=str(tmp_path))
-        report = await _update_local_taosmd(req)
+        with _patch_probe_current():
+            report = await _update_local_taosmd(req)
         assert "taosmd_restart_cmd" in report["error"]
 
     @pytest.mark.asyncio
@@ -149,31 +168,35 @@ class TestUpdateLocalTaosmd:
         (tmp_path / ".git").mkdir()
         req = _fake_request(taosmd_dir=str(tmp_path),
                             taosmd_restart_cmd="systemctl restart 'taosmd")
-        report = await _update_local_taosmd(req)
+        with _patch_probe_current():
+            report = await _update_local_taosmd(req)
         assert "not parseable" in report["error"]
 
     @pytest.mark.asyncio
     async def test_errors_named_on_whitespace_restart_cmd(self, tmp_path):
         (tmp_path / ".git").mkdir()
         req = _fake_request(taosmd_dir=str(tmp_path), taosmd_restart_cmd="  ")
-        report = await _update_local_taosmd(req)
+        with _patch_probe_current():
+            report = await _update_local_taosmd(req)
         # Whitespace-only strips to empty -> caught by the unset check.
         assert "taosmd_restart_cmd" in report["error"]
 
     @pytest.mark.asyncio
     async def test_errors_loudly_when_pull_fails(self, tmp_path):
         (tmp_path / ".git").mkdir()
-        req = _fake_request(taosmd_dir=str(tmp_path), taosmd_restart_cmd="true")
-        with patch.object(settings_mod, "_run_capture",
-                          new=AsyncMock(return_value=(1, "fatal: not fast-forward"))):
-            report = await _update_local_taosmd(req)
+        req = _fake_request(taosmd_dir=str(tmp_path), taosmd_restart_cmd="true", data_dir=tmp_path)
+        with _patch_probe_current():
+            with patch.object(settings_mod, "_run_capture",
+                              new=AsyncMock(return_value=(1, "fatal: not fast-forward"))):
+                report = await _update_local_taosmd(req)
         assert "git pull failed" in report["error"]
 
     @pytest.mark.asyncio
     async def test_announces_before_restart_and_reports(self, tmp_path):
         (tmp_path / ".git").mkdir()
         req = _fake_request(taosmd_dir=str(tmp_path),
-                            taosmd_restart_cmd="systemctl restart taosmd")
+                            taosmd_restart_cmd="systemctl restart taosmd",
+                            data_dir=tmp_path)
         calls = []
 
         async def _fake_run(cmd, cwd=None, timeout=None, env=None):
@@ -184,11 +207,12 @@ class TestUpdateLocalTaosmd:
             calls.append(["ANNOUNCE"])
             return True
 
-        with (
-            patch.object(settings_mod, "_run_capture", new=_fake_run),
-            patch.object(settings_mod, "_announce_taosmd_restart", new=_fake_announce),
-        ):
-            report = await _update_local_taosmd(req)
+        with _patch_probe_current():
+            with (
+                patch.object(settings_mod, "_run_capture", new=_fake_run),
+                patch.object(settings_mod, "_announce_taosmd_restart", new=_fake_announce),
+            ):
+                report = await _update_local_taosmd(req)
 
         assert report["updated"] and report["restarted"] and report["announced"]
         # Order: pull, announce, restart — the notice must precede the restart.

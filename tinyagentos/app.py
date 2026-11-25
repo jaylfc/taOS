@@ -40,13 +40,13 @@ _TAOSMD_MIGRATE_TIMEOUT = 30.0
 
 
 async def _run_taosmd_migrate(argv: list[str]) -> dict:
-    """Run ``taosmd <argv>`` and return a plain-result dict.
+    """Run ``python -m taosmd <argv>`` and return a plain-result dict.
 
     Never raises: a missing or unrunnable taosmd, a timeout, or an unparseable
     payload is reported as an unavailable result so the caller can refuse
     loudly instead of silently falling back.
     """
-    cmd = ["taosmd", *argv]
+    cmd = [sys.executable, "-m", "taosmd", *argv]
     try:
         proc = await asyncio.create_subprocess_exec(
             *cmd,
@@ -58,7 +58,7 @@ async def _run_taosmd_migrate(argv: list[str]) -> dict:
             "exit_code": -1,
             "state": "unavailable",
             "error": (
-                "The taosmd command could not be run "
+                "The taosmd module could not be run "
                 f"({type(exc).__name__}: {exc}). The store is untouched and "
                 "your memories are safe. Please install taOSmd."
             ),
@@ -816,15 +816,12 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
         # converted on open; conversion is an explicit choice only.
         ok, err = await _probe_memory_store(data_dir)
         if not ok:
-            # Log the error and set a flag on app.state so routes can surface
-            # it. We do NOT raise here: a failed conversion must not brick the
-            # controller. The memory service (taosmd) runs separately and will
-            # fail to start on its own if the store is incompatible. The user
-            # sees the message in /api/health and the update flow.
+            # Refuse to start on unknown (11) or newer (12) store formats,
+            # or when taosmd is missing/unrunnable (-1). Surface the message
+            # to the person immediately instead of only setting a flag.
             logger.error("Memory store check failed: %s", err)
-            app.state.memory_store_error = err
-        else:
-            app.state.memory_store_error = None
+            raise RuntimeError(err)
+        app.state.memory_store_error = None
 
         # Arm the startup guard: block non-exempt requests until init completes.
         app.state._startup_complete = False
