@@ -205,7 +205,10 @@ def peer_uid(host: str | None, port: int | None) -> int | None:
     return None
 
 
-def mint_ticket(uid: int | None = None, now: float | None = None) -> str:
+def mint_ticket(uid: int | None, now: float | None = None) -> str:
+    """A one-time ticket bound to ``uid``. An unknown uid is refused."""
+    if uid is None:
+        raise ValueError("cannot bind a ticket to an unknown uid")
     now = time.time() if now is None else now
     for t in [t for t, (exp, _) in _tickets.items() if exp <= now]:
         del _tickets[t]
@@ -214,13 +217,15 @@ def mint_ticket(uid: int | None = None, now: float | None = None) -> str:
     return ticket
 
 
-def redeem_ticket(ticket: str, uid: int | None = None, now: float | None = None) -> bool:
+def redeem_ticket(ticket: str, uid: int | None, now: float | None = None) -> bool:
     """True once per valid, unexpired ticket, for the uid that minted it.
 
     The ticket sits in the browser's argv, which other local users can read, so
     it only works for the account that asked for it. A wrong-uid attempt does
-    not burn it. Where uids cannot be read (not Linux) neither end can be bound.
+    not burn it. An unknown uid (cannot be read) is refused: fail closed.
     """
+    if uid is None:
+        return False
     now = time.time() if now is None else now
     hit = _tickets.get(ticket or "")
     if hit is None or hit[0] <= now:
