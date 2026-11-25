@@ -603,6 +603,30 @@ def app(tmp_data_dir):
     return create_app(data_dir=tmp_data_dir)
 
 
+@pytest.fixture(autouse=True)
+def _mock_taosmd_probe():
+    """Mock taosmd migrate probe to return success by default.
+
+    Tests that need different exit codes can patch asyncio.create_subprocess_exec
+    again in their test function to override this default.
+    """
+    import asyncio
+    import json
+    from unittest.mock import AsyncMock, MagicMock
+
+    def _make_fake_proc(exit_code: int, stdout: str = "", stderr: str = "") -> MagicMock:
+        proc = MagicMock()
+        proc.returncode = exit_code
+        proc.communicate = AsyncMock(return_value=(stdout.encode(), stderr.encode()))
+        proc.wait = AsyncMock(return_value=exit_code)
+        proc.kill = MagicMock()
+        return proc
+
+    fake_proc = _make_fake_proc(0, json.dumps({"status": "current"}))
+    with patch("asyncio.create_subprocess_exec", new=AsyncMock(return_value=fake_proc)):
+        yield
+
+
 @pytest_asyncio.fixture
 async def client(app, tmp_data_dir):
     """Async test client with metrics store initialised and proper teardown."""

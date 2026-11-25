@@ -46,7 +46,7 @@ async def _run_taosmd_migrate(argv: list[str]) -> dict:
     payload is reported as an unavailable result so the caller can refuse
     loudly instead of silently falling back.
     """
-    cmd = ["taosmd", *argv]
+    cmd = [sys.executable, "-m", "taosmd", *argv]
     try:
         proc = await asyncio.create_subprocess_exec(
             *cmd,
@@ -814,17 +814,14 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
         # store initialization to avoid opening an old-format store with a
         # newer service. Exit 10 (old/legacy) is served as is and is never
         # converted on open; conversion is an explicit choice only.
-        ok, err = await _probe_memory_store(data_dir)
-        if not ok:
-            # Log the error and set a flag on app.state so routes can surface
-            # it. We do NOT raise here: a failed conversion must not brick the
-            # controller. The memory service (taosmd) runs separately and will
-            # fail to start on its own if the store is incompatible. The user
-            # sees the message in /api/health and the update flow.
-            logger.error("Memory store check failed: %s", err)
-            app.state.memory_store_error = err
-        else:
-            app.state.memory_store_error = None
+        # Exit 11 (unknown), 12 (newer), and -1 (missing taosmd) refuse
+        # startup with a clear user-facing message.
+        probe = await _taosmd_probe(data_dir)
+        if probe["error"] is not None:
+            # Refuse to start: surface the message to the person.
+            logger.error("Memory store check failed: %s", probe["error"])
+            raise RuntimeError(probe["error"])
+        app.state.memory_store_error = None
 
         # Arm the startup guard: block non-exempt requests until init completes.
         app.state._startup_complete = False

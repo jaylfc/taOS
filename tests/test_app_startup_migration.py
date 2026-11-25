@@ -2,9 +2,21 @@
 
 from __future__ import annotations
 
+import asyncio
+import json
 import yaml
 import pytest
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
+
+
+def _make_fake_proc(exit_code: int, stdout: str = "", stderr: str = "") -> MagicMock:
+    """Create a fake asyncio subprocess with the given exit code and output."""
+    proc = MagicMock()
+    proc.returncode = exit_code
+    proc.communicate = AsyncMock(return_value=(stdout.encode(), stderr.encode()))
+    proc.wait = AsyncMock(return_value=exit_code)
+    proc.kill = MagicMock()
+    return proc
 
 
 @pytest.mark.asyncio
@@ -26,16 +38,19 @@ async def test_legacy_agent_migrated_on_startup(tmp_path, monkeypatch):
     # Patch register_agent before importing create_app so the module-level
     # reference in migrations.persona_v2 picks up the mock.
     with patch("taosmd.agents.AgentRegistry.register_agent", side_effect=lambda name: calls.append(name)):
-        from tinyagentos.app import create_app
+        # Mock the taosmd migrate probe to return exit 0 (current store)
+        fake_proc = _make_fake_proc(0, json.dumps({"status": "current"}))
+        with patch("asyncio.create_subprocess_exec", new=AsyncMock(return_value=fake_proc)):
+            from tinyagentos.app import create_app
 
-        app = create_app(data_dir=data_dir)
-        async with app.router.lifespan_context(app):
-            agents = app.state.config.agents
-            assert agents[0]["soul_md"] == ""
-            assert agents[0]["memory_plugin"] == "taosmd"
-            assert agents[0]["migrated_to_v2_personas"] is False
-            assert agents[0]["display_name"] == "legacy"
-            assert calls == ["legacy"]
+            app = create_app(data_dir=data_dir)
+            async with app.router.lifespan_context(app):
+                agents = app.state.config.agents
+                assert agents[0]["soul_md"] == ""
+                assert agents[0]["memory_plugin"] == "taosmd"
+                assert agents[0]["migrated_to_v2_personas"] is False
+                assert agents[0]["display_name"] == "legacy"
+                assert calls == ["legacy"]
 
 
 @pytest.mark.asyncio
@@ -62,17 +77,20 @@ async def test_migration_is_idempotent_across_restarts(tmp_path, monkeypatch):
             raise AgentExistsError(f"{name} already registered")
 
     with patch("taosmd.agents.AgentRegistry.register_agent", side_effect=_register):
-        from tinyagentos.app import create_app
+        # Mock the taosmd migrate probe to return exit 0 (current store)
+        fake_proc = _make_fake_proc(0, json.dumps({"status": "current"}))
+        with patch("asyncio.create_subprocess_exec", new=AsyncMock(return_value=fake_proc)):
+            from tinyagentos.app import create_app
 
-        # First startup
-        app = create_app(data_dir=data_dir)
-        async with app.router.lifespan_context(app):
-            agents_first = [dict(a) for a in app.state.config.agents]
+            # First startup
+            app = create_app(data_dir=data_dir)
+            async with app.router.lifespan_context(app):
+                agents_first = [dict(a) for a in app.state.config.agents]
 
-        # Second startup (config has been persisted with persona fields)
-        app2 = create_app(data_dir=data_dir)
-        async with app2.router.lifespan_context(app2):
-            agents_second = [dict(a) for a in app2.state.config.agents]
+            # Second startup (config has been persisted with persona fields)
+            app2 = create_app(data_dir=data_dir)
+            async with app2.router.lifespan_context(app2):
+                agents_second = [dict(a) for a in app2.state.config.agents]
 
     assert agents_first[0]["soul_md"] == agents_second[0]["soul_md"]
     assert agents_first[0]["memory_plugin"] == agents_second[0]["memory_plugin"]

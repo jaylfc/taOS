@@ -57,13 +57,16 @@ class _FakeHttpClient:
 
 
 def _fake_request(resp=None, exc=None, memory_url="http://localhost:7900",
-                  taosmd_dir="", taosmd_restart_cmd=""):
+                  taosmd_dir="", taosmd_restart_cmd="", data_dir=None):
     config = types.SimpleNamespace(
         memory_url=memory_url,
         taosmd_dir=taosmd_dir,
         taosmd_restart_cmd=taosmd_restart_cmd,
     )
-    state = types.SimpleNamespace(config=config, http_client=_FakeHttpClient(resp, exc))
+    if data_dir is None:
+        import tempfile
+        data_dir = tempfile.mkdtemp()
+    state = types.SimpleNamespace(config=config, http_client=_FakeHttpClient(resp, exc), data_dir=data_dir)
     return types.SimpleNamespace(app=types.SimpleNamespace(state=state))
 
 
