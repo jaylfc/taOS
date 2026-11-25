@@ -12,7 +12,10 @@ ColumnLayout {
     readonly property var tak: Survival.tak
     spacing: 0
     // the channels of the connected radios are conversations too: ask each radio for them
-    Component.onCompleted: { for (const r of tak.radios) tak.requestConfig(r.id) }
+    property var asked: ({})
+    function askRadios() { for (const r of tak.radios) if (!asked[r.id]) { asked[r.id] = true; tak.requestConfig(r.id) } }
+    Component.onCompleted: askRadios()
+    Connections { target: root.tak; function onChanged() { root.askRadios() } }
     NetworkFilter { Layout.fillWidth: true; Layout.margins: Look.space3; Layout.bottomMargin: 0 }
     C.ScrollView {
         Layout.fillWidth: true; Layout.fillHeight: true
