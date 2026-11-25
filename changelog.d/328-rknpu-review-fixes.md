@@ -1,0 +1,3 @@
+### Fixed
+
+- **Pi-NPU review fixes (#328, #4503)** — `install-rknpu.sh --runtime-only` again pulls the three shared memory preload models (embedding, reranker, query expansion) after the librknnrt pin: they are `.rkllm` artefacts only rkllama can serve, their catalog manifests carry no rkllm variant, and nothing else pulls them, so fresh installs no longer end up with no memory models. The setup checklist's NPU step again completes when a live rkllama answers (not only rk-llama.cpp), so existing installs are not re-prompted for the new default backend; the wizard's one-tap still installs rk-llama.cpp only.

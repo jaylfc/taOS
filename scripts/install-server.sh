@@ -23,7 +23,7 @@
 #     TAOS_BUS_PORT             taosmd A2A bus port (default: 7900); used only to open the firewall rule
 #     TAOS_SERVICE              install as system service: auto (default), system, user, skip
 #     TAOS_SKIP_QMD             if set, skip qmd.service install (useful for boxes without a model backend)
-#     TAOS_RKNPU_SETUP          if set to 1, auto-run install-rknpu.sh when RKNPU is detected but rkllama is missing
+#     TAOS_RKNPU_SETUP          if set to 1, auto-run the NPU setup when RKNPU is detected but rk-llama.cpp is missing
 #     TAOS_HAILO_SETUP          set to 1/true to auto-run install-hailo.sh when a Hailo-10H is detected
 #     TAOS_FORCE_HAILO          set to 1/true to force the Hailo-10H branch on bench boxes without /dev/hailo0
 #     TAOS_NO_HAILO             if set to 1/true, skip the hailo-ollama auto-install on Hailo-10H hosts
@@ -669,35 +669,36 @@ detect_and_advise_accelerators() {
     fi
     if (( rknpu_present )); then
         found_any=1
-        # rkllama might be installed as a top-level command, or as a
-        # venv-local entrypoint under ~/rkllama/rkllama-env/bin. Check
-        # both — the install-rknpu.sh layout uses the venv path.
-        local rkllama_found=0
-        if command -v rkllama >/dev/null 2>&1; then
-            rkllama_found=1
-        elif [[ -x "$HOME/rkllama/rkllama-env/bin/rkllama_server" ]]; then
-            rkllama_found=1
+        # Since #328 (PR-B) rk-llama.cpp is the default NPU backend: its
+        # install layout puts llama-server under ~/rk-llama.cpp/bin
+        # (TAOS_RKLLAMACPP_DIR overrides the dir). rkllama is lazy now —
+        # no longer installed by default; the Store resolver chains its
+        # install when the user picks an .rkllm model.
+        local rkllamacpp_dir="${TAOS_RKLLAMACPP_DIR:-$HOME/rk-llama.cpp}"
+        local rkllamacpp_found=0
+        if [[ -x "$rkllamacpp_dir/bin/llama-server" ]]; then
+            rkllamacpp_found=1
         fi
-        if (( rkllama_found )); then
-            log "rknpu: device present + rkllama backend installed"
+        if (( rkllamacpp_found )); then
+            log "rknpu: device present + rk-llama.cpp backend installed"
         else
-            log "Rockchip NPU detected — auto-installing the jaylfc/rkllama backend"
-            log "  (set TAOS_NO_RKNPU=1 to skip, or run install-rknpu.sh manually later)"
-            log "  fork: https://github.com/jaylfc/rkllama"
+            log "Rockchip NPU detected — auto-installing the rk-llama.cpp backend"
+            log "  (set TAOS_NO_RKNPU=1 to skip, or run install-rk-llama-cpp.sh manually later)"
+            log "  upstream: https://github.com/invisiofficial/rk-llama.cpp"
             # Chained auto-install on by default for RK3588 hosts: if the
-            # NPU is present and rkllama isn't installed yet, set up our
-            # fork now so rkllama is already serving (port 7833) before the
-            # controller systemd unit lands. Opt-out via TAOS_NO_RKNPU=1.
+            # NPU is present and rk-llama.cpp isn't installed yet, set it
+            # up now so the default backend is ready before the controller
+            # systemd unit lands. Opt-out via TAOS_NO_RKNPU=1.
             if [[ "${TAOS_NO_RKNPU:-}" == "1" || "${TAOS_NO_RKNPU:-}" == "true" ]]; then
-                warn "TAOS_NO_RKNPU=1 — skipping rkllama install; controller will run CPU-only on this NPU box"
-                warn "  to set up later: sudo bash scripts/install-rknpu.sh"
+                warn "TAOS_NO_RKNPU=1 — skipping rk-llama.cpp install; controller will run CPU-only on this NPU box"
+                warn "  to set up later: sudo bash scripts/install-rknpu.sh --yes --runtime-only && sudo bash scripts/install-rk-llama-cpp.sh"
             else
                 # Defer the actual install to after the repo clone — the
-                # script we need lives at $INSTALL_DIR/scripts/install-rknpu.sh
-                # and that path doesn't exist on this very first detection
-                # pass. install_rknpu_if_pending below picks this up.
+                # scripts we need live at $INSTALL_DIR/scripts/ and that
+                # path doesn't exist on this very first detection pass.
+                # install_rknpu_if_pending below picks this up.
                 RKNPU_PENDING_INSTALL=1
-                log "rkllama install deferred until after repo clone"
+                log "rk-llama.cpp install deferred until after repo clone"
             fi
         fi
     fi
@@ -768,21 +769,43 @@ detect_and_advise_accelerators() {
 # Run the deferred rknpu auto-install once the repo is on disk. Called
 # after `git clone $INSTALL_DIR`. Skips if no NPU was detected up front
 # or if the user opted out via TAOS_NO_RKNPU=1.
+#
+# Since #328 (PR-B) the default NPU backend is rk-llama.cpp, so the
+# chain is: (1) pin the librknnrt runtime via install-rknpu.sh
+# --runtime-only (rk-llama.cpp's installer refuses to run without
+# /usr/lib/librknnrt.so, and the pin is the one piece of the old stack
+# the new default still needs; the same step also pulls the three
+# shared memory preload models, which nothing else pulls or serves —
+# #4503 Q1), then (2) install rk-llama.cpp itself.
+# rkllama is NOT installed here anymore — it is lazy and chains in via
+# the Store resolver when an .rkllm model is picked.
 install_rknpu_if_pending() {
     if [[ "${RKNPU_PENDING_INSTALL:-0}" != "1" ]]; then
         return 0
     fi
     local rknpu_script="$INSTALL_DIR/scripts/install-rknpu.sh"
-    # We invoke via `bash "$rknpu_script"`, so executable bit isn't
+    local rkllamacpp_script="$INSTALL_DIR/scripts/install-rk-llama-cpp.sh"
+    # We invoke via `bash "<script>"`, so executable bit isn't
     # required — only readable. Per CodeRabbit nit on #405.
     if [[ ! -f "$rknpu_script" || ! -r "$rknpu_script" ]]; then
-        warn "install-rknpu.sh missing or unreadable at $rknpu_script — skipping rkllama auto-install"
-        warn "  to set up rkllama later: sudo bash $INSTALL_DIR/scripts/install-rknpu.sh"
+        warn "install-rknpu.sh missing or unreadable at $rknpu_script — skipping NPU runtime pin"
+        warn "  to set up the NPU runtime later: sudo bash $INSTALL_DIR/scripts/install-rknpu.sh --runtime-only"
         return 0
     fi
-    log "chaining into $rknpu_script (rkllama auto-install)"
-    sudo -E bash "$rknpu_script" --yes \
-        || warn "install-rknpu.sh failed — continuing controller install anyway"
+    log "chaining into $rknpu_script --runtime-only (librknnrt pin + memory preloads for rk-llama.cpp)"
+    if ! sudo -E bash "$rknpu_script" --yes --runtime-only; then
+        warn "install-rknpu.sh --runtime-only failed — skipping rk-llama.cpp install (it needs the pinned librknnrt)"
+        warn "  to retry: sudo bash $rknpu_script --yes --runtime-only && sudo bash $rkllamacpp_script"
+        return 0
+    fi
+    if [[ ! -f "$rkllamacpp_script" || ! -r "$rkllamacpp_script" ]]; then
+        warn "install-rk-llama-cpp.sh missing or unreadable at $rkllamacpp_script — skipping rk-llama.cpp auto-install"
+        warn "  to set up rk-llama.cpp later: sudo bash $INSTALL_DIR/scripts/install-rk-llama-cpp.sh"
+        return 0
+    fi
+    log "chaining into $rkllamacpp_script (rk-llama.cpp auto-install)"
+    sudo -E bash "$rkllamacpp_script" \
+        || warn "install-rk-llama-cpp.sh failed — continuing controller install anyway"
 }
 
 # Run the deferred hailo auto-install once the repo is on disk. Called

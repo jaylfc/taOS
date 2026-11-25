@@ -148,8 +148,11 @@ async def _default_backend_running(accel: str) -> bool:
 async def _npu_backend_running() -> bool:
     """True if either NPU LLM backend (rkllama or rk-llama.cpp) is live.
 
-    Installing either one from the Store satisfies the checklist step —
-    they're alternative backends for the same NPU, not a matched pair.
+    Since #328 (PR-B) rk-llama.cpp is the default backend for NEW
+    installs and the one-tap below installs it alone — but detection
+    accepts either backend: they are alternatives for the same NPU, and
+    a live rkllama on an existing install satisfies the step (the issue
+    keeps existing installs as they are; jaylfc's #4503 review).
     """
     global _npu_probe_cache
     now = time.monotonic()
@@ -187,13 +190,14 @@ async def setup_status(request: Request):
       has_agent       — at least one deployed agent exists
       memory_enabled  — user completed the taOSmd memory setup wizard
       npu_present     — a Rockchip NPU was detected on this board (#1535)
-      npu_backend_running — a live rkllama OR rk-llama.cpp answers locally
+      npu_backend_running — a live rk-llama.cpp (the default NPU backend
+                         since #328) answers locally
       accel           — this device's default-local-backend accelerator:
                          "rknpu"|"cuda"|"rocm"|"metal"|"cpu"|"none". "none"
                          means no one-tap backend step is shown (e.g. Intel
                          Arc / Mali have none yet).
       default_backend_running — the accel-appropriate backend answers
-                         locally (rkllama/rk-llama.cpp probes for "rknpu",
+                         locally (rk-llama.cpp probe for "rknpu",
                          llama.cpp server /health for the other four)
       dismissed       — user dismissed the checklist
       complete        — has_provider AND taos_model_set (the core two steps)
@@ -229,8 +233,10 @@ async def setup_status(request: Request):
     dismissed = bool(setup_prefs.get("dismissed", False))
 
     # NPU-conditional step (#1535): on a Rockchip board the checklist offers
-    # the rkllama backend install (via the Store), complete once a live
-    # rkllama answers. Boards without an NPU never see the step.
+    # the rk-llama.cpp backend install (via the Store), complete once a
+    # live NPU backend answers — rk-llama.cpp (the #328 default for new
+    # installs) or rkllama (kept on existing installs; #4503). Boards
+    # without an NPU never see the step.
     profile = getattr(request.app.state, "hardware_profile", None)
     npu = getattr(profile, "npu", None)
     npu_present = bool(npu is not None and getattr(npu, "type", "none") == "rknpu")
@@ -277,23 +283,30 @@ async def setup_dismiss(request: Request):
 
 @router.post("/api/setup/install-npu-backend")
 async def install_npu_backend(request: Request):
-    """One-tap install of the NPU LLM backend SERVERS (rkllama + rk-llama.cpp).
+    """One-tap install of the default NPU LLM backend SERVER (rk-llama.cpp).
 
-    Runs each backend's Store install script via the same privileged
-    ScriptInstaller path the Store itself uses (creates/enables/starts the
-    systemd unit and health-gates on the service actually answering before
-    the script exits 0 — see scripts/install-rknpu.sh and
-    scripts/install-rk-llama-cpp.sh). Idempotent: re-running is safe and
-    self-heals a half-installed box, exactly like re-clicking Install in
-    the Store.
+    Runs the backend's Store install script via the same privileged
+    ScriptInstaller path the Store itself uses (creates the systemd unit
+    and health-gates on the service actually answering before the script
+    exits 0 — see scripts/install-rk-llama-cpp.sh). Idempotent: re-running
+    is safe and self-heals a half-installed box, exactly like re-clicking
+    Install in the Store.
 
-    Deliberately scoped to just these two permissively-licensed
-    (Apache-2.0 / MIT) LLM-runtime servers — this is the user's one
-    explicit tap of consent for exactly those two installs, nothing more.
-    No models are pulled here (those go through the existing per-model
-    Store flow with their own license acceptance) and the AGPL RK NPU
-    image-gen stack is never touched by this endpoint. Only meaningful on
-    a Rockchip NPU board — 400 otherwise.
+    rkllama is deliberately NOT installed here: since #328 (PR-B) it is
+    a lazy backend — the Store's manifest resolver chains its install
+    (confirm-then-chain) when the user picks an .rkllm model, and only
+    then. The librknnrt 2.3.0 runtime pin rk-llama.cpp needs is
+    established inside scripts/install-rk-llama-cpp.sh itself (it chains
+    the sibling install-rknpu.sh --runtime-only before installing), so
+    this endpoint inherits the pin without a separate privileged step. Deliberately scoped to just this one permissively-licensed
+    (MIT) LLM-runtime server — this is the user's one explicit tap of
+    consent for exactly that install, nothing more. No chat models are
+    pulled here (those go through the existing per-model Store flow with
+    their own license acceptance); the chained runtime step does fetch
+    the three shared memory preloads, which are part of the NPU runtime
+    install itself (#4503 Q1). The AGPL RK NPU image-gen stack is never
+    touched by this endpoint. Only meaningful on a Rockchip NPU board —
+    400 otherwise.
     """
     profile = getattr(request.app.state, "hardware_profile", None)
     npu = getattr(profile, "npu", None)
@@ -318,7 +331,8 @@ async def install_npu_backend(request: Request):
         request.app.state._background_tasks = bg_tasks
 
     backends: dict[str, dict] = {}
-    for backend_app_id in ("rkllama", "rk-llama-cpp"):
+    # #328: rk-llama.cpp only — rkllama is lazy (see docstring above).
+    for backend_app_id in ("rk-llama-cpp",):
         manifest = registry.get(backend_app_id) if hasattr(registry, "get") else None
         if manifest is None:
             backends[backend_app_id] = {

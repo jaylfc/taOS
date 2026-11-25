@@ -8,8 +8,8 @@
 #
 # Requirements:
 #   * RK3588 board (Orange Pi 5 / 5+ / 5 Max etc)
-#   * librknnrt.so installed at /usr/lib/librknnrt.so (install-rknpu.sh
-#     does this; running this script before that will fail)
+#   * librknnrt.so at /usr/lib/librknnrt.so — pinned automatically via
+#     the sibling install-rknpu.sh --runtime-only when available (#328)
 #
 # Environment overrides:
 #   TAOS_RKLLAMACPP_DIR     install dir (default: ~<user>/rk-llama.cpp)
@@ -65,6 +65,21 @@ run_as_user() {
 
 # -------- precondition checks --------------------------------------------
 [[ "$(uname -m)" == "aarch64" ]] || die "rk-llama.cpp is aarch64-only (got $(uname -m))"
+# librknnrt: rk-llama.cpp links the system runtime, pinned to 2.3.0 by
+# install-rknpu.sh. Since #328 that pin is no longer a side effect of a
+# default rkllama install, so establish it here, at the one point every
+# install path (Store, setup-wizard one-tap, manual) flows through:
+# chain the sibling installer's runtime-only mode (idempotent — the
+# pin and the memory-preload pulls are checksum-verified skips when
+# already in place). If the sibling script
+# isn't available (this file copied standalone), fall back to the
+# historical existence check with its actionable error.
+_rknpu_script="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/install-rknpu.sh"
+if [[ -f "$_rknpu_script" ]]; then
+    log "ensuring the pinned librknnrt runtime via install-rknpu.sh --runtime-only"
+    sudo -E bash "$_rknpu_script" "${1:-$(pwd)}" --yes --runtime-only \
+        || die "librknnrt runtime pin failed — run sudo bash install-rknpu.sh --runtime-only manually"
+fi
 [[ -f /usr/lib/librknnrt.so ]] || die "librknnrt.so missing — run install-rknpu.sh first"
 command -v sha256sum >/dev/null || die "sha256sum not found — install coreutils"
 

@@ -339,4 +339,46 @@ set -e
 rm -f "$tmp_src" "$tmp_dst"
 [ "$actual_mode" = "644" ]
 
+# ── RK3588 NPU default backend (#328 PR-B) ─────────────────────────
+# New Pi-NPU installs default to rk-llama.cpp; rkllama is lazy (Store
+# resolver chains it when an .rkllm model is picked).
+
+echo "test: install-rknpu.sh syntax"
+bash -n scripts/install-rknpu.sh
+
+echo "test: install-rk-llama-cpp.sh syntax"
+bash -n scripts/install-rk-llama-cpp.sh
+
+echo "test: rknpu detection keys on the rk-llama.cpp binary, not rkllama"
+grep -q 'TAOS_RKLLAMACPP_DIR' "$SCRIPT"
+grep -q 'bin/llama-server' "$SCRIPT"
+
+echo "test: deferred NPU install chains install-rk-llama-cpp.sh"
+grep -q 'install-rk-llama-cpp.sh' "$SCRIPT"
+
+echo "test: deferred NPU install pins the runtime via install-rknpu.sh --runtime-only"
+grep -q 'install-rknpu.sh.*--runtime-only' "$SCRIPT"
+
+echo "test: install-rknpu.sh supports --runtime-only (pin librknnrt, skip rkllama)"
+grep -q -- '--runtime-only' scripts/install-rknpu.sh
+
+echo "test: rk-llama.cpp installer establishes the librknnrt pin itself"
+grep -q 'install-rknpu.sh.*--runtime-only' scripts/install-rk-llama-cpp.sh
+
+echo "test: TAOS_NO_RKNPU manual-setup hint includes the runtime pin"
+grep -q 'install-rknpu.sh --yes --runtime-only && sudo bash scripts/install-rk-llama-cpp.sh' "$SCRIPT"
+
+echo "test: deferred-install retry hint passes --yes to the runtime pin"
+grep -q 'rknpu_script --yes --runtime-only' "$SCRIPT"
+
+echo "test: runtime-only install still pulls the three memory preload models (#4503 Q1)"
+# Nothing else pulls or serves the .rkllm memory preloads (embedding,
+# reranker, query expansion) on a fresh install — their catalog
+# manifests carry no rkllm variant and rk-llama.cpp cannot load .rkllm —
+# so the --runtime-only branch must run pull_models after the pin.
+awk '/if \(\( runtime_only \)\); then/,/exit 0/' scripts/install-rknpu.sh | grep -q 'pull_models'
+
+echo "test: runtime-only install does not install rkllama or its systemd unit"
+! awk '/if \(\( runtime_only \)\); then/,/exit 0/' scripts/install-rknpu.sh | grep -q 'install_rkllama\|install_systemd_unit'
+
 echo "all tests passed"

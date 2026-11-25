@@ -311,6 +311,21 @@ runs setup. `/auth/setup` remains the no-JS fallback. API callers still receive
 hitting an API before setup should treat `onboarding_required` as "no owner yet",
 not as an expired session.
 
+**The setup checklist's NPU step accepts either live NPU backend (#328).**
+On a Rockchip board, `GET /api/setup/status` reports `npu_backend_running`
+from the rk-llama.cpp and rkllama probes — rk-llama.cpp is the default NPU
+backend for new installs since PR-B, but a live rkllama on an existing
+install also completes the step (existing installs stay as they are;
+jaylfc's #4503 review). `POST /api/setup/install-npu-backend` installs
+only the `rk-llama-cpp` catalog entry; rkllama is never installed by the
+wizard and chains in via the Store resolver when an `.rkllm` model is
+picked. The dispatched `scripts/install-rk-llama-cpp.sh` establishes the
+pinned librknnrt 2.3.0 runtime first (via the sibling
+`install-rknpu.sh --runtime-only` — which also pulls the three shared
+memory preload models, since nothing else pulls or serves those `.rkllm`
+artefacts), so the one-tap works on boards where the runtime was never
+pinned.
+
 **A malformed JSON body to an auth route is a 400, not a 500.** `request.json()`
 happily parses `null`, `[]`, `1` and `"x"` - all valid JSON, none of them an
 object - and the `body.get()` that follows then raises `AttributeError`. Six
