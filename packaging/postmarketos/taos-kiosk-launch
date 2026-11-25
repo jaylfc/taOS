@@ -59,6 +59,13 @@ while [ "$i" -lt 60 ]; do
     sleep 1
 done
 
+# The start URL carries a one-time console ticket (taos-console-url), so the
+# page is recognised as this device's own screen. Without one it opens the
+# sign-in page flagged console_missing, which says so.
+CONSOLE_URL_TOOL="$(dirname "$0")/taos-console-url"
+[ -x "$CONSOLE_URL_TOOL" ] || CONSOLE_URL_TOOL="/usr/local/bin/taos-console-url"
+START_URL="$("$CONSOLE_URL_TOOL" "$TAOS_URL" 2>/dev/null || echo "$TAOS_URL/auth/login?console_missing=1")"
+
 BROWSER_ARGS="--ozone-platform=wayland \
 --kiosk \
 --no-first-run \
@@ -67,7 +74,7 @@ BROWSER_ARGS="--ozone-platform=wayland \
 --disable-pinch \
 --overscroll-history-navigation=0 \
 --user-data-dir=/var/lib/taos-kiosk/chrome \
---app=$TAOS_URL"
+--app=$START_URL"
 
 if [ "$COMPOSITOR_KIND" = "sway" ]; then
     [ -r "$SWAY_CONF" ] || { echo "taos-kiosk: $SWAY_CONF missing" >&2; exit 1; }

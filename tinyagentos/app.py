@@ -551,6 +551,12 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
     async def lifespan(app: FastAPI):
         # Arm the startup guard: block non-exempt requests until init completes.
         app.state._startup_complete = False
+        # No session signed in at the device's own screen before this start
+        # survives it.
+        try:
+            app.state.auth.revoke_console_sessions()
+        except Exception:  # noqa: BLE001
+            logger.exception("could not end console sessions at startup")
         await agent_registry_store.init()
         await auth_requests_store.init()
         await password_reset_store.init()
