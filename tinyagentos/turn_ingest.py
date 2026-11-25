@@ -184,6 +184,14 @@ class TurnIngestQueue(BaseStore):
             self.wake.set()
         return cur.rowcount
 
+    async def revert_to_pending(self, key: str) -> None:
+        """Put a row whose send was cancelled (never confirmed) back in the queue."""
+        assert self._db is not None
+        await self._db.execute(
+            "UPDATE turn_ingest SET state = 'pending' WHERE key = ? AND state = 'inflight'",
+            (key,))
+        await self._db.commit()
+
     async def mark_done(self, key: str) -> None:
         assert self._db is not None
         await self._db.execute(
@@ -299,6 +307,11 @@ class TurnIngestWorker:
             await self.queue.mark_inflight(item["key"])
             try:
                 await self.send(item["shelf"], item["turn"], item["key"])
+            except asyncio.CancelledError:
+                # Shutdown mid-send: nothing confirmed it was delivered, so the
+                # turn goes back in the queue instead of being left in flight.
+                await asyncio.shield(self.queue.revert_to_pending(item["key"]))
+                raise
             except Exception as exc:
                 state = await self.queue.mark_attempt_failed(
                     item["key"], item["attempts"], f"{type(exc).__name__}: {exc}")

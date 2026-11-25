@@ -614,3 +614,34 @@ async def test_backfill_legacy_user_turns_follow_only_a_single_person_install(cl
     result, shelves = await run("multi")  # several people: do not guess whose it was
     assert user_namespace(me) not in shelves and "agent-a" in shelves
     assert result["legacy_user_skipped"] == 1
+
+
+@pytest.mark.asyncio
+async def test_stop_during_a_send_keeps_the_turn_for_the_next_start(tmp_path, monkeypatch):
+    from tinyagentos import turn_ingest as ti
+    monkeypatch.setattr(ti, "source_id_dedup_supported", lambda: False)  # taosmd 0.5.24
+    q = ti.TurnIngestQueue(tmp_path / "q.db")
+    await q.init()
+    await q.enqueue("chat:1|agent-a", "agent-a", {"role": "user", "content": "keep me"})
+    started = asyncio.Event()
+
+    async def hanging_send(shelf, turn, source_id):
+        started.set()
+        await asyncio.sleep(3600)
+
+    w = ti.TurnIngestWorker(q, hanging_send, rate_per_sec=0)
+    w.start()
+    await asyncio.wait_for(started.wait(), 5)
+    await w.stop()  # shutdown cancels the send; it was never confirmed
+    assert (await q.counts())["pending"] == 1
+
+    sent = []
+
+    async def send(shelf, turn, source_id):
+        sent.append(turn["content"])
+
+    w2 = ti.TurnIngestWorker(q, send, rate_per_sec=0)  # the restart
+    await w2.recover_inflight()
+    await w2.drain_once()
+    assert sent == ["keep me"] and (await q.counts())["done"] == 1
+    await q.close()
