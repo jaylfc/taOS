@@ -185,7 +185,7 @@ async def test_unregister_unknown_worker(client, app):
 
 @pytest.mark.asyncio
 async def test_unregister_with_local_token_403(local_token_client, client, app):
-    """Local token must be rejected for deregister — only admin session is allowed."""
+    """Local token must be rejected for deregister - only admin session is allowed."""
     await app.state.cluster_pairing.init()
     # First pair a worker using the admin client
     key = await pair_worker(client, app, "local-token-worker", "http://10.0.0.2:9000")

@@ -119,7 +119,7 @@ def _resolve_safe_child(workspace: Path, subpath: str) -> Path | None:
     """Like ``_resolve_safe`` but also refuse the workspace root itself.
 
     Every destructive or mutating operation (delete) must resolve to a
-    *child* of the workspace — ``_resolve_safe`` alone accepts the base, which
+    *child* of the workspace - ``_resolve_safe`` alone accepts the base, which
     let a ``DELETE /api/projects/{slug}/files/`` (empty path, ``.``, ``%2e``,
     ``sub/..``) move the whole files folder into the trash. Listing the base
     stays allowed, so callers that only read use ``_resolve_safe``.

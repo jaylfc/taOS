@@ -36,7 +36,7 @@ _update_jobs: dict[str, dict] = {}
 # local token (via auth_context.require_admin). Routes using _ADMIN:
 #   POST /api/cluster/route, POST /api/cluster/workers/{name}/deploy,
 #   POST /api/cluster/workers/{name}/remote, POST /api/cluster/promote-archived.
-# Individual handlers that use _require_admin (from routes.auth) —
+# Individual handlers that use _require_admin (from routes.auth) -
 # admin-only, no local token: unregister_worker, revoke/block/unblock,
 # drain, cancel-drain, update-worker, update-all.
 _ADMIN = [Depends(require_admin)]
@@ -668,7 +668,7 @@ async def worker_heartbeat(request: Request, body: HeartbeatBody):
 
 @router.delete("/api/cluster/workers/{name}")
 async def unregister_worker(request: Request, name: str):
-    # Admin check — only admin session, no local token
+    # Admin check - only admin session, no local token
     ok, err = _require_admin(request)
     if not ok:
         return err

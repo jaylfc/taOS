@@ -285,7 +285,7 @@ async def check_agent_identity(request: Request) -> Optional[str]:
     """Return the canonical_id from a valid Bearer registry JWT for an ACTIVE
     agent, without requiring any scope grant.
 
-    This proves only *who* the caller is, not *what* it may do — the caller is
+    This proves only *who* the caller is, not *what* it may do - the caller is
     responsible for the authorization decision (e.g. only allowing an agent to
     act on its OWN canonical_id).  It is used by the scope-request create flow,
     where an already-registered agent asks for MORE scopes: it must not need a

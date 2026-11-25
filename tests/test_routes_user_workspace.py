@@ -287,7 +287,7 @@ class TestUserWorkspaceRoutes:
 
 class TestRootDeleteRefused:
     """A DELETE whose path resolves to the workspace root itself must never
-    move the whole workspace into the trash — it must return 400 and leave
+    move the whole workspace into the trash - it must return 400 and leave
     the root and its contents intact."""
 
     @pytest.mark.asyncio
@@ -317,7 +317,7 @@ class TestRootDeleteRefused:
         ``""``, ``%2e`` and ``sub%2F..`` reach the DELETE handler and are a
         400; ``.`` and ``sub/..`` are collapsed by the HTTP client to the bare
         root path, which the route layer rejects as 405 (method not allowed on
-        the GET route) — the root is never trashed either way.
+        the GET route) - the root is never trashed either way.
         """
         await self._seed(client)
         resp = await client.delete(f"/api/workspace/files/{bad_path}")

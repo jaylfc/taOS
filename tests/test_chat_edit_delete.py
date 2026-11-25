@@ -215,7 +215,7 @@ async def test_edit_truncates_subsequent_messages(tmp_path):
             m2_id = m2["id"]
             m3_id = m3.json()["id"]
 
-            # Edit m1 — this should soft-delete m2 and m3
+            # Edit m1 - this should soft-delete m2 and m3
             r = await client.patch(
                 f"/api/chat/messages/{m1_id}", json={"content": "first-edited"},
             )

@@ -153,7 +153,7 @@ async def test_stats_after_upload(client):
 
 class TestProjectRootDeleteRefused:
     """A DELETE whose path resolves to the project files root itself must never
-    move the whole folder into the trash — it must return 400 and leave the
+    move the whole folder into the trash - it must return 400 and leave the
     root and its contents intact."""
 
     @pytest.mark.asyncio
@@ -182,7 +182,7 @@ class TestProjectRootDeleteRefused:
 
         ``""``, ``%2e`` and ``sub%2F..`` reach the DELETE handler and are a
         400; ``.`` and ``sub/..`` are collapsed by the HTTP client to the bare
-        root path, which the route layer rejects as 405 — the root is never
+        root path, which the route layer rejects as 405 - the root is never
         trashed either way.
         """
         await self._seed(client, "delroot")
