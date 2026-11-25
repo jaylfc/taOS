@@ -584,6 +584,19 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
             )
         except Exception:
             logger.exception("native agent identity could not be ensured at startup")
+        # Memory shelf grants for agents deployed before shelf grants existed:
+        # each active agent gets its own shelf, so its memory keeps working
+        # once the memory service enforces shelf access.  Idempotent, never fatal.
+        try:
+            from tinyagentos.shelf_grants import backfill_agent_shelf_grants
+
+            _added = await backfill_agent_shelf_grants(
+                agent_grants_store, agent_registry_store, list(getattr(config, "agents", None) or [])
+            )
+            if _added:
+                logger.info("memory shelf grants added for %d existing agent(s)", _added)
+        except Exception as exc:
+            logger.error("memory shelf grant backfill failed (%s)", type(exc).__name__)
         await user_shares_store.init()
         app.state.user_shares = user_shares_store
         await app_grants_store.init()

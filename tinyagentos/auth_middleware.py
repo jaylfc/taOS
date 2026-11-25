@@ -108,6 +108,9 @@ _AGENT_TOKEN_PATHS = (
     | frozenset({
         "/api/agents/me/models",
         "/api/agents/me/model",
+        # An agent renews its own token here, so a token that has just lapsed
+        # must reach the route (which verifies it with a grace period).
+        "/api/agents/registry/refresh-token",
         "/api/desktop/command",
         "/api/desktop/screenshot",
         "/api/desktop/layout",

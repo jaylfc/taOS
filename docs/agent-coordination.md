@@ -2147,3 +2147,24 @@ The agent's own A2A identity token (`.taos_agent_token`) is a2a-only
 (scope `a2a_send` + `a2a_receive`) and covers none of the above endpoints.
 Leaving PicoClaw, or any controller start into opencode, revokes the old
 credential and mints a fresh one.
+
+## Token lifetime and renewal
+
+An agent's registry token expires 30 days after it is issued. Before it lapses
+(or up to 14 days after), the agent renews it with its own token:
+
+    POST /api/agents/registry/refresh-token
+    Authorization: Bearer <current token>
+    -> {"token": "...", "expires_at": <unix>, "canonical_id": "..."}
+
+The new token is for the same identity. The token the agent is running with is
+not retired, so renewing never interrupts a running agent. A token that was
+superseded by a rotation, belongs to a suspended identity, or lapsed more than
+14 days ago cannot renew; ask the owner to rotate it. Tokens issued before this
+change carry no expiry and keep working; they gain one at their next renewal.
+
+## Memory shelves
+
+Each agent may use its own memory shelf (the name it is deployed under) and no
+other. A person can read an agent they own by opting in with
+`PUT /api/agents/{name}/memory-read` (and withdraw with `DELETE`).
