@@ -164,18 +164,51 @@ expect "$SYS/class/devfreq/fdab0000.npu/governor" powersave
 expect "$SYS/devices/system/cpu/cpufreq/policy0/scaling_governor" ondemand
 expect "$SYS/devices/system/cpu/cpufreq/policy4/scaling_governor" powersave
 
-echo "test: start changes no governor when recording the previous value fails"
+echo "test: start fails and changes no governor when recording the previous value fails"
 printf 'rockchip,rk3588\0' > "$COMPAT"
 seed_tree
 rm -rf "$FAKE/run"
 touch "$FAKE/state-blocker"
+rc=0
 TAOS_PERF_SYSFS_ROOT="$SYS" \
 TAOS_PERF_STATE_DIR="$FAKE/state-blocker/state" \
 TAOS_PERF_COMPATIBLE_FILE="$COMPAT" \
-    sh "$SCRIPT" start > /dev/null
+    sh "$SCRIPT" start > /dev/null || rc=$?
+if [ "$rc" -eq 0 ]; then
+    echo "FAIL: start reported success although recording failed" >&2
+    exit 1
+fi
 expect "$SYS/class/devfreq/fdab0000.npu/governor" powersave
 expect "$SYS/devices/system/cpu/cpufreq/policy0/scaling_governor" ondemand
 expect "$SYS/devices/system/cpu/cpufreq/policy4/scaling_governor" powersave
+
+echo "test: stop after that failed start applies the documented per-family fallbacks"
+rc=0
+TAOS_PERF_SYSFS_ROOT="$SYS" \
+TAOS_PERF_STATE_DIR="$FAKE/state-blocker/state" \
+TAOS_PERF_COMPATIBLE_FILE="$COMPAT" \
+    sh "$SCRIPT" stop > /dev/null || rc=$?
+if [ "$rc" -ne 0 ]; then
+    echo "FAIL: stop after a failed start exited $rc" >&2
+    exit 1
+fi
+expect "$SYS/class/devfreq/fdab0000.npu/governor" simple_ondemand
+expect "$SYS/devices/system/cpu/cpufreq/policy0/scaling_governor" schedutil
+
+echo "test: start fails when a governor record cannot be written (record path blocked)"
+seed_tree
+rm -rf "$FAKE/run"
+mkdir -p "$STATE"
+mkdir "$STATE/cpu.policy0"
+rc=0
+run_perf start || rc=$?
+if [ "$rc" -eq 0 ]; then
+    echo "FAIL: start reported success although a record could not be written" >&2
+    exit 1
+fi
+expect "$SYS/devices/system/cpu/cpufreq/policy0/scaling_governor" ondemand
+expect "$SYS/class/devfreq/fdab0000.npu/governor" performance
+rm -rf "$FAKE/run"
 
 echo "test: stop keeps the recorded governor and fails when the restore write fails"
 seed_tree
@@ -192,5 +225,20 @@ if [ "$rc" -eq 0 ]; then
 fi
 expect "$STATE/cpu.policy0" ondemand
 expect "$SYS/class/devfreq/fdab0000.npu/governor" powersave
+
+echo "test: stop keeps the record and fails when the governor path is gone"
+rm -rf "$SYS/devices/system/cpu/cpufreq/policy0/scaling_governor"
+seed_tree
+rm -rf "$FAKE/run"
+run_perf start
+rm "$SYS/class/devfreq/fdab0000.npu/governor"
+rc=0
+run_perf stop || rc=$?
+if [ "$rc" -eq 0 ]; then
+    echo "FAIL: stop reported success although a recorded governor could not be restored" >&2
+    exit 1
+fi
+expect "$STATE/devfreq.fdab0000.npu" powersave
+expect "$SYS/class/devfreq/fd900000.gpu/governor" simple_ondemand
 
 echo "all tests passed"

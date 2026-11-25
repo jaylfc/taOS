@@ -46,15 +46,20 @@ is_rockchip() {
 # value, so a failed recording leaves the governor untouched.
 record_and_set() {
     if [ -w "$1" ]; then
-        if [ ! -s "$2" ]; then
-            cat "$1" > "$2" 2>/dev/null || true
+        if [ ! -f "$2" ] || [ ! -s "$2" ]; then
+            # The copy's exit status is checked, not just the result's
+            # size: a failed copy can leave a non-empty partial record
+            # that a size check alone would accept as the real value.
+            if ! cat "$1" > "$2" 2>/dev/null || [ ! -f "$2" ] || [ ! -s "$2" ]; then
+                rm -f "$2"
+                echo "  $1: could not record current governor — leaving it unchanged" >&2
+                return 1
+            fi
         fi
-        if [ ! -s "$2" ]; then
-            rm -f "$2"
-            echo "  $1: could not record current governor — leaving it unchanged" >&2
+        if ! echo "$3" > "$1" 2>/dev/null; then
+            echo "  $1: could not set governor $3 — recorded value kept" >&2
             return 1
         fi
-        echo "$3" > "$1" 2>/dev/null || true
         echo "  $1: $(cat "$2" 2>/dev/null || echo '?') -> $(cat "$1" 2>/dev/null || echo '?')"
     fi
 }
@@ -64,16 +69,32 @@ record_and_set() {
 # on a failed write it stays, so a later stop retries with the real
 # previous value instead of the fallback, and the failure propagates.
 restore() {
-    if [ -w "$1" ]; then
+    if [ -s "$2" ]; then
+        # A recorded value exists: it must be written back or the
+        # failure reported. A governor path that is gone or not
+        # writable is a failed restore, not a skip — the record stays
+        # for a retry and stop reports the failure.
         prev="$(cat "$2" 2>/dev/null || true)"
         if [ -z "$prev" ]; then
             prev="$3"
         fi
-        if echo "$prev" > "$1" 2>/dev/null; then
+        if [ -w "$1" ] && echo "$prev" > "$1" 2>/dev/null; then
             rm -f "$2"
             echo "  $1: restored $prev"
         else
             echo "  $1: FAILED to restore $prev — recorded value kept" >&2
+            return 1
+        fi
+    elif [ -w "$1" ]; then
+        # Nothing recorded for this domain: the per-family fallback
+        # (unit stopped without a matching start, state dir lost).
+        # No record and no writable path means the domain is simply
+        # absent on this board — nothing to do.
+        if echo "$3" > "$1" 2>/dev/null; then
+            rm -f "$2"
+            echo "  $1: restored $3"
+        else
+            echo "  $1: FAILED to restore $3" >&2
             return 1
         fi
     fi
@@ -101,18 +122,29 @@ do_start() {
     fi
     echo "taos-rk3588-perf: setting performance governors for Rockchip NPU"
     mkdir -p "$STATE_DIR"
+    # A domain whose previous governor could not be recorded (or set)
+    # fails the start as a whole: the unit is oneshot, so a failed
+    # start leaves it inactive and visible instead of half-applied
+    # with a success report. The loops are for-loops, not pipelines,
+    # so the failures reach this shell (a pipeline's while loop runs
+    # in a subshell and its status would be lost).
+    failed=0
     # devfreq: NPU throughput drops ~5x on simple_ondemand; GPU (Mali)
     # Vulkan compute and the DMC (LPDDR bandwidth is the bottleneck for
     # large models) benefit from fixed clocks too.
-    devfreq_domains | while read -r domain; do
-        record_and_set "$domain/governor" "$STATE_DIR/devfreq.$(basename "$domain")" "performance"
+    for domain in $(devfreq_domains); do
+        record_and_set "$domain/governor" "$STATE_DIR/devfreq.$(basename "$domain")" "performance" || failed=1
     done
     # cpufreq: RK3588 big.LITTLE — performance on both clusters; the
     # big cluster (policy4, cpu4-7) is where rkllama.cpp pins its
     # threads via taskset.
-    cpu_policies | while read -r policy; do
-        record_and_set "$policy/scaling_governor" "$STATE_DIR/cpu.$(basename "$policy")" "performance"
+    for policy in $(cpu_policies); do
+        record_and_set "$policy/scaling_governor" "$STATE_DIR/cpu.$(basename "$policy")" "performance" || failed=1
     done
+    if [ "$failed" -ne 0 ]; then
+        echo "taos-rk3588-perf: some governors were not recorded or set — see above" >&2
+        exit 1
+    fi
     echo "taos-rk3588-perf: governors applied"
 }
 
