@@ -26,12 +26,9 @@ Item {
         Accessible.role: Accessible.List
         Accessible.name: qsTr("Pinned apps")
         delegate: AppTile {
-            required property int index
-            required property string appId
-            required property string name
-            required property string icon
-            required property bool hasIcon
-            required property string group
+            required property var model
+            readonly property int index: model.index
+            appId: model.appId; name: model.name; icon: model.icon; hasIcon: model.hasIcon; group: model.group
             width: grid.cellWidth
             height: grid.cellHeight
             selected: Launcher.menu.zone === "pinned" && Launcher.menu.index === index

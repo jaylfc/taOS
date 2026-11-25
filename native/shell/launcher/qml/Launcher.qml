@@ -94,7 +94,7 @@ FocusScope {
             NumberAnimation { duration: 230; easing.type: Easing.OutQuint }
         }
 
-        Glass { anchors.fill: parent; radius: root.fullScreen ? 0 : Math.round((22) * Style.radiusScale); kind: root.fullScreen ? "solid" : Style.dockSurface }
+        Glass { anchors.fill: parent; frame: !root.fullScreen; radius: root.fullScreen ? 0 : Math.round((22) * Style.radiusScale); kind: root.fullScreen ? "solid" : Style.dockSurface }
         MouseArea { anchors.fill: parent; Accessible.ignored: true }   // clicks on the panel do not reach the backdrop
 
         // ------------------------------------------------ search field
@@ -363,7 +363,7 @@ FocusScope {
 
             Item {
                 id: noResults
-                visible: !Launcher.actionsOpen && Launcher.count === 0 && !Launcher.searching && Launcher.query.length > 0
+                visible: !Launcher.actionsOpen && !root.menuOn && Launcher.count === 0 && !Launcher.searching && Launcher.query.length > 0
                 anchors.fill: parent
                 Accessible.role: Accessible.StaticText
                 Accessible.name: qsTr("No results")

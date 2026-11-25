@@ -3,6 +3,8 @@
 
 #include <QDateTime>
 #include <QDir>
+#include <QHash>
+#include <QMutex>
 #include <QFileInfo>
 #include <QProcess>
 #include <QRegularExpression>
@@ -23,6 +25,23 @@ QProcessEnvironment cleanAppEnvironment(const QProcessEnvironment &in) {
     return out;
 }
 
+// Does a transient user scope really start here? (No user manager, a stale XDG_RUNTIME_DIR, a sandbox: it does not, and
+// then the app is started directly rather than not at all.) Asked once per environment, then remembered.
+static bool scopeWorks(const QString &systemdRun, const QProcessEnvironment &env) {
+    static QMutex mu;
+    static QHash<QString, bool> known;
+    const QString key = env.value(QStringLiteral("XDG_RUNTIME_DIR")) + QLatin1Char('|') + env.value(QStringLiteral("DBUS_SESSION_BUS_ADDRESS"));
+    { QMutexLocker l(&mu); const auto it = known.constFind(key); if (it != known.constEnd()) return *it; }
+    QProcess p;
+    p.setProcessEnvironment(env);
+    p.start(systemdRun, { QStringLiteral("--user"), QStringLiteral("--scope"), QStringLiteral("--quiet"), QStringLiteral("--collect"), QStringLiteral("true") });
+    const bool ok = p.waitForFinished(4000) && p.exitStatus() == QProcess::NormalExit && p.exitCode() == 0;
+    if (p.state() != QProcess::NotRunning) { p.kill(); p.waitForFinished(200); }
+    QMutexLocker l(&mu);
+    known.insert(key, ok);
+    return ok;
+}
+
 static QString unitName(const QString &program) {
     QString base = QFileInfo(program).fileName();
     base.replace(QRegularExpression(QStringLiteral("[^A-Za-z0-9_.-]")), QStringLiteral("_"));
@@ -40,7 +59,7 @@ bool launchApp(const QString &program, const QStringList &args, QString *error, 
     QString prog = program;
     QStringList argv = args;
     const QString sd = o.useScope && env.contains(QStringLiteral("XDG_RUNTIME_DIR")) ? QStandardPaths::findExecutable(QStringLiteral("systemd-run")) : QString();
-    if (!sd.isEmpty()) {
+    if (!sd.isEmpty() && scopeWorks(sd, env)) {
         // a transient scope of the person's user manager: the app is not the component's child and has its own cgroup
         argv = { QStringLiteral("--user"), QStringLiteral("--scope"), QStringLiteral("--quiet"), QStringLiteral("--collect"),
                  QStringLiteral("--unit=") + unitName(program), QStringLiteral("--"), program };

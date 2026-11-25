@@ -39,7 +39,17 @@ public:
             for (QQuickItem *c : i->childItems()) walk(c);
         };
         walk(view->rootObject());
+        byIndex.remove(-2);   // the leading apps cell is not a dock item (it is not in the model); appsCell() finds it
         return byIndex.values();
+    }
+    QQuickItem *appsCell() {
+        QQuickItem *found = nullptr;
+        std::function<void(QQuickItem *)> walk = [&](QQuickItem *i) {
+            if (i->property("accessibleText").isValid() && i->metaObject()->indexOfProperty("kbd") >= 0 && i->property("index").toInt() == -2) found = i;
+            for (QQuickItem *c : i->childItems()) walk(c);
+        };
+        walk(view->rootObject());
+        return found;
     }
 private slots:
     void initTestCase() {
@@ -78,7 +88,7 @@ private slots:
             for (QQuickItem *c : i->childItems()) walk(c);
         };
         walk(root);
-        QCOMPARE(buttons.size(), dock->model()->items().size());   // Dock.qml draws one slot per model row
+        QCOMPARE(buttons.size(), dock->model()->items().size() + 1);   // + the apps cell   // Dock.qml draws one slot per model row
         bool found = false;
         for (QQuickItem *b : buttons) if (b->property("accessibleText").toString() == QStringLiteral("Activity, running, 1 window, focused")) found = true;
         QVERIFY(found);
@@ -92,9 +102,13 @@ private slots:
         QTest::keyClick(view, Qt::Key_Right);
         QCOMPARE(root->property("focusIndex").toInt(), 1);
         QTest::keyClick(view, Qt::Key_Left);
+        QTest::keyClick(view, Qt::Key_Left);                           // past the first item: the apps cell
+        QCOMPARE(root->property("focusIndex").toInt(), -2);
         QTest::keyClick(view, Qt::Key_Left);                           // wraps, skipping the separator
         const int last = root->property("focusIndex").toInt();
         QCOMPARE(dock->model()->items()[last].kind, DockItem::Minimised);
+        QTest::keyClick(view, Qt::Key_Right);                          // past the last item: the apps cell again
+        QCOMPARE(root->property("focusIndex").toInt(), -2);
         QTest::keyClick(view, Qt::Key_Right);
         QCOMPARE(root->property("focusIndex").toInt(), 0);
         QTest::keyClick(view, Qt::Key_End);
@@ -102,6 +116,42 @@ private slots:
         QTest::keyClick(view, Qt::Key_Escape);                        // leaves
         QVERIFY(!dock->keyboardActive());
         QCOMPARE(root->property("focusIndex").toInt(), -1);
+    }
+    // ---- the apps cell: the visible way into the app menu, leftmost, in every dock style
+    void appsCellIsLeftmostAndNamed() {
+        QQuickItem *a = appsCell();
+        QVERIFY2(a, "the dock has no apps cell");
+        QVERIFY(a->property("accessibleText").toString().contains("Apps"));
+        for (QQuickItem *b : slotItems()) QVERIFY2(a->mapToScene(QPointF(0, 0)).x() < b->mapToScene(QPointF(0, 0)).x(), "the apps cell must come first");
+        QVERIFY(dock->layout().stripMain >= (slotItems().size() + 1) * 40);   // the strip has room for the cell too
+    }
+    void clickingTheAppsCellOpensTheLauncher() {
+        QStringList spawned, args;
+        dock->setLauncherForTests([&](const QString &p, const QStringList &a) { spawned << p; args << a.join(' '); });
+        QQuickItem *a = appsCell();
+        QVERIFY(a);
+        const QPoint at = a->mapToScene(QPointF(a->width() / 2, a->height() / 2)).toPoint();
+        QTest::mouseClick(view, Qt::LeftButton, Qt::NoModifier, at);
+        QTRY_COMPARE(spawned, QStringList{QStringLiteral("taos-launcher")});
+        QCOMPARE(args, QStringList{QStringLiteral("toggle")});
+        spawned.clear();
+        QTest::mouseClick(view, Qt::RightButton, Qt::NoModifier, at);   // a right click has no menu there and opens nothing
+        QTest::qWait(60);
+        QVERIFY(spawned.isEmpty());
+    }
+    void keyboardReachesTheAppsCellWithHomeAndEnterOpensIt() {
+        QStringList spawned;
+        dock->setLauncherForTests([&](const QString &p, const QStringList &) { spawned << p; });
+        dock->handleCommand(QStringLiteral("focus"));
+        QTest::keyClick(view, Qt::Key_Home);
+        QCOMPARE(view->rootObject()->property("focusIndex").toInt(), -2);
+        QTest::keyClick(view, Qt::Key_Right);                          // on to the first dock item
+        QCOMPARE(view->rootObject()->property("focusIndex").toInt(), 0);
+        QTest::keyClick(view, Qt::Key_Left);                           // and back
+        QCOMPARE(view->rootObject()->property("focusIndex").toInt(), -2);
+        QTest::keyClick(view, Qt::Key_Return);
+        QCOMPARE(spawned, QStringList{QStringLiteral("taos-launcher")});
+        dock->releaseKeyboard();
     }
     void enterActivatesTheFocusedItem() {
         QStringList spawned;

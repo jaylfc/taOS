@@ -88,6 +88,7 @@ Item {
             anchors.fill: parent
             anchors.margins: Style.space(8)
             Repeater {
+                id: rep
                 model: Launcher.menu.power
                 delegate: Rectangle {
                     required property int index

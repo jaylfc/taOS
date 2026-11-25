@@ -33,12 +33,9 @@ Item {
         Repeater {
             model: Launcher.menu.pinned
             delegate: AppTile {
-                required property int index
-                required property string appId
-                required property string name
-                required property string icon
-                required property bool hasIcon
-                required property string group
+                required property var model
+                readonly property int index: model.index
+                appId: model.appId; name: model.name; icon: model.icon; hasIcon: model.hasIcon; group: model.group
                 readonly property real ang: -Math.PI / 2 + index * 2 * Math.PI / Math.max(1, m.n)
                 width: Style.space(80); height: Style.space(80)
                 x: m.cx + m.radius * Math.cos(ang) - width / 2

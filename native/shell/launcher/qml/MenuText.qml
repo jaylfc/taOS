@@ -42,7 +42,8 @@ Item {
                     required property string appId
                     required property string name
                     width: home.width
-                    height: Style.space(48)
+                    visible: index < 8                       // a few favourites, calmly: the rest are one swipe or a few letters away
+                    height: visible ? Style.space(48) : 0
                     readonly property bool cur: Launcher.menu.zone === "pinned" && Launcher.menu.index === index
                     Accessible.role: Accessible.Button
                     Accessible.name: name

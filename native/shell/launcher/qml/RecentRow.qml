@@ -16,12 +16,9 @@ Item {
         Repeater {
             model: Launcher.menu.recent
             delegate: AppTile {
-                required property int index
-                required property string appId
-                required property string name
-                required property string icon
-                required property bool hasIcon
-                required property string group
+                required property var model
+                readonly property int index: model.index
+                appId: model.appId; name: model.name; icon: model.icon; hasIcon: model.hasIcon; group: model.group
                 width: rr.width / rr.columns
                 height: rr.height
                 iconSize: Style.space(32)

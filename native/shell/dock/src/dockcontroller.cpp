@@ -135,7 +135,7 @@ void DockController::relayout() {
     in.attached = m_settings.attached();
     in.autohide = effectiveAutohide();
     in.magnify = m_settings.magnify();
-    in.items = 0;
+    in.items = 1;   // the apps cell
     for (const DockItem &i : m_model.items()) if (i.kind != DockItem::Separator) ++in.items;
     in.separators = m_model.separatorCount();
     in.output = m_output;
@@ -227,7 +227,10 @@ void DockController::perform(const DockAction &a) {
     }
 }
 
-void DockController::activate(int row) { perform(m_model.primaryAction(row)); }
+void DockController::activate(int row) {
+    if (row == AppsRow) { taskbarStart(); return; }   // the apps cell opens the launcher's menu
+    perform(m_model.primaryAction(row));
+}
 void DockController::middleClick(int row) { perform(m_model.middleAction(row)); }
 
 // window-min:<id> (restore when minimised), window-full:<id> (the engine toggles), window-close:<id>.

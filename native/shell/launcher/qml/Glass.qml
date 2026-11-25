@@ -11,7 +11,8 @@ Item {
     property real radius: Math.round((22) * Style.radiusScale)
     property string kind: Style.dockSurface        // translucent (frosted glass, the default) | solid | raised (bevelled)
     property real tintAlpha: kind === "translucent" ? (Style.dark ? 0.86 : 0.90) : 1.0
-    readonly property int bw: Style.borderWidth
+    property bool frame: true                        // false: a full screen surface has no edge and no shadow
+    readonly property int bw: frame ? Style.borderWidth : 0
     readonly property bool ring: Style.launcherPlace === "ring"       // the command ring: an accent outline with a soft glow
 
     Rectangle {
@@ -26,7 +27,7 @@ Item {
         anchors.fill: shadowSource
         source: shadowSource
         autoPaddingEnabled: true
-        shadowEnabled: Style.shadowStrength > 0
+        shadowEnabled: gp.frame && Style.shadowStrength > 0
         shadowColor: gp.ring ? Style.accent : "black"
         shadowOpacity: gp.ring ? 0.28 : Math.min(1, (Style.dark ? 0.45 : 0.28) * Style.shadowStrength)
         shadowBlur: 1.0

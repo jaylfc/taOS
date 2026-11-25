@@ -78,7 +78,7 @@ qt_add_resources(taos-launcher-shots shots_resources
         qml/MenuText.qml
         qml/MenuPhone.qml)
 target_link_libraries(taos-launcher-shots PRIVATE taos_launcher_ui taos_search_core taos_common Qt6::Quick Qt6::Qml Qt6::Gui)
-target_compile_definitions(taos-launcher-shots PRIVATE TAOS_LAUNCHER_FIXTURES="${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures")
+target_compile_definitions(taos-launcher-shots PRIVATE TAOS_LAUNCHER_FIXTURES="${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures" TAOS_APP_ICONS_DIR="${CMAKE_CURRENT_SOURCE_DIR}/../../apps/icons")
 
 # Unit tests.
 function(taos_launcher_test name)
