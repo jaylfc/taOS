@@ -237,3 +237,65 @@ async def test_notification_add_without_user_id_still_broadcasts(notif_store):
     await notif_store.add("System alert", "everyone sees this")
 
     assert bcast_q.get_nowait() is not None
+
+
+# ---------------------------------------------------------------------------
+# Broadcast notifications: per-recipient delivery prefs on the SSE stream
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_stream_suppresses_broadcast_for_a_muting_user(notif_store):
+    """A broadcast notification.added event must not reach an SSE client
+    whose own prefs suppress that source (mute / style none / DND) --
+    personal rows are decided in add(), broadcasts are decided here, at
+    the fan-out point that knows the recipient (CodeRabbit, PR #4507)."""
+    from tinyagentos.routes.event_stream import events_stream
+
+    bus = EventBus()
+    await notif_store.set_event_muted("u1", "worker.join", True)
+
+    req = MagicMock()
+    req.state.user_id = "u1"
+    req.app.state.event_bus = bus
+    req.app.state.notifications = notif_store
+    req.is_disconnected = AsyncMock(return_value=False)
+
+    resp = await events_stream(req)
+    assert resp.status_code == 200
+
+    frames: list[str] = []
+
+    async def _collect():
+        async for chunk in resp.body_iterator:
+            frames.append(chunk)
+
+    task = asyncio.create_task(_collect())
+    try:
+        await asyncio.sleep(0.2)
+        await bus.broadcast(
+            _make_event(
+                payload={
+                    "id": 11, "title": "Muted", "message": "m", "level": "info",
+                    "source": "worker.join", "user_id": None,
+                }
+            )
+        )
+        await asyncio.sleep(0.5)
+        assert not any("Muted" in f for f in frames), frames
+
+        await bus.broadcast(
+            _make_event(
+                payload={
+                    "id": 12, "title": "Audible", "message": "m", "level": "info",
+                    "source": "backend.up", "user_id": None,
+                }
+            )
+        )
+        for _ in range(50):
+            if any("Audible" in f for f in frames):
+                break
+            await asyncio.sleep(0.1)
+        assert any("Audible" in f for f in frames), frames
+    finally:
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)

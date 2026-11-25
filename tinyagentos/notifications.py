@@ -51,7 +51,8 @@ CREATE TABLE IF NOT EXISTS notifications (
     source TEXT,
     archived INTEGER NOT NULL DEFAULT 0,
     data TEXT,
-    user_id TEXT
+    user_id TEXT,
+    show_centre INTEGER NOT NULL DEFAULT 1
 );
 CREATE INDEX IF NOT EXISTS idx_notif_ts ON notifications(timestamp DESC);
 CREATE TABLE IF NOT EXISTS notification_prefs (
@@ -124,7 +125,6 @@ class NotificationStore(BaseStore):
         self._push_sender = None  # async callable: (row: dict) -> None
         self._push_tasks: set = set()  # strong refs so fire-and-forget tasks aren't GC'd
         self._os_lock = asyncio.Lock()  # serialises add_os (idempotency check + insert)
-        self._transient_seq = 0  # synthetic negative ids for toast-only (unstored) rows
 
     def set_webhook_notifier(self, notifier) -> None:
         """Attach a WebhookNotifier to fire on every notification."""
@@ -185,6 +185,15 @@ class NotificationStore(BaseStore):
                 "ALTER TABLE notifications ADD COLUMN user_id TEXT"
             )
             await self._db.commit()
+        # `show_centre` marks rows their owner's pref kept out of the
+        # Notification Centre at insert time (#206): stored, but hidden
+        # from the Centre listing. Guarded ALTER; rows from before the
+        # column keep the visible default.
+        if "show_centre" not in cols:
+            await self._db.execute(
+                "ALTER TABLE notifications ADD COLUMN show_centre INTEGER NOT NULL DEFAULT 1"
+            )
+            await self._db.commit()
         # `digest` on os_notification_ids: an earlier version of the table had no such column, and
         # CREATE TABLE IF NOT EXISTS leaves an existing table as it was. Guarded ALTER, like the above;
         # rows from before the column keep the empty default.
@@ -204,6 +213,12 @@ class NotificationStore(BaseStore):
         if pref_cols and "user_id" not in pref_cols:
             style_expr = "style" if "style" in pref_cols else "'banner'"
             centre_expr = "show_centre" if "show_centre" in pref_cols else "1"
+            # An interrupted earlier run can leave the staging table on
+            # disk (the CREATE below commits in autocommit mode, before
+            # the copy does). It holds nothing the migration depends on
+            # -- the source table is intact until the DROP/RENAME commit
+            # -- so drop any leftover and rerun clean.
+            await self._db.execute("DROP TABLE IF EXISTS notification_prefs_new")
             await self._db.execute(
                 "CREATE TABLE notification_prefs_new ("
                 "user_id TEXT NOT NULL DEFAULT '', event_type TEXT NOT NULL, "
@@ -285,8 +300,10 @@ class NotificationStore(BaseStore):
     ) -> int | None:
         """Create a notification row and fan out to emitters + push.
 
-        Returns the new row id, or None when the source is muted or its
-        prefs keep it out of the Notification Centre (toast-only, #206).
+        Returns the new row id, or None when the source is muted for the
+        recipient. A centre-off source still stores its row, marked
+        show_centre = 0; list() filters marked rows out of the owner's
+        Centre view, so nothing is lost (#206).
 
         Args:
             user_id: Scope the notification to a specific user. When None
@@ -309,42 +326,31 @@ class NotificationStore(BaseStore):
             return None
         ts = int(time.time()) if timestamp is None else int(timestamp)
         data_json = json.dumps(data) if data is not None else None
-        # show_centre off (#206): the notification is toast-only — published
-        # live but never stored, so it never reaches the Notification Centre.
-        # OS-originated rows always store: their idempotency record must be
-        # written in the same transaction as a real row.
-        stored = pref["show_centre"] or os_client_id is not None
-        row_id = None
-        if stored:
-            cursor = await self._db.execute(
-                "INSERT INTO notifications (timestamp, level, title, message, source, data, user_id) VALUES (?, ?, ?, ?, ?, ?, ?)",
-                (ts, level, title, message, source, data_json, user_id),
+        # show_centre off (#206): the row is STILL stored -- nothing is
+        # lost -- but marked show_centre = 0, and list() filters marked
+        # rows out of the owner's Centre view. The live toast below is
+        # unaffected. (OS-originated rows store either way: their
+        # idempotency record must commit in the same transaction.)
+        cursor = await self._db.execute(
+            "INSERT INTO notifications (timestamp, level, title, message, source, data, user_id, show_centre) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (ts, level, title, message, source, data_json, user_id, 1 if pref["show_centre"] else 0),
+        )
+        row_id = cursor.lastrowid
+        if os_client_id is not None:
+            await self._db.execute(
+                "INSERT INTO os_notification_ids (user_id, client_id, notification_id, digest) VALUES (?, ?, ?, ?)",
+                (user_id or "", os_client_id, row_id, os_digest),
             )
-            row_id = cursor.lastrowid
-            if os_client_id is not None:
-                await self._db.execute(
-                    "INSERT INTO os_notification_ids (user_id, client_id, notification_id, digest) VALUES (?, ?, ?, ?)",
-                    (user_id or "", os_client_id, row_id, os_digest),
-                )
-            await self._db.commit()
+        await self._db.commit()
         # Fire webhook notifications in the background
         if webhook and self._webhook_notifier:
             try:
                 await self._webhook_notifier.notify(title, message, level)
             except Exception as e:
                 logger.warning(f"Webhook notification error: {e}")
-        # Push to EventBus broadcast for SSE delivery — best-effort, never breaks add()
-        if row_id is None:
-            # Toast-only row: a unique negative id keeps the client's srv-<id>
-            # keying collision-free against stored rows (and other transient
-            # rows); read/archive calls against it are best-effort no-ops.
-            self._transient_seq -= 1
-            publish_id = self._transient_seq
-        else:
-            publish_id = row_id
-        transient = row_id is None
+        # Fan out to the SSE emitter + web-push -- best-effort, never breaks add()
         row = {
-            "id": publish_id,
+            "id": row_id,
             "timestamp": ts,
             "level": level,
             "title": title,
@@ -356,12 +362,8 @@ class NotificationStore(BaseStore):
         }
         if pref["style"] == "alert":
             row["persistent"] = True
-        if transient:
-            # Live-only: the client must keep this out of the Notification
-            # Centre's collection (it was never stored) while still toasting.
-            row["transient"] = True
         # Style "none" and an active Do Not Disturb window both mean: stored
-        # (above) but no live fan-out — no toast, no web-push (#206).
+        # (above) but no live fan-out -- no toast, no web-push (#206).
         deliver = pref["style"] != "none" and not (
             user_id and await self.dnd_active(user_id)
         )
@@ -448,10 +450,11 @@ class NotificationStore(BaseStore):
                     target = await cur.fetchone()
                 if target:
                     ts = int(time.time()) if timestamp is None else int(timestamp)
+                    _pref = await self._pref_for(user_id, source)
                     upd = await self._db.execute(
                         "UPDATE notifications SET timestamp = ?, level = ?, title = ?, message = ?, "
-                        "source = ?, data = ?, read = 0, archived = 0 WHERE id = ? AND user_id = ?",
-                        (ts, level, title, message, source, json.dumps(data), target[0], user_id),
+                        "source = ?, data = ?, read = 0, archived = 0, show_centre = ? WHERE id = ? AND user_id = ?",
+                        (ts, level, title, message, source, json.dumps(data), 1 if _pref["show_centre"] else 0, target[0], user_id),
                     )
                     if upd.rowcount == 0:
                         # The row was removed (retention): the replacement must not be lost.
@@ -472,7 +475,6 @@ class NotificationStore(BaseStore):
                         (user_id, client_id, target[0], digest),
                     )
                     await self._db.commit()
-                    _pref = await self._pref_for(user_id, source)
                     _row = {
                         "id": target[0], "timestamp": ts, "level": level, "title": title,
                         "message": message, "read": False, "source": source, "data": data,
@@ -503,6 +505,24 @@ class NotificationStore(BaseStore):
             raise ValueError("list() takes user_id or source, not both")
         if user_id is not None:
             # Per-user notifications: include both own notifications and broadcasts
+            # Per-person delivery prefs (#206) are enforced in SQL, before
+            # LIMIT, so hidden rows cannot starve a page:
+            #   * rows marked show_centre = 0 at insert time (their owner's
+            #     centre-off pref) never appear in the Centre listing -- the
+            #     marking is insert-time, so a later pref change neither
+            #     hides nor resurrects stored rows;
+            #   * broadcast rows are shared and carry no per-person marking,
+            #     so they are filtered per reader by the reader's CURRENT
+            #     muted / centre-off sources (the hidden predicate below).
+            # The reader's own unmarked rows are never read-filtered.
+            hidden = await self._hidden_sources(user_id)
+            hidden_placeholders = ",".join("?" * len(hidden))
+            hidden_params: tuple = tuple(sorted(hidden))
+            hidden_pred = ""
+            if hidden:
+                hidden_pred = (
+                    f" AND (n.user_id IS NOT NULL OR n.source NOT IN ({hidden_placeholders}))"
+                )
             # First, fetch pinned grant requests (non-archived, ignoring read/unread_only)
             pinned_placeholders = ",".join("?" * len(PINNED_SOURCES))
             pinned_sql = (
@@ -510,10 +530,11 @@ class NotificationStore(BaseStore):
                 "COALESCE(nus.read_at, n.read) as read, n.source, n.data, n.user_id "
                 "FROM notifications n "
                 "LEFT JOIN notification_user_state nus ON n.id = nus.notification_id AND nus.user_id = ? "
-                f"WHERE (n.user_id IS NULL OR n.user_id = ?) AND n.archived = 0 AND (n.user_id IS NOT NULL OR nus.archived_at IS NULL) AND n.source IN ({pinned_placeholders}) "
-                "ORDER BY n.timestamp DESC"
+                f"WHERE (n.user_id IS NULL OR n.user_id = ?) AND n.archived = 0 AND (n.user_id IS NOT NULL OR nus.archived_at IS NULL) AND n.source IN ({pinned_placeholders}) AND n.show_centre = 1"
+                + hidden_pred
+                + " ORDER BY n.timestamp DESC"
             )
-            pinned_params: tuple = (user_id, user_id) + PINNED_SOURCES
+            pinned_params: tuple = (user_id, user_id) + PINNED_SOURCES + hidden_params
             async with self._db.execute(pinned_sql, pinned_params) as cursor:
                 pinned_rows = await cursor.fetchall()
             pinned_items = [_serialize_row(r) for r in pinned_rows]
@@ -526,8 +547,14 @@ class NotificationStore(BaseStore):
                 "n.archived = 0",
                 f"(n.source IS NULL OR n.source NOT IN ({pinned_placeholders}))",
                 "(n.user_id IS NOT NULL OR nus.archived_at IS NULL)",
+                "n.show_centre = 1",
             ]
             params_list = [user_id, user_id] + list(PINNED_SOURCES)
+            if hidden:
+                conds.append(
+                    f"(n.user_id IS NOT NULL OR n.source NOT IN ({hidden_placeholders}))"
+                )
+                params_list += sorted(hidden)
             if unread_only:
                 conds.append("COALESCE(nus.read_at, n.read) = 0")
             sql = (
@@ -545,22 +572,7 @@ class NotificationStore(BaseStore):
             for item in regular_items:
                 item["pinned"] = False
 
-            items = pinned_items + regular_items
-            # Per-person delivery prefs (#206): BROADCAST rows whose source
-            # this reader muted or hid from their Centre are filtered out
-            # of their list. Broadcasts are shared rows, so they cannot be
-            # dropped per-person at insert time; this is their only
-            # enforcement point. The reader's OWN rows are not filtered:
-            # their prefs already governed delivery at insert time, and a
-            # later pref change must not retroactively hide stored rows.
-            hidden = await self._hidden_sources(user_id)
-            if hidden:
-                items = [
-                    i
-                    for i in items
-                    if i["user_id"] is not None or i["source"] not in hidden
-                ]
-            return items
+            return pinned_items + regular_items
         else:
             # Internal/system caller: unfiltered by user.  ``source`` narrows
             # to one sender (the agent path of GET /api/notifications lists
@@ -615,13 +627,29 @@ class NotificationStore(BaseStore):
     async def unread_count(self, user_id: str | None = None) -> int:
         if user_id is not None:
             # For per-user notifications, include both own notifications and broadcasts
-            # Read state for broadcasts is stored in notification_user_state
+            # Read state for broadcasts is stored in notification_user_state.
+            # The count applies the same filtering as list(), so the badge
+            # never counts rows the Centre cannot show: rows marked
+            # show_centre = 0 at insert time are excluded by their marking,
+            # and broadcast rows by the reader's current hidden (muted /
+            # centre-off) sources. Own unmarked rows are always counted,
+            # including rows stored before a preference change.
+            hidden = await self._hidden_sources(user_id)
+            hidden_pred = ""
+            hidden_params: tuple = ()
+            if hidden:
+                hidden_placeholders = ",".join("?" * len(hidden))
+                hidden_pred = (
+                    f" AND (n.user_id IS NOT NULL OR n.source NOT IN ({hidden_placeholders}))"
+                )
+                hidden_params = tuple(sorted(hidden))
             sql = (
                 "SELECT COUNT(*) FROM notifications n "
                 "LEFT JOIN notification_user_state nus ON n.id = nus.notification_id AND nus.user_id = ? "
-                "WHERE (n.user_id IS NULL OR n.user_id = ?) AND (n.user_id IS NOT NULL OR nus.archived_at IS NULL) AND COALESCE(nus.read_at, n.read) = 0"
+                "WHERE (n.user_id IS NULL OR n.user_id = ?) AND (n.user_id IS NOT NULL OR nus.archived_at IS NULL) AND COALESCE(nus.read_at, n.read) = 0 AND n.show_centre = 1"
+                + hidden_pred
             )
-            params = (user_id, user_id)
+            params = (user_id, user_id) + hidden_params
         else:
             # Internal/system caller: unfiltered by user
             sql = (
@@ -833,6 +861,23 @@ class NotificationStore(BaseStore):
 
     async def _is_event_muted(self, user_id: str, event_type: str) -> bool:
         return (await self._get_event_pref(user_id, event_type))["muted"]
+
+    async def live_delivery_allowed(self, user_id: str, source: str) -> bool:
+        """Whether a live (toast / web-push) delivery of a ``source``
+        notification may reach ``user_id`` right now.
+
+        Personal rows are decided in add() against the recipient's prefs;
+        a BROADCAST row has no recipient at insert time, so the fan-out
+        points that know the recipients -- the SSE stream and the
+        web-push sender -- consult this per person instead. Muted and
+        style "none" suppress live delivery, as does an active Do Not
+        Disturb window; centre visibility does NOT (it governs the
+        Centre listing, not the toast).
+        """
+        pref = await self._get_event_pref(user_id, source)
+        if pref["muted"] or pref["style"] == "none":
+            return False
+        return not await self.dnd_active(user_id)
 
     async def _hidden_sources(self, user_id: str) -> set[str]:
         """Sources this user muted or hid from their Notification Centre."""

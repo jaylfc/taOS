@@ -299,13 +299,28 @@ async def _send_one(sub: dict, data_str: str, signing_key: str, store: Notificat
         return "failed"
 
 
-async def send_web_push(row: dict, *, store: NotificationPushStore, vapid: tuple[str, str] | None) -> dict:
+async def send_web_push(
+    row: dict,
+    *,
+    store: NotificationPushStore,
+    vapid: tuple[str, str] | None,
+    delivery_check=None,
+) -> dict:
     """Best-effort fan-out of one notification row to every subscription.
 
     When ``row["user_id"]`` is set, fans out only to that user's subscriptions
     via ``store.list_all_for_user()``. When ``user_id`` is None (broadcast), fans
     out to every subscription via ``store.list_all()`` for genuinely
     system-wide notices.
+
+    ``delivery_check`` is an optional async callable ``(user_id) -> bool``
+    consulted once per recipient for BROADCAST rows only: a recipient it
+    rejects is skipped, so a broadcast never reaches someone whose own
+    mute / style / Do Not Disturb settings suppress it (#206). Personal
+    rows ignore it -- NotificationStore.add() already decided their
+    delivery against the recipient's prefs. A failing check fails open
+    (the recipient is kept): push is best-effort and a prefs hiccup must
+    not silently swallow system notices.
 
     Returns {"sent", "failed", "removed"} counts (also useful for tests). Never
     raises: a missing VAPID key or no subscriptions is a no-op, and every
@@ -330,6 +345,25 @@ async def send_web_push(row: dict, *, store: NotificationPushStore, vapid: tuple
         return {"sent": 0, "failed": 0, "removed": 0}
     if not subs:
         return {"sent": 0, "failed": 0, "removed": 0}
+
+    if delivery_check is not None and not user_id:
+        allowed_by_user: dict[str, bool] = {}
+        kept_subs = []
+        for sub in subs:
+            uid = sub.get("user_id") or ""
+            if uid not in allowed_by_user:
+                if not uid:
+                    allowed_by_user[uid] = True
+                else:
+                    try:
+                        allowed_by_user[uid] = bool(await delivery_check(uid))
+                    except Exception:  # noqa: BLE001 - fail open, see docstring
+                        allowed_by_user[uid] = True
+            if allowed_by_user[uid]:
+                kept_subs.append(sub)
+        subs = kept_subs
+        if not subs:
+            return {"sent": 0, "failed": 0, "removed": 0}
 
     data_str = json.dumps(_build_payload(row))
     results = await asyncio.gather(

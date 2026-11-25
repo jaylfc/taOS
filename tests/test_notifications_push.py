@@ -289,6 +289,70 @@ class TestSendWebPush:
         assert "image" not in payload["data"]
 
 
+@pytest.mark.asyncio
+class TestSendWebPushDeliveryCheck:
+    """Broadcast fan-out consults the per-recipient delivery check (CR).
+
+    Personal rows were already decided by NotificationStore.add(); the
+    check applies only to broadcasts (row without user_id), whose
+    recipients are known only here.
+    """
+
+    async def test_broadcast_skips_recipients_the_check_rejects(self, push_store):
+        await _seed(push_store, _ENDPOINT_A, user_id="u1")
+        await _seed(push_store, _ENDPOINT_B, user_id="u2")
+
+        async def check(user_id):
+            return user_id != "u1"
+
+        with patch("pywebpush.webpush") as mock:
+            result = await send_web_push(
+                _ROW, store=push_store, vapid=FAKE_VAPID, delivery_check=check
+            )
+        assert mock.call_count == 1
+        assert result == {"sent": 1, "failed": 0, "removed": 0}
+
+    async def test_broadcast_check_rejecting_everyone_sends_nothing(self, push_store):
+        await _seed(push_store, _ENDPOINT_A, user_id="u1")
+
+        async def check(user_id):
+            return False
+
+        with patch("pywebpush.webpush") as mock:
+            result = await send_web_push(
+                _ROW, store=push_store, vapid=FAKE_VAPID, delivery_check=check
+            )
+        assert mock.call_count == 0
+        assert result == {"sent": 0, "failed": 0, "removed": 0}
+
+    async def test_personal_row_ignores_the_check(self, push_store):
+        await _seed(push_store, _ENDPOINT_A, user_id="u1")
+
+        async def check(user_id):
+            return False
+
+        row = {**_ROW, "user_id": "u1"}
+        with patch("pywebpush.webpush") as mock:
+            result = await send_web_push(
+                row, store=push_store, vapid=FAKE_VAPID, delivery_check=check
+            )
+        assert mock.call_count == 1
+        assert result["sent"] == 1
+
+    async def test_check_failure_fails_open(self, push_store):
+        await _seed(push_store, _ENDPOINT_A, user_id="u1")
+
+        async def check(user_id):
+            raise RuntimeError("prefs store unavailable")
+
+        with patch("pywebpush.webpush") as mock:
+            result = await send_web_push(
+                _ROW, store=push_store, vapid=FAKE_VAPID, delivery_check=check
+            )
+        assert mock.call_count == 1
+        assert result["sent"] == 1
+
+
 # ---------------------------------------------------------------------------
 # NotificationStore.add() wiring - best-effort, off-loop, never breaks add()
 # ---------------------------------------------------------------------------

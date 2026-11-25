@@ -78,6 +78,30 @@ async def events_stream(request: Request):
                 except asyncio.TimeoutError:
                     yield ":keepalive\n\n"
                     continue
+                if (
+                    event.kind == "notification.added"
+                    and isinstance(event.payload, dict)
+                    and not event.payload.get("user_id")
+                ):
+                    # Broadcast notification: personal rows were decided
+                    # against the recipient's prefs in NotificationStore
+                    # .add(), but a broadcast has no recipient at insert
+                    # time -- apply THIS recipient's mute / style / DND
+                    # here, at the fan-out point that knows them (#206).
+                    # Best-effort: any failure delivers the event.
+                    _notif_store = getattr(
+                        request.app.state, "notifications", None
+                    )
+                    if _notif_store is not None:
+                        try:
+                            _allowed = await _notif_store.live_delivery_allowed(
+                                user_id,
+                                event.payload.get("source") or "system",
+                            )
+                        except Exception:
+                            _allowed = True
+                        if not _allowed:
+                            continue
                 seq += 1
                 data = json.dumps(
                     {

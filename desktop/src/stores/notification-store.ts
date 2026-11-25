@@ -22,7 +22,11 @@ export interface Notification {
    *  of auto-expiring. Set from the backend row's `persistent` flag. */
   persistent?: boolean;
   /** Live-only row (#206): published for the toast but never stored, so it
-   *  must not render in the Notification Centre or count as unread there. */
+   *  must not render in the Notification Centre or count as unread there.
+   *  The backend has stored every row since the centre-off rework (the row
+   *  is marked server-side and filtered from the Centre listing instead),
+   *  so this is only produced by older servers; the handling stays so a
+   *  toast from one is never dropped by a feed merge. */
   transient?: boolean;
 }
 
@@ -94,7 +98,7 @@ export const useNotificationStore = create<NotificationStore>((set, get) => ({
       // server items (they must survive polls). Drop the old unarchived server
       // items (replaced by the fresh list), de-dupe, sort newest-first.
       const kept = s.notifications.filter(
-        (n) => !n.id.startsWith("srv-") || n.archived,
+        (n) => !n.id.startsWith("srv-") || n.archived || n.transient,
       );
       const combined = [...merged, ...kept];
       // Pinned grant requests always lead the active inbox (newest-first among
@@ -125,7 +129,7 @@ export const useNotificationStore = create<NotificationStore>((set, get) => ({
           if (n.source === "agent_scope_requests" || n.source === "auth_requests") {
             return { ...n, read: true };
           }
-          if (n.id.startsWith("srv-")) {
+          if (n.id.startsWith("srv-") && !n.transient) {
             dismissedServerIds.add(n.id);
             void archiveServerNotification(id);
           }
@@ -160,8 +164,10 @@ export const useNotificationStore = create<NotificationStore>((set, get) => ({
           if (n.source === "agent_scope_requests" || n.source === "auth_requests") {
             return n;
           }
-          dismissedServerIds.add(n.id);
-          void archiveServerNotification(n.id);
+          if (!n.transient) {
+            dismissedServerIds.add(n.id);
+            void archiveServerNotification(n.id);
+          }
           return { ...n, archived: true };
         }
         // Local (non-srv-) notifications: archive them as before

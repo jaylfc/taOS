@@ -118,20 +118,52 @@ class TestDeliveryStyle:
 
 @pytest.mark.asyncio
 class TestShowCentre:
-    async def test_centre_off_publishes_but_does_not_store(self, store, published):
+    async def test_centre_off_stores_but_hides_from_centre(self, store, published):
+        # Jay's ruling on #206: "Show in Centre off" keeps the notification
+        # -- it is stored, just filtered out of the Centre view, so nothing
+        # is lost. The live toast still publishes, with the real row id.
         await store.set_event_pref(U1, "app.installed", show_centre=False)
         result = await store.add(
             "App installed", "Store app ready", source="app.installed", user_id=U1
         )
-        assert result is None  # nothing stored -> no row id
-        assert await store.list(limit=10) == []
+        assert result is not None  # stored: a real row id
+        # Kept in the store (the system/history view sees it)...
+        assert [i["id"] for i in await store.list(limit=10)] == [result]
+        # ...but filtered out of the owner's Centre listing.
+        assert await store.list(limit=10, user_id=U1) == []
+        # Another user is unaffected by U1's pref.
+        assert len(await store.list(limit=10, user_id=U2)) == 0  # not theirs
         assert len(published) == 1
         assert published[0]["title"] == "App installed"
+        assert published[0]["id"] == result
+        assert not published[0].get("transient")
+
+    async def test_centre_off_os_notification_still_stores(self, store):
+        # OS-originated rows always stored (their idempotency record commits
+        # with the row); a centre-off pref marks the row hidden, it does not
+        # drop it.
+        await store.set_event_pref(U1, "backend.down", show_centre=False)
+        rid, created = await store.add_os(
+            user_id=U1,
+            client_id="os-centre-off",
+            title="Backend down",
+            message="stopped",
+            level="error",
+            source="backend.down",
+            data={},
+            digest="d-centre-off",
+        )
+        assert created is True
+        assert rid is not None
+        assert await store.list(limit=10, user_id=U1) == []
+        assert len(await store.list(limit=10)) == 1
 
     async def test_centre_off_alert_still_persistent(self, store, published):
         await store.set_event_pref(U1, "app.failed", style="alert", show_centre=False)
         await store.emit_event("app.failed", "Install failed", "boom", user_id=U1)
-        assert await store.list(limit=10) == []
+        # Stored (system view) but hidden from the owner's Centre.
+        assert len(await store.list(limit=10)) == 1
+        assert await store.list(limit=10, user_id=U1) == []
         assert len(published) == 1
         assert published[0].get("persistent") is True
 
@@ -284,13 +316,16 @@ class TestPerUserIsolation:
 
 @pytest.mark.asyncio
 class TestReviewRegressions:
-    async def test_centre_off_row_published_as_transient(self, store, published):
-        # The Centre renders from the same client store the live events merge
-        # into, so a toast-only row must be marked live-only at publish time.
+    async def test_centre_off_row_published_with_its_real_id(self, store, published):
+        # Centre-off rows are stored now (Jay's ruling), so the live event
+        # carries the real row id and is NOT marked transient: when the
+        # client's next poll returns the row, the merge keys line up.
         await store.set_event_pref(U1, "app.installed", show_centre=False)
-        await store.add("App installed", "ready", source="app.installed", user_id=U1)
+        rid = await store.add("App installed", "ready", source="app.installed", user_id=U1)
+        assert rid is not None
         assert len(published) == 1
-        assert published[0].get("transient") is True
+        assert published[0]["id"] == rid
+        assert not published[0].get("transient")
 
     async def test_stored_row_published_without_transient(self, store, published):
         await store.add("Hello", "world", source="app.installed", user_id=U1)
@@ -346,6 +381,79 @@ class TestReviewRegressions:
 
 
 @pytest.mark.asyncio
+class TestBroadcastLiveDelivery:
+    """Broadcast rows get their per-recipient live check at fan-out (CR).
+
+    Personal rows are decided in add() against the recipient's prefs.
+    A broadcast has no recipient at insert time, so the fan-out points
+    that know the recipients (SSE stream, web-push) consult
+    live_delivery_allowed() per person. These tests pin that decision.
+    """
+
+    async def test_default_allows_live_delivery(self, store):
+        assert await store.live_delivery_allowed(U1, "worker.join") is True
+
+    async def test_mute_blocks_live_delivery(self, store):
+        await store.set_event_muted(U1, "worker.join", True)
+        assert await store.live_delivery_allowed(U1, "worker.join") is False
+        assert await store.live_delivery_allowed(U2, "worker.join") is True
+
+    async def test_style_none_blocks_but_alert_allows(self, store):
+        await store.set_event_pref(U1, "worker.join", style="none")
+        assert await store.live_delivery_allowed(U1, "worker.join") is False
+        await store.set_event_pref(U1, "worker.join", style="alert")
+        assert await store.live_delivery_allowed(U1, "worker.join") is True
+
+    async def test_dnd_blocks_live_delivery(self, store):
+        await store.set_dnd(U1, enabled=True, start="08:00", end="08:00")
+        assert await store.live_delivery_allowed(U1, "worker.join") is False
+
+    async def test_centre_off_does_not_block_the_toast(self, store):
+        # Centre visibility governs the Centre, not the live toast (#206).
+        await store.set_event_pref(U1, "worker.join", show_centre=False)
+        assert await store.live_delivery_allowed(U1, "worker.join") is True
+
+
+@pytest.mark.asyncio
+class TestListAndCountFiltering:
+    async def test_hidden_broadcasts_do_not_starve_the_limit(self, store):
+        # The newest `limit` rows are broadcasts from a source this reader
+        # hid; an older visible row must still be returned (the hidden
+        # filter applies in SQL, before LIMIT -- CodeRabbit, PR #4507).
+        await store.add(
+            "Visible", "older", source="task.closed", user_id=U1, timestamp=1000
+        )
+        for i in range(3):
+            await store.add(
+                "Hidden", f"b{i}", source="worker.join", timestamp=2000 + i
+            )
+        await store.set_event_pref(U1, "worker.join", show_centre=False)
+        items = await store.list(limit=3, user_id=U1)
+        assert [i["title"] for i in items] == ["Visible"]
+        # A reader who did not hide the source still sees the broadcasts.
+        titles_u2 = [i["title"] for i in await store.list(limit=3, user_id=U2)]
+        assert titles_u2 == ["Hidden", "Hidden", "Hidden"]
+
+    async def test_unread_count_excludes_hidden_broadcasts(self, store):
+        # unread_count() applies the same hidden-source rule as list():
+        # broadcast rows from a source the reader muted/hid are not
+        # counted; the reader's own rows always are (CodeRabbit, PR #4507).
+        await store.add("B1", "x", source="worker.join")
+        await store.add("Own", "x", source="worker.join", user_id=U1)
+        await store.set_event_muted(U1, "worker.join", True)
+        assert await store.unread_count(U1) == 1  # own row only
+        assert await store.unread_count(U2) == 1  # the broadcast
+
+    async def test_unread_count_excludes_centre_off_own_rows(self, store):
+        # Badge coherence with the J2 design: a stored-but-Centre-hidden
+        # row is not counted as unread for the Centre badge.
+        await store.set_event_pref(U1, "app.installed", show_centre=False)
+        await store.add("Hidden own", "x", source="app.installed", user_id=U1)
+        await store.add("Visible own", "x", source="task.closed", user_id=U1)
+        assert await store.unread_count(U1) == 1
+
+
+@pytest.mark.asyncio
 class TestPrefsUpgrade:
     """Upgrade from a pre-per-user notification_prefs table (Jay's ask).
 
@@ -393,6 +501,40 @@ class TestPrefsUpgrade:
                 p for p in await s.get_event_prefs(U1) if p["event_type"] == "worker.join"
             )
             assert person["muted"] is False
+        finally:
+            await s.close()
+
+    async def test_upgrade_reruns_after_an_interrupted_migration(self, tmp_path):
+        # The migration CREATEs notification_prefs_new in autocommit mode;
+        # an interruption after that CREATE leaves the staging table on
+        # disk. The next start must drop the leftover and rerun, not fail
+        # with "table already exists" (CodeRabbit, PR #4507).
+        import sqlite3
+
+        path = tmp_path / "interrupted.db"
+        conn = sqlite3.connect(path)
+        conn.execute(
+            "CREATE TABLE notification_prefs ("
+            "event_type TEXT PRIMARY KEY, muted INTEGER NOT NULL DEFAULT 0)"
+        )
+        conn.execute("INSERT INTO notification_prefs VALUES ('worker.join', 1)")
+        conn.execute(
+            "CREATE TABLE notification_prefs_new ("
+            "user_id TEXT NOT NULL DEFAULT '', event_type TEXT NOT NULL, "
+            "muted INTEGER NOT NULL DEFAULT 0, "
+            "style TEXT NOT NULL DEFAULT 'banner', "
+            "show_centre INTEGER NOT NULL DEFAULT 1, "
+            "PRIMARY KEY (user_id, event_type))"
+        )
+        conn.commit()
+        conn.close()
+        s = NotificationStore(path)
+        await s.init()  # must not raise
+        try:
+            legacy = next(
+                p for p in await s.get_event_prefs("") if p["event_type"] == "worker.join"
+            )
+            assert legacy["muted"] is True
         finally:
             await s.close()
 
