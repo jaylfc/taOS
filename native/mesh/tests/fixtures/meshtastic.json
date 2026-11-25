@@ -1,0 +1,238 @@
+{
+ "frames": [
+  {
+   "name": "my_info_heltec_v2_1",
+   "provenance": "recorded",
+   "source": "https://raw.githubusercontent.com/meshtastic/python/master/meshtastic/tests/test_mesh_interface.py",
+   "hex": "1a2c08cccfbdc502180d320e312e322e34392e35333534633439500d5d30b5884168e0a71270e89d017808900101",
+   "expect": {
+    "variant": "my_info",
+    "my_node_num": 682584012
+   }
+  },
+  {
+   "name": "node_info_heltec_v2_1",
+   "provenance": "recorded",
+   "source": "https://raw.githubusercontent.com/meshtastic/python/master/meshtastic/tests/test_mesh_interface.py",
+   "hex": "223208cccfbdc50212280a09213238616636376363120c556e6b6e6f776e20363763631a033f43432206246f28af67cc300a1a00",
+   "expect": {
+    "variant": "node_info",
+    "num": 682584012,
+    "long_name": "Unknown 67cc",
+    "short_name": "?CC",
+    "user_id": "!28af67cc"
+   }
+  },
+  {
+   "name": "my_info_second_capture",
+   "provenance": "recorded",
+   "source": "https://raw.githubusercontent.com/meshtastic/python/master/meshtastic/tests/test_stream_interface.py",
+   "hex": "1a2c08dc8cd5c502180d320e312e322e34392e3533353463343950155de125174568e0a71270e89d017808900101",
+   "expect": {
+    "variant": "my_info",
+    "my_node_num": 682968668
+   }
+  },
+  {
+   "name": "rebooted_flag_1_2_capture",
+   "provenance": "recorded",
+   "source": "https://raw.githubusercontent.com/meshtastic/python/master/meshtastic/tests/test_stream_interface.py",
+   "hex": "40cfe5d18c0e",
+   "expect": {
+    "variant": "rebooted"
+   }
+  },
+  {
+   "name": "text_broadcast",
+   "provenance": "reference-encoded",
+   "source": null,
+   "hex": "12380dcc67af2815ffffffff220e0801120a68656c6c6f206d65736835cdab34123d00812469450000d040480260a5ffffffffffffffff017803",
+   "expect": {
+    "kind": "text",
+    "from": "!28af67cc",
+    "to": "!ffffffff",
+    "broadcast": true,
+    "channel": 0,
+    "text": "hello mesh",
+    "snr": 6.5,
+    "rssi": -91,
+    "hops": 1,
+    "packet_id": 305441741,
+    "radio_ts": 1764000000
+   }
+  },
+  {
+   "name": "text_direct_utf8",
+   "provenance": "reference-encoded",
+   "source": null,
+   "hex": "12260d003cd27e15cc67af281801220d08011209636166c3a920e29c93354d000000480350017803",
+   "expect": {
+    "kind": "text",
+    "from": "!7ed23c00",
+    "to": "!28af67cc",
+    "broadcast": false,
+    "channel": 1,
+    "text": "caf\u00e9 \u2713",
+    "hops": 0,
+    "packet_id": 77
+   }
+  },
+  {
+   "name": "position_packet",
+   "provenance": "reference-encoded",
+   "source": null,
+   "hex": "12480d003cd27e15ffffffff22230803121f0da0a5aa1e15205144ff18232564812469589601607870b817980109b80120354e00000045000010c048016094ffffffffffffffff017803",
+   "expect": {
+    "kind": "position",
+    "from": "!7ed23c00",
+    "lat": 51.45,
+    "lon": -1.23,
+    "alt": 35,
+    "time": 1764000100,
+    "hdop": 120,
+    "pdop": 150,
+    "sats": 9,
+    "precision_bits": 32,
+    "gps_accuracy_mm": 3000,
+    "snr": -2.25,
+    "rssi": -108,
+    "hops": 2
+   }
+  },
+  {
+   "name": "position_negative_alt",
+   "provenance": "reference-encoded",
+   "source": null,
+   "hex": "122a0d0500000015ffffffff2219080312150dc0c9e9eb15c007105a18fbffffffffffffffff01354f000000",
+   "expect": {
+    "kind": "position",
+    "from": "!00000005",
+    "lat": -33.7,
+    "lon": 151.1,
+    "alt": -5,
+    "time": null
+   }
+  },
+  {
+   "name": "nodeinfo_packet",
+   "provenance": "reference-encoded",
+   "source": null,
+   "hex": "122f0d003cd27e15ffffffff221e0804121a0a092137656432336330301207544265616d20311a02543128043550000000",
+   "expect": {
+    "kind": "nodeinfo",
+    "from": "!7ed23c00",
+    "long_name": "TBeam 1",
+    "short_name": "T1"
+   }
+  },
+  {
+   "name": "telemetry_device",
+   "provenance": "reference-encoded",
+   "source": null,
+   "hex": "12300d003cd27e15ffffffff221f0843121b0dc881246912140857159a9981401d00006040250000003f28b9603551000000",
+   "expect": {
+    "kind": "telemetry",
+    "telemetry": "device",
+    "battery_level": 87,
+    "voltage": 4.05,
+    "uptime_seconds": 12345,
+    "radio_ts": 1764000200
+   }
+  },
+  {
+   "name": "telemetry_environment",
+   "provenance": "reference-encoded",
+   "source": null,
+   "hex": "12260d0900000015ffffffff2215084312110d2c8224691a0a0d0000ac4115000021423552000000",
+   "expect": {
+    "kind": "telemetry",
+    "telemetry": "environment",
+    "temperature": 21.5,
+    "relative_humidity": 40.25
+   }
+  },
+  {
+   "name": "routing_nak",
+   "provenance": "reference-encoded",
+   "source": null,
+   "hex": "121c0dcc67af2815003cd27e220b080512021801354d0000003553000000",
+   "expect": {
+    "kind": "ack",
+    "request_id": 77,
+    "error": "routing_error_1"
+   }
+  },
+  {
+   "name": "routing_ack",
+   "provenance": "reference-encoded",
+   "source": null,
+   "hex": "121c0dcc67af2815003cd27e220b080512021800354d0000003554000000",
+   "expect": {
+    "kind": "ack",
+    "request_id": 77,
+    "error": null
+   }
+  },
+  {
+   "name": "encrypted_unknown_channel",
+   "provenance": "reference-encoded",
+   "source": null,
+   "hex": "12290d4433221115ffffffff2a18000102030405060708090a0b0c0d0e0f10111213141516173555000000",
+   "expect": {
+    "kind": "opaque",
+    "from": "!11223344"
+   }
+  },
+  {
+   "name": "private_app_port",
+   "provenance": "reference-encoded",
+   "source": null,
+   "hex": "12180d0300000015ffffffff2207088002120201023556000000",
+   "expect": {
+    "kind": "opaque",
+    "from": "!00000003"
+   }
+  },
+  {
+   "name": "node_info_with_position",
+   "provenance": "reference-encoded",
+   "source": null,
+   "hex": "22320880f8c8f607120d1207544265616d20311a0254311a0f0da0a5aa1e15205144ff25187d246925000090402d7c7d24694802",
+   "expect": {
+    "kind": "nodeinfo",
+    "from": "!7ed23c00",
+    "lat": 51.45,
+    "lon": -1.23,
+    "snr": 4.5,
+    "hops": 2,
+    "radio_ts": 1763999100
+   }
+  }
+ ],
+ "outbound": {
+  "want_config": {
+   "hex": "18818094d007",
+   "want_config_id": 2047148033
+  },
+  "text_broadcast": {
+   "hex": "0a1b15ffffffff220f0801120b636865636b20696e206f6b350df0ad0b",
+   "to": 4294967295,
+   "channel": 0,
+   "id": 195948557,
+   "text": "check in ok",
+   "want_ack": false
+  },
+  "text_direct_channel2": {
+   "hex": "0a1d15cc67af281802220d080112096f6e206d792077617935630000005001",
+   "to": 682584012,
+   "channel": 2,
+   "id": 99,
+   "text": "on my way",
+   "want_ack": true
+  }
+ },
+ "framing": {
+  "empty_frame": "94c30000",
+  "false_start": "940094940094c3000000"
+ }
+}
