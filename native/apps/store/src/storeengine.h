@@ -69,6 +69,8 @@ class StoreEngine : public QObject {
     Q_PROPERTY(bool usingSnapshot READ usingSnapshot NOTIFY stateChanged)
     /// One plain line about the saved catalogue ("" while the live one is shown).
     Q_PROPERTY(QString statusText READ statusText NOTIFY stateChanged)
+    /// Creating an app group (a new container, so it takes a while): {state: idle|creating|failed, name, text}.
+    Q_PROPERTY(QVariantMap groupWork READ groupWork NOTIFY revisionChanged)
 public:
     explicit StoreEngine(QObject *parent = nullptr);
     ~StoreEngine() override;
@@ -129,6 +131,28 @@ public:
     Q_INVOKABLE void cancelConsent(const QString &id);
     Q_INVOKABLE void remove(const QString &id);
     Q_INVOKABLE void dismiss(const QString &id);
+    /// App groups (container apps): [{name, displayName, state, apps}]; "default" is "My apps".
+    Q_INVOKABLE QVariantList appGroups() const { return m_groups; }
+    /// Reads the groups again from the engine (a short call); the picker does this when it opens.
+    Q_INVOKABLE void refreshGroups();
+    QVariantMap groupWork() const { return m_groupWork; }
+    /// Creates a group named by what the person typed ("Dev apps" becomes the group dev-apps) and calls it that.
+    Q_INVOKABLE void createAppGroup(const QString &displayName);
+    /// The group a person made or used last (kept between runs); "" when none. Pickers preselect it.
+    Q_INVOKABLE QString lastAppGroup() const;
+    /// Records the acceptance of the licence of an installed app that has none on record.
+    Q_INVOKABLE void acceptInstalledLicence(const QString &id);
+    /// A name the engine would accept for what the person typed, or "" when nothing usable is left.
+    Q_INVOKABLE QString groupSlug(const QString &displayName) const;
+    /// The group the person picked for an install that is waiting for consent.
+    Q_INVOKABLE void chooseGroup(const QString &id, const QString &group);
+    /// Moves an installed container app and its data to another group (refused while it runs).
+    Q_INVOKABLE void moveContainerApp(const QString &id, const QString &group);
+    /// Asks the publisher what is current / installs it. The result is in updateState(id).
+    Q_INVOKABLE void checkAppUpdate(const QString &id);
+    Q_INVOKABLE void updateContainerApp(const QString &id);
+    /// {state: idle|checking|available|current|failed|updating, latest, text}
+    Q_INVOKABLE QVariantMap updateState(const QString &id) const { return m_update.value(id); }
     /// Open an installed app: its window or its web address. False (and a toast) when there is nothing to open.
     Q_INVOKABLE bool open(const QString &id);
 
@@ -145,11 +169,15 @@ Q_SIGNALS:
     void toast(const QString &text);
     /// An install/remove reached an end (ok or not).
     void installFinished(const QString &id, bool ok, const QString &text);
+    /// A group made from the picker is ready (its name).
+    void groupCreated(const QString &name);
 
 private:
     struct Inst {
         QString state = QStringLiteral("idle");
         QString text, detail, consent, consentText, variant, error;
+        QString group = QStringLiteral("default");   ///< container apps: where the install goes
+        QString op;                                  ///< "install", "move" or "update" (what a failure belongs to)
         double percent = -1;
         bool dockerOk = false, licenseOk = false;
         QPointer<Taos::Reply> reply;
@@ -162,6 +190,9 @@ private:
     void fetchHardware();
     void postInstall(const QString &id);
     void loadContainerApps();
+    void refreshContainerInfo();
+    void rememberGroup(const QString &group);
+    QString groupDisplayName(const QString &group) const;
     void installContainerApp(const QString &id);
     void pollProgress();
     void finishInstall(const QString &id, bool ok, const QString &text);
@@ -175,6 +206,10 @@ private:
     ContainerAppsService *m_capps = nullptr;
     std::unique_ptr<ThemesService> m_themes;
     QHash<QString, Inst> m_inst;
+    QVariantList m_groups;
+    QHash<QString, QJsonObject> m_capInfo;         ///< taos-appgroups list: group, installed_version, licence_accepted
+    QVariantMap m_groupWork{{QStringLiteral("state"), QStringLiteral("idle")}};
+    QHash<QString, QVariantMap> m_update;
     QSet<QString> m_detailWanted;
     QHash<QString, QVariantMap> m_detail;          ///< GET /api/store/app/{id}
     QHash<QString, QVariantMap> m_runtime;         ///< installed-v2 rows by app id

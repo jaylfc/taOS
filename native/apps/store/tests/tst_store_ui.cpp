@@ -3,6 +3,7 @@
 // page end to end (add from the catalogue, expand, clone, remove with a second click), the Add website dialog and its
 // address check, the Docker consent card, and the refusal a member gets, in words.
 #include <QPointer>
+#include <QSettings>
 #include <QTemporaryDir>
 
 #include "apphost.h"
@@ -22,6 +23,17 @@ QQuickItem *visibleByName(QQuickWindow *w, const QString &name)
 QQuickItem *byAccessible(QQuickWindow *w, const QString &name)
 {
     return findItem(w->contentItem(), [&](QQuickItem *i) { return i->property("accessibleName").toString() == name && i->isVisible(); });
+}
+QByteArray jq(const char *text) { return QByteArray(text).replace('\'', '"'); }
+// TAOS_TEST_SHOTS=<dir> saves a picture of the window at the named moments (the owner's review of the real screens)
+void shot(QQuickWindow *w, const QString &name)
+{
+    const QString dir = qEnvironmentVariable("TAOS_TEST_SHOTS");
+    if (dir.isEmpty())
+        return;
+    QTest::qWait(350);   // let the transitions end
+    QDir().mkpath(dir);
+    w->grabWindow().save(dir + u"/"_s + name + u".png"_s);
 }
 int countPrefix(QQuickWindow *w, const QString &prefix)
 {
@@ -92,6 +104,7 @@ private Q_SLOTS:
         m_stop = r + u"/stop"_s;
         qputenv("FAKE_BROWSER_STOP", m_stop.toUtf8());
         qputenv("TAOS_STORE_WEBAPPS", QByteArray(WEBAPPS_JSON));
+        qputenv("TAOS_APPGROUPS_BIN", "/nonexistent/taos-appgroups");   // none, unless a test brings a fake
         Taos::Store::registerStoreQmlTypes();
         m_fake = new FakeHost;
         QVERIFY(m_fake->ok());
@@ -252,6 +265,105 @@ private Q_SLOTS:
         click(visibleByName(m_win, u"consentAccept"_s));
         QVERIFY(waitFor([this] { return m_fake->callsTo(u"/api/store/install-v2"_s).size() == 1; }));
         QVERIFY(waitFor([this] { return byAccessible(m_win, u"Open SearXNG"_s) != nullptr; }));
+    }
+
+
+    void a_container_app_asks_for_the_group_and_licence_and_moves_from_its_page()
+    {
+        QTemporaryDir ag;
+        const QString d = ag.path();
+        writeFile(d + u"/catalog.json"_s, jq("{'ok':true,'apps':[{'id':'claude-desktop','name':'Claude','type':'container-desktop-app','description':'Anthropic app','publisher':'Anthropic','homepage':'https://x.example/','licence':'Anthropic Consumer Terms of Service','licence_url':'https://www.anthropic.com/legal/consumer-terms','licence_required':true,'terms_note':'Proprietary','version':'apt','categories':['Development'],'can_update':true,'window_app_id':'claude-desktop','grants':{}}]}"));
+        writeFile(d + u"/list.json"_s, jq("{'ok':true,'apps':[]}"));
+        writeFile(d + u"/groups.json"_s, jq("{'ok':true,'groups':[{'name':'default','display_name':'My apps','state':'running','apps':[]},{'name':'dev-apps','display_name':'Dev apps','state':'running','apps':[]}]}"));
+        qputenv("TAOS_APPGROUPS_BIN", QByteArray(FAKE_APPGROUPS));
+        qputenv("FAKE_AG_DIR", d.toUtf8());
+        const auto log = [&] { QFile f(d + u"/args.log"_s); return f.open(QIODevice::ReadOnly) ? QString::fromUtf8(f.readAll()) : QString(); };
+        open(true);
+        QVERIFY(waitFor([this] { return m_win->property("engine").value<QObject *>() && m_win->property("engine").value<QObject *>()->property("loaded").toBool(); }));
+        if (!qEnvironmentVariable("TAOS_TEST_SIZE").isEmpty()) {
+            const QStringList wh = qEnvironmentVariable("TAOS_TEST_SIZE").split(u'x');
+            m_win->resize(wh[0].toInt(), wh[1].toInt());
+        }
+        m_win->setProperty("detailId", u"claude-desktop"_s);
+        QVERIFY(waitFor([this] { return byAccessible(m_win, u"Install Claude"_s) != nullptr; }));
+        click(byAccessible(m_win, u"Install Claude"_s));
+        // the card: the group choices, the licence and the words on the button
+        QVERIFY(waitFor([this] { return visibleByName(m_win, u"consentCard"_s) != nullptr && visibleByName(m_win, u"group-dev-apps"_s) != nullptr; }));
+        QVERIFY(visibleByName(m_win, u"group-default"_s));
+        QVERIFY(visibleByName(m_win, u"licenceBlock"_s));
+        QVERIFY(visibleByName(m_win, u"readLicence"_s));
+        QCOMPARE(visibleByName(m_win, u"consentAccept"_s)->property("text").toString(), u"I agree and install"_s);
+        QVERIFY2(!log().contains(u"install claude-desktop"_s), "nothing is installed before the person agrees");
+        shot(m_win, u"1-install-asks-group-and-licence"_s);
+        // a new group is named in words; the button waits for a usable name
+        click(visibleByName(m_win, u"newGroupButton"_s));
+        QVERIFY(waitFor([this] { return visibleByName(m_win, u"groupNameField"_s) != nullptr; }));
+        QCOMPARE(visibleByName(m_win, u"createGroupButton"_s)->property("enabled").toBool(), false);
+        visibleByName(m_win, u"groupNameField"_s)->setProperty("text", u"Internet apps"_s);
+        QVERIFY(waitFor([this] { return visibleByName(m_win, u"createGroupButton"_s)->property("enabled").toBool(); }));
+        writeFile(d + u"/groups.json"_s, jq("{'ok':true,'groups':[{'name':'default','display_name':'My apps','state':'running','apps':[]},{'name':'dev-apps','display_name':'Dev apps','state':'running','apps':[]},{'name':'internet-apps','display_name':'Internet apps','state':'running','apps':[]}]}"));
+        qputenv("FAKE_AG_SLOW", "1");
+        click(visibleByName(m_win, u"createGroupButton"_s));
+        shot(m_win, u"2-new-group-naming"_s);
+        QVERIFY(waitFor([&] { return log().contains(u"group create internet-apps --display-name Internet apps --json"_s); }));
+        // while the group is still being made the install button waits (the install would go to the wrong group)
+        QCOMPARE(visibleByName(m_win, u"consentAccept"_s)->property("enabled").toBool(), false);
+        // when it is ready the name box closes and the new group is the chosen one
+        QVERIFY(waitFor([this] { return visibleByName(m_win, u"groupNameField"_s) == nullptr; }));
+        QVERIFY(waitFor([this] { auto *r = visibleByName(m_win, u"group-internet-apps"_s); return r && r->property("on").toBool(); }));
+        QVERIFY(visibleByName(m_win, u"consentAccept"_s)->property("enabled").toBool());
+        qunsetenv("FAKE_AG_SLOW");
+        // choose Dev apps and agree
+        writeFile(d + u"/list.json"_s, jq("{'ok':true,'apps':[{'id':'claude-desktop','name':'Claude','group':'dev-apps','installed_version':'1.17282.0'}]}"));
+        click(visibleByName(m_win, u"group-dev-apps"_s));
+        click(visibleByName(m_win, u"consentAccept"_s));
+        QVERIFY(waitFor([&] { return log().contains(u"install claude-desktop --json --target group:dev-apps"_s); }));
+        // the installed page says where it lives, and offers Move to group
+        QVERIFY(waitFor([this] { return visibleByName(m_win, u"groupSection"_s) != nullptr && visibleByName(m_win, u"groupName"_s) != nullptr; }));
+        QCOMPARE(visibleByName(m_win, u"groupName"_s)->property("text").toString(), u"Dev apps"_s);
+        shot(m_win, u"3-installed-page-group-section"_s);
+        click(visibleByName(m_win, u"moveToGroup"_s));
+        QVERIFY(waitFor([this] { return visibleByName(m_win, u"moveButton"_s) != nullptr; }));
+        QVERIFY(waitFor([this] { return visibleByName(m_win, u"group-default"_s) != nullptr; }));
+        QVERIFY2(!visibleByName(m_win, u"group-dev-apps"_s), "the group the app is in is not offered");
+        QVERIFY(waitFor([this] { return visibleByName(m_win, u"moveButton"_s)->property("enabled").toBool(); }));   // My apps is preselected
+        shot(m_win, u"4-move-to-group-dialog"_s);
+        click(visibleByName(m_win, u"moveButton"_s));
+        QVERIFY(waitFor([&] { return log().contains(u"move claude-desktop --to group:default --json"_s); }));
+        // and Back from the page still goes back after a move
+        QVERIFY(waitFor([this] { return byName(m_win, u"backButton"_s) != nullptr; }));
+        QTest::qWait(400);
+        click(byName(m_win, u"backButton"_s));
+        QVERIFY(waitFor([this] { return m_win->property("detailId").toString().isEmpty(); }));
+        qputenv("TAOS_APPGROUPS_BIN", "/nonexistent/taos-appgroups");
+    }
+
+
+    void a_container_app_installs_into_the_group_the_card_shows_selected()
+    {
+        QSettings(u"taOS"_s, u"Store"_s).remove(u"lastAppGroup"_s);   // the picker starts from the last-used group; a previous test used dev-apps
+        QTemporaryDir ag;
+        const QString d = ag.path();
+        writeFile(d + u"/catalog.json"_s, jq("{'ok':true,'apps':[{'id':'chromium','name':'Chromium','type':'container-desktop-app','description':'d','publisher':'p','homepage':'https://x.example/','licence':'BSD','licence_required':false,'terms_note':'Open','version':'debian','categories':['Network'],'window_app_id':'chromium','grants':{}}]}"));
+        writeFile(d + u"/list.json"_s, jq("{'ok':true,'apps':[]}"));
+        // the order a real Incus lists them in: the named group before the default one
+        writeFile(d + u"/groups.json"_s, jq("{'ok':true,'groups':[{'name':'dev-apps','display_name':'Dev apps','state':'running','apps':[]},{'name':'default','display_name':'My apps','state':'running','apps':[]}]}"));
+        qputenv("TAOS_APPGROUPS_BIN", QByteArray(FAKE_APPGROUPS));
+        qputenv("FAKE_AG_DIR", d.toUtf8());
+        const auto log = [&] { QFile f(d + u"/args.log"_s); return f.open(QIODevice::ReadOnly) ? QString::fromUtf8(f.readAll()) : QString(); };
+        open(true);
+        QVERIFY(waitFor([this] { return m_win->property("engine").value<QObject *>() && m_win->property("engine").value<QObject *>()->property("loaded").toBool(); }));
+        m_win->setProperty("detailId", u"chromium"_s);
+        QVERIFY(waitFor([this] { return byAccessible(m_win, u"Install Chromium"_s) != nullptr; }));
+        click(byAccessible(m_win, u"Install Chromium"_s));
+        QVERIFY(waitFor([this] { return visibleByName(m_win, u"group-default"_s) != nullptr && visibleByName(m_win, u"group-dev-apps"_s) != nullptr; }));
+        QVERIFY(waitFor([this] { return visibleByName(m_win, u"group-default"_s)->property("on").toBool(); }));   // "My apps" looks selected
+        QCOMPARE(visibleByName(m_win, u"group-dev-apps"_s)->property("on").toBool(), false);
+        QCOMPARE(visibleByName(m_win, u"consentAccept"_s)->property("text").toString(), u"Install"_s);      // no licence to accept
+        click(visibleByName(m_win, u"consentAccept"_s));                                                    // the picker is never touched
+        QVERIFY(waitFor([&] { return log().contains(u"install chromium --json --target group:default"_s); }));
+        QVERIFY2(!log().contains(u"--accept-licence"_s), qPrintable(log()));
+        qputenv("TAOS_APPGROUPS_BIN", "/nonexistent/taos-appgroups");
     }
 
     void a_member_sees_why_the_install_failed()

@@ -10,7 +10,7 @@ function(taos_store_test name)
   add_executable(${name} ${name}.cpp)
   target_link_libraries(${name} PRIVATE taosqt Qt6::Test Qt6::Quick Qt6::QuickControls2 Qt6::Qml taos_store_core)
   target_include_directories(${name} PRIVATE ${CMAKE_SOURCE_DIR}/tests ${STORE_DIR}/src)
-  target_compile_definitions(${name} PRIVATE FAKE_APPS_PY="${FAKE_STORE_PY}" FAKE_BROWSER="${FAKE_BROWSER_SH}"
+  target_compile_definitions(${name} PRIVATE FAKE_APPS_PY="${FAKE_STORE_PY}" FAKE_BROWSER="${FAKE_BROWSER_SH}" FAKE_APPGROUPS="${CMAKE_CURRENT_SOURCE_DIR}/fake_appgroups.sh"
                              WEBAPPS_JSON="${STORE_DIR}/catalog/webapps.json")
   taos_apps_use_common(${name})
   set(_files)

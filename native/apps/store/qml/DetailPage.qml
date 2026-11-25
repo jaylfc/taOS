@@ -20,6 +20,8 @@ Item {
     Component.onCompleted: engine.loadDetail(appId)
     Keys.onEscapePressed: page.back()
 
+    MoveToGroupDialog { id: moveDialog; engine: page.engine }
+
     C.ScrollView {
         id: scroll
         anchors.fill: parent
@@ -54,8 +56,8 @@ Item {
                 coverUrl: page.e.coverUrl ? page.e.coverUrl : ""
                 subtitle: [page.e.kind === "webapp" ? qsTr("Web app") : page.e.kind === "model" ? qsTr("Model") : page.e.kind === "agent" ? qsTr("Agent framework")
                            : page.e.kind === "plugin" ? qsTr("Plugin") : page.e.kind === "mcp" ? qsTr("Tool server") : qsTr("App"),
-                           page.e.categoryLabel, page.e.version ? "v" + page.e.version : "", page.e.sizeText].filter(s => s).join("  ·  ")
-                actions: Component { GetButton { engine: page.engine; entry: page.e; compact: false; showRemove: true; pick: page.variant; onReview: {} } }
+                           page.e.categoryLabel, (page.e.kind === "containerapp" && page.e.installedVersion) ? "v" + page.e.installedVersion : page.e.version ? "v" + page.e.version : "", page.e.sizeText].filter(s => s).join("  ·  ")
+                actions: Component { GetButton { engine: page.engine; entry: page.e; compact: false; showRemove: true; pick: page.variant; hideReview: true; onReview: {} } }
                 Chip { visible: page.e.needsDocker === true; text: qsTr("Needs Docker"); tone: "warning"; glyph: "alert" }
                 Chip { visible: !!page.e.fit; text: page.e.fitText ? page.e.fitText : ""
                        tone: page.e.fit === "green" ? "success" : page.e.fit === "yellow" ? "warning" : "danger" }
@@ -95,22 +97,123 @@ Item {
                     anchors { fill: parent; margins: 14 }
                     spacing: 10
                     Accessible.role: Accessible.Dialog
-                    Accessible.name: page.st.consent === "license" ? qsTr("Licence to accept") : qsTr("Docker is needed")
+                    Accessible.name: page.st.consent === "containerapp" ? qsTr("Install %1").arg(page.e.name ? page.e.name : "")
+                                     : page.st.consent === "license" ? qsTr("Licence to accept") : qsTr("Docker is needed")
                     TaosText {
-                        text: page.st.consent === "license" ? qsTr("Licence to accept") : qsTr("Needs Docker")
+                        text: page.st.consent === "containerapp" ? qsTr("Install %1").arg(page.e.name ? page.e.name : "")
+                              : page.st.consent === "license" ? qsTr("Licence to accept") : qsTr("Needs Docker")
                         font.weight: Font.DemiBold
                         Accessible.ignored: false; Accessible.role: Accessible.Heading; Accessible.name: text
                     }
                     TaosText { Layout.fillWidth: true; wrapMode: Text.Wrap; text: page.st.consentText ? page.st.consentText : ""; font.pixelSize: Look.small }
+                    // container apps: which group, and the licence when the publisher requires it
+                    GroupPicker {
+                        visible: page.st.consent === "containerapp"
+                        Layout.fillWidth: true
+                        engine: page.engine
+                        // chosen afresh each time the card is shown, so the row that looks selected is the group used
+                        onVisibleChanged: if (visible) reset()
+                        onPicked: (g) => page.engine.chooseGroup(page.appId, g)
+                    }
+                    ColumnLayout {
+                        visible: page.st.consent === "containerapp" && page.e.licenceRequired === true
+                        objectName: "licenceBlock"
+                        Layout.fillWidth: true
+                        spacing: 4
+                        TaosText { text: qsTr("Licence"); font.pixelSize: Look.small; color: Look.textSecondary }
+                        TaosText { Layout.fillWidth: true; wrapMode: Text.Wrap; font.weight: Font.DemiBold; text: page.e.license ? page.e.license : "" }
+                        TaosText { Layout.fillWidth: true; wrapMode: Text.Wrap; font.pixelSize: Look.small; color: Look.textSecondary
+                                   visible: !!page.e.termsNote; text: page.e.termsNote ? page.e.termsNote : "" }
+                        TaosButton {
+                            text: qsTr("Read the licence"); glyph: "external"; variant: "ghost"; compact: true
+                            objectName: "readLicence"
+                            accessibleName: qsTr("Read the licence of %1 in your browser").arg(page.e.name ? page.e.name : "")
+                            onClicked: Qt.openUrlExternally(page.e.licenceUrl)
+                        }
+                    }
                     RowLayout {
                         spacing: 8
                         TaosButton {
                             objectName: "consentAccept"
-                            text: page.st.consent === "license" ? qsTr("I agree and install") : qsTr("Install with Docker")
+                            // not while a group is still being made: the install would go to the wrong place
+                            enabled: page.st.consent !== "containerapp" || page.engine.groupWork.state !== "creating"
+                            text: page.st.consent === "containerapp" ? (page.e.licenceRequired === true ? qsTr("I agree and install") : qsTr("Install"))
+                                  : page.st.consent === "license" ? qsTr("I agree and install") : qsTr("Install with Docker")
                             variant: "primary"
                             onClicked: page.engine.acceptConsent(page.appId)
                         }
                         TaosButton { objectName: "consentCancel"; text: qsTr("Cancel"); variant: "ghost"; onClicked: page.engine.cancelConsent(page.appId) }
+                    }
+                }
+            }
+
+            // ---- container app: where it lives, move, licence, updates
+            ColumnLayout {
+                visible: page.known && page.e.kind === "containerapp" && page.e.installed === true
+                objectName: "groupSection"
+                Layout.fillWidth: true
+                spacing: 6
+                TaosText { text: qsTr("Where it lives"); font.pixelSize: Look.small; font.weight: Font.DemiBold; color: Look.textSecondary
+                           font.capitalization: Font.AllUppercase; font.letterSpacing: 0.6
+                           Accessible.ignored: false; Accessible.role: Accessible.Heading; Accessible.name: text }
+                Rectangle {
+                    Layout.fillWidth: true
+                    implicitHeight: groupFlow.implicitHeight + 24
+                    radius: Look.radiusCard; color: Look.surface
+                    border.width: 1; border.color: Look.hairline
+                    Flow {
+                        id: groupFlow
+                        x: 14; y: 12
+                        width: parent.width - 28
+                        spacing: 12
+                        ColumnLayout {
+                            width: Math.max(180, groupFlow.width - moveBtn.width - groupFlow.spacing)
+                            spacing: 2
+                            TaosText { objectName: "groupName"; text: page.e.groupName ? page.e.groupName : ""; font.weight: Font.DemiBold
+                                       Accessible.ignored: false; Accessible.role: Accessible.StaticText; Accessible.name: qsTr("App group: %1").arg(text) }
+                            TaosText { Layout.fillWidth: true; wrapMode: Text.Wrap; font.pixelSize: Look.small; color: Look.textSecondary
+                                       text: [page.e.installedVersion ? qsTr("Version %1").arg(page.e.installedVersion) : "", page.e.licenceAcceptedText ? page.e.licenceAcceptedText : ""].filter(x => x).join("  ·  ") }
+                        }
+                        TaosButton {
+                            id: moveBtn
+                            objectName: "moveToGroup"
+                            text: qsTr("Move to group…"); variant: "outline"; compact: true
+                            enabled: page.st.state === "idle" || page.st.state === "installed"
+                            accessibleName: qsTr("Move %1 to another app group").arg(page.e.name ? page.e.name : "")
+                            onClicked: moveDialog.openFor(page.appId, page.e.name, page.e.group)
+                        }
+                    }
+                }
+                // an app installed before licences were recorded: say so, and let the person accept (or read) it now
+                RowLayout {
+                    visible: page.e.needsLicenceAcceptance === true
+                    objectName: "licenceAcceptRow"
+                    Layout.fillWidth: true
+                    spacing: 8
+                    TaosText { Layout.fillWidth: true; wrapMode: Text.Wrap; font.pixelSize: Look.small; color: Look.textSecondary
+                               text: qsTr("You have not accepted the licence of %1 yet.").arg(page.e.name ? page.e.name : "")
+                               Accessible.ignored: false; Accessible.role: Accessible.StaticText; Accessible.name: text }
+                    TaosButton { text: qsTr("Read it"); variant: "ghost"; compact: true; onClicked: Qt.openUrlExternally(page.e.licenceUrl) }
+                    TaosButton { objectName: "acceptLicence"; text: qsTr("I accept"); variant: "primary"; compact: true
+                                 accessibleName: qsTr("Accept the licence of %1").arg(page.e.name ? page.e.name : "")
+                                 onClicked: page.engine.acceptInstalledLicence(page.appId) }
+                }
+                RowLayout {
+                    visible: page.e.canUpdate === true
+                    Layout.fillWidth: true
+                    spacing: 8
+                    readonly property var up: page.engine.revision >= 0 ? page.engine.updateState(page.appId) : ({})
+                    TaosText { Layout.fillWidth: true; wrapMode: Text.Wrap; font.pixelSize: Look.small; color: Look.textSecondary
+                               text: parent.up.text ? parent.up.text : qsTr("Updates come from the publisher when you ask for them.")
+                               Accessible.ignored: false; Accessible.role: Accessible.StaticText; Accessible.name: text }
+                    TaosButton {
+                        objectName: "updateButton"
+                        readonly property string us: parent.up.state ? parent.up.state : "idle"
+                        text: us === "available" ? (parent.up.unverified ? qsTr("Install anyway") : qsTr("Update")) : qsTr("Check for updates")
+                        variant: us === "available" ? "primary" : "outline"; compact: true
+                        enabled: us !== "checking" && us !== "updating" && (page.st.state === "idle" || page.st.state === "installed")
+                        accessibleName: us === "available" ? qsTr("Install the new version of %1").arg(page.e.name) : qsTr("Check whether %1 has an update").arg(page.e.name)
+                        onClicked: us === "available" ? page.engine.updateContainerApp(page.appId) : page.engine.checkAppUpdate(page.appId)
                     }
                 }
             }

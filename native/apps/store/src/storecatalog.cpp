@@ -221,9 +221,16 @@ QVariantMap normalizeContainerAppEntry(const QJsonObject &o)
     e[u"source"_s] = u"builtin"_s;
     e[u"license"_s] = o.value(u"licence"_s).toString();
     e[u"termsNote"_s] = o.value(u"terms_note"_s).toString();
+    e[u"licenceUrl"_s] = o.value(u"licence_url"_s).toString();
+    e[u"licenceRequired"_s] = o.value(u"licence_required"_s).toBool();
+    e[u"publisher"_s] = o.value(u"publisher"_s).toString();
+    e[u"canUpdate"_s] = o.value(u"can_update"_s).toBool();
+    // "apt" and "debian" name where it comes from, not which version it is
+    if (!e.value(u"version"_s).toString().isEmpty() && !e.value(u"version"_s).toString().at(0).isDigit())
+        e[u"version"_s] = QString();
     e[u"windowAppId"_s] = o.value(u"window_app_id"_s).toString();
     e[u"grants"_s] = o.value(u"grants"_s).toVariant();
-    e[u"runtimeText"_s] = QObject::tr("Runs in your apps container");
+    e[u"runtimeText"_s] = QObject::tr("Runs in an app group, apart from your files");
     return e;
 }
 

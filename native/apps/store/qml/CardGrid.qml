@@ -38,6 +38,9 @@ Item {
                 required property int index
                 Layout.fillWidth: true
                 Layout.preferredWidth: 1
+                // one result in a wide window is one card wide, not the whole row
+                Layout.maximumWidth: Math.floor((root.width - (root.columns - 1) * root.gap) / root.columns)
+                Layout.alignment: Qt.AlignTop
                 objectName: root.tag + "-" + modelData.id
                 name: modelData.name
                 category: modelData.categoryLabel ? modelData.categoryLabel : ""
