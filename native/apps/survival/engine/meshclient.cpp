@@ -29,6 +29,11 @@ MeshClient::MeshClient(QString socketPath, QObject *parent) : QObject(parent), m
         m_stream.write("{\"id\":0,\"method\":\"subscribe\",\"principal\":\"owner\",\"params\":{}}\n");
     });
     connect(&m_stream, &QLocalSocket::readyRead, this, &MeshClient::onStreamRead);
+    connect(&m_stream, &QLocalSocket::disconnected, this, [this] {
+        // the record stream dropped on its own: the command connection is still up, so look again after a moment
+        if (m_running && m_state == State::Connected)
+            QTimer::singleShot(2000, this, [this] { if (m_running && m_state == State::Connected && m_stream.state() == QLocalSocket::UnconnectedState) openStream(); });
+    });
 }
 
 MeshClient::~MeshClient()

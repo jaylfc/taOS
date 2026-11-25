@@ -27,7 +27,11 @@ C.ScrollView {
         deviceId = fw.devices[0].id
         if (d.fwstep === "choose") step = "choose"
         else { entryId = "meshtastic:heltec-v3:2.7.26.54e0d8d"; fw.planFlash(deviceId, entryId); step = "plan"
-               if (d.fwstep === "result") Qt.callLater(() => { fw.runFlash(deviceId, entryId, "Heltec V3", false); step = "result" }) }
+               if (d.fwstep === "result") Qt.callLater(demoRun) }
+    }
+    function demoRun() {
+        if (!fw.plan.confirm_phrase) { Qt.callLater(demoRun); return }
+        fw.runFlash(deviceId, entryId, fw.plan.confirm_phrase, false); step = "result"
     }
     function networkName(n) { return n === "meshtastic" ? "Meshtastic" : n === "meshcore" ? "MeshCore" : n === "rnode" ? "RNode (Reticulum)" : n }
     function boardName(id) { for (const b of (fw.boards.boards || [])) if (b.id === id) return b.name; return id }
