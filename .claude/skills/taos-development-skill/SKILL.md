@@ -156,6 +156,14 @@ If it fires: a resolvable fix means take the upgrade and drop the entry; a
 new advisory means triage it, never blanket-add it. Entries for tool-level
 deps the project does not pin set `check_upgrade = false`.
 
+The desktop's npm dependencies are gated by the `npm-audit` job in the same
+workflow: `npm audit --audit-level=high` against `desktop/package-lock.json`
+(the audit reads the lockfile; no install step). High and critical
+advisories fail the job, dev dependencies included; lower severities print
+in the step output for triage but do not gate. If it fires on an advisory
+with no released fix, prefer a lockfile-level override or a tracked
+follow-up over lowering the threshold.
+
 ### Test conventions
 
 - `conftest.py`: `tmp_data_dir` fixture creates temp config + SQLite

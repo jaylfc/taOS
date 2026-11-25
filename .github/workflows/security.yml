@@ -53,3 +53,29 @@ jobs:
           python -m pip install --upgrade "pip>=26.1"
           pip install pip-audit
           python scripts/check_dependency_audit_ignores.py
+
+  npm-audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
+
+      - name: Set up Node
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1  # v7
+        with:
+          node-version: "22"
+
+      # #739's third ask (ruff and vitest already gate in ci.yml): audit the
+      # desktop's npm dependencies. npm audit reads the committed lockfile,
+      # so no install step is needed. The gate fails on high or critical
+      # advisories anywhere in the tree, dev dependencies included; lower
+      # severities still print in the step output for triage. Verified
+      # before enabling (2026-11-25, npm 10.9.8 against
+      # desktop/package-lock.json): 861 dependencies, 8 low advisories --
+      # all one low-severity KaTeX advisory arriving transitively via
+      # mermaid / @excalidraw / @milkdown -- and 0 moderate, 0 high,
+      # 0 critical, so this exits 0 today and does not block the open
+      # queue, mirroring the pip-audit job above.
+      - name: Audit desktop npm dependencies
+        run: |
+          cd desktop
+          npm audit --audit-level=high
