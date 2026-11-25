@@ -1,0 +1,11 @@
+{
+ "blkid": {
+  "out": "DEVNAME=ntfs.img\nLABEL=win\nFSBLOCKSIZE=4096\nBLOCK_SIZE=512\nFSSIZE=67108352\nUUID=1056F6AC15C0F9A2\nTYPE=ntfs\nUSAGE=filesystem\n",
+  "rc": 0
+ },
+ "synthetic_image": false,
+ "wipefs": {
+  "out": "{\n   \"signatures\": [\n      {\n         \"device\": \"ntfs.img\",\n         \"offset\": \"0x3\",\n         \"type\": \"ntfs\",\n         \"uuid\": \"1056F6AC15C0F9A2\",\n         \"label\": \"win\"\n      },{\n         \"device\": \"ntfs.img\",\n         \"offset\": \"0x1fe\",\n         \"type\": \"dos\",\n         \"uuid\": null,\n         \"label\": null\n      }\n   ]\n}\n",
+  "rc": 0
+ }
+}

@@ -1,0 +1,11 @@
+{
+ "blkid": {
+  "out": "DEVNAME=luks.img\nVERSION=2\nUUID=d2f491a4-bfad-47c4-b60d-821fa6fc4174\nTYPE=crypto_LUKS\nUSAGE=crypto\n",
+  "rc": 0
+ },
+ "synthetic_image": true,
+ "wipefs": {
+  "out": "{\n   \"signatures\": [\n      {\n         \"device\": \"luks.img\",\n         \"offset\": \"0x0\",\n         \"type\": \"crypto_LUKS\",\n         \"uuid\": \"d2f491a4-bfad-47c4-b60d-821fa6fc4174\",\n         \"label\": null\n      }\n   ]\n}\n",
+  "rc": 0
+ }
+}

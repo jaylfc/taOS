@@ -1,0 +1,11 @@
+{
+ "blkid": {
+  "out": "",
+  "rc": 2
+ },
+ "synthetic_image": false,
+ "wipefs": {
+  "out": "{\n   \"signatures\": [\n\n   ]\n}\n",
+  "rc": 0
+ }
+}

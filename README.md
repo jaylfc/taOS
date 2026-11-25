@@ -519,6 +519,7 @@ Run `curl -fsSL https://raw.githubusercontent.com/jaylfc/taOS/master/scripts/ins
 | Local desktop (optional) | Asked during install, or `TAOS_DESKTOP=local` / `TAOS_DESKTOP=headless` for unattended installs. `local` runs `scripts/kiosk-setup.sh` and enables `taos-kiosk.service`, so the machine boots into the taOS desktop. Default: headless. |
 | Desktop launcher | On a machine that already has a desktop (and local desktop not chosen), adds a taOS entry to the app menu. Remove with `sudo taos desktop launcher remove`. |
 | OS packages added | python3 + venv + pip, git, curl, ca-certificates, libtorrent-rasterbar (model torrent mesh), Node.js 22 (qmd + SPA build), sqlite3, libsqlcipher (encrypted secrets), vulkan-tools (hardware detection) |
+| `/usr/local/sbin/taos-storage-helper`, `/usr/local/lib/taos-storage/`, `/etc/sudoers.d/taos-storage`, `/etc/taos/keys/` | The root storage helper (the only code that formats a disk), its safety classifier, a sudoers entry that lets only the taOS service account run only that helper, and the 0700 directory for storage-area key files. Installed by `scripts/install-storage-helper.sh`; see `docs/storage-engine.md`. |
 | User accounts created | None for the LLM layer any more. Everything runs as the user who ran the installer. Older installs may still have a `litellm` Postgres role and database from before LiteLLM was removed; nothing uses them now. |
 
 ### Hailo-10H install (`scripts/install-hailo.sh`)

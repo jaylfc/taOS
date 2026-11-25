@@ -1,0 +1,16 @@
+# taOS storage helper. Installed to /etc/sudoers.d/taos-storage (mode 0440) by
+# scripts/install-storage-helper.sh, which replaces @TAOS_USER@ with the
+# controller's service account and validates the result with visudo -c -f.
+#
+# Exactly ONE account may run exactly ONE program, with a fixed set of
+# subcommands. The helper validates every argument itself, re-runs the disk
+# safety check before it writes, and refuses to run if its own files are
+# writable by anyone but root.
+Cmnd_Alias TAOS_STORAGE_HELPER = \
+    /usr/local/sbin/taos-storage-helper list, \
+    /usr/local/sbin/taos-storage-helper status, \
+    /usr/local/sbin/taos-storage-helper add *, \
+    /usr/local/sbin/taos-storage-helper prepare-home *, \
+    /usr/local/sbin/taos-storage-helper install-veracrypt --accept-licence
+
+@TAOS_USER@ ALL=(root) NOPASSWD: TAOS_STORAGE_HELPER

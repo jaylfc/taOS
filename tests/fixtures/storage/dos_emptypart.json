@@ -1,0 +1,24 @@
+{
+ "disk": {
+  "blkid": {
+   "out": "DEVNAME=dos_emptypart.img\nPTUUID=3e344be5\nPTTYPE=dos\n",
+   "rc": 0
+  },
+  "synthetic_image": false,
+  "wipefs": {
+   "out": "{\n   \"signatures\": [\n      {\n         \"device\": \"dos_emptypart.img\",\n         \"offset\": \"0x1fe\",\n         \"type\": \"dos\",\n         \"uuid\": null,\n         \"label\": null\n      }\n   ]\n}\n",
+   "rc": 0
+  }
+ },
+ "part1": {
+  "blkid": {
+   "out": "",
+   "rc": 2
+  },
+  "synthetic_image": false,
+  "wipefs": {
+   "out": "{\n   \"signatures\": [\n\n   ]\n}\n",
+   "rc": 0
+  }
+ }
+}

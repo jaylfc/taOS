@@ -1,0 +1,24 @@
+{
+ "disk": {
+  "blkid": {
+   "out": "DEVNAME=dos_ext4.img\nPTUUID=167bdd42\nPTTYPE=dos\n",
+   "rc": 0
+  },
+  "synthetic_image": false,
+  "wipefs": {
+   "out": "{\n   \"signatures\": [\n      {\n         \"device\": \"dos_ext4.img\",\n         \"offset\": \"0x1fe\",\n         \"type\": \"dos\",\n         \"uuid\": null,\n         \"label\": null\n      }\n   ]\n}\n",
+   "rc": 0
+  }
+ },
+ "part1": {
+  "blkid": {
+   "out": "DEVNAME=dos_ext4-part1.img\nUUID=56d99775-c030-426e-aaea-26fd198356db\nVERSION=1.0\nFSBLOCKSIZE=1024\nBLOCK_SIZE=1024\nFSLASTBLOCK=50000\nFSSIZE=51200000\nTYPE=ext4\nUSAGE=filesystem\n",
+   "rc": 0
+  },
+  "synthetic_image": false,
+  "wipefs": {
+   "out": "{\n   \"signatures\": [\n      {\n         \"device\": \"dos_ext4-part1.img\",\n         \"offset\": \"0x438\",\n         \"type\": \"ext4\",\n         \"uuid\": \"56d99775-c030-426e-aaea-26fd198356db\",\n         \"label\": null\n      }\n   ]\n}\n",
+   "rc": 0
+  }
+ }
+}

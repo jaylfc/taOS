@@ -1,0 +1,11 @@
+{
+ "blkid": {
+  "out": "DEVNAME=exfat.img\nLABEL=x\nUUID=EF66-9044\nVERSION=1.0\nFSBLOCKSIZE=512\nBLOCK_SIZE=512\nFSSIZE=67108864\nTYPE=exfat\nUSAGE=filesystem\n",
+  "rc": 0
+ },
+ "synthetic_image": false,
+ "wipefs": {
+  "out": "{\n   \"signatures\": [\n      {\n         \"device\": \"exfat.img\",\n         \"offset\": \"0x3\",\n         \"type\": \"exfat\",\n         \"uuid\": \"EF66-9044\",\n         \"label\": \"x\"\n      },{\n         \"device\": \"exfat.img\",\n         \"offset\": \"0x1fe\",\n         \"type\": \"dos\",\n         \"uuid\": null,\n         \"label\": null\n      }\n   ]\n}\n",
+  "rc": 0
+ }
+}

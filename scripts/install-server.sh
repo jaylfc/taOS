@@ -2479,6 +2479,14 @@ install_linux_systemd_system() {
             || warn "automatic maintenance steps are not set up (see the message above); updates will ask the owner to run them"
     fi
 
+    # Root storage helper: the only code that formats a disk, allowed to run only
+    # for the 'taos' account through a validated sudoers entry. Installed from the
+    # tree BEFORE it is handed to 'taos', so the installed copies are root-owned.
+    if [[ -f "$INSTALL_DIR/scripts/install-storage-helper.sh" ]]; then
+        $sudo_cmd bash "$INSTALL_DIR/scripts/install-storage-helper.sh" --user taos \
+            || warn "adding storage areas is not set up (see the message above); the rest of taOS is unaffected"
+    fi
+
     # Install graceful-stop script
     $sudo_cmd install -m 0755 "$INSTALL_DIR/scripts/taos-graceful-stop.sh" /usr/local/bin/taos-graceful-stop
     log "installed /usr/local/bin/taos-graceful-stop"

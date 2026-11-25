@@ -267,6 +267,8 @@ def register_all_routers(app):
 
     from tinyagentos.routes.shared_folders import router as shared_folders_router
     app.include_router(shared_folders_router, dependencies=_csrf)
+    from tinyagentos.routes.storage import router as storage_router
+    app.include_router(storage_router, dependencies=_csrf)
 
     from tinyagentos.routes.providers import router as providers_router
     app.include_router(providers_router, dependencies=_csrf)

@@ -2071,6 +2071,8 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
     app.state.conversion = conversion_manager
     app.state.agent_messages = agent_messages
     app.state.shared_folders = shared_folders
+    from tinyagentos.storage_engine import StorageEngine
+    app.state.storage_engine = StorageEngine(data_dir)
     app.state.streaming_sessions = streaming_sessions
     app.state.expert_agents = expert_agents
     app.state.app_orchestrator = app_orchestrator
