@@ -505,6 +505,9 @@ def register_all_routers(app):
     from tinyagentos.routes.agent_model_api import router as agent_model_api_router
     app.include_router(agent_model_api_router, dependencies=_csrf)
 
+    from tinyagentos.routes.ollama_compat import router as ollama_compat_router
+    app.include_router(ollama_compat_router, dependencies=_csrf)
+
     # In-process LLM gateway (/api/llm/v1), the LiteLLM replacement. Always
     # mounted: since LiteLLM removal 2b-2a it is the only LLM path, and
     # TAOS_LLM_GATEWAY=0 is a logged no-op (see llm_gateway.enabled).

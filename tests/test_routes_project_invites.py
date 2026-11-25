@@ -1477,3 +1477,129 @@ class TestBuildControllerDict:
         for ep in endpoints:
             assert "2001:db8::1" not in ep.get("url", "")
         assert any("2001:db8::1" in r.message for r in caplog.records)
+
+
+# ---------------------------------------------------------------------------
+# #2067: pending invites surface in Members + Agents app. The list
+# serializers carry the fields those surfaces render (created_ts,
+# pin_required), and a read-only admin-gated aggregate lists pending
+# agent-kind invites across projects for the Agents app.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_list_invites_carries_created_ts_and_pin_required(client, app):
+    pid = await _create_project(client, slug="list-fields")
+    await client.post(
+        f"/api/projects/{pid}/invites",
+        json={"scopes": [], "approval_mode": "auto"},
+    )
+    resp = await client.get(f"/api/projects/{pid}/invites")
+    assert resp.status_code == 200, resp.text
+    items = resp.json()
+    assert len(items) == 1
+    assert isinstance(items[0]["created_ts"], (int, float))
+    assert items[0]["created_ts"] > 0
+    assert items[0]["pin_required"] is True
+    assert items[0]["kind"] == "agent"
+
+
+@pytest.mark.asyncio
+async def test_os_list_carries_kind_created_ts_and_pin_required(client, app):
+    await client.post(
+        "/api/agents/invites",
+        json={"scopes": ["a2a_send"], "approval_mode": "auto"},
+    )
+    resp = await client.get("/api/agents/invites")
+    assert resp.status_code == 200, resp.text
+    rows = resp.json()
+    assert len(rows) == 1
+    assert rows[0]["kind"] == "agent"
+    assert isinstance(rows[0]["created_ts"], (int, float))
+    assert rows[0]["pin_required"] is True
+
+
+@pytest.mark.asyncio
+async def test_pending_aggregate_includes_project_and_os_invites(client, app):
+    pid = await _create_project(client, slug="agg-proj")
+    iid_proj, _pin = await _mint_invite(client, pid, approval_mode="auto")
+    os_resp = await client.post(
+        "/api/agents/invites",
+        json={"scopes": ["a2a_send"], "approval_mode": "auto", "display_name": "Scout"},
+    )
+    iid_os = os_resp.json()["invite_id"]
+
+    resp = await client.get("/api/agents/invites/pending")
+    assert resp.status_code == 200, resp.text
+    rows = {r["invite_id"]: r for r in resp.json()}
+    assert set(rows) == {iid_proj, iid_os}
+
+    proj_row = rows[iid_proj]
+    assert proj_row["project_id"] == pid
+    assert proj_row["project_name"] == "Invite Proj"
+    assert proj_row["kind"] == "agent"
+    assert proj_row["status"] == "pending"
+    assert proj_row["pin_required"] is True
+    assert isinstance(proj_row["created_ts"], (int, float))
+    assert "pin_hash" not in proj_row
+
+    os_row = rows[iid_os]
+    assert os_row["project_id"] is None
+    assert os_row["project_name"] is None
+    assert os_row["display_name"] == "Scout"
+
+
+@pytest.mark.asyncio
+async def test_pending_aggregate_excludes_collab_revoked_and_expired(client, app):
+    pid = await _create_project(client, slug="agg-filter")
+    store = app.state.project_invites
+    # A collab invite for the same project: not an agent invite, excluded.
+    await store.mint(
+        project_id=pid,
+        scopes=[],
+        approval_mode="manual",
+        check_interval_secs=1800,
+        created_by="test-admin",
+        kind="collab",
+        contact_id="hub:abcdef",
+    )
+    # An already-expired agent invite: the row's status stays 'pending'
+    # (expiry is lazy) but it is not pending in the sense the mint cap uses
+    # (expires_ts > now), so it is excluded.
+    expired = await store.mint(
+        project_id=pid,
+        scopes=["a2a_send"],
+        approval_mode="auto",
+        check_interval_secs=1800,
+        created_by="test-admin",
+        kind="agent",
+    )
+    import time as _time
+
+    await store._db.execute(
+        "UPDATE project_invites SET expires_ts = ? WHERE invite_id = ?",
+        (_time.time() - 10, expired["record"]["invite_id"]),
+    )
+    await store._db.commit()
+    # A revoked agent invite: excluded.
+    iid_revoked, _pin = await _mint_invite(client, pid, approval_mode="auto")
+    await client.delete(f"/api/projects/{pid}/invites/{iid_revoked}")
+    # One live pending agent invite: included.
+    iid_live, _pin2 = await _mint_invite(client, pid, approval_mode="auto")
+
+    resp = await client.get("/api/agents/invites/pending")
+    assert resp.status_code == 200, resp.text
+    ids = {r["invite_id"] for r in resp.json()}
+    assert ids == {iid_live}
+
+
+@pytest.mark.asyncio
+async def test_pending_aggregate_requires_admin(client, app):
+    app.dependency_overrides[current_user] = lambda: CurrentUser(
+        user_id="non-admin-user", is_admin=False
+    )
+    try:
+        resp = await client.get("/api/agents/invites/pending")
+        assert resp.status_code == 403, resp.text
+    finally:
+        app.dependency_overrides.pop(current_user, None)

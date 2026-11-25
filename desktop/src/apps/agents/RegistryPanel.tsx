@@ -20,6 +20,7 @@ import { projectsApi } from "@/lib/projects";
 import { AssignAgentToProjectDialog } from "./AssignAgentToProjectDialog";
 import { AgentGrantsPanel } from "./AgentGrantsPanel";
 import { InviteAgentDialog } from "@/apps/ProjectsApp/InviteAgentDialog";
+import { PendingAgentInvites } from "./PendingAgentInvites";
 import { ConsentActions } from "@/components/ConsentActions";
 import { copyText } from "@/lib/clipboard";
 
@@ -1136,6 +1137,9 @@ export function RegistryPanel() {
   const [inviteProjectId, setInviteProjectId] = useState<string | null>(null);
   const [invitePickerOpen, setInvitePickerOpen] = useState(false);
   const [assignEntry, setAssignEntry] = useState<RegistryEntry | null>(null);
+  // Bumped whenever an invite dialog closes so the pending-invites section
+  // refetches (a mint inside the dialog changes the aggregate).
+  const [invitesNonce, setInvitesNonce] = useState(0);
   const [grantsEntry, setGrantsEntry] = useState<RegistryEntry | null>(null);
   // Monotonic counter, only the latest in-flight response is applied.
   const loadSeq = useRef(0);
@@ -1396,18 +1400,25 @@ export function RegistryPanel() {
             )}
           </>
         )}
+        <PendingAgentInvites active={expanded} refreshKey={invitesNonce} />
         <GovernanceAuditPanel isAdmin={isAdmin} />
       </div>
 
       {isAdmin && inviteProjectId && (
         <InviteAgentDialog
           projectId={inviteProjectId}
-          onClose={() => setInviteProjectId(null)}
+          onClose={() => {
+            setInviteProjectId(null);
+            setInvitesNonce((n) => n + 1);
+          }}
         />
       )}
       {isAdmin && invitePickerOpen && (
         <InviteExternalAgentPicker
-          onCancel={() => setInvitePickerOpen(false)}
+          onCancel={() => {
+            setInvitePickerOpen(false);
+            setInvitesNonce((n) => n + 1);
+          }}
           onPick={(pid) => {
             setInvitePickerOpen(false);
             setInviteProjectId(pid);
