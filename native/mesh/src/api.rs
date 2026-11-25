@@ -132,7 +132,14 @@ impl Daemon {
             };
         }
         match req.method.as_str() {
-            "health" => ok!(self.engine.health()),
+            "health" => {
+                // what the app needs to decide whether it may offer sending and configuration writes
+                let mut h = self.engine.health();
+                h["receive_only"] = json!(self.receive_only);
+                h["device_config"] = json!(false);
+                h["device_config_write"] = json!(false);
+                ok!(h)
+            }
             "radios" => ok!(self.engine.radios()),
             "discover" => {
                 if let Some(e) = owner_only(&id) {

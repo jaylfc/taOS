@@ -198,3 +198,41 @@ fn malformed_requests_get_an_error_not_a_hang() {
     rd.read_line(&mut b).unwrap();
     assert!(b.contains("unknown_method"));
 }
+
+#[test]
+fn health_says_whether_the_engine_is_receive_only_and_that_it_cannot_configure_radios_yet() {
+    let ro = up(true);
+    let h = call(&ro.sock, "health", "owner", json!({})).unwrap();
+    assert_eq!(h["result"]["receive_only"], true, "{h}");
+    assert_eq!(h["result"]["device_config"], false);
+    assert_eq!(h["result"]["device_config_write"], false);
+    let rw = up(false);
+    let h = call(&rw.sock, "health", "owner", json!({})).unwrap();
+    assert_eq!(h["result"]["receive_only"], false, "{h}");
+}
+
+/// Writes the real daemon's answers to the app's methods, so the app's fixtures are captured, not typed.
+/// Runs only when TAOS_MESH_DUMP_FIXTURES names a directory.
+#[test]
+fn dump_app_fixtures_when_asked() {
+    let Ok(dir) = std::env::var("TAOS_MESH_DUMP_FIXTURES") else { return };
+    let u = up(true);
+    wait_for(&u.sock, 4);
+    let c = call(&u.sock, "contacts.create", "owner", json!({"name": "Sam", "notes": "neighbour with a handset"})).unwrap();
+    let cid = c["result"]["contact"].as_str().unwrap().to_string();
+    // the node that sent the broadcast text becomes Sam
+    let msgs = call(&u.sock, "messages", "owner", json!({"filter": {"kind": "text"}})).unwrap();
+    let node = msgs["result"][0]["from"].as_str().unwrap().to_string();
+    call(&u.sock, "identities.assign", "owner", json!({"node": node, "identity": format!("contact:{cid}")})).unwrap();
+    let put = |name: &str, v: Value| std::fs::write(format!("{dir}/{name}.json"), serde_json::to_string_pretty(&v).unwrap()).unwrap();
+    put("health", call(&u.sock, "health", "owner", json!({})).unwrap());
+    put("radios", call(&u.sock, "radios", "owner", json!({})).unwrap());
+    put("app.radios", call(&u.sock, "app.radios", "owner", json!({})).unwrap());
+    put("app.identities", call(&u.sock, "app.identities", "owner", json!({})).unwrap());
+    put("app.messages", call(&u.sock, "app.messages", "owner", json!({})).unwrap());
+    put("messages.text", call(&u.sock, "messages", "owner", json!({"filter": {"kind": "text"}})).unwrap());
+    put("messages.position", call(&u.sock, "messages", "owner", json!({"filter": {"kind": "position"}})).unwrap());
+    put("last_positions", call(&u.sock, "last_positions", "owner", json!({})).unwrap());
+    put("identities.list", call(&u.sock, "identities.list", "owner", json!({})).unwrap());
+    put("no_config", call(&u.sock, "device.config", "owner", json!({"radio": node})).unwrap());
+}
