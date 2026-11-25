@@ -85,16 +85,32 @@ void DesktopSessionTokenSource::remember(const QByteArray &sessionJson)
         return;
     f.setPermissions(QFileDevice::ReadOwner | QFileDevice::WriteOwner);
     f.write(sessionJson);
+    clearSignedOut();
     m_written = sessionJson.trimmed();
     m_offered = m_written;
     if (f.commit() && !m_watcher.directories().contains(dir))
         m_watcher.addPath(dir);
 }
 
-void DesktopSessionTokenSource::forget()
+bool DesktopSessionTokenSource::signedOut() const
+{
+    return !m_path.isEmpty() && QFileInfo::exists(QFileInfo(m_path).absolutePath() + u"/signed-out"_s);
+}
+
+void DesktopSessionTokenSource::clearSignedOut()
 {
     if (!m_path.isEmpty())
+        QFile::remove(QFileInfo(m_path).absolutePath() + u"/signed-out"_s);
+}
+
+void DesktopSessionTokenSource::forget()
+{
+    if (!m_path.isEmpty()) {
         QFile::remove(m_path);
+        QFile mark(QFileInfo(m_path).absolutePath() + u"/signed-out"_s);
+        if (mark.open(QIODevice::WriteOnly))
+            mark.setPermissions(QFileDevice::ReadOwner | QFileDevice::WriteOwner);
+    }
     m_offered.clear();
     m_written.clear();
 }

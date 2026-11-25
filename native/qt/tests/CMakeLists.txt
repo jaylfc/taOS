@@ -17,7 +17,8 @@ endforeach()
 
 # The command line face of the shared sign-in, run as a real process.
 taos_qt_test(tst_sessioncli)
-target_compile_definitions(tst_sessioncli PRIVATE TAOS_SESSION_BIN="$<TARGET_FILE:taos-session>")
+target_compile_definitions(tst_sessioncli PRIVATE TAOS_SESSION_BIN="$<TARGET_FILE:taos-session>"
+                           FAKE_SSO_PY="${CMAKE_CURRENT_SOURCE_DIR}/../../testing/fake_sso.py")
 add_dependencies(tst_sessioncli taos-session)
 
 # ---- app conventions: build a dummy app through taos_add_native_app --------
