@@ -208,6 +208,26 @@ async def test_repair_leaves_exactly_one_live_key(tmp_path, store):
     assert _live(tmp_path, new) is not None
 
 
+@pytest.mark.asyncio
+async def test_repair_with_gateway_off_revokes_old_key(tmp_path, store):
+    """A board paired with the gateway on, then re-paired with it off, must
+    leave no orphan model key behind."""
+    first = FakeBoard(board_id="B1")
+    mgr = _mgr(tmp_path, store, {"a": first})
+    await mgr.confirm((await mgr.start("a"))["session"])
+    old = first.responder.provisioned["llm"]["key"]
+    assert _live(tmp_path, old) is not None
+
+    assert await store.revoke("taOSusb-B1")
+
+    second = FakeBoard(board_id="B1")
+    mgr2 = _mgr(tmp_path, store, {"a": second}, llm=False)
+    await mgr2.confirm((await mgr2.start("a"))["session"])
+
+    assert _live(tmp_path, old) is None
+    assert second.responder.provisioned["llm"] is None
+
+
 # -- orb: never mint a model key ----------------------------------------------
 
 @pytest.mark.asyncio
@@ -263,3 +283,27 @@ async def test_taosusb_with_llm_enabled_still_gets_llm_block(tmp_path, store):
     assert llm is not None
     assert llm["base"] == URL + "/api/llm/v1"
     assert _live(tmp_path, llm["key"]) is not None
+
+
+# -- revoke rollback ------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_revoke_failure_rolls_back_node_credential(tmp_path, store, monkeypatch):
+    """If revoke_for_node raises (keystore write error), the node credential
+    must be rolled back and PairError raised, not a raw exception."""
+    board = FakeBoard(board_id="REV1")
+    mgr = _mgr(tmp_path, store, {"a": board})
+    started = await mgr.start("a")
+
+    def _boom(name, data_dir):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(gw, "revoke_for_node", _boom)
+
+    with pytest.raises(PairError) as exc:
+        await mgr.confirm(started["session"])
+    assert exc.value.status == 500
+    assert "failed to revoke model keys" in str(exc.value)
+
+    # The node credential must be rolled back (no orphan key)
+    assert await store.get_signing_key("taOSusb-REV1") is None

@@ -1,0 +1,2 @@
+### Fixed
+- BLE pairing: hoisted `revoke_for_node` in `confirm()` is now guarded. If the keystore write fails (disk full, permissions, corrupt store), the node credential is rolled back, the session is closed, and a shaped `PairError(500)` is raised instead of a raw exception leaking the credential.
