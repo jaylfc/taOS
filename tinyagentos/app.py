@@ -1778,6 +1778,26 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
                 )
         logger.info("startup complete — accepting requests")
 
+        # Desktop single sign-on socket. Never fatal.
+        _sso = None
+        try:
+            from tinyagentos import desktop_sso
+
+            # Always listening: the link file is read on every request, so it may appear later (an install or
+            # update links the owner) with no controller restart; an unlinked uid is simply refused.
+            _sso = desktop_sso.DesktopSessionService(
+                auth_manager,
+                os.environ.get("TAOS_ACCOUNT_LINKS", desktop_sso.DEFAULT_LINKS),
+                os.environ.get("TAOS_DESKTOP_SSO_SOCKET", desktop_sso.DEFAULT_SOCKET),
+            )
+            if _sso.socket_path.parent.is_dir():  # no socket directory (not a systemd install): nothing to serve
+                await _sso.start()
+            else:
+                _sso = None
+        except Exception:
+            _sso = None
+            logger.exception("desktop sso socket not started (sign-in by password still works)")
+
         # Lazy lifecycle wrappers (#63) — one LazyBackendProxy per backend
         # entry that opts in with a `lazy` block. Starting a proxy only
         # binds its public port; the real backend subprocess starts on the
@@ -1794,6 +1814,8 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
         await start_lazy_proxies(lazy_proxies)
 
         yield
+        if _sso is not None:
+            await _sso.stop()
         # NOTE: controller restart/shutdown does NOT touch agent containers --
         # agents keep running independently across a controller restart, so
         # there's nothing to gracefully drain here. Only true system halt

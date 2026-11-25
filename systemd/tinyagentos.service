@@ -13,9 +13,12 @@ TimeoutStopSec=45
 # Private scratch dir for taos-graceful-stop's dedupe stamp (see the same block
 # in scripts/systemd/tinyagentos.service): without it the stamp lands in
 # world-writable /tmp, where any local user can suppress the agent drain.
-RuntimeDirectory=taos
+RuntimeDirectory=taos taos-sso
+# /run/taos is private to the service; /run/taos-sso holds only the desktop sign-in socket, which any local
+# account must be able to reach (what it is given depends on its kernel-reported uid, not on who may connect)
 RuntimeDirectoryMode=0750
 RuntimeDirectoryPreserve=yes
+ExecStartPre=+/bin/chmod 0755 /run/taos-sso
 Environment=PYTHONUNBUFFERED=1
 
 [Install]
