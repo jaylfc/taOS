@@ -2,11 +2,15 @@
 
 The Settings toggle drives the taos-rk3588-perf.service unit that
 install-server.sh installs on Rockchip boards: GET reports board support,
-unit presence and the unit's enabled/active state; PUT enables/disables
-the unit with --now so the governor change takes effect immediately.
-systemctl is faked at the routes.settings._systemctl seam and the two
-filesystem probes (unit file, device-tree compatible) are pointed at tmp
-paths so a test never touches the machine's real /etc or /proc.
+unit presence, the persisted toggle flag and the unit's active state;
+PUT starts/stops the unit for the immediate governor change and flips
+the flag the unit gates its boot start on. The toggle never changes the
+unit's enablement — systemd's unit-files polkit action carries no
+unit detail a rule could scope by (see the polkit rule file).
+systemctl is faked at the routes.settings._systemctl seam and the three
+filesystem probes (unit file, device-tree compatible, toggle flag) are
+pointed at tmp paths so a test never touches the machine's real /etc,
+/proc or /var.
 """
 from __future__ import annotations
 
@@ -20,46 +24,52 @@ UNIT = "taos-rk3588-perf.service"
 
 
 class FakeSystemctl:
-    """Records calls; answers is-enabled/is-active from mutable state and
-    applies enable/disable to that state, like the real unit would."""
+    """Records calls; answers is-active from mutable state and applies
+    start/stop to that state, like the real unit would. Any other verb
+    answers 1, so a route that (re)grows an enable/disable call fails
+    its test as a 502 instead of silently succeeding."""
 
-    def __init__(self, *, enabled=False, active=False, fail_on=None):
-        self.enabled = enabled
+    def __init__(self, *, active=False, fail_on=None):
         self.active = active
-        self.fail_on = fail_on  # action ("enable"/"disable") to fail
+        self.fail_on = fail_on  # action ("start"/"stop") to fail
         self.calls = []
 
     async def __call__(self, *args):
         self.calls.append(args)
         action = args[0]
-        if action == "is-enabled":
-            return (0, "") if self.enabled else (1, "")
         if action == "is-active":
             return (0, "") if self.active else (3, "")
         if action == self.fail_on:
             return 1, "simulated systemctl failure"
-        if action == "enable":
-            self.enabled = True
+        if action == "start":
             self.active = True
-        elif action == "disable":
-            self.enabled = False
+        elif action == "stop":
             self.active = False
+        else:
+            return 1, f"unexpected systemctl action: {action}"
         return 0, ""
 
 
 @pytest.fixture
 def perf_env(tmp_path, monkeypatch):
-    """Point the perf probes at a tmp tree; return (unit_path, compat_path)."""
+    """Point the perf probes at a tmp tree; return (unit, compat, flag)."""
     unit_path = tmp_path / "etc" / "systemd" / "system" / UNIT
     compat_path = tmp_path / "proc" / "device-tree" / "compatible"
+    flag_path = tmp_path / "var" / "lib" / "taos-rk3588-perf" / "enabled"
     monkeypatch.setattr(settings_mod, "_RK3588_PERF_UNIT_PATH", unit_path, raising=False)
     monkeypatch.setattr(settings_mod, "_RK3588_COMPATIBLE_PATH", compat_path, raising=False)
-    return unit_path, compat_path
+    monkeypatch.setattr(settings_mod, "_RK3588_PERF_FLAG_PATH", flag_path, raising=False)
+    return unit_path, compat_path, flag_path
 
 
 def _install_unit(unit_path):
     unit_path.parent.mkdir(parents=True, exist_ok=True)
     unit_path.write_text("[Unit]\nDescription=perf\n")
+
+
+def _set_flag(flag_path):
+    flag_path.parent.mkdir(parents=True, exist_ok=True)
+    flag_path.write_text("")
 
 
 def _set_board(compat_path, value: bytes):
@@ -69,7 +79,7 @@ def _set_board(compat_path, value: bytes):
 
 @pytest.mark.asyncio
 async def test_get_reports_unsupported_board_without_unit(client, perf_env, monkeypatch):
-    unit_path, compat_path = perf_env
+    unit_path, compat_path, flag_path = perf_env
     _set_board(compat_path, b"raspberrypi,5-model-b\x00brcm,bcm2712\x00")
     fake = FakeSystemctl()
     monkeypatch.setattr(settings_mod, "_systemctl", fake)
@@ -89,10 +99,11 @@ async def test_get_reports_unsupported_board_without_unit(client, perf_env, monk
 
 @pytest.mark.asyncio
 async def test_get_reports_state_on_rk3588_with_unit(client, perf_env, monkeypatch):
-    unit_path, compat_path = perf_env
+    unit_path, compat_path, flag_path = perf_env
     _install_unit(unit_path)
     _set_board(compat_path, b"rockchip,rk3588\x00")
-    fake = FakeSystemctl(enabled=True, active=True)
+    _set_flag(flag_path)
+    fake = FakeSystemctl(active=True)
     monkeypatch.setattr(settings_mod, "_systemctl", fake)
 
     resp = await client.get("/api/settings/rk3588-performance")
@@ -104,15 +115,15 @@ async def test_get_reports_state_on_rk3588_with_unit(client, perf_env, monkeypat
         "enabled": True,
         "active": True,
     }
-    assert fake.calls == [("is-enabled", UNIT), ("is-active", UNIT)]
+    assert fake.calls == [("is-active", UNIT)]
 
 
 @pytest.mark.asyncio
-async def test_get_reports_disabled_unit(client, perf_env, monkeypatch):
-    unit_path, compat_path = perf_env
+async def test_get_reports_mode_off_when_flag_absent(client, perf_env, monkeypatch):
+    unit_path, compat_path, flag_path = perf_env
     _install_unit(unit_path)
     _set_board(compat_path, b"rockchip,rk3588\x00")
-    fake = FakeSystemctl(enabled=False, active=False)
+    fake = FakeSystemctl(active=False)
     monkeypatch.setattr(settings_mod, "_systemctl", fake)
 
     resp = await client.get("/api/settings/rk3588-performance")
@@ -126,11 +137,11 @@ async def test_get_reports_disabled_unit(client, perf_env, monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_put_enable_dispatches_enable_now(client, perf_env, monkeypatch):
-    unit_path, compat_path = perf_env
+async def test_put_enable_starts_unit_and_sets_flag(client, perf_env, monkeypatch):
+    unit_path, compat_path, flag_path = perf_env
     _install_unit(unit_path)
     _set_board(compat_path, b"rockchip,rk3588\x00")
-    fake = FakeSystemctl(enabled=False, active=False)
+    fake = FakeSystemctl(active=False)
     monkeypatch.setattr(settings_mod, "_systemctl", fake)
 
     resp = await client.put("/api/settings/rk3588-performance", json={"enabled": True})
@@ -140,15 +151,17 @@ async def test_put_enable_dispatches_enable_now(client, perf_env, monkeypatch):
     assert body["ok"] is True
     assert body["enabled"] is True
     assert body["active"] is True
-    assert ("enable", "--now", UNIT) in fake.calls
+    assert ("start", UNIT) in fake.calls
+    assert flag_path.exists()
 
 
 @pytest.mark.asyncio
-async def test_put_disable_dispatches_disable_now(client, perf_env, monkeypatch):
-    unit_path, compat_path = perf_env
+async def test_put_disable_stops_unit_and_clears_flag(client, perf_env, monkeypatch):
+    unit_path, compat_path, flag_path = perf_env
     _install_unit(unit_path)
     _set_board(compat_path, b"rockchip,rk3588\x00")
-    fake = FakeSystemctl(enabled=True, active=True)
+    _set_flag(flag_path)
+    fake = FakeSystemctl(active=True)
     monkeypatch.setattr(settings_mod, "_systemctl", fake)
 
     resp = await client.put("/api/settings/rk3588-performance", json={"enabled": False})
@@ -158,26 +171,30 @@ async def test_put_disable_dispatches_disable_now(client, perf_env, monkeypatch)
     assert body["ok"] is True
     assert body["enabled"] is False
     assert body["active"] is False
-    assert ("disable", "--now", UNIT) in fake.calls
+    assert ("stop", UNIT) in fake.calls
+    assert not flag_path.exists()
 
 
 @pytest.mark.asyncio
 async def test_put_systemctl_failure_is_502(client, perf_env, monkeypatch):
-    unit_path, compat_path = perf_env
+    unit_path, compat_path, flag_path = perf_env
     _install_unit(unit_path)
     _set_board(compat_path, b"rockchip,rk3588\x00")
-    fake = FakeSystemctl(fail_on="enable")
+    fake = FakeSystemctl(fail_on="start")
     monkeypatch.setattr(settings_mod, "_systemctl", fake)
 
     resp = await client.put("/api/settings/rk3588-performance", json={"enabled": True})
 
     assert resp.status_code == 502
     assert "simulated systemctl failure" in resp.json()["error"]
+    # Nothing moved, nothing persisted: the flag is only flipped once
+    # the unit has actually been started/stopped.
+    assert not flag_path.exists()
 
 
 @pytest.mark.asyncio
 async def test_put_without_unit_is_409_and_dispatches_nothing(client, perf_env, monkeypatch):
-    unit_path, compat_path = perf_env
+    unit_path, compat_path, flag_path = perf_env
     _set_board(compat_path, b"rockchip,rk3588\x00")
     fake = FakeSystemctl()
     monkeypatch.setattr(settings_mod, "_systemctl", fake)
@@ -186,11 +203,12 @@ async def test_put_without_unit_is_409_and_dispatches_nothing(client, perf_env, 
 
     assert resp.status_code == 409
     assert fake.calls == []
+    assert not flag_path.exists()
 
 
 @pytest.mark.asyncio
 async def test_put_rejects_non_bool_enabled(client, perf_env, monkeypatch):
-    unit_path, compat_path = perf_env
+    unit_path, compat_path, flag_path = perf_env
     _install_unit(unit_path)
     fake = FakeSystemctl()
     monkeypatch.setattr(settings_mod, "_systemctl", fake)
@@ -239,7 +257,7 @@ async def _member_client(app) -> AsyncClient:
 async def test_put_member_session_is_403_and_dispatches_nothing(
     client, app, perf_env, monkeypatch
 ):
-    unit_path, compat_path = perf_env
+    unit_path, compat_path, flag_path = perf_env
     _install_unit(unit_path)
     _set_board(compat_path, b"rockchip,rk3588\x00")
     fake = FakeSystemctl()
@@ -255,6 +273,7 @@ async def test_put_member_session_is_403_and_dispatches_nothing(
 
     assert resp.status_code == 403
     assert fake.calls == []
+    assert not flag_path.exists()
 
 
 @pytest.mark.asyncio
@@ -263,7 +282,7 @@ async def test_put_agent_token_is_refused_and_dispatches_nothing(
 ):
     from tinyagentos.agent_registry_store import mint_registry_token
 
-    unit_path, compat_path = perf_env
+    unit_path, compat_path, flag_path = perf_env
     _install_unit(unit_path)
     _set_board(compat_path, b"rockchip,rk3588\x00")
     fake = FakeSystemctl()
@@ -295,3 +314,4 @@ async def test_put_agent_token_is_refused_and_dispatches_nothing(
     # and this route is not on it) -- never reaches the toggle handler.
     assert resp.status_code == 401
     assert fake.calls == []
+    assert not flag_path.exists()

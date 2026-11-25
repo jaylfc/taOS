@@ -21,16 +21,27 @@
 # Install (done automatically by install-server.sh):
 #     sudo cp scripts/systemd/taos-rk3588-perf.service /etc/systemd/system/
 #     sudo install -m 0755 scripts/taos-rk3588-perf.sh /usr/local/bin/taos-rk3588-perf
+#     sudo install -d -o taos -g taos /var/lib/taos-rk3588-perf
+#     sudo install -o taos -g taos -m 0644 /dev/null /var/lib/taos-rk3588-perf/enabled
 #     sudo systemctl daemon-reload
 #     sudo systemctl enable taos-rk3588-perf.service
 #
-# Disable (settings UI toggle):
-#     sudo systemctl disable --now taos-rk3588-perf.service
+# The Settings toggle does NOT enable/disable this unit: systemd's
+# unit-files polkit action carries no unit detail a rule could scope
+# by, so the unprivileged controller user cannot be granted
+# enable/disable for just this unit (see the polkit rule file). The
+# unit stays enabled; the toggle persists its choice in the flag file
+# above - this unit's boot start gates on it via ConditionPathExists -
+# and starts/stops the unit for the immediate effect. Off by hand:
+#     sudo rm /var/lib/taos-rk3588-perf/enabled
+#     sudo systemctl stop taos-rk3588-perf.service
 [Unit]
 Description=Rockchip RK3588 performance mode — devfreq governors + NPU tuning
 Documentation=https://github.com/jaylfc/tinyagentos/issues/361
 # Gate: only activate on boards that expose an NPU devfreq entry.
 ConditionPathExists=/sys/class/devfreq
+# Gate: the Settings performance toggle's persisted on/off flag.
+ConditionPathExists=/var/lib/taos-rk3588-perf/enabled
 
 [Service]
 Type=oneshot

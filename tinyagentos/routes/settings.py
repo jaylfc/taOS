@@ -1848,14 +1848,31 @@ async def put_demo_mode(request: Request):
 # taos-rk3588-perf.service unit. install-server.sh installs and enables
 # the unit on Rockchip boards; its ExecStart applies the performance
 # governor tuning and its ExecStop restores the governors recorded at
-# enable time (devfreq via `governor`, cpufreq via `scaling_governor`),
-# so enabling/disabling the unit with --now changes the governors
-# immediately AND persists the choice across boots via the unit
-# enablement state.
+# start time (devfreq via `governor`, cpufreq via `scaling_governor`).
+# The toggle itself is start/stop for the immediate effect plus a
+# persisted flag file the unit's boot start gates on
+# (ConditionPathExists), so the choice persists across boots without
+# the toggle ever changing the unit's enablement.
+#
+# Why not enable/disable --now? The toggle runs as the unprivileged
+# `taos` user, so its systemctl calls go through polkit. systemd
+# attaches the unit name as a detail to manage-units requests, so a
+# rule can scope start/stop to exactly this unit - but it attaches NO
+# details to manage-unit-files requests (enable/disable):
+# bus_verify_manage_unit_files_async passes details=NULL (checked
+# against systemd v257; bookworm's 252 is built the same way), so
+# action.lookup("unit") can never match there and no polkit rule can
+# scope enable/disable to one unit. The only alternative would be
+# granting the controller unit-file control over every unit on the
+# box. See scripts/systemd/50-taos-rk3588-perf.rules.
 # ---------------------------------------------------------------------------
 
 _RK3588_PERF_UNIT = "taos-rk3588-perf.service"
 _RK3588_PERF_UNIT_PATH = Path("/etc/systemd/system/taos-rk3588-perf.service")
+# The toggle's persisted on/off state. install-server.sh creates the
+# directory owned by the controller user and seeds the flag (mode on);
+# the unit's boot start gates on the flag via ConditionPathExists.
+_RK3588_PERF_FLAG_PATH = Path("/var/lib/taos-rk3588-perf/enabled")
 _RK3588_COMPATIBLE_PATH = Path("/proc/device-tree/compatible")
 # The same board set the perf unit's own ExecStart gate accepts.
 _RK3588_COMPATIBLE_RE = re.compile(r"rockchip,rk(3588|3576|3568)")
@@ -1878,8 +1895,7 @@ async def _rk3588_perf_state() -> dict:
     installed = _RK3588_PERF_UNIT_PATH.exists()
     enabled = active = False
     if installed:
-        code, _err = await _systemctl("is-enabled", _RK3588_PERF_UNIT)
-        enabled = code == 0
+        enabled = _RK3588_PERF_FLAG_PATH.exists()
         code, _err = await _systemctl("is-active", _RK3588_PERF_UNIT)
         active = code == 0
     return {
@@ -1895,8 +1911,9 @@ async def get_rk3588_performance(request: Request):
     """Performance-mode state for the Settings toggle (#361).
 
     ``supported`` is the Rockchip board check, ``installed`` whether the
-    perf unit exists on this device, ``enabled``/``active`` the unit's
-    systemctl state (both false when the unit is not installed).
+    perf unit exists on this device, ``enabled`` the persisted toggle
+    flag, ``active`` the unit's systemctl state (both false when the
+    unit is not installed).
     """
     return await _rk3588_perf_state()
 
@@ -1915,11 +1932,27 @@ async def put_rk3588_performance(request: Request):
             {"error": f"{_RK3588_PERF_UNIT} is not installed on this device"},
             status_code=409,
         )
-    action = "enable" if body["enabled"] else "disable"
-    code, err = await _systemctl(action, "--now", _RK3588_PERF_UNIT)
+    action = "start" if body["enabled"] else "stop"
+    code, err = await _systemctl(action, _RK3588_PERF_UNIT)
     if code != 0:
         return JSONResponse(
             {"error": f"systemctl {action} {_RK3588_PERF_UNIT} failed: {err or f'exit {code}'}"},
+            status_code=502,
+        )
+    # The unit has moved; now persist the choice for the next boot.
+    # The flag's directory is created by install-server.sh (owned by
+    # the controller user); create it here too so a hand-installed
+    # unit still toggles. If persisting fails the caller hears about
+    # it - the re-read state shows the flag as it actually is.
+    try:
+        if body["enabled"]:
+            _RK3588_PERF_FLAG_PATH.parent.mkdir(parents=True, exist_ok=True)
+            _RK3588_PERF_FLAG_PATH.touch()
+        else:
+            _RK3588_PERF_FLAG_PATH.unlink(missing_ok=True)
+    except OSError as exc:
+        return JSONResponse(
+            {"error": f"could not persist the performance-mode choice: {exc}"},
             status_code=502,
         )
     return {"ok": True, **(await _rk3588_perf_state())}
