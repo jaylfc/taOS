@@ -246,6 +246,8 @@ class TestAgentWorkspaceOwnership:
     @pytest.mark.asyncio
     async def test_agent_token_is_fenced_to_its_own_workspace(self, owner_clients, app):
         _add_agent(app, "beta")
+        from agent_owner_helper import own_agent
+        await own_agent(app, "beta", app.state.auth.find_user("admin")["id"])
         token = app.state.auth.mint_agent_local_token("beta")
         async with AsyncClient(
             transport=ASGITransport(app=app), base_url="http://test",

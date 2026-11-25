@@ -75,7 +75,7 @@ async def _authorize_agent_memory(
     - Without an agent the request targets the shared user index and no
       per-agent ownership applies.
     """
-    if getattr(request.state, "via", None) == "local_token":
+    if getattr(request.state, "via", None) in ("local_token", "agent_token"):
         bound = getattr(request.state, "agent_name", None)
         if bound:
             if not allow_bound:

@@ -770,18 +770,26 @@ class AuthMiddleware(BaseHTTPMiddleware):
                 # current_user-gated routes still 401 while middleware-only
                 # routes proceed as before. (Not failing closed here: the
                 # local token already authenticates, so it is not a bypass.)
-                primary = auth_mgr.get_primary_user()
-                if primary:
-                    request.state.user_id = primary["id"]
-                    request.state.is_admin = True
-                    request.state.via = "local_token"
-                else:
-                    request.state.user_id = None
-                    request.state.is_admin = False
-                    request.state.via = "local_token"
                 bound_agent = auth_mgr.get_local_token_agent(presented)
                 if bound_agent:
+                    # A per-agent token authenticates AS THE AGENT, acting for
+                    # its registry owner, never admin. No owner -> no user (it
+                    # never falls back to the primary user).
+                    from tinyagentos.auth_context import resolve_agent_owner
+
+                    try:
+                        owner = await resolve_agent_owner(request, bound_agent)
+                    except Exception:  # noqa: BLE001 - fail closed
+                        owner = None
+                    request.state.user_id = owner
+                    request.state.is_admin = False
+                    request.state.via = "agent_token"
                     request.state.agent_name = bound_agent
+                else:
+                    primary = auth_mgr.get_primary_user()
+                    request.state.user_id = primary["id"] if primary else None
+                    request.state.is_admin = primary is not None
+                    request.state.via = "local_token"
                 return await call_next(request)
 
         # 2) Registry JWT on allowlisted paths (passthrough; route verifies

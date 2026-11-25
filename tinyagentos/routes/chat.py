@@ -841,6 +841,10 @@ async def post_thinking(channel_id: str, body: dict, request: Request):
     if auth is None or not auth.validate_local_token(bearer[7:].strip()):
         return JSONResponse({"error": "Unauthorized"}, status_code=401)
 
+    if getattr(request.state, "via", None) == "agent_token":
+        if (body or {}).get("slug") != getattr(request.state, "agent_name", None):
+            return JSONResponse({"error": "forbidden: slug does not match credential"}, status_code=403)
+
     slug = (body or {}).get("slug")
     state = (body or {}).get("state")
     if not slug or state not in ("start", "end"):

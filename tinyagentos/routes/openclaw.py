@@ -76,6 +76,11 @@ async def bootstrap(request: Request, agent: str | None = None):
     if not valid:
         return JSONResponse({"error": "Unauthorized"}, status_code=401)
 
+    if getattr(request.state, "via", None) == "agent_token":
+        expected = getattr(request.state, "agent_name", None)
+        if agent != expected:
+            return JSONResponse({"error": "forbidden: agent does not match credential"}, status_code=403)
+
     if not agent:
         return JSONResponse(
             {"error": "agent query parameter required"},
@@ -182,6 +187,11 @@ async def events_stream(request: Request, agent: str):
     if not valid:
         return JSONResponse({"error": "Unauthorized"}, status_code=401)
 
+    if getattr(request.state, "via", None) == "agent_token":
+        expected = getattr(request.state, "agent_name", None)
+        if agent != expected:
+            return JSONResponse({"error": "forbidden: agent does not match credential"}, status_code=403)
+
     registry = getattr(request.app.state, "bridge_sessions", None)
     if registry is None:
         return JSONResponse(
@@ -219,6 +229,11 @@ async def reply_ingest(request: Request, agent: str):
     valid, _ = _validate_bearer(request)
     if not valid:
         return JSONResponse({"error": "Unauthorized"}, status_code=401)
+
+    if getattr(request.state, "via", None) == "agent_token":
+        expected = getattr(request.state, "agent_name", None)
+        if agent != expected:
+            return JSONResponse({"error": "forbidden: agent does not match credential"}, status_code=403)
 
     registry = getattr(request.app.state, "bridge_sessions", None)
     if registry is None:

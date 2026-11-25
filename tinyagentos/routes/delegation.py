@@ -38,7 +38,8 @@ ACTION_CLASS = "delegate"
 
 def _is_admin_or_local_token(request: Request) -> bool:
     """True if the caller is an admin session or presented the host's local
-    token. Mirrors ``routes.skill_exec._is_admin_or_local_token`` - delegation
+    token (a per-agent token is refused here; delegate_task admits it only for
+    its own agent). Mirrors ``routes.skill_exec._is_admin_or_local_token`` - delegation
     is an agent action, gated the same way skill execution is."""
     if getattr(request.state, "is_admin", False):
         return True
@@ -318,12 +319,16 @@ async def delegate_task(request: Request, from_agent: str, body: DelegateRequest
     queues a blocking Decision; approving it (routes/decisions.py) grants the
     action and completes the delegation.
     """
-    if not _is_admin_or_local_token(request):
+    agent_caller = getattr(request.state, "via", None) == "agent_token"
+    if not (agent_caller or _is_admin_or_local_token(request)):
         return JSONResponse({"error": "forbidden"}, status_code=403)
 
     from_name = await _resolve_agent_name(request, from_agent)
     if from_name is None:
         return JSONResponse({"error": f"agent '{from_agent}' not found"}, status_code=404)
+    if agent_caller and from_name != getattr(request.state, "agent_name", None):
+        # An agent delegates only as itself.
+        return JSONResponse({"error": "forbidden"}, status_code=403)
     to_name = await _resolve_agent_name(request, body.to_agent)
     if to_name is None:
         return JSONResponse({"error": f"agent '{body.to_agent}' not found"}, status_code=404)

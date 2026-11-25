@@ -56,6 +56,21 @@ def _is_admin_or_local_token(request: Request) -> bool:
     return via == "local_token" or via == "registry_jwt_native_agent"
 
 
+def _may_use_skill_exec(request: Request) -> bool:
+    """Admin / host token / registry agent, OR a per-agent local token.
+
+    A per-agent token (``via == "agent_token"``) is not admin and is refused by
+    ``_is_admin_or_local_token`` (so ``code_exec``'s own defence-in-depth check
+    still refuses it); it may call a skill only through ``execute_skill``.
+    """
+    if _is_admin_or_local_token(request):
+        return True
+    return (
+        getattr(request.state, "via", None) == "agent_token"
+        and bool(getattr(request.state, "agent_name", None))
+    )
+
+
 # ---------------------------------------------------------------------------
 # Built-in skill implementations
 # ---------------------------------------------------------------------------
@@ -708,7 +723,7 @@ async def execute_skill(skill_id: str, request: Request):
     (GHSA-h24f-gp4c-8qjm). Checked first, before touching the skill store or
     parsing args, so no attacker-controlled work happens pre-authorization.
     """
-    if not _is_admin_or_local_token(request):
+    if not _may_use_skill_exec(request):
         return JSONResponse({"error": "forbidden"}, status_code=403)
 
     body = await request.json()
