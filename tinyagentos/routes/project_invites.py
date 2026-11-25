@@ -1077,6 +1077,47 @@ async def list_pending_agent_invites(
     ]
 
 
+@router.get("/api/agents/invites/pending/mine")
+async def list_pending_agent_invites_mine(
+    request: Request,
+    user: CurrentUser = Depends(current_user),
+):
+    """Per-owner pending agent invites for the Agents app.
+
+    The caller's own pending agent-kind invites (the ones they minted), newest
+    first. Not admin-gated: a project owner who is not an admin sees their own
+    agents' pending invites here, while admins keep the cross-project aggregate
+    at GET /api/agents/invites/pending. Same exclusions as the aggregate: pin
+    hashes and expired invites are never returned, collab invites excluded.
+    """
+    store = request.app.state.project_invites
+    project_store = request.app.state.project_store
+    items = await store.list_pending_agent_invites_for_owner(user.user_id)
+    project_names: dict = {}
+    for i in items:
+        pid = i.get("project_id")
+        if pid is not None and pid not in project_names:
+            project = await project_store.get_project(pid)
+            project_names[pid] = (
+                (project.get("name") or project.get("slug")) if project else None
+            )
+    return [
+        {
+            "invite_id": i["invite_id"],
+            "scopes": _scopes_as_list(i["scopes"]),
+            "status": i["status"],
+            "kind": i.get("kind", "agent"),
+            "created_ts": i["created_ts"],
+            "expires_ts": i["expires_ts"],
+            "pin_required": bool(i.get("pin_required", 1)),
+            "display_name": i.get("display_name"),
+            "project_id": i.get("project_id"),
+            "project_name": project_names.get(i.get("project_id")),
+        }
+        for i in items
+    ]
+
+
 @router.delete("/api/agents/invites/{invite_id}")
 async def revoke_os_invite(
     invite_id: str,

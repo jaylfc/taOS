@@ -1400,7 +1400,11 @@ export function RegistryPanel() {
             )}
           </>
         )}
-        <PendingAgentInvites active={expanded} refreshKey={invitesNonce} />
+        <PendingAgentInvites
+          active={expanded}
+          refreshKey={invitesNonce}
+          isAdmin={isAdmin}
+        />
         <GovernanceAuditPanel isAdmin={isAdmin} />
       </div>
 

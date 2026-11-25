@@ -1603,3 +1603,148 @@ async def test_pending_aggregate_requires_admin(client, app):
         assert resp.status_code == 403, resp.text
     finally:
         app.dependency_overrides.pop(current_user, None)
+
+
+# ---------------------------------------------------------------------------
+# #2067 follow-up: per-owner pending invites (non-admin owners see their own)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_pending_mine_returns_owners_invites(client, app):
+    """A project owner who is not an admin sees their own agents' pending
+    invites via GET /api/agents/invites/pending/mine. Pin hashes are never
+    returned and expired invites are excluded."""
+    app.dependency_overrides[current_user] = lambda: CurrentUser(
+        user_id="owner-user", is_admin=False
+    )
+    try:
+        pid = await _create_project(client, slug="mine-proj")
+        mint_resp = await client.post(
+            f"/api/projects/{pid}/invites",
+            json={"scopes": ["a2a_send"], "approval_mode": "auto"},
+        )
+        assert mint_resp.status_code == 200, mint_resp.text
+        iid = mint_resp.json()["invite_id"]
+
+        # An expired invite for the same owner must be excluded.
+        store = app.state.project_invites
+        expired = await store.mint(
+            project_id=pid,
+            scopes=["a2a_send"],
+            approval_mode="auto",
+            check_interval_secs=1800,
+            created_by="owner-user",
+        )
+        import time as _time
+
+        await store._db.execute(
+            "UPDATE project_invites SET expires_ts = ? WHERE invite_id = ?",
+            (_time.time() - 10, expired["record"]["invite_id"]),
+        )
+        await store._db.commit()
+
+        resp = await client.get("/api/agents/invites/pending/mine")
+        assert resp.status_code == 200, resp.text
+        rows = resp.json()
+        assert len(rows) == 1, rows
+        assert rows[0]["invite_id"] == iid
+        assert rows[0]["project_id"] == pid
+        assert rows[0]["kind"] == "agent"
+        assert rows[0]["status"] == "pending"
+        assert rows[0]["pin_required"] is True
+        assert isinstance(rows[0]["created_ts"], (int, float))
+        assert "pin_hash" not in rows[0]
+    finally:
+        app.dependency_overrides.pop(current_user, None)
+
+
+@pytest.mark.asyncio
+async def test_pending_mine_excludes_others_invites(client, app):
+    """A member never sees another person's agents' pending invites."""
+    # Owner A mints a pending invite on project A.
+    app.dependency_overrides[current_user] = lambda: CurrentUser(
+        user_id="owner-a", is_admin=False
+    )
+    try:
+        resp_a = await client.post(
+            "/api/projects",
+            json={"name": "Mine Proj A", "slug": "mine-proj-a"},
+        )
+        assert resp_a.status_code == 200, resp_a.text
+        pid_a = resp_a.json()["id"]
+        mint_a = await client.post(
+            f"/api/projects/{pid_a}/invites",
+            json={"scopes": ["a2a_send"], "approval_mode": "auto"},
+        )
+        assert mint_a.status_code == 200, mint_a.text
+        iid_a = mint_a.json()["invite_id"]
+    finally:
+        app.dependency_overrides.pop(current_user, None)
+
+    # Owner B mints a pending invite on project B.
+    app.dependency_overrides[current_user] = lambda: CurrentUser(
+        user_id="owner-b", is_admin=False
+    )
+    try:
+        resp_b = await client.post(
+            "/api/projects",
+            json={"name": "Mine Proj B", "slug": "mine-proj-b"},
+        )
+        assert resp_b.status_code == 200, resp_b.text
+        pid_b = resp_b.json()["id"]
+        mint_b = await client.post(
+            f"/api/projects/{pid_b}/invites",
+            json={"scopes": ["a2a_send"], "approval_mode": "auto"},
+        )
+        assert mint_b.status_code == 200, mint_b.text
+        iid_b = mint_b.json()["invite_id"]
+
+        # Owner B's listing contains only B's invite, never A's.
+        resp = await client.get("/api/agents/invites/pending/mine")
+        assert resp.status_code == 200, resp.text
+        rows = resp.json()
+        ids = {r["invite_id"] for r in rows}
+        assert ids == {iid_b}, ids
+        assert iid_a not in ids
+    finally:
+        app.dependency_overrides.pop(current_user, None)
+
+
+@pytest.mark.asyncio
+async def test_pending_mine_empty_for_owner_with_no_invites(client, app):
+    """An owner with no pending invites gets an empty list (not a 403)."""
+    app.dependency_overrides[current_user] = lambda: CurrentUser(
+        user_id="owner-empty", is_admin=False
+    )
+    try:
+        resp = await client.get("/api/agents/invites/pending/mine")
+        assert resp.status_code == 200, resp.text
+        assert resp.json() == []
+    finally:
+        app.dependency_overrides.pop(current_user, None)
+
+
+@pytest.mark.asyncio
+async def test_pending_mine_excludes_collab(client, app):
+    """Collab invites are human invitations and are excluded from the
+    per-owner agent listing."""
+    app.dependency_overrides[current_user] = lambda: CurrentUser(
+        user_id="owner-user", is_admin=False
+    )
+    try:
+        pid = await _create_project(client, slug="mine-collab")
+        await app.state.project_invites.mint(
+            project_id=pid,
+            scopes=[],
+            approval_mode="manual",
+            check_interval_secs=1800,
+            created_by="owner-user",
+            kind="collab",
+            contact_id="hub:abcdef",
+        )
+        resp = await client.get("/api/agents/invites/pending/mine")
+        assert resp.status_code == 200, resp.text
+        assert resp.json() == []
+    finally:
+        app.dependency_overrides.pop(current_user, None)

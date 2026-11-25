@@ -326,6 +326,34 @@ class ProjectInviteStore(BaseStore):
             result.append(d)
         return result
 
+    async def list_pending_agent_invites_for_owner(
+        self, user_id: str
+    ) -> list[dict]:
+        """List the caller's own pending agent-kind invites, newest first,
+        without the pin hash.
+
+        Same exclusions as ``list_pending_agent_invites``: kind in
+        ('agent', 'cloud_agent'), status 'pending', still within TTL
+        (expires_ts > now); collab invites excluded. Scoped to invites the
+        caller minted (created_by == user_id), so a project owner who is not
+        an admin sees only their own agents' pending invites here.
+        """
+        if self._db is None:
+            raise RuntimeError("ProjectInviteStore not initialised")
+        cursor = await self._db.execute(
+            "SELECT * FROM project_invites "
+            "WHERE created_by = ? AND kind IN ('agent', 'cloud_agent') "
+            "AND status = 'pending' AND expires_ts > ? ORDER BY created_ts DESC",
+            (user_id, _now()),
+        )
+        rows = await cursor.fetchall()
+        result = []
+        for row in rows:
+            d = self._row_to_dict(row)
+            d.pop("pin_hash", None)
+            result.append(d)
+        return result
+
     async def list_pending_agent_invites(self) -> list[dict]:
         """List pending agent-kind invites across every project plus the
         OS-level group, newest first, without the pin hash.

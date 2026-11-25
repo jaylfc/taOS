@@ -125,6 +125,24 @@ export async function fetchPendingAgentInvites(): Promise<PendingInvite[] | null
   }
 }
 
+/**
+ * Per-owner pending agent invites for the Agents app
+ * (GET /api/agents/invites/pending/mine, not admin-gated). Returns the
+ * caller's own pending invites, or null when the caller cannot see them.
+ */
+export async function fetchPendingAgentInvitesMine(): Promise<PendingInvite[] | null> {
+  try {
+    const r = await fetch("/api/agents/invites/pending/mine", {
+      credentials: "include",
+    });
+    if (!r.ok) return null;
+    const rows = await r.json();
+    return Array.isArray(rows) ? (rows as PendingInvite[]) : null;
+  } catch {
+    return null;
+  }
+}
+
 /** Cancel an invite from the aggregate view: the DELETE route depends on
  *  whether the invite is project-scoped or OS-level. */
 export async function revokePendingAgentInvite(invite: PendingInvite): Promise<boolean> {
