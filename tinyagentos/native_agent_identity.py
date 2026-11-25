@@ -127,8 +127,9 @@ def token_path(data_dir: Path | str) -> Path:
     return Path(data_dir) / TOKEN_FILENAME
 
 
-# Renew once a third of the token's life is left.
-_RENEW_WITHIN_SECONDS = AGENT_TOKEN_TTL_SECONDS // 3
+# Renew once half of the token's life is left; the hourly loop below looks
+# often enough to never miss it.
+_RENEW_WITHIN_SECONDS = AGENT_TOKEN_TTL_SECONDS // 2
 
 
 def _token_near_expiry(data_dir: Path | str) -> bool:
@@ -426,3 +427,31 @@ async def rotate_native_agent_token(
 
     logger.info("native agent token rotated at %s", path)
     return token
+
+
+async def run_native_agent_token_renewal(
+    *,
+    registry: Any,
+    grants: Any,
+    data_dir: Path | str,
+    signing_key_pem: bytes,
+    owner_id,
+    interval: float = 3600.0,
+) -> None:
+    """Background loop: re-run the identity step hourly so the OS agent's token
+    file is replaced before it lapses.  Never raises out of a pass."""
+    import asyncio
+
+    while True:
+        await asyncio.sleep(interval)
+        try:
+            await ensure_native_agent_identity(
+                registry=registry, grants=grants, data_dir=data_dir,
+                signing_key_pem=signing_key_pem, user_id=owner_id(),
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "native agent token renewal pass failed (%s); retrying", type(exc).__name__
+            )

@@ -584,6 +584,22 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
             )
         except Exception:
             logger.exception("native agent identity could not be ensured at startup")
+        # Keep the OS agent's token file fresh on disk, well before it expires.
+        try:
+            from tinyagentos import native_agent_identity as _nai
+
+            _create_supervised_task(
+                _nai.run_native_agent_token_renewal(
+                    registry=agent_registry_store,
+                    grants=agent_grants_store,
+                    data_dir=data_dir,
+                    signing_key_pem=agent_registry_keypair[0],
+                    owner_id=lambda: (auth_manager.get_primary_user() or {}).get("id", ""),
+                ),
+                app.state._background_tasks,
+            )
+        except Exception as exc:
+            logger.error("agent token renewal loop not started (%s)", type(exc).__name__)
         # Memory shelf grants for agents deployed before shelf grants existed:
         # each active agent gets its own shelf, so its memory keeps working
         # once the memory service enforces shelf access.  Idempotent, never fatal.
