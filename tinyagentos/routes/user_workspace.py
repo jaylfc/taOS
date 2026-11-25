@@ -10,6 +10,8 @@ from fastapi import APIRouter, File, Form, Query, Request, UploadFile
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from pydantic import BaseModel
 
+from tinyagentos.session_turns import stamp_turn
+
 from tinyagentos.workspace_trash import (
     TrashItemNotFound,
     TrashRestoreConflict,
@@ -33,20 +35,32 @@ async def _capture_file_activity(
     size: int,
     action: str,
     user_id: str = "user",
+    session_turns=None,
+    actor_id: str | None = None,
 ) -> None:
-    """Fire-and-forget file activity capture. Never raises."""
+    """Fire-and-forget file activity capture. Never raises.
+
+    File activity is one session per acting user (``files:<actor_id>``); each
+    capture is a turn in it.  ``actor_id`` is the authenticated caller, passed
+    by the route; when it is not known the session fields are written as
+    unknown (never defaulted to the single-user memory partition id).
+    """
     if not user_memory:
         return
     try:
         settings = await user_memory.get_settings(user_id)
         if not settings.get("capture_files"):
             return
+        fields = await stamp_turn(
+            session_turns, f"files:{actor_id}" if actor_id else None,
+            owner=actor_id,
+        )
         await user_memory.save_chunk(
             user_id,
             content=f"File {action}: {filename}",
             title=filename,
             collection="files",
-            metadata={"path": path, "size": size, "action": action},
+            metadata={"path": path, "size": size, "action": action, **fields},
         )
     except Exception as e:  # pragma: no cover - best-effort
         logger.debug(f"file activity capture failed: {e}")
@@ -248,6 +262,8 @@ async def api_upload_file(
             path=str(rel),
             size=len(content),
             action="upload",
+            session_turns=getattr(request.app.state, "session_turns", None),
+            actor_id=getattr(request.state, "user_id", None),
         ))
 
     return {"name": filename, "path": str(rel), "size": len(content), "status": "uploaded"}

@@ -242,6 +242,18 @@ class ChatMessageStore(BaseStore):
             await self._db.rollback()
             return None
 
+    async def count_messages(self, channel_id: str) -> int:
+        """Number of messages ever stored in a channel (deleted ones included).
+
+        Seeds the per-session turn counter for a channel that has history from
+        before the counter existed.
+        """
+        async with self._db.execute(
+            "SELECT COUNT(*) FROM chat_messages WHERE channel_id = ?", (channel_id,)
+        ) as cursor:
+            row = await cursor.fetchone()
+        return int(row[0])
+
     async def get_message(self, message_id: str) -> dict | None:
         async with self._db.execute(
             "SELECT * FROM chat_messages WHERE id = ?", (message_id,)

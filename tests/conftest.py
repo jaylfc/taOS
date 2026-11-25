@@ -663,6 +663,10 @@ async def client(app, tmp_data_dir):
     if chat_messages._db is not None:
         await chat_messages.close()
     await chat_messages.init()
+    session_turns = app.state.session_turns
+    if session_turns._db is not None:
+        await session_turns.close()
+    await session_turns.init()
     chat_channels = app.state.chat_channels
     if chat_channels._db is not None:
         await chat_channels.close()
@@ -857,6 +861,7 @@ async def client(app, tmp_data_dir):
     await project_invites.close()
     await chat_channels.close()
     await chat_messages.close()
+    await session_turns.close()
     await expert_agents.close()
     await streaming_sessions.close()
     await shared_folders.close()
