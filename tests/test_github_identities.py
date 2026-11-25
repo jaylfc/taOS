@@ -1,10 +1,13 @@
 """Unit tests for GitHubIdentitiesStore add/list/get_token/delete."""
 from __future__ import annotations
 
+import os
+import stat
 from unittest.mock import patch
 
 import pytest
 
+import tinyagentos.secrets as sec_mod
 from tinyagentos.github_identities import GitHubIdentitiesStore
 
 
@@ -135,3 +138,21 @@ async def test_token_encrypted_at_rest(tmp_path):
         assert await store.get_token(identity["id"]) == "gho_plaintexttoken"
     finally:
         await store.close()
+
+
+@pytest.mark.asyncio
+async def test_loose_shared_key_file_is_tightened_before_use(tmp_path):
+    """The GitHub store reuses ``.secrets_key``; a loose key must be repaired."""
+    key_path = tmp_path / ".secrets_key"
+    key_path.write_bytes(os.urandom(32))
+    key_path.chmod(0o644)
+    sec_mod._fernet_key_cache.clear()
+
+    store = await _store(tmp_path)
+    try:
+        identity = await store.add("octocat", "", "gho_sharedtoken", "repo")
+        assert stat.S_IMODE(key_path.stat().st_mode) == 0o600
+        assert await store.get_token(identity["id"]) == "gho_sharedtoken"
+    finally:
+        await store.close()
+        sec_mod._fernet_key_cache.clear()
