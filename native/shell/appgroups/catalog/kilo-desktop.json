@@ -29,7 +29,7 @@
     "argv": ["/usr/bin/kilo-desktop", "--ozone-platform=wayland", "--password-store=basic"],
     "env": {}
   },
-  "window": {"app_id": "Kilo"},
+  "window": {"app_id": "kilo"},
   "mime_types": ["x-scheme-handler/kilo-desktop"],
   "grants": {"network": true, "gpu": true, "documents": true, "downloads": true}
 }

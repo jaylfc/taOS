@@ -30,7 +30,7 @@
     "argv": ["/usr/bin/claude-desktop", "--ozone-platform=wayland", "--password-store=basic"],
     "env": {}
   },
-  "window": {"app_id": "claude-desktop"},
+  "window": {"app_id": "com.anthropic.Claude"},
   "mime_types": ["x-scheme-handler/claude"],
   "grants": {"network": true, "gpu": true, "documents": true, "downloads": true}
 }

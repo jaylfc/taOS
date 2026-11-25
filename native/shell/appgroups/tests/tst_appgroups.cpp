@@ -364,7 +364,7 @@ private slots:
         QVERIFY(calls.contains(u"dpkg-query"_s));
         QCOMPARE(indexRec(u"claude-desktop"_s).value(u"installed_version"_s).toString(), u"1.0.0"_s);
         const QString d = QString::fromUtf8(readAll(xdgData + u"/applications/taos-appgroups-claude-desktop.desktop"_s));
-        QVERIFY(d.contains(u"StartupWMClass=claude-desktop"_s));
+        QVERIFY(d.contains(u"StartupWMClass=com.anthropic.Claude"_s));
     }
     void kiloInstallsOnlyWithItsPinnedChecksum()
     {
