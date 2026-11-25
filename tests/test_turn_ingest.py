@@ -14,6 +14,7 @@ import time
 from unittest.mock import AsyncMock
 
 import pytest
+import pytest_asyncio
 import yaml
 from fastapi.testclient import TestClient
 from httpx import ASGITransport, AsyncClient
@@ -25,6 +26,16 @@ taosmd_api = pytest.importorskip("taosmd.api")
 if not hasattr(taosmd_api, "answer_context") and not hasattr(
         __import__("taosmd"), "answer_context"):  # pragma: no cover
     pytest.skip("taosmd without answer_context", allow_module_level=True)
+
+
+@pytest_asyncio.fixture
+async def client(client):
+    """The shared test client, with the turn queue open (the lifespan owns it in production)."""
+    queue = client._transport.app.state.turn_ingest
+    if queue._db is None:
+        await queue.init()
+    yield client
+    await queue.close()
 
 
 class _Resp:
