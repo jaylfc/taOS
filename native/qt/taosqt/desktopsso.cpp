@@ -82,6 +82,7 @@ void DesktopSso::acquire()
         if (!m_ours.isEmpty() && m_store->stored() == m_ours)
             QFile::remove(m_store->path());
         m_ours.clear();
+        m_store->setAccountUnlinked(true);
         Q_EMIT finished(Unlinked);
         return;
     }
@@ -99,6 +100,7 @@ void DesktopSso::acquire()
         return;
     }
     m_ours = json;
+    m_store->setAccountUnlinked(false);
     const int expires = qMax(120, r.value(u"expires_in"_s).toInt(86400));
     m_renewMs = qMin(expires / 2, 12 * 3600) * 1000;
     m_dueAt = QDateTime::currentMSecsSinceEpoch() + m_renewMs;

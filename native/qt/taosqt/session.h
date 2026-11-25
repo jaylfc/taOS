@@ -40,6 +40,9 @@ public:
     virtual void remember(const QByteArray &sessionJson) { Q_UNUSED(sessionJson); }
     /// Called on sign-out: drop anything stored.
     virtual void forget() {}
+    /// True when the desktop's single sign-on found this Linux account is not linked to a taOS person,
+    /// so the sign-in form can say why it is asking. Default: false.
+    virtual bool accountUnlinked() const { return false; }
 
 Q_SIGNALS:
     /// The source cannot proceed without the user (show a sign-in form).
@@ -124,6 +127,8 @@ class TAOSQT_EXPORT Session : public QObject
     /// controller" instead of a sign-in prompt, because signing in again
     /// would not help.
     Q_PROPERTY(bool unreachable READ unreachable NOTIFY errorTextChanged)
+    /// This Linux account has no taOS person linked (see TokenSource::accountUnlinked).
+    Q_PROPERTY(bool accountUnlinked READ accountUnlinked NOTIFY stateChanged)
     Q_PROPERTY(Taos::Client *client READ client CONSTANT)
 public:
     enum State { SignedOut, SigningIn, SignedIn };
@@ -138,6 +143,7 @@ public:
     QString userName() const { return m_user.value(QStringLiteral("username")).toString(); }
     QString errorText() const { return m_errorText; }
     bool unreachable() const { return m_unreachable; }
+    bool accountUnlinked() const { return m_source && m_source->accountUnlinked(); }
 
     /// Replace the credential source. The Session takes ownership. Takes effect
     /// at the next acquire(); call start() to use it now.
