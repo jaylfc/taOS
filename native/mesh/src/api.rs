@@ -90,6 +90,8 @@ pub struct Daemon {
     pub owner_uid: u32,
     /// Verifies capability tokens for non-owner principals; None refuses them all.
     pub verifier: Option<crate::auth::TokenVerifier>,
+    /// One stop flag per supervised radio, by the connector's label: `radios.release` sets it.
+    releases: std::sync::Mutex<std::collections::HashMap<String, Arc<AtomicBool>>>,
 }
 
 impl Daemon {
@@ -102,6 +104,7 @@ impl Daemon {
             stop: Arc::new(AtomicBool::new(false)),
             owner_uid: nix::unistd::geteuid().as_raw(),
             verifier: None,
+            releases: Default::default(),
         }
     }
 
@@ -139,20 +142,62 @@ impl Daemon {
         first: Option<(Box<dyn Link>, Vec<u8>)>,
     ) -> String {
         let label = connector.describe();
+        // its own stop flag, so one radio can be released without stopping the daemon; the daemon's flag is
+        // copied into it by a small watcher
+        let own = Arc::new(AtomicBool::new(false));
+        {
+            let (global, own2) = (self.stop.clone(), own.clone());
+            std::thread::spawn(move || {
+                while !own2.load(Ordering::Relaxed) {
+                    if global.load(Ordering::Relaxed) {
+                        own2.store(true, Ordering::Relaxed);
+                    }
+                    std::thread::sleep(Duration::from_millis(200));
+                }
+            });
+        }
+        self.releases.lock().unwrap_or_else(|p| p.into_inner()).insert(label.clone(), own.clone());
         let sup = supervisor::Supervised {
             engine: self.engine.clone(),
             connector,
             network: network.to_string(),
             transmit: !self.receive_only,
-            stop: self.stop.clone(),
+            stop: own,
             backoff: supervisor::Backoff::standard(),
             first,
         };
-        let stop = self.stop.clone();
+        let stop = sup.stop.clone();
         std::thread::spawn(move || {
             supervisor::run(sup, &|d| supervisor::sleep_unless_stopped(&stop, d))
         });
         label
+    }
+
+    /// Close a radio's link and stop reconnecting it, so another program (the firmware flasher) can have the port.
+    /// The saved entry goes too: it is not opened again at the next start.
+    pub fn release_spec(&self, spec: &str) -> Result<Value, String> {
+        let flag = self.releases.lock().unwrap_or_else(|p| p.into_inner()).remove(spec);
+        let was_open = flag.is_some();
+        if let Some(f) = &flag {
+            f.store(true, Ordering::Relaxed);
+        }
+        let list: Vec<Value> = saved_radios().into_iter().filter(|d| d["device"] != spec).collect();
+        write_saved(&list)?;
+        if was_open {
+            let end = std::time::Instant::now() + Duration::from_secs(6);
+            loop {
+                let open = self.engine.radios().iter().any(|r| r.link == spec && r.connected);
+                if !open {
+                    break;
+                }
+                if std::time::Instant::now() > end {
+                    return Err(format!("{spec}: the radio did not close in time"));
+                }
+                std::thread::sleep(Duration::from_millis(50));
+            }
+        }
+        let gone = self.engine.forget_radio(spec);
+        Ok(json!({"device": spec, "released": true, "was_open": was_open, "entries_removed": gone}))
     }
 
     /// `spec` is a serial path, `tcp:host:port` or `ble:ADDRESS`.
@@ -241,8 +286,8 @@ impl Daemon {
                 // what the app needs to decide whether it may offer sending and configuration writes
                 let mut h = self.engine.health();
                 h["receive_only"] = json!(self.receive_only);
-                h["device_config"] = json!(false);
-                h["device_config_write"] = json!(false);
+                h["device_config"] = json!(true);
+                h["device_config_write"] = json!(!self.receive_only);
                 h["radios_connect"] = json!(true);
                 ok!(h)
             }
@@ -304,11 +349,38 @@ impl Daemon {
                 // forgetting stops it being opened again; the open session ends when the engine restarts
                 ok!(json!({"device": spec, "forgotten": true, "closes": "at the next engine start"}))
             }
+            "radios.release" => {
+                if let Some(e) = owner_only(&id) {
+                    return e;
+                }
+                let spec = try_p!(need(p, "device"));
+                match self.release_spec(spec) {
+                    Ok(v) => ok!(v),
+                    Err(m) => err(&id, "connect_failed", &m),
+                }
+            }
             "radios.saved" => {
                 if let Some(e) = owner_only(&id) {
                     return e;
                 }
                 ok!(saved_radios())
+            }
+            "device.config" => {
+                if let Some(e) = owner_only(&id) {
+                    return e;
+                }
+                let radio = try_p!(need(p, "radio"));
+                ok!(eng!(self.engine.device_config(radio)))
+            }
+            "device.apply" => {
+                if let Some(e) = owner_only(&id) {
+                    return e;
+                }
+                let radio = try_p!(need(p, "radio"));
+                let Some(changes) = p.get("changes").and_then(|c| c.as_object()) else {
+                    return err(&id, "invalid", "changes: an object of setting path to new value");
+                };
+                ok!(eng!(self.engine.device_apply(radio, changes, self.receive_only)))
             }
             "app.radios" => ok!(eng!(crate::appview::radios(&self.engine, who))),
             "app.identities" => ok!(eng!(crate::appview::identities(&self.engine, who))),

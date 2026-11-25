@@ -323,15 +323,16 @@ fn malformed_requests_get_an_error_not_a_hang() {
 }
 
 #[test]
-fn health_says_whether_the_engine_is_receive_only_and_that_it_cannot_configure_radios_yet() {
+fn health_says_whether_the_engine_is_receive_only_and_so_cannot_write_radio_settings() {
     let ro = up(true);
     let h = call(&ro.sock, "health", "owner", json!({})).unwrap();
     assert_eq!(h["result"]["receive_only"], true, "{h}");
-    assert_eq!(h["result"]["device_config"], false);
+    assert_eq!(h["result"]["device_config"], true);
     assert_eq!(h["result"]["device_config_write"], false);
     let rw = up(false);
     let h = call(&rw.sock, "health", "owner", json!({})).unwrap();
     assert_eq!(h["result"]["receive_only"], false, "{h}");
+    assert_eq!(h["result"]["device_config_write"], true);
 }
 
 /// Writes the real daemon's answers to the app's methods, so the app's fixtures are captured, not typed.

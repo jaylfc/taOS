@@ -84,7 +84,8 @@ pub fn radios(e: &Engine, viewer: &str) -> Result<Value, EngineError> {
         };
         out.push(json!({
             "id": r.id, "name": name, "transport": r.network, "link": r.link_kind, "state": state,
-            "firmware": "", "batteryPercent": battery,
+            "firmware": r.firmware.clone().unwrap_or_default(), "hardware": r.hardware.clone().unwrap_or_default(),
+            "batteryPercent": battery,
         }));
     }
     Ok(Value::Array(out))

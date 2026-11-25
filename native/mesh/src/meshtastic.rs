@@ -449,6 +449,7 @@ fn telemetry_json(b: &[u8]) -> Result<(Option<u64>, String, serde_json::Value), 
 /// Sans-I/O Meshtastic session state: frames in, decoded `Inbound` out.
 pub struct MeshtasticDriver {
     stream: StreamDecoder,
+    pub device: crate::mt_device::DeviceState,
     pub my_node: Option<u32>,
     pub config_complete: bool,
     pub decode_errors: u64,
@@ -464,6 +465,7 @@ impl MeshtasticDriver {
     pub fn new() -> Self {
         MeshtasticDriver {
             stream: StreamDecoder::new(),
+            device: Default::default(),
             my_node: None,
             config_complete: false,
             decode_errors: 0,
@@ -497,6 +499,7 @@ impl MeshtasticDriver {
     /// Decode one FromRadio payload. Never drops: a payload that does not
     /// parse becomes an `Opaque` event carrying the bytes.
     pub fn decode_frame(&mut self, payload: Vec<u8>) -> Inbound {
+        self.device.observe(&payload);
         let (_id, msg) = match decode_from_radio(&payload) {
             Ok(x) => x,
             Err(e) => {

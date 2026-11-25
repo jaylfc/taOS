@@ -24,6 +24,8 @@ pub const CMD_SEND_CHANNEL_TXT_MSG: u8 = 0x03;
 pub const CMD_GET_CONTACTS: u8 = 0x04;
 pub const CMD_SYNC_NEXT_MESSAGE: u8 = 0x0A;
 pub const CMD_DEVICE_QUERY: u8 = 0x16;
+pub const CMD_GET_CHANNEL: u8 = 0x1F;
+pub const RESP_CHANNEL_INFO: u8 = 0x12;
 
 pub const RESP_OK: u8 = 0;
 pub const RESP_ERR: u8 = 1;
@@ -166,6 +168,7 @@ fn path_len(b: u8) -> Option<u32> {
 
 pub struct MeshcoreDriver {
     serial: SerialDecoder,
+    pub device: McDevice,
     pub self_prefix: Option<String>,
     pub app_name: String,
     pub version: Option<u8>,
@@ -177,6 +180,7 @@ impl MeshcoreDriver {
     pub fn new(app_name: &str) -> Self {
         MeshcoreDriver {
             serial: SerialDecoder::new(),
+            device: McDevice::default(),
             self_prefix: None,
             app_name: app_name.into(),
             version: None,
@@ -224,6 +228,13 @@ impl MeshcoreDriver {
             return (Inbound::control(f, "empty_frame"), cmds);
         }
         let code = f[0];
+        self.device.observe(&f);
+        if code == RESP_DEVICE_INFO {
+            // read-only: ask for each channel slot the radio says it has (at most 8 are listed)
+            for i in 0..self.device.max_channels.unwrap_or(0).min(8) {
+                cmds.push(vec![CMD_GET_CHANNEL, i]);
+            }
+        }
         let inb = match code {
             RESP_SELF_INFO => self.self_info(f),
             RESP_DEVICE_INFO => {
@@ -441,5 +452,84 @@ impl MeshcoreDriver {
             broadcast: true,
             trust: Some("claimed".into()),
         }
+    }
+}
+
+/// What a MeshCore companion radio says about itself: DEVICE_INFO (firmware, board model), SELF_INFO (name, radio
+/// parameters) and CHANNEL_INFO. Layouts: docs/companion_protocol.md of meshcore-dev/MeshCore.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct McDevice {
+    pub max_channels: Option<u8>,
+    pub build: Option<String>,
+    pub model: Option<String>,
+    pub version: Option<String>,
+    pub name: Option<String>,
+    pub tx_power: Option<u8>,
+    pub radio: Option<(f64, f64, u8, u8)>, // MHz, kHz, sf, cr
+    pub channels: std::collections::BTreeMap<u8, (String, Vec<u8>)>,
+}
+
+fn cstr(b: &[u8]) -> String {
+    String::from_utf8_lossy(b.split(|c| *c == 0).next().unwrap_or(&[])).trim().to_string()
+}
+
+impl McDevice {
+    pub fn observe(&mut self, f: &[u8]) {
+        match f.first().copied() {
+            Some(RESP_DEVICE_INFO) if f.len() >= 80 && f[1] >= 3 => {
+                self.max_channels = Some(f[3]);
+                self.build = Some(cstr(&f[8..20])).filter(|s| !s.is_empty());
+                self.model = Some(cstr(&f[20..60])).filter(|s| !s.is_empty());
+                self.version = Some(cstr(&f[60..80])).filter(|s| !s.is_empty());
+            }
+            Some(RESP_SELF_INFO) if f.len() >= 58 => {
+                self.tx_power = Some(f[2]);
+                self.radio = Some((f64::from(u32le(&f[48..])) / 1000.0, f64::from(u32le(&f[52..])) / 1000.0, f[56], f[57]));
+                self.name = Some(String::from_utf8_lossy(&f[58..]).trim_end_matches('\0').to_string()).filter(|s| !s.is_empty());
+            }
+            Some(RESP_CHANNEL_INFO) if f.len() >= 50 => {
+                self.channels.insert(f[1], (cstr(&f[2..34]), f[34..50].to_vec()));
+            }
+            _ => {}
+        }
+    }
+
+    pub fn firmware(&self) -> Option<String> {
+        match (&self.version, &self.build) {
+            (Some(v), Some(b)) => Some(format!("{v} ({b})")),
+            (Some(v), None) => Some(v.clone()),
+            _ => None,
+        }
+    }
+
+    pub fn snapshot(&self) -> serde_json::Value {
+        use serde_json::{json, Map, Value};
+        let mut m = Map::new();
+        m.insert("network".into(), json!("meshcore"));
+        if let Some(f) = self.firmware() {
+            m.insert("firmware".into(), json!(f));
+        }
+        if let Some(h) = &self.model {
+            m.insert("hardware".into(), json!(h));
+        }
+        if let Some(n) = &self.name {
+            m.insert("name".into(), json!(n));
+        }
+        if let Some((f, bw, sf, cr)) = self.radio {
+            let mut r = json!({"freq_mhz": f, "bw_khz": bw, "sf": sf, "cr": cr});
+            if let Some(t) = self.tx_power {
+                r["tx_power_dbm"] = json!(t);
+            }
+            m.insert("radio".into(), r);
+        }
+        let ch: Vec<Value> = self
+            .channels
+            .iter()
+            .filter(|(_, (n, _))| !n.is_empty())
+            .map(|(i, (n, k))| json!({"index": i, "name": n, "role": if *i == 0 { "PRIMARY" } else { "SECONDARY" }, "psk_b64": crate::mt_device::b64(k, false)}))
+            .collect();
+        m.insert("channels".into(), Value::Array(ch));
+        m.insert("writable".into(), json!([]));
+        Value::Object(m)
     }
 }

@@ -11,6 +11,8 @@ pub mod identity;
 pub mod link;
 pub mod meshcore;
 pub mod meshtastic;
+pub mod meshtastic_enums;
+pub mod mt_device;
 pub mod model;
 pub mod proto;
 pub mod store;
