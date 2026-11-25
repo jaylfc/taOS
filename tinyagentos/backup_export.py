@@ -77,6 +77,7 @@ slice can validate a bundle before applying it.
 from __future__ import annotations
 
 import json
+import ntpath
 import os
 import re
 from datetime import datetime, timezone
@@ -133,12 +134,17 @@ _DRIVE_RE = re.compile(r"^[A-Za-z]:[\\/]")
 # credential nor host layout. Everything else is replaced wholesale and
 # recorded, so an import can prompt for the value. Names match exactly:
 # env names are case-sensitive and conventionally uppercase.
-_ENV_ALLOWLIST = frozenset({
-    "LANG", "LANGUAGE",
-    "LC_ALL", "LC_COLLATE", "LC_CTYPE", "LC_MESSAGES", "LC_MONETARY",
-    "LC_NUMERIC", "LC_TIME",
-    "TZ", "TERM",
-})
+_ENV_ALLOWLIST = frozenset({"LANG", "LANGUAGE", "TZ", "TERM"})
+
+
+def _env_allowlisted(name: str) -> bool:
+    if name in _ENV_ALLOWLIST:
+        return True
+    # The whole LC_* locale family (LC_PAPER, LC_MEASUREMENT, ...), not
+    # an enumerated subset: the names are POSIX locale categories and
+    # their values name a locale. Case-sensitive, like env names
+    # themselves -- a lowercase lookalike is not the locale variable.
+    return name.startswith("LC_") and name.isupper()
 
 # The bundle is assembled in memory; cap the serialized size so a
 # pathological install fails with a clear error instead of an unbounded
@@ -255,6 +261,20 @@ def _rewrite_path_parts(
     """
     if not (value.startswith("/") or _DRIVE_RE.match(value)):
         return None
+    if _DRIVE_RE.match(value):
+        # Windows-shaped path: use ntpath rules whatever the host OS
+        # is -- a POSIX basename does not split backslashes and would
+        # return the whole path untouched. A relative form is only
+        # computed against a Windows-shaped data dir.
+        if data_dir and _DRIVE_RE.match(data_dir):
+            rel = ntpath.relpath(value, data_dir)
+            if rel != ".." and not rel.startswith(".." + ntpath.sep):
+                return rel, "absolute path rewritten relative to the data dir"
+        return (
+            ntpath.basename(value.rstrip("\\/")) or value,
+            "absolute path outside the data dir; reduced to its "
+            "final component so the host layout is not exported",
+        )
     if data_dir:
         rel = os.path.relpath(value, data_dir)
         if rel != ".." and not rel.startswith(".." + os.sep):
@@ -348,7 +368,7 @@ def sanitize_for_export(
                               "entry kept under a suffixed key so no "
                               "value is silently dropped",
                 })
-            if _in_env and isinstance(k, str) and k not in _ENV_ALLOWLIST:
+            if _in_env and isinstance(k, str) and not _env_allowlisted(k):
                 # Env sections are allow-listed (rule 7): an innocent
                 # name proves nothing about the value.
                 if v not in (None, "", [], {}):

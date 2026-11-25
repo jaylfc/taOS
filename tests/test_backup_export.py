@@ -617,6 +617,41 @@ class TestExportFollowups:
         assert STORE_SECRET not in json.dumps(out)
 
 
+    def test_env_allow_list_covers_full_lc_family(self):
+        # CodeRabbit on PR #4565: the contract says the LC_* family, so
+        # categories beyond the enumerated subset (LC_PAPER,
+        # LC_MEASUREMENT, ...) must survive too.
+        data = {"env": {
+            "LC_PAPER": "en_US.UTF-8",
+            "LC_MEASUREMENT": "en_US.UTF-8",
+            "LC_ALL": "C.UTF-8",
+        }}
+        out = sanitize_for_export(data, "config", [], known_values=[])
+        assert out["env"] == data["env"]
+
+    def test_windows_shaped_key_reduced_on_posix(self):
+        # A Windows-shaped key must not survive whole on a POSIX host:
+        # os.path.basename does not split backslashes, so the rewrite
+        # has to use ntpath rules for drive-shaped paths.
+        redactions: list[dict] = []
+        data = {"C:\\Users\\alice\\work\\ws": {"model": "m1"}}
+        out = sanitize_for_export(
+            data, "config", redactions, known_values=[], data_dir="/srv/taos"
+        )
+        assert out == {"ws": {"model": "m1"}}
+        assert "alice" not in json.dumps(out)
+        assert redactions
+
+    def test_windows_shaped_value_reduced_on_posix(self):
+        redactions: list[dict] = []
+        data = {"agents": [{"name": "a", "workspace": "C:\\Users\\alice\\work\\ws"}]}
+        out = sanitize_for_export(
+            data, "agents", redactions, known_values=[], data_dir="/srv/taos"
+        )
+        assert out["agents"][0]["workspace"] == "ws"
+        assert "alice" not in json.dumps(out)
+        assert redactions
+
 @pytest.mark.asyncio
 class TestBuildExportBundleFollowups:
     async def test_agent_env_innocent_name_redacted_in_bundle(self, tmp_path):
@@ -635,3 +670,5 @@ class TestBuildExportBundleFollowups:
         assert env["TZ"] == "Europe/Oslo"
         paths = {e["path"] for e in bundle["manifest"]["excluded"]}
         assert "agents.active[0].env.INNOCENT_NAME" in paths
+
+
