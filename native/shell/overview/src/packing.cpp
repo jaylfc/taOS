@@ -89,7 +89,9 @@ QVector<QRectF> pack(const QVector<Item> &items, const QRectF &area, const Optio
     }
     // The factor is bounded by maxScale relative to the real window size (taken from the first item's
     // natural/lifted ratio is not needed: sz is already in the source unit).
-    const qreal s = std::min(bestScale, opt.maxScale);
+    qreal s = std::min(bestScale, opt.maxScale);
+    if (opt.maxItem.width() > 0 && opt.maxItem.height() > 0)
+        for (const QSizeF &z : sz) s = std::min(s, std::min(opt.maxItem.width() / z.width(), opt.maxItem.height() / z.height()));
 
     qreal blockH = 0;
     for (const Row &r : bestRows) blockH += r.h * s;

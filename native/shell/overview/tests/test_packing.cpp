@@ -54,6 +54,24 @@ private slots:
         QVERIFY(std::abs(out[0].center().x() - area.center().x()) < 1);
         QVERIFY(std::abs(out[0].center().y() - area.center().y()) < 1);
     }
+    // one window on an ultrawide screen must not swallow it
+    void oneWindowIsCappedToAFractionOfTheArea() {
+        Options o; o.gap = 40; o.maxItem = QSizeF(900, 560);
+        const QRectF area(0, 0, 3600, 800);
+        const auto r = pack({ { 1, QRectF(0, 0, 3840, 1200) } }, area, o);
+        QVERIFY2(r[0].width() <= 900.01 && r[0].height() <= 560.01, qPrintable(QString::number(r[0].width())));
+        QVERIFY(qAbs(r[0].width() / r[0].height() - 3.2) < 0.001);
+        QVERIFY(qAbs(r[0].center().x() - 1800) < 1);
+        QVERIFY(r[0].width() > 800);    // and still as large as the cap allows
+    }
+    void capDoesNotShrinkACrowd() {
+        Options o; o.gap = 24; o.maxItem = QSizeF(900, 560);
+        const QRectF area(0, 0, 3600, 800);
+        QVector<Item> items;
+        for (int i = 0; i < 6; ++i) items.push_back({ i, QRectF(i * 100, 0, 800, 600) });
+        Options free_; free_.gap = 24;
+        QCOMPARE(pack(items, area, o), pack(items, area, free_));
+    }
     void neverEnlargesBeyondMaxScale() {
         const QVector<Item> items = { { 1, QRectF(0, 0, 200, 100) } };
         Options o;
