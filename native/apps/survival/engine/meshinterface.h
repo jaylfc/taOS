@@ -106,7 +106,7 @@ struct MeshTrailPoint
 };
 
 /// What the engine can tell about one radio's own settings. `values` is the engine's JSON as a map; its shape is in
-/// docs/DEVICE-SETTINGS.md. `state`: loading | unsupported | ok | error.
+/// native/mesh/docs/DEVICE-SETTINGS.md. `state`: loading | unsupported | ok | error.
 struct MeshDeviceConfig
 {
     QString radioId;

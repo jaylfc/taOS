@@ -31,17 +31,19 @@ C.ScrollView {
     }
     function networkName(n) { return n === "meshtastic" ? "Meshtastic" : n === "meshcore" ? "MeshCore" : n === "rnode" ? "RNode (Reticulum)" : n }
     function boardName(id) { for (const b of (fw.boards.boards || [])) if (b.id === id) return b.name; return id }
-    // one row per network and board: its versions, total size and how it was checked
-    readonly property var rows: {
+    // one group per network, one row per board: its versions and total size; how the network's files were checked is said once
+    readonly property var groups: {
         const by = {}
         for (const e of fw.library) {
-            const k = e.network + "|" + e.board
-            if (!by[k]) by[k] = {key: k, network: e.network, board: e.board, versions: [], bytes: 0, unsigned: false, how: e.verifiedBy}
-            if (by[k].versions.indexOf(e.version) < 0) by[k].versions.push(e.version)
-            by[k].bytes += e.sizeBytes
-            if (e.unsigned) by[k].unsigned = true
+            if (!by[e.network]) by[e.network] = {network: e.network, how: e.verifiedBy, unsigned: false, boards: {}}
+            const g = by[e.network]
+            if (e.unsigned) g.unsigned = true
+            if (!g.boards[e.board]) g.boards[e.board] = {board: e.board, versions: [], bytes: 0}
+            const b = g.boards[e.board]
+            if (b.versions.indexOf(e.version) < 0) b.versions.push(e.version)
+            b.bytes += e.sizeBytes
         }
-        return Object.keys(by).sort().map(k => by[k])
+        return Object.keys(by).sort().map(n => ({network: n, how: by[n].how, unsigned: by[n].unsigned, rows: Object.keys(by[n].boards).sort().map(k => by[n].boards[k])}))
     }
     readonly property var device: { for (const d of fw.devices) if (d.id === deviceId) return d; return null }
     // for the chosen board: the newest version of each network that fits it
@@ -124,8 +126,8 @@ C.ScrollView {
                 delegate: RowLayout {
                     required property var modelData
                     Layout.fillWidth: true; spacing: Look.space2
-                    Chip { text: root.networkName(modelData.network); tone: "success"; glyph: "check" }
-                    TaosText { Layout.fillWidth: true; elide: Text.ElideRight; font.pixelSize: Look.small; color: Look.textSecondary
+                    Chip { Layout.alignment: Qt.AlignTop; text: root.networkName(modelData.network); tone: "success"; glyph: "check" }
+                    TaosText { Layout.fillWidth: true; wrapMode: Text.Wrap; font.pixelSize: Look.small; color: Look.textSecondary
                                text: qsTr("%1, accepted by %2 on %3").arg(modelData.licence_id).arg(modelData.accepted_by).arg(root.fw.dateText(modelData.accepted_at)) }
                 }
             }
@@ -137,17 +139,33 @@ C.ScrollView {
                 detail: qsTr("Refresh while you are online. The latest stable and the one before it are kept for each network.")
             }
             Repeater {
-                model: root.rows
-                delegate: ListRow {
+                model: root.groups
+                delegate: ColumnLayout {
+                    id: grp
                     required property var modelData
-                    Layout.fillWidth: true
-                    objectName: "fw-" + modelData.key
-                    clickable: false
-                    glyph: "cpu"
-                    title: root.boardName(modelData.board) + "  " + root.networkName(modelData.network)
-                    subtitle: modelData.versions.join(", ") + "  -  " + root.fw.sizeText(modelData.bytes)
-                    detail: modelData.unsigned ? qsTr("Unsigned by the publisher. %1.").arg(modelData.how) : modelData.how
-                    trailing: Component { Chip { text: modelData.unsigned ? qsTr("Checksum only") : qsTr("Publisher checked"); tone: modelData.unsigned ? "warning" : "success"; glyph: modelData.unsigned ? "alert" : "check" } }
+                    Layout.fillWidth: true; spacing: Look.space1
+                    objectName: "fwgroup-" + modelData.network
+                    RowLayout {
+                        Layout.fillWidth: true; Layout.topMargin: Look.space2; spacing: Look.space2
+                        TakLabel { text: root.networkName(grp.modelData.network); Layout.leftMargin: Look.space1 }
+                        Item { Layout.fillWidth: true }
+                        Chip { text: grp.modelData.unsigned ? qsTr("Not signed by the publisher") : qsTr("Publisher checksums"); tone: grp.modelData.unsigned ? "warning" : "success"; glyph: grp.modelData.unsigned ? "alert" : "check" }
+                    }
+                    TaosText { Layout.fillWidth: true; wrapMode: Text.Wrap; font.pixelSize: Look.small; color: Look.textSecondary; Layout.leftMargin: Look.space1
+                               text: grp.modelData.unsigned ? qsTr("%1. Every file is verified before it is stored and again before a flash.").arg(grp.modelData.how) : qsTr("%1.").arg(grp.modelData.how) }
+                    Repeater {
+                        model: grp.modelData.rows
+                        delegate: ListRow {
+                            required property var modelData
+                            Layout.fillWidth: true
+                            objectName: "fw-" + grp.modelData.network + "|" + modelData.board
+                            clickable: false
+                            glyph: "cpu"
+                            title: root.boardName(modelData.board)
+                            subtitle: qsTr("Version %1").arg(modelData.versions.join(", "))
+                            trailing: Component { TaosText { text: root.fw.sizeText(modelData.bytes); font.pixelSize: Look.small; color: Look.textSecondary; font.features: { "tnum": 1 } } }
+                        }
+                    }
                 }
             }
 
@@ -252,7 +270,7 @@ C.ScrollView {
                 }
                 TaosCheck { id: noBackup; visible: false; text: qsTr("Flash even if the settings cannot be backed up") }
                 TaosText { text: qsTr("Type %1 to confirm").arg(root.fw.plan.confirm_phrase); font.pixelSize: Look.body; font.weight: Font.DemiBold; Layout.topMargin: Look.space2 }
-                TaosField { id: typed; objectName: "confirmField"; text: root.nav && root.nav.demo.typed !== undefined ? root.nav.demo.typed : ""; Layout.fillWidth: true; placeholderText: root.fw.plan.confirm_phrase; accessibleName: qsTr("Type the board name to confirm") }
+                TaosField { id: typed; objectName: "confirmField"; text: root.nav && root.nav.demo.typed !== undefined ? root.nav.demo.typed : ""; Layout.fillWidth: true; placeholderText: root.fw.plan.confirm_phrase || ""; accessibleName: qsTr("Type the board name to confirm") }
                 RowLayout {
                     spacing: Look.space2
                     PillButton { objectName: "flashButton"; variant: "primary"; text: root.fw.busy ? qsTr("Flashing...") : qsTr("Flash the board")
@@ -290,7 +308,7 @@ C.ScrollView {
                         TaosText { Layout.fillWidth: true; wrapMode: Text.Wrap; font.pixelSize: Look.body; text: modelData.name === "backup" ? qsTr("Settings backed up") : modelData.name === "flash" ? qsTr("Firmware written") : modelData.name === "verify" ? qsTr("Board checked") : modelData.name === "restore" ? qsTr("Settings restored") : modelData.name }
                     }
                 }
-                TaosText { visible: root.fw.result.restore && root.fw.result.restore.status === "kept_for_switching_back"; Layout.fillWidth: true; wrapMode: Text.Wrap; font.pixelSize: Look.small; color: Look.textSecondary
+                TaosText { visible: !!root.fw.result.restore && root.fw.result.restore.status === "kept_for_switching_back"; Layout.fillWidth: true; wrapMode: Text.Wrap; font.pixelSize: Look.small; color: Look.textSecondary
                            text: qsTr("The old settings are kept so you can switch back.") }
                 ColumnLayout {
                     visible: !root.fw.result.ok && !!root.fw.result.recovery

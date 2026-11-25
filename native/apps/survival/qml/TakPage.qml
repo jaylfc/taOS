@@ -22,7 +22,7 @@ StagePage {
     panelWidth: wideView ? 440 : 340
     tall: view !== ""
     function focusSearch() { stage.focusSearch() }
-    function open(v, arg) { view = v; viewArg = arg; sheetOpen = true; stage.selectedPerson = v === "person" ? arg : "" }
+    function open(v, arg) { viewArg = arg; view = v; sheetOpen = true; stage.selectedPerson = v === "person" ? arg : "" }
     function back() { view = ""; viewArg = ""; stage.selectedPerson = "" }
     readonly property string viewTitle: {
         if (view === "person") { tak.people; return tak.displayName(viewArg) }

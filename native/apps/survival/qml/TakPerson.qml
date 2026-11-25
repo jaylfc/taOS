@@ -46,9 +46,9 @@ C.ScrollView {
                 spacing: Look.space2
                 TakLabel { text: qsTr("Last known position") }
                 TaosText { text: root.p.hasPosition ? root.p.coords : qsTr("No position heard yet"); font.pixelSize: Look.bodyMedium; font.weight: Font.DemiBold; font.features: { "tnum": 1 } }
-                TaosText { visible: root.p.hasPosition; text: qsTr("Seen %1").arg(root.p.positionAgo || ""); font.pixelSize: Look.body; color: Look.textSecondary }
+                TaosText { visible: !!root.p.hasPosition; text: qsTr("Seen %1").arg(root.p.positionAgo || ""); font.pixelSize: Look.body; color: Look.textSecondary }
                 TaosText { text: qsTr("Last heard %1").arg(root.p.heardAgo || ""); font.pixelSize: Look.small; color: Look.textSecondary }
-                PillButton { visible: root.p.hasPosition; compact: true; text: qsTr("Show on the map"); glyph: "map-pin"; onClicked: root.nav.stage.centerOn(root.p.lon, root.p.lat) }
+                PillButton { visible: !!root.p.hasPosition; compact: true; text: qsTr("Show on the map"); glyph: "map-pin"; onClicked: root.nav.stage.centerOn(root.p.lon, root.p.lat) }
             }
         }
         TakLabel { text: qsTr("Trail") }

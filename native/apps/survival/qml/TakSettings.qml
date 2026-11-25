@@ -27,7 +27,8 @@ C.ScrollView {
     property int qrChannel: -1
     contentWidth: availableWidth
     clip: true
-    Component.onCompleted: tak.requestConfig(radioId)
+    Component.onCompleted: if (radioId !== "") tak.requestConfig(radioId)
+    onRadioIdChanged: if (radioId !== "") tak.requestConfig(radioId)
     onNavChanged: if (nav && nav.demo.qr !== undefined) { qrChannel = Number(nav.demo.qr); if (nav.demo.showkey !== undefined) { const s = {}; s[Number(nav.demo.showkey)] = true; shown = s } }
     function getPath(o, p) { let c = o; for (const k of p.split(".")) { if (c === undefined || c === null) return undefined; c = c[k] } return c }
     function stage(path, v) {

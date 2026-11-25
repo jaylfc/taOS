@@ -16,10 +16,11 @@ add_test(NAME apps_tst_survival_engine COMMAND ${CMAKE_COMMAND} -E env QT_QPA_PL
 set_tests_properties(apps_tst_survival_engine PROPERTIES TIMEOUT 300)
 
 if(PYTHON3)
-  add_executable(tst_survival_ui tst_survival_ui.cpp)
+  add_executable(tst_survival_ui tst_survival_ui.cpp fakemesh.h)
   target_link_libraries(tst_survival_ui PRIVATE taosqt Qt6::Test Qt6::Quick Qt6::QuickControls2 Qt6::Qml taos_survival_faces)
   target_include_directories(tst_survival_ui PRIVATE ${CMAKE_CURRENT_SOURCE_DIR} ${CMAKE_SOURCE_DIR}/tests)
-  target_compile_definitions(tst_survival_ui PRIVATE FAKE_APPS_PY="${CMAKE_SOURCE_DIR}/tests/fake_apps_controller.py")
+  target_compile_definitions(tst_survival_ui PRIVATE FAKE_APPS_PY="${CMAKE_SOURCE_DIR}/tests/fake_apps_controller.py"
+                             MESH_FIXTURES_DIR="${CMAKE_CURRENT_SOURCE_DIR}/fixtures")
   taos_apps_use_common(tst_survival_ui)
   set(_files)
   foreach(f ${TAOS_SURVIVAL_QML})
@@ -34,7 +35,7 @@ if(PYTHON3)
            XDG_CONFIG_HOME=${CMAKE_CURRENT_BINARY_DIR}/home_ui/config TMPDIR=${CMAKE_CURRENT_BINARY_DIR}
            TAOS_APPEARANCE_MIRROR_DIR=${CMAKE_CURRENT_BINARY_DIR}/home_ui/mirror
            TAOS_SYSTEM_APPEARANCE=${CMAKE_CURRENT_BINARY_DIR}/home_ui/etc-appearance.json
-           TAOS_SYSTEM_THEME_DIR=${CMAKE_CURRENT_BINARY_DIR}/home_ui/system-themes
+           TAOS_SYSTEM_THEME_DIR=${CMAKE_CURRENT_BINARY_DIR}/home_ui/system-themes TAOS_SURVIVAL_NO_SYSTEMCTL=1
            QT_QPA_PLATFORM=offscreen QT_QUICK_BACKEND=software $<TARGET_FILE:tst_survival_ui>)
   set_tests_properties(apps_tst_survival_ui PROPERTIES TIMEOUT 300)
 endif()

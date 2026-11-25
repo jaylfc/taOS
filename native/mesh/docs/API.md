@@ -46,7 +46,7 @@ allowed or over budget), `no_radio`, `store_error`, `connect_failed`.
 
 | Method | Who | Params | Result |
 |---|---|---|---|
-| `health` | any | none | `{ok, store_error, pending_unwritten, stored_this_run, torn_tail_preserved, store}` |
+| `health` | any | none | `{ok, store_error, pending_unwritten, stored_this_run, torn_tail_preserved, store, receive_only, device_config, device_config_write}`; the last three tell the app whether sending is possible and whether radio settings can be read and written (both settings fields are `false`: the engine does not read or write radio settings yet) |
 | `radios` | any | none | list of `{id, network, link, link_kind, ready, connected, identity, frames_in, frames_out, console_bytes, decode_errors, last_error, queued}` |
 | `discover` | owner | none | `{serial: [{path, vid, pid, product, manufacturer, hint}], ble: {state: "devices"|"no_adapter", ...}}` |
 | `connect` | owner | `device`, optional `network` | `{radio, network}` |
@@ -134,9 +134,14 @@ fails does not use budget. Agents cannot grant, change identities, connect radio
   a peer node id (direct) or `ch:<network>:<index>` (channel).
 * `app.send {thread, text}` -> `{accepted, messageId, error}`.
 
-The C++ `MeshBackend` that calls these is not written here: the header lives on an unmerged branch.
+The C++ side is `SocketMeshBackend` in the Survival Studio app (`native/apps/survival/engine/socketmeshbackend.cpp`). It reads the app's lists from `app.radios` and `app.identities` and builds messages from the full `messages` records (kind `text`) so that each message carries its sender's name, position and signal.
 Change notifications: `subscribe` and re-query.
 
+## Radio settings (proposed, not implemented)
+The app's device settings screens read `device.config {radio}` (owner only: it carries channel keys) and write through
+`device.apply {radio, changes}`. Neither exists yet; `health.device_config` and `health.device_config_write` stay `false`
+until they do, and the app shows "not read from the radio yet" rather than any default. The reply shape the screens
+expect is in `DEVICE-SETTINGS.md`.
 ## CLI
 
 ```

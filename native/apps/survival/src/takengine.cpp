@@ -306,9 +306,9 @@ QVariantList TakEngine::messages(const QString &threadId) const
         if (m.hasPosition)
             pos = coords(m.lon, m.lat) + (m.positionIsLastKnown ? tr(", last known ") : tr(", ")) + formatAgo(m.positionTimeMs, now);
         QStringList sig;
-        if (m.hasSignal)
+        if (m.hasSignal && !m.outgoing)   // what a radio heard; it says nothing about our own send
             sig << tr("signal %1 dBm").arg(m.rssi, 0, 'f', 0) << tr("SNR %1 dB").arg(m.snr, 0, 'f', 1);
-        if (m.hops >= 0)
+        if (m.hops >= 0 && !m.outgoing)
             sig << (m.hops == 1 ? tr("1 hop") : tr("%1 hops").arg(m.hops));
         out.append(QVariantMap{{u"id"_s, m.id}, {u"text"_s, m.text}, {u"timeMs"_s, double(m.timeMs)}, {u"ago"_s, formatAgo(m.timeMs, now)},
                                {u"time"_s, QLocale().toString(QDateTime::fromMSecsSinceEpoch(m.timeMs), QLocale::ShortFormat)}, {u"outgoing"_s, m.outgoing},
@@ -422,7 +422,7 @@ QString FirmwareEngine::sizeText(double bytes) const
 QString FirmwareEngine::dateText(const QString &iso) const
 {
     const QDateTime d = QDateTime::fromString(iso, Qt::ISODate);
-    return d.isValid() ? QLocale().toString(d.date(), QLocale::ShortFormat) : iso;
+    return d.isValid() ? QLocale().toString(d.date(), u"d MMM yyyy"_s) : iso;
 }
 
 QString FirmwareEngine::totalSize() const

@@ -17,7 +17,7 @@ ColumnLayout {
     readonly property string blocked: { tak.threads; return tak.sendBlocked }
     spacing: 0
     Component.onCompleted: tak.markRead(threadId)
-    onMsgsChanged: tak.markRead(threadId)
+    onMsgsChanged: Qt.callLater(() => tak.markRead(threadId))
     C.ScrollView {
         Layout.fillWidth: true; Layout.fillHeight: true
         contentWidth: availableWidth
