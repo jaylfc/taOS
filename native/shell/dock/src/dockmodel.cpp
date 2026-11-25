@@ -267,20 +267,54 @@ static DockMenuRow entry(const QString &id, const QString &text, bool enabled = 
     DockMenuRow r; r.id = id; r.text = text; r.enabled = enabled; r.danger = danger; return r;
 }
 
-static QVector<DockMenuSub> subsFor(const WindowInfo &w, const QString &title) {
-    QVector<DockMenuSub> v;
-    const bool big = w.fullscreen || w.fullSize;
-    auto add = [&](const QString &id, const QString &glyph, const QString &verb, bool enabled = true) {
-        DockMenuSub s;
-        s.id = id + QString::number(w.id);
-        s.glyph = glyph;
-        s.accessible = verb + QLatin1Char(' ') + title;
-        s.enabled = enabled;
-        v << s;
+// "1" is Space 1; a space the person named keeps its name.
+static QString spaceLabel(const QString &name) {
+    bool digits = !name.isEmpty();
+    for (const QChar c : name) digits &= c.isDigit();
+    return digits ? QObject::tr("Space %1").arg(name) : name;
+}
+
+QVector<DockMenuRow> DockModel::windowControlRows(int windowId) const {
+    QVector<DockMenuRow> v;
+    const WindowInfo *w = window(windowId);
+    if (!w) return v;
+    QString title = w->title;
+    if (title.isEmpty())
+        for (const DockItem &it : m_items) if (it.windows.contains(w->id) || it.windowId == w->id) { title = it.name; break; }
+    const QString idn = QString::number(w->id);
+    const bool maximised = w->fullSize;
+    const bool canSize = !w->minimised;
+    auto add = [&](const QString &id, const QString &text, const QString &verb, bool enabled = true, bool danger = false) -> DockMenuRow & {
+        DockMenuRow r = entry(id + idn, text, enabled, danger);
+        r.windowId = w->id;
+        r.accessible = verb + QLatin1Char(' ') + title;
+        v << r;
+        return v.last();
     };
-    add(QStringLiteral("window-min:"), w.minimised ? QStringLiteral("restore") : QStringLiteral("min"), w.minimised ? QStringLiteral("Restore") : QStringLiteral("Minimise"));
-    add(QStringLiteral("window-full:"), big ? QStringLiteral("unfull") : QStringLiteral("full"), big ? QStringLiteral("Restore size of") : QStringLiteral("Full size"), !w.minimised);
-    add(QStringLiteral("window-close:"), QStringLiteral("close"), QStringLiteral("Close"));
+    add(QStringLiteral("window-min:"), w->minimised ? QObject::tr("Restore") : QObject::tr("Minimise"), w->minimised ? QStringLiteral("Restore") : QStringLiteral("Minimise"));
+    add(QStringLiteral("window-full:"), maximised ? QObject::tr("Restore size") : QObject::tr("Maximise"), maximised ? QStringLiteral("Restore size of") : QStringLiteral("Maximise"), canSize);
+    add(QStringLiteral("window-fs:"), w->fullscreen ? QObject::tr("Exit full screen") : QObject::tr("Full screen"), w->fullscreen ? QStringLiteral("Exit full screen of") : QStringLiteral("Full screen"), canSize);
+    v << sep();
+    add(QStringLiteral("window-bring:"), QObject::tr("Bring here"), QStringLiteral("Bring"));
+    v.last().accessible = QStringLiteral("Bring ") + title + QStringLiteral(" here");
+    // Tiled windows are sized by the layout; only a floating or full screen window has a size of its own to reset.
+    add(QStringLiteral("window-reset:"), QObject::tr("Reset size"), QStringLiteral("Reset size of"), canSize && (w->floating || w->fullscreen));
+    DockMenuRow &spaces = add(QStringLiteral("window-spaces:"), QObject::tr("Move to space"), QStringLiteral("Move to space"));
+    spaces.accessible = QStringLiteral("Move ") + title + QStringLiteral(" to a space");
+    for (const SpaceInfo &s : m_spaces) {
+        DockMenuRow c = entry(QStringLiteral("window-space:%1:%2").arg(w->id).arg(s.name), spaceLabel(s.name), s.name != w->workspace);
+        c.windowId = w->id;
+        c.current = s.name == w->workspace;
+        c.accessible = QStringLiteral("Move %1 to space %2").arg(title, s.name);
+        spaces.children << c;
+    }
+    if (!spaces.children.isEmpty()) spaces.children << sep();
+    DockMenuRow n = entry(QStringLiteral("window-newspace:") + idn, QObject::tr("New space"));
+    n.windowId = w->id;
+    n.accessible = QStringLiteral("Move ") + title + QStringLiteral(" to a new space");
+    spaces.children << n;
+    v << sep();
+    add(QStringLiteral("window-close:"), QObject::tr("Close"), QStringLiteral("Close"), true, true);
     return v;
 }
 
@@ -298,7 +332,7 @@ QVector<DockMenuRow> DockModel::windowListFor(int row) const {
         r.windowId = id;
         r.minimised = w->minimised;
         r.accessible = (w->minimised ? QStringLiteral("Restore ") : QStringLiteral("Show ")) + title;
-        r.subs = subsFor(*w, title);
+        r.children = windowControlRows(id);
         rows << r;
     }
     return rows;
@@ -318,20 +352,8 @@ QVector<DockMenuRow> DockModel::menuFor(int row) const {
             rows.last().accessible = QStringLiteral("Close ") + it.name;
         } else {
             if (it.windows.size() == 1) {
-                // One window: its actions go straight at the top of the menu.
-                const WindowInfo *w = window(it.windows.first());
-                if (w) {
-                    const bool big = w->fullscreen || w->fullSize;
-                    auto act = [&](const QString &id, const QString &text, const QString &verb, bool enabled, bool danger) {
-                        DockMenuRow r = entry(id + QString::number(w->id), text, enabled, danger);
-                        r.windowId = w->id;
-                        r.accessible = verb + QLatin1Char(' ') + it.name;
-                        rows << r;
-                    };
-                    act(QStringLiteral("window-min:"), w->minimised ? QStringLiteral("Restore") : QStringLiteral("Minimise"), w->minimised ? QStringLiteral("Restore") : QStringLiteral("Minimise"), true, false);
-                    act(QStringLiteral("window-full:"), big ? QStringLiteral("Restore size") : QStringLiteral("Full size"), big ? QStringLiteral("Restore size of") : QStringLiteral("Full size"), !w->minimised, false);
-                    act(QStringLiteral("window-close:"), QStringLiteral("Close"), QStringLiteral("Close"), true, true);
-                }
+                // One window: its controls go straight at the top of the menu (and a title for a screen reader).
+                rows += windowControlRows(it.windows.first());
             } else if (it.windows.size() > 1) {
                 rows += windowListFor(row);
                 bool anyUp = false;

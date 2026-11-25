@@ -550,7 +550,8 @@ bool FrameController::perform(int id, const QString &button, QString *error)
         return false;
     }
     for (const Strip &s : std::as_const(m_strips)) {
-        if (s.id == id && ((button == QLatin1String("minimise") && !s.canMinimise) || (button == QLatin1String("full") && !s.canFull))) {
+        const bool full = button == QLatin1String("full") || button == QLatin1String("maximise") || button == QLatin1String("fullscreen");
+        if (s.id == id && ((button == QLatin1String("minimise") && !s.canMinimise) || (full && !s.canFull))) {
             if (error) *error = QStringLiteral("this window has no %1 button").arg(button);
             return false;
         }
@@ -561,7 +562,10 @@ bool FrameController::perform(int id, const QString &button, QString *error)
     bool ok = false;
     if (button == QLatin1String("close")) ok = c.close(ref, &err);
     else if (button == QLatin1String("minimise")) ok = c.minimise(ref, &err);
-    else if (button == QLatin1String("full")) ok = c.full(ref, &err);
+    else if (button == QLatin1String("full")) ok = c.full(ref, &err);                 // the middle button: maximise or restore
+    else if (button == QLatin1String("maximise")) ok = c.maximise(ref, &err);          // maximise, never back
+    // Full screen is sway's own fullscreen (the client is told set_fullscreen); the container is not resized by us.
+    else if (button == QLatin1String("fullscreen")) ok = c.fullscreen(ref, &err, Plans::Fullscreen::On);
     else err = QStringLiteral("unknown action %1").arg(button);
     if (!ok)
         fprintf(stderr, "taos-frame: %s %d: %s\n", qPrintable(button), id, qPrintable(err));

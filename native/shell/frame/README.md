@@ -1,6 +1,6 @@
 # taos-frame: the window buttons for every window
 
-Every normal window on the desktop shows the same three taOS buttons (close, minimise, full size), always drawn (not
+Every normal window on the desktop shows the same three taOS buttons (close, minimise, maximise), always drawn (not
 only on hover), in the order and on the side the theme sets (`windowButtons`, the person can override it), with a
 focused and an unfocused style, hover and pressed feedback, a tooltip and an accessible name, whatever toolkit drew it.
 
@@ -31,10 +31,10 @@ second after it maps: a bar forced on a GTK 3 header bar window before it has sa
 ### Kinds of window
 
 * **Normal** window: all three buttons.
-* **Dialog, utility, splash, toolbar**: close only; minimise and full size are drawn as empty, inert discs. X11 windows
+* **Dialog, utility, splash, toolbar**: close only; minimise and maximise are drawn as empty, inert discs. X11 windows
   are recognised from their window type or `transient_for` (sway reports them). Wayland does not tell sway which
   toplevel is a dialog or has a fixed size, so for Wayland apps this is data: `dialogs` (close only) and `fixedSize`
-  (no full size button) in `frame.json`. **Not detected automatically.** A compositor patch that exports the parent
+  (no maximise button) in `frame.json`. **Not detected automatically.** A compositor patch that exports the parent
   and the min/max size in `get_tree` would replace both lists.
 * **Fullscreen** (`F11`, `Super+F`): no title bar, no buttons; they come back when it ends.
 * **Minimised** windows are parked; their buttons are hidden and the dock shows them (click to restore).
@@ -43,7 +43,7 @@ second after it maps: a bar forced on a GTK 3 header bar window before it has sa
 
 ### Keyboard
 The buttons never take the keyboard (the strip must not steal focus from the window). The equivalents: `Super+Q` close,
-`Super+M` minimise, `Super+Shift+M` restore the last one, `Super+Ctrl+Up` full size or restore, `Super+Ctrl+Shift+Up`
+`Super+M` minimise, `Super+Shift+M` restore the last one, `Super+Ctrl+Up` maximise or restore, `Super+Ctrl+Shift+Up`
 fullscreen. The tooltip names them. Native apps' own buttons are focusable (ring on keyboard focus).
 
 ### Look
@@ -75,9 +75,16 @@ button: 8% disc, no glyph. Tooltip after 500 ms. `native/qt/style/Taos/Style/Tit
   window above it covers the buttons (a layer surface is always above every window, so an overlapped window's buttons
   have to give way).
 * **Actions** go through `taos_window_core` like the dock and the native header: close, minimise (scratchpad plus marks,
-  `scratchpad_minimize` is never used), full size. Right click on a title bar opens a small menu (minimise, full size,
+  `scratchpad_minimize` is never used), maximise. Right click on a title bar opens a small menu (minimise, maximise, full screen,
   close): `49-taos-frame.conf` binds `--release --border button3` to `taos-frame menu`; sway focuses the clicked window
   first, so "the focused window" is the one clicked. Right click on the buttons does the same.
+  **Maximise and Full screen are different things** (the menu once had only the first, called "Full size", and the owner
+  read it as full screen): *Maximise* (`taos-frame press <id> full`, the middle button, which toggles) floats the window and
+  sizes the container, title bar included, to the usable area (bar and dock excluded); sway stays in `fullscreen_mode 0`.
+  *Full screen* (`press <id> fullscreen`) is `taos-window fullscreen <id> on`: sway's own fullscreen, `fullscreen_mode 1`,
+  the container is the output and the client gets `xdg_toplevel.set_fullscreen` (a client that draws to the whole output
+  is then right, and no resizing of ours can leave it 32 px past the bottom). `taos-window restore` leaves full screen and
+  maximise and returns the geometry from before. `test_frame_sway` asserts both through `swaymsg -t get_tree`.
 * **Window core.** With a sway title bar `rect` is the content below the bar, but `resize set` and `move position` speak
   of the container, bar included, so `taos_window_core` replayed saved geometry 32 px lower and 32 px shorter on every
   full size or minimise cycle (measured). `window/core/windowmodel.cpp` now keeps `Window::rect` in container terms
@@ -104,7 +111,7 @@ bar") and a key in the file **replaces** the shipped list. `include` narrows the
 
 ## Control
 
-`taos-frame menu | state | press <window-id> <close|minimise|full>` talk to the running daemon over
+`taos-frame menu | state | press <window-id> <close|minimise|full|maximise|fullscreen>` talk to the running daemon over
 `$XDG_RUNTIME_DIR/taos-frame.sock`. `state` is the JSON the tests read.
 
 ## Tests

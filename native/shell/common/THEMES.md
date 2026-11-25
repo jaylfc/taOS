@@ -45,8 +45,8 @@ that folder exists and is writable by them (for example mode 1777). It never rea
       "windowButtons": "left"           // optional: "left" (default) or "right", see below
     }
 
-`windowButtons` is the side of the window buttons on taOS app windows: `"left"` puts them close, minimise, full size
-at the left of the title bar; `"right"` puts them minimise, full size, close at the right. Anything else refuses the
+`windowButtons` is the side of the window buttons on taOS app windows: `"left"` puts them close, minimise, maximise
+at the left of the title bar; `"right"` puts them minimise, maximise, close at the right. Anything else refuses the
 theme. A person can override it for every theme with `"windowButtons"` in `appearance.json`
 (`taos-theme set-buttons left|right|theme`; `theme` removes the override). The change shows at once in every open window.
 

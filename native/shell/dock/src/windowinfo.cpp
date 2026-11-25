@@ -37,10 +37,29 @@ bool parseList(const QByteArray &json, QVector<WindowInfo> *out, QString *error)
         w.minimised = o.value(QStringLiteral("minimised")).toBool();
         w.floating = o.value(QStringLiteral("floating")).toBool();
         w.fullscreen = o.value(QStringLiteral("fullscreen")).toBool();
-        // Not in the contract today (taos-window keeps it in the taos_full mark): read it when the engine adds it.
         w.fullSize = o.value(QStringLiteral("full_size")).toBool(o.value(QStringLiteral("maximised")).toBool());
         w.output = o.value(QStringLiteral("output")).toString();
         if (w.id > 0) out->append(w);
+    }
+    return true;
+}
+
+bool parseSpaces(const QByteArray &json, QVector<SpaceInfo> *out, QString *error) {
+    QJsonParseError pe;
+    const QJsonDocument d = QJsonDocument::fromJson(json, &pe);
+    if (pe.error != QJsonParseError::NoError || !d.isArray()) {
+        if (error) *error = pe.error != QJsonParseError::NoError ? pe.errorString() : QStringLiteral("not a JSON array");
+        return false;
+    }
+    out->clear();
+    for (const QJsonValue &v : d.array()) {
+        const QJsonObject o = v.toObject();
+        SpaceInfo s;
+        s.name = o.value(QStringLiteral("name")).toVariant().toString();
+        s.focused = o.value(QStringLiteral("focused")).toBool();
+        s.visible = o.value(QStringLiteral("visible")).toBool();
+        s.windows = o.value(QStringLiteral("windows")).toInt();
+        if (!s.name.isEmpty()) out->append(s);
     }
     return true;
 }

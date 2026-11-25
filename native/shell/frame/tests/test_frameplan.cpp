@@ -402,7 +402,7 @@ private slots:
     {
         QCOMPARE(StripLayout::labelFor(QStringLiteral("close"), QStringLiteral("YouTube")), QStringLiteral("Close YouTube"));
         QCOMPARE(StripLayout::labelFor(QStringLiteral("minimise"), QStringLiteral("YouTube")), QStringLiteral("Minimise YouTube"));
-        QCOMPARE(StripLayout::labelFor(QStringLiteral("full"), QStringLiteral("YouTube")), QStringLiteral("Full size YouTube"));
+        QCOMPARE(StripLayout::labelFor(QStringLiteral("full"), QStringLiteral("YouTube")), QStringLiteral("Maximise YouTube"));
         QCOMPARE(StripLayout::labelFor(QStringLiteral("close"), QString()), QStringLiteral("Close window"));
     }
 

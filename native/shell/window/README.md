@@ -5,10 +5,12 @@ resize windows on sway. The dock, the overview, the title bar of every taOS app 
 the keyboard shortcuts all use it, through the static library `taos_window_core` or through the command.
 
     taos-window list [--json]
-    taos-window close|minimise|restore|toggle-minimise|focus|full|fullscreen <id|focused|last>
-    taos-window subscribe          one JSON line per change: {"event": new|close|focus|title|minimise|restore, "window": {...}}
+    taos-window close|minimise|restore|toggle-minimise|focus|full|maximise|bring-here|reset-size <id|focused|last>
+    taos-window fullscreen <id|focused> [on|off|toggle]
+    taos-window move-to-space <id|focused> [space]       new-space [<id|focused>]       spaces [--json]
+    taos-window subscribe          one JSON line per change: {"event": new|close|focus|title|minimise|restore|state, "window": {...}}
 
-`list --json` gives `[{id, app_id, title, pid, workspace, focused, minimised, floating, fullscreen, output}]`, minimised
+`list --json` gives `[{id, app_id, title, pid, workspace, focused, minimised, floating, fullscreen, full_size, output}]`, minimised
 windows included (`workspace` and `output` are where they will come back to; `floating` is how they will come back).
 `<id>` is the sway container id, `focused` the focused window, `last` (restore, focus) the most recently minimised one.
 Exit status: 0 done, 1 refused (a plain sentence on stderr), 2 usage, 3 not running under sway.
@@ -40,14 +42,50 @@ Restore goes back to the original workspace (switching to it), restores tiled or
 and focuses the window. Marks are removed. A window hidden in the scratchpad by someone else is listed as
 minimised too, and restoring it shows it on the current workspace.
 
-## Full size
+## Maximise, full screen, restore
 
-Both kinds of window are made to fill the workspace's usable area (the output minus the bar and the dock; sway's
-workspace rectangle already excludes layer-shell reserved space). Sway's `fullscreen` is not used for this: it
-hides the bar and the dock, which is not what the green button of a window with a dock means. A tiled window is
-floated and sized to the area (`taos_ftiled`); toggling again tiles it back. A floating window remembers its
-geometry (`taos_fgeo_...`) and goes back to it. `taos_full` is the flag. Real fullscreen is a separate verb,
-`taos-window fullscreen`, bound to Super+Shift+Up. The state survives minimise and restore.
+Three different things, one verb each (the dock's menus, the title bar buttons of every window and the keys all call these):
+
+| Verb | What it does | sway state afterwards |
+| --- | --- | --- |
+| `maximise <id>` | Fills the workspace's usable area (the output minus the bar and the dock; sway's workspace rectangle already excludes layer-shell reserved space), title bar included. Only enters; asked again it re-fits the area. A fullscreen window leaves fullscreen first. | `fullscreen_mode 0`, floating, `rect` = usable area |
+| `full <id>` | The same, as a toggle (the middle title bar button, `Super+Ctrl+Up`): a second call goes back. | as above, or the old geometry |
+| `fullscreen <id> [on\|off\|toggle]` | sway's own `fullscreen enable/disable`. The container is not resized by us: sway makes it cover the output and tells the client (`xdg_toplevel.set_fullscreen`). `on` and `off` are idempotent, no argument toggles (`Super+Ctrl+Shift+Up`). | `fullscreen_mode 1`, `rect` = output |
+| `restore <id>` | A minimised window: comes back (see above; `last` is the most recent). A window on screen: leaves fullscreen, then gives up maximise and goes back to the geometry (or the tiling) it had before. Nothing to undo: nothing is run. | the geometry from before |
+
+A tiled window is floated to maximise (`taos_ftiled`) and tiled again by `restore`; a floating one remembers its geometry
+(`taos_fgeo_...`). `taos_full` is the flag; `list --json` reports it as `full_size`, and the state survives minimise and restore.
+The dock used to be told this by the mark alone; it now reads `full_size`, and `subscribe` sends a `{"event":"state"}` line
+when a window's fullscreen, full size, floating, workspace or output changes, so a label never goes stale after a title bar
+button was pressed. Real fullscreen hides the bar and the dock, which is not what the green button of a window with a dock
+means: that is why maximise is not fullscreen.
+
+A floating window is positioned by `move absolute position`, and sway puts a floating window moved that way on the workspace
+that is *shown* on the output under it. A window on a hidden workspace (a window of another space asked to maximise or
+reset its size from the dock's menu) is therefore sent back to its own workspace after the move, and the settle loop does
+the same; the integration test covers it.
+
+## Window controls (lost, off screen or the wrong size)
+
+    taos-window bring-here <id>            move onto the focused workspace (the screen being looked at), centred, sensible size
+    taos-window reset-size <id>            default size for the screen (60 % x 70 % of the usable area), centred on its own workspace
+    taos-window move-to-space <id> [space] to another space; no space: the focused one; a name that does not exist makes it
+    taos-window new-space [<id>]           prints the new space's name; with a window, it moves there and the space is shown
+    taos-window spaces [--json]            [{name, output, focused, visible, windows}]
+
+* **bring-here** works for a floating window, a tiled one (moved, still tiled), a fullscreen one (moved, still fullscreen),
+  a minimised one (comes up here, not where it came from), and one that is half or wholly off the screen. Its own size is kept
+  when it is sensible (at least 240x160 and 32 px smaller than the area), else the default size is used. A maximised window
+  fills the area again. The window gets focus.
+* **reset-size** refuses a tiled window with a plain sentence (the layout sizes it); a fullscreen window leaves fullscreen;
+  the maximise marks are dropped.
+* **move-to-space** of a minimised window only rewrites its `taos_ws_` mark (it stays parked and comes back to the new
+  space); of a floating window it also keeps a sensible size, centred in the new space. A space that is not shown has no
+  usable rectangle of its own to trust: the one shown on the same output is used.
+* **new-space** names the space like the overview does: the next number after the highest in use. `spaces` lists only
+  workspaces sway has (a workspace exists while it holds a window or is shown).
+
+Exit status as above (a sentence on stderr for 1; unknown `fullscreen` modes are usage, 2).
 
 ## Desktop and tiling mode
 
@@ -83,7 +121,7 @@ A person with no file gets desktop mode everywhere.
   starts it. GTK apps that draw their own buttons follow it after a restart of the app (GTK reads the key at start;
   some versions follow it live).
 * **foot.** `taos-theme export foot` prints foot's `[csd]` section with `preferred=server`: foot asks the compositor for
-  its title bar and taos-frame draws the taOS buttons on it (close, minimise, full size, on the theme's side), like
+  its title bar and taos-frame draws the taOS buttons on it (close, minimise, maximise, on the theme's side), like
   every other window; foot no longer draws a header of its own (it only ever offered a close button, because sway does
   not advertise minimise and maximise to it, and could not put it on the left). The colours in the section are the
   theme's and only matter if a compositor refuses server side decoration. The hook writes it to
@@ -150,7 +188,7 @@ installed app with `--app-id`, or Window Controls Overlay), or a layer-shell con
 * `taos-window` on PATH (`bin/`), `46-taos-window.conf` to `/usr/share/taos/sway/` and an `include` of it in the sway
   config (it also starts `taos-window mode-daemon`). Nothing is written to `/etc`.
 * The keys: Super+M minimise or restore the focused window, Super+Shift+M restore the last minimised window,
-  Super+Ctrl+Up full size, Super+Ctrl+Shift+Up fullscreen, Super+Shift+T desktop/tiling for the current workspace. Close is
+  Super+Ctrl+Up maximise, Super+Ctrl+Shift+Up fullscreen, Super+Shift+T desktop/tiling for the current workspace. Close is
   `$mod+q` (kill) in the base config and is not bound here. If `$mod+Shift+t` is already taken there, change that line.
   Reserved by the base config, not used by any snippet: `$mod+q`, f, space, the arrows and Shift+arrows, 1-9 and Shift+1-9,
   Return, d (`$mod+Tab` is the overview's). `$mod+m` is free. `tests/check-sway-config.sh` (ctest `sway-config`) loads the snippets together with a
@@ -160,8 +198,12 @@ installed app with `--app-id`, or Window Controls Overlay), or a layer-shell con
 
 ## Tests
 
-`test_windowcore` (logic on fixture trees that are real sway `get_tree` output) and `test_window_sway`, which starts
-a headless sway with its own `XDG_RUNTIME_DIR`, opens two real Wayland windows (`taos-window-dummy`) and drives the
-real `taos-window`. It needs a sway binary: `TAOS_TEST_SWAY=/path/to/sway` (default: `sway` on PATH) and
+`test_windowcore` (logic on fixture trees that are real sway `get_tree` output, plus generated trees with a bar-sized usable
+area) and `test_window_sway`, which starts a headless sway with its own `XDG_RUNTIME_DIR` (and a swaybar when one sits next
+to the sway binary, so the usable area is smaller than the output), opens real Wayland windows (`taos-window-dummy`, with and
+without a sway title bar) and drives the real `taos-window`. It asserts from `get_tree` that fullscreen gives `rect` = output
+and `fullscreen_mode 1`, maximise gives `rect` = usable area and mode 0, restore gives the old rectangle back, and bring-here puts
+an off-screen window inside the output. Run it with a PATH that has no installed `taos-window` (the snippet's `exec taos-window
+mode-daemon` would start it and float the test windows) and, on a machine with a GPU, `WLR_RENDER_DRM_DEVICE`. It needs a sway binary: `TAOS_TEST_SWAY=/path/to/sway` (default: `sway` on PATH) and
 `TAOS_TEST_SWAY_LIBS=dir:dir` when it is not installed; without sway it skips with a message. The Qt Wayland
 platform plugin must be loadable (`QT_PLUGIN_PATH`).
