@@ -19,13 +19,13 @@ from urllib.parse import urlparse
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import JSONResponse
 
+from tinyagentos import license_gate
 from tinyagentos.agent_image import (
     FRAMEWORKS_WITH_DEDICATED_BASE,
     base_image_alias,
     base_image_url_for_alias,
     ensure_image_present,
 )
-from tinyagentos import license_gate
 from tinyagentos.auth_context import require_admin
 from tinyagentos.catalog.resolver import (
     DeviceCapability,

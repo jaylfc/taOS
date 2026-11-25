@@ -99,6 +99,7 @@ async def install_marketplace_server(manifest_id: str, request: Request):
     except MCPMarketplaceError as exc:
         return _error_response(exc)
     from types import SimpleNamespace
+
     from tinyagentos import license_gate
     try:
         body = await request.json()

@@ -93,7 +93,6 @@ Old installs keep their old ports automatically. Users never need to change port
 - **Projects**: boards/docs; request access via auth-request.
 - **Files**: browse agent workspaces, user workspace, shared folders. Upload and download.
 - **Store**: one-click install of community apps. Each app gets its own container and a safe port.
-- **Store licences**: an app or model with restrictive terms (non-commercial, research-only, revenue-capped, use-restricted, proprietary, or a licence taOS does not recognise) asks the person to accept before it installs. Only the person can accept, in their own session; an agent cannot accept for them and gets a 412 with the text to show. A licence limited by country also needs the person's country (Settings, Account, Country, or asked at install time); an excluded country is refused even after acceptance.
 - **Models**: see and pull local models; pin cloud models.
 - **Providers**: add cloud API keys (OpenAI, Anthropic, and compatible).
 - **Cluster**: pair other machines into the compute mesh with a six-digit code.

@@ -10,8 +10,7 @@ from fastapi.responses import JSONResponse
 from packaging.version import InvalidVersion, Version
 from pydantic import BaseModel
 
-from tinyagentos import upstream_versions
-from tinyagentos import license_gate
+from tinyagentos import license_gate, upstream_versions
 from tinyagentos.auth_context import require_admin
 from tinyagentos.catalog.resolver import (
     ResolveOk,
