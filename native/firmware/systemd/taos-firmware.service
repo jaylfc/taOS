@@ -1,0 +1,13 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# The local JSON API (127.0.0.1 only, bearer token in the data directory).
+[Unit]
+Description=taOS firmware manager API
+
+[Service]
+ExecStart=/opt/taos/bin/taos-firmware serve --port 7421
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=yes
+
+[Install]
+WantedBy=default.target
