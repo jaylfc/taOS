@@ -66,7 +66,7 @@ int main(int argc, char **argv)
     }
 
     if (cmd == u"acquire"_s || cmd == u"sso"_s) {
-        DesktopSso sso(DesktopSso::defaultSocketPath(), options.baseUrl, source);
+        DesktopSso sso(DesktopSso::defaultSocketPath(), options.baseUrl, source, cmd == u"sso"_s ? u"desktop"_s : u"cli"_s);
         if (cmd == u"acquire"_s) {
             source->clearSignedOut(); // asking for it by hand is a sign-in
             DesktopSso::Result res = DesktopSso::Failed;

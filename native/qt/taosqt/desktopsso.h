@@ -24,7 +24,10 @@ public:
     Q_ENUM(Result)
     static QString defaultSocketPath();
 
-    DesktopSso(const QString &socketPath, const QUrl &baseUrl, DesktopSessionTokenSource *store, QObject *parent = nullptr);
+    DesktopSso(const QString &socketPath, const QUrl &baseUrl, DesktopSessionTokenSource *store, const QString &kind = QStringLiteral("desktop"),
+               QObject *parent = nullptr);
+    /// The controller keeps one live session per (uid, kind): the desktop service is "desktop", a by-hand
+    /// `taos-session acquire` (an ssh login, say) is "cli", so one never revokes the other.
     /// One request now. Emits finished().
     void acquire();
     /// Acquire, then keep the session current until stop().
@@ -44,6 +47,7 @@ private:
     QUrl m_base;
     DesktopSessionTokenSource *m_store;
     QByteArray m_ours;
+    QString m_kind;
     QTimer m_timer;
     int m_renewMs = 0;
     qint64 m_dueAt = 0;

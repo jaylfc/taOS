@@ -15,11 +15,11 @@ namespace Taos {
 QString DesktopSso::defaultSocketPath()
 {
     const QString env = qEnvironmentVariable("TAOS_DESKTOP_SSO_SOCKET");
-    return env.isEmpty() ? u"/run/taos/desktop-sso.sock"_s : env;
+    return env.isEmpty() ? u"/run/taos-sso/desktop-sso.sock"_s : env;
 }
 
-DesktopSso::DesktopSso(const QString &socketPath, const QUrl &baseUrl, DesktopSessionTokenSource *store, QObject *parent)
-    : QObject(parent), m_socket(socketPath), m_base(baseUrl), m_store(store)
+DesktopSso::DesktopSso(const QString &socketPath, const QUrl &baseUrl, DesktopSessionTokenSource *store, const QString &kind, QObject *parent)
+    : QObject(parent), m_socket(socketPath), m_base(baseUrl), m_store(store), m_kind(kind)
 {
     m_timer.setInterval(5000);
     connect(&m_timer, &QTimer::timeout, this, &DesktopSso::tick);
@@ -73,7 +73,7 @@ void DesktopSso::acquire()
         return;
     }
     bool reached = false;
-    const QJsonObject r = QJsonDocument::fromJson(request(R"({"op":"session"})", &reached)).object();
+    const QJsonObject r = QJsonDocument::fromJson(request(QJsonDocument(QJsonObject{{u"op"_s, u"session"_s}, {u"kind"_s, m_kind}}).toJson(QJsonDocument::Compact), &reached)).object();
     if (!reached) {
         Q_EMIT finished(NoSocket);
         return;
