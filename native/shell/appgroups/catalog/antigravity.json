@@ -1,5 +1,5 @@
 {
-  "schema": 1,
+  "schema": 2,
   "kind": "container-desktop-app",
   "id": "antigravity",
   "name": "Antigravity",
@@ -7,7 +7,7 @@
   "description": "Google's agent-first development environment (a Code OSS based IDE). Installed from Google into your apps container; sign in with a Google account.",
   "publisher": "Google",
   "homepage": "https://antigravity.google/",
-  "licence": "proprietary-freeware",
+  "licence": {"name": "Google Terms of Service and the Antigravity Additional Terms", "url": "https://policies.google.com/terms", "accept": "required"},
   "terms": {
     "note": "Proprietary software under the Google Antigravity Additional Terms of Service and Google's Terms of Service. taOS downloads it from Google when you install it and never redistributes it. The icon shown here is a generic taOS icon, because Google's brand terms do not allow reusing its icons without approval.",
     "url": "https://policies.google.com/terms"

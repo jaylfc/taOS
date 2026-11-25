@@ -1393,6 +1393,32 @@ Result Engine::move(const QString &appId, const QString &toGroup, const Progress
     return r;
 }
 
+Result Engine::acceptLicence(const QString &appId, const QString &acceptedBy)
+{
+    QJsonObject idx = readIndex();
+    QJsonObject apps = idx.value(u"apps"_s).toObject();
+    if (!apps.contains(appId))
+        return Result::fail(ExitNotFound, u"%1 is not installed"_s.arg(appId));
+    Manifest cat;
+    QString err;
+    if (!findManifest(*this, appId, &cat, &err))
+        return Result::fail(ExitNotFound, err);
+    if (!cat.licenceRequired)
+        return Result::fail(ExitRefused, u"%1 has no licence to accept"_s.arg(cat.name));
+    QJsonObject rec = apps.value(appId).toObject();
+    rec[u"licence_accepted"_s] = QJsonObject{{u"name"_s, cat.licence}, {u"url"_s, cat.licenceUrl},
+                                             {u"accepted_at"_s, QDateTime::currentDateTimeUtc().toString(Qt::ISODate)},
+                                             {u"accepted_by"_s, acceptedBy.isEmpty() ? qEnvironmentVariable("USER") : acceptedBy}};
+    apps[appId] = rec;
+    idx[u"apps"_s] = apps;
+    if (!writeIndex(idx, &err))
+        return Result::fail(ExitFailed, err);
+    Result r;
+    r.data[u"id"_s] = appId;
+    r.data[u"licence_accepted"_s] = rec.value(u"licence_accepted"_s);
+    return r;
+}
+
 Result Engine::iconSet(const QString &appId, const QString &file)
 {
     const QJsonObject rec = readIndex().value(u"apps"_s).toObject().value(appId).toObject();

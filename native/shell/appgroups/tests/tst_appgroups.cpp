@@ -131,7 +131,7 @@ private slots:
     }
     void installWritesLauncherAndRecord()
     {
-        const Run r = cli({u"install"_s, u"antigravity"_s, u"--json"_s});
+        const Run r = cli({u"install"_s, u"antigravity"_s, u"--accept-licence"_s, u"antigravity"_s, u"--json"_s});
         QVERIFY2(r.code == 0, qPrintable(r.raw + r.err));
         QCOMPARE(r.last.value(u"desktop_id"_s).toString(), u"taos-appgroups-antigravity"_s);
         const QString d = QString::fromUtf8(readAll(xdgData + u"/applications/taos-appgroups-antigravity.desktop"_s));
@@ -150,12 +150,12 @@ private slots:
         // Every event line is one JSON object (the Store parses them).
         for (const QString &l : r.raw.trimmed().split(u'\n'))
             QVERIFY2(!QJsonDocument::fromJson(l.toUtf8()).isNull(), qPrintable(l));
-        const Run again = cli({u"install"_s, u"antigravity"_s});
+        const Run again = cli({u"install"_s, u"antigravity"_s, u"--accept-licence"_s, u"antigravity"_s});
         QCOMPARE(again.code, 7);
     }
     void wrongChecksumIsRefusedAndLeavesNothing()
     {
-        const Run r = cli({u"install"_s, u"antigravity"_s}, {{u"FAKE_SHA"_s, u"00"_s}});
+        const Run r = cli({u"install"_s, u"antigravity"_s, u"--accept-licence"_s, u"antigravity"_s}, {{u"FAKE_SHA"_s, u"00"_s}});
         QCOMPARE(r.code, 6);
         QVERIFY2(r.err.contains(u"pinned checksum"_s), qPrintable(r.err));
         QVERIFY(!QFileInfo::exists(xdgData + u"/applications/taos-appgroups-antigravity.desktop"_s));
@@ -165,7 +165,7 @@ private slots:
     {
         const QString empty = m_tmp.path() + u"/nodri"_s;
         QDir().mkpath(empty);
-        const Run r = cli({u"install"_s, u"antigravity"_s}, {{u"TAOS_APPGROUPS_DRI_DIR"_s, empty}});
+        const Run r = cli({u"install"_s, u"antigravity"_s, u"--accept-licence"_s, u"antigravity"_s}, {{u"TAOS_APPGROUPS_DRI_DIR"_s, empty}});
         QVERIFY2(r.code == 0, qPrintable(r.raw + r.err));
         QVERIFY2(r.err.contains(u"no GPU render node"_s), qPrintable(r.err));
         QVERIFY(!QString::fromUtf8(readAll(fakeDir + u"/calls.log"_s)).contains(u"unix-char"_s));
@@ -179,7 +179,7 @@ private slots:
             .replace(u"\"description\": \"Google's"_s, u"\"description\": \"line one\\nHidden=true\\n Google's"_s)
             .replace(u"/opt/antigravity"_s, u"/opt/nl"_s);
         writeFile(catDir + u"/nl.json"_s, text.toUtf8());
-        const Run r = cli({u"install"_s, u"nl"_s}, {{u"TAOS_APPGROUPS_CATALOG"_s, catDir}});
+        const Run r = cli({u"install"_s, u"nl"_s, u"--accept-licence"_s, u"nl"_s}, {{u"TAOS_APPGROUPS_CATALOG"_s, catDir}});
         QVERIFY2(r.code == 0, qPrintable(r.raw + r.err));
         const QString d = QString::fromUtf8(readAll(xdgData + u"/applications/taos-appgroups-nl.desktop"_s));
         QVERIFY(d.contains(u"Name=Evil Exec=/bin/false X-Bad=1\n"_s));
@@ -196,7 +196,7 @@ private slots:
             .replace(u"\"op\": \"symlink\""_s, u"\"op\": \"apt-source\", \"name\": \"keyed\", \"uri\": \"https://us-central1-apt.pkg.dev/x/\", \"suite\": \"s\", \"components\": [\"main\"], \"key_url\": \"https://us-central1-apt.pkg.dev/k.gpg\", \"key_fingerprint\": \"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\" }, {\"op\": \"symlink\""_s)
             .replace(u"/opt/antigravity"_s, u"/opt/keyed"_s);
         writeFile(catDir + u"/keyed.json"_s, text.toUtf8());
-        const Run r = cli({u"install"_s, u"keyed"_s}, {{u"TAOS_APPGROUPS_CATALOG"_s, catDir}});
+        const Run r = cli({u"install"_s, u"keyed"_s, u"--accept-licence"_s, u"keyed"_s}, {{u"TAOS_APPGROUPS_CATALOG"_s, catDir}});
         QCOMPARE(r.code, 6);
         QVERIFY2(r.err.contains(u"expected fingerprint"_s), qPrintable(r.err));
     }
@@ -211,7 +211,7 @@ private slots:
     }
     void removeKeepsDataUnlessAsked()
     {
-        QCOMPARE(cli({u"install"_s, u"antigravity"_s}).code, 0);
+        QCOMPARE(cli({u"install"_s, u"antigravity"_s, u"--accept-licence"_s, u"antigravity"_s}).code, 0);
         QFile::remove(fakeDir + u"/calls.log"_s);
         const Run r = cli({u"remove"_s, u"antigravity"_s, u"--json"_s});
         QCOMPARE(r.code, 0);
@@ -225,7 +225,7 @@ private slots:
         QVERIFY(!calls.contains(u"libgbm1"_s));
         QVERIFY(!calls.contains(u"libxkbcommon0"_s));
         QVERIFY(!QFileInfo::exists(xdgData + u"/applications/taos-appgroups-antigravity.desktop"_s));
-        QCOMPARE(cli({u"install"_s, u"antigravity"_s}).code, 0);
+        QCOMPARE(cli({u"install"_s, u"antigravity"_s, u"--accept-licence"_s, u"antigravity"_s}).code, 0);
         QFile::remove(fakeDir + u"/calls.log"_s);
         QCOMPARE(cli({u"remove"_s, u"antigravity"_s, u"--purge-data"_s}).code, 0);
         QVERIFY(QString::fromUtf8(readAll(fakeDir + u"/calls.log"_s)).contains(u"rm -rf /home/taos/apps/antigravity"_s));
@@ -245,14 +245,14 @@ private slots:
     }
     void targetsHostAndWorkerAreNotSilentlyFallenBack()
     {
-        const Run h = cli({u"install"_s, u"antigravity"_s, u"--target"_s, u"host"_s, u"--accept-host-warning"_s, u"--json"_s});
+        const Run h = cli({u"install"_s, u"antigravity"_s, u"--accept-licence"_s, u"antigravity"_s, u"--target"_s, u"host"_s, u"--accept-host-warning"_s, u"--json"_s});
         QCOMPARE(h.code, 9);
         QVERIFY(h.last.value(u"error"_s).toString().contains(u"not available yet"_s));
-        QCOMPARE(cli({u"install"_s, u"antigravity"_s, u"--target"_s, u"worker:desk2"_s}).code, 9);
-        QCOMPARE(cli({u"install"_s, u"antigravity"_s, u"--target"_s, u"bogus"_s}).code, 2);
+        QCOMPARE(cli({u"install"_s, u"antigravity"_s, u"--accept-licence"_s, u"antigravity"_s, u"--target"_s, u"worker:desk2"_s}).code, 9);
+        QCOMPARE(cli({u"install"_s, u"antigravity"_s, u"--accept-licence"_s, u"antigravity"_s, u"--target"_s, u"bogus"_s}).code, 2);
         QVERIFY(!QFileInfo::exists(xdgData + u"/applications/taos-appgroups-antigravity.desktop"_s));
         QVERIFY(!QString::fromUtf8(readAll(fakeDir + u"/calls.log"_s)).contains(u"exec"_s));
-        QCOMPARE(cli({u"install"_s, u"antigravity"_s, u"--target"_s, u"group:default"_s}).code, 0);
+        QCOMPARE(cli({u"install"_s, u"antigravity"_s, u"--accept-licence"_s, u"antigravity"_s, u"--target"_s, u"group:default"_s}).code, 0);
     }
 
     // ---------------------------------------------------------------- schema 2, licence, new manifests
@@ -293,7 +293,7 @@ private slots:
     {
         Manifest m;
         QString err;
-        QVERIFY(parseManifest(readAll(QStringLiteral(CATALOG_DIR) + u"/antigravity.json"_s), &m, &err));
+        QVERIFY(parseManifest(readAll(QStringLiteral(CATALOG_DIR) + u"/chromium.json"_s), &m, &err));
         QCOMPARE(m.schema, 1);
         QVERIFY(!m.licenceRequired);
         QVERIFY(m.data.isEmpty());   // no data field: the whole app home
@@ -413,7 +413,7 @@ private slots:
 
     void moveInstallsCopiesVerifiesSwitchesThenBacksUp()
     {
-        QCOMPARE(cli({u"install"_s, u"antigravity"_s}).code, 0);
+        QCOMPARE(cli({u"install"_s, u"antigravity"_s, u"--accept-licence"_s, u"antigravity"_s}).code, 0);
         QFile::remove(fakeDir + u"/calls.log"_s);
         const Run r = cli({u"move"_s, u"antigravity"_s, u"--to"_s, u"group:dev-apps"_s, u"--json"_s});
         QVERIFY2(r.code == 0, qPrintable(r.raw + r.err));
@@ -464,7 +464,7 @@ private slots:
     }
     void moveRefusesARunningApp()
     {
-        QCOMPARE(cli({u"install"_s, u"antigravity"_s}).code, 0);
+        QCOMPARE(cli({u"install"_s, u"antigravity"_s, u"--accept-licence"_s, u"antigravity"_s}).code, 0);
         QFile::remove(fakeDir + u"/calls.log"_s);
         const Run r = cli({u"move"_s, u"antigravity"_s, u"--to"_s, u"group:dev-apps"_s}, {{u"FAKE_RUNNING"_s, u"1"_s}});
         QCOMPARE(r.code, 7);
@@ -475,7 +475,7 @@ private slots:
     void moveRefusalsAreSpecific()
     {
         QCOMPARE(cli({u"move"_s, u"antigravity"_s, u"--to"_s, u"group:dev-apps"_s}).code, 3);           // not installed
-        QCOMPARE(cli({u"install"_s, u"antigravity"_s}).code, 0);
+        QCOMPARE(cli({u"install"_s, u"antigravity"_s, u"--accept-licence"_s, u"antigravity"_s}).code, 0);
         QCOMPARE(cli({u"move"_s, u"antigravity"_s, u"--to"_s, u"group:nope"_s}).code, 3);               // no such group
         QCOMPARE(cli({u"move"_s, u"antigravity"_s, u"--to"_s, u"group:default"_s}).code, 7);            // already there
         QCOMPARE(cli({u"move"_s, u"antigravity"_s, u"--to"_s, u"host"_s}).code, 9);
@@ -496,7 +496,7 @@ private slots:
         QFETCH(QString, knob);
         QFETCH(int, code);
         QFETCH(bool, targetTouched);
-        QCOMPARE(cli({u"install"_s, u"antigravity"_s}).code, 0);
+        QCOMPARE(cli({u"install"_s, u"antigravity"_s, u"--accept-licence"_s, u"antigravity"_s}).code, 0);
         const QByteArray before = readAll(dataDir + u"/installed.json"_s);
         const QByteArray launcher = readAll(xdgData + u"/applications/taos-appgroups-antigravity.desktop"_s);
         QFile::remove(fakeDir + u"/calls.log"_s);
@@ -516,22 +516,22 @@ private slots:
     {
         // installed.json as an earlier engine wrote it: no installed_version, no licence_accepted, no backups, no previous_group
         QDir().mkpath(dataDir);
-        QJsonObject man = QJsonDocument::fromJson(readAll(QStringLiteral(CATALOG_DIR) + u"/antigravity.json"_s)).object();
+        QJsonObject man = QJsonDocument::fromJson(readAll(QStringLiteral(CATALOG_DIR) + u"/chromium.json"_s)).object();
         QJsonObject rec{{u"group"_s, u"default"_s}, {u"target"_s, QJsonObject{{u"kind"_s, u"group"_s}, {u"id"_s, u"default"_s}}},
                         {u"installed_at"_s, u"2026-11-20T10:00:00Z"_s}, {u"manifest"_s, man}};
-        writeFile(dataDir + u"/installed.json"_s, QJsonDocument(QJsonObject{{u"apps"_s, QJsonObject{{u"antigravity"_s, rec}}}}).toJson());
+        writeFile(dataDir + u"/installed.json"_s, QJsonDocument(QJsonObject{{u"apps"_s, QJsonObject{{u"chromium"_s, rec}}}}).toJson());
         QCOMPARE(cli({u"list"_s, u"--json"_s}).last.value(u"apps"_s).toArray().size(), 1);
         QCOMPARE(cli({u"launchers"_s, u"sync"_s}).code, 0);
-        const Run r = cli({u"move"_s, u"antigravity"_s, u"--to"_s, u"group:dev-apps"_s});
+        const Run r = cli({u"move"_s, u"chromium"_s, u"--to"_s, u"group:dev-apps"_s});
         QVERIFY2(r.code == 0, qPrintable(r.raw + r.err));
-        QCOMPARE(indexRec(u"antigravity"_s).value(u"group"_s).toString(), u"dev-apps"_s);
-        QCOMPARE(indexRec(u"antigravity"_s).value(u"installed_at"_s).toString(), u"2026-11-20T10:00:00Z"_s);
+        QCOMPARE(indexRec(u"chromium"_s).value(u"group"_s).toString(), u"dev-apps"_s);
+        QCOMPARE(indexRec(u"chromium"_s).value(u"installed_at"_s).toString(), u"2026-11-20T10:00:00Z"_s);
         const Run b = cli({u"backups"_s, u"--json"_s});
         QCOMPARE(b.last.value(u"backups"_s).toArray().size(), 1);
     }
     void backupsAreListedAndDeletedOnlyOnRequest()
     {
-        QCOMPARE(cli({u"install"_s, u"antigravity"_s}).code, 0);
+        QCOMPARE(cli({u"install"_s, u"antigravity"_s, u"--accept-licence"_s, u"antigravity"_s}).code, 0);
         QCOMPARE(cli({u"move"_s, u"antigravity"_s, u"--to"_s, u"group:dev-apps"_s}).code, 0);
         const QJsonObject b = cli({u"backups"_s, u"--json"_s}).last.value(u"backups"_s).toArray()[0].toObject();
         QCOMPARE(b.value(u"app"_s).toString(), u"antigravity"_s);
@@ -617,7 +617,7 @@ private slots:
         QVERIFY(readAll(iconsDir() + u"/kilo-desktop.pkg.png"_s).startsWith("\x89PNG"));
         QVERIFY(callsLog().contains(u"file pull user-apps/usr/share/icons/hicolor/256x256/apps/found.png"_s));
         // a manifest can name the file inside the container (a tarball has no .desktop file)
-        QCOMPARE(cli({u"install"_s, u"antigravity"_s}).code, 0);
+        QCOMPARE(cli({u"install"_s, u"antigravity"_s, u"--accept-licence"_s, u"antigravity"_s}).code, 0);
         QVERIFY2(callsLog().contains(u"file pull user-apps/opt/antigravity/resources/app/resources/linux/code.png"_s), qPrintable(callsLog()));
         QCOMPARE(iconLine(u"antigravity"_s), iconsDir() + u"/antigravity.pkg.png"_s);
     }
@@ -637,7 +637,7 @@ private slots:
         const QString hand = iconsDir() + u"/kilo-desktop.png"_s, nobg = iconsDir() + u"/antigravity-nobg.png"_s;
         QCOMPARE(cli({u"install"_s, u"kilo-desktop"_s, u"--accept-licence"_s, u"kilo-desktop"_s}, kiloEnv()).code, 0);
         QCOMPARE(iconLine(u"kilo-desktop"_s), hand);                       // install did not replace it
-        QCOMPARE(cli({u"install"_s, u"antigravity"_s}).code, 0);
+        QCOMPARE(cli({u"install"_s, u"antigravity"_s, u"--accept-licence"_s, u"antigravity"_s}).code, 0);
         QCOMPARE(readAll(iconLine(u"antigravity"_s)), QByteArray("\x89PNG-nobg"));   // the launcher's own icon was adopted
         QCOMPARE(cli({u"move"_s, u"kilo-desktop"_s, u"--to"_s, u"group:dev-apps"_s}, kiloEnv()).code, 0);
         QCOMPARE(iconLine(u"kilo-desktop"_s), hand);
@@ -683,7 +683,7 @@ private slots:
     }
     void aDeviceEditThatLosesTheRaceIsRetried()
     {
-        QCOMPARE(cli({u"install"_s, u"antigravity"_s}).code, 0);
+        QCOMPARE(cli({u"install"_s, u"antigravity"_s, u"--accept-licence"_s, u"antigravity"_s}).code, 0);
         QMap<QString, QString> env = sessionEnv();
         env.insert(u"FAKE_ETAG_FAILS"_s, u"2"_s);
         QFile::remove(fakeDir + u"/etag.count"_s);
@@ -693,7 +693,7 @@ private slots:
     }
     void twoLaunchesOfOneGroupDoNotEditItsDevicesAtTheSameTime()
     {
-        QCOMPARE(cli({u"install"_s, u"antigravity"_s}).code, 0);
+        QCOMPARE(cli({u"install"_s, u"antigravity"_s, u"--accept-licence"_s, u"antigravity"_s}).code, 0);
         QCOMPARE(cli({u"install"_s, u"chromium"_s}).code, 0);
         QDir(fakeDir + u"/busy"_s).removeRecursively();
         QFile::remove(fakeDir + u"/conflicts"_s);
@@ -719,10 +719,30 @@ private slots:
         QVERIFY2(a.exitCode() == 0 && b.exitCode() == 0, qPrintable(QString::fromUtf8(a.readAllStandardError() + b.readAllStandardError())));
         QVERIFY2(!QFileInfo::exists(fakeDir + u"/conflicts"_s), "the two launches edited the group's devices at the same time");
     }
+
+    void anAppInstalledBeforeTheLicenceSystemCanAcceptItLater()
+    {
+        // an Antigravity installed by an earlier engine: schema 1 manifest, licence a plain string, no acceptance
+        QJsonObject man = QJsonDocument::fromJson(readAll(QStringLiteral(CATALOG_DIR) + u"/antigravity.json"_s)).object();
+        man[u"schema"_s] = 1;
+        man[u"licence"_s] = u"proprietary-freeware"_s;
+        QJsonObject rec{{u"group"_s, u"default"_s}, {u"target"_s, QJsonObject{{u"kind"_s, u"group"_s}, {u"id"_s, u"default"_s}}},
+                        {u"installed_at"_s, u"2026-11-24T01:50:51Z"_s}, {u"manifest"_s, man}};
+        writeFile(dataDir + u"/installed.json"_s, QJsonDocument(QJsonObject{{u"apps"_s, QJsonObject{{u"antigravity"_s, rec}}}}).toJson());
+        QCOMPARE(indexRec(u"antigravity"_s).value(u"licence_accepted"_s).toObject().isEmpty(), true);
+        const Run r = cli({u"licence"_s, u"accept"_s, u"antigravity"_s, u"--accepted-by"_s, u"jay (in the Store)"_s, u"--json"_s});
+        QVERIFY2(r.code == 0, qPrintable(r.raw + r.err));
+        const QJsonObject acc = indexRec(u"antigravity"_s).value(u"licence_accepted"_s).toObject();
+        QCOMPARE(acc.value(u"url"_s).toString(), u"https://policies.google.com/terms"_s);
+        QCOMPARE(acc.value(u"accepted_by"_s).toString(), u"jay (in the Store)"_s);
+        QCOMPARE(indexRec(u"antigravity"_s).value(u"installed_at"_s).toString(), u"2026-11-24T01:50:51Z"_s);   // nothing else changed
+        QCOMPARE(cli({u"licence"_s, u"accept"_s, u"nosuchapp"_s}).code, 3);
+        QCOMPARE(cli({u"licence"_s, u"accept"_s, u"chromium"_s}).code, 3);   // not installed
+    }
     void usageAndRunWithoutSession()
     {
         QCOMPARE(cli({u"bogus"_s}).code, 2);
-        QCOMPARE(cli({u"install"_s, u"antigravity"_s}).code, 0);
+        QCOMPARE(cli({u"install"_s, u"antigravity"_s, u"--accept-licence"_s, u"antigravity"_s}).code, 0);
         QCOMPARE(cli({u"run"_s, u"antigravity"_s}, {{u"XDG_RUNTIME_DIR"_s, u"/nonexistent"_s}}).code, 8);
         QCOMPARE(cli({u"run"_s, u"notinstalled"_s}).code, 3);
     }

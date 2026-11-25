@@ -59,6 +59,9 @@ public:
     // A person's own icon for an app (wins over the package's); `iconClear` goes back to the package's icon.
     Result iconSet(const QString &appId, const QString &file);
     Result iconClear(const QString &appId);
+    // Records the person's acceptance of the licence the catalogue now names, for an app installed before licences were
+    // recorded. Installs nothing and changes nothing else.
+    Result acceptLicence(const QString &appId, const QString &acceptedBy);
     Result backups();
     Result backupDelete(const QString &appId, const QString &stamp);
     // Looks for (checkOnly) or installs a newer version: from the app's apt source, or from the publisher's feed.
