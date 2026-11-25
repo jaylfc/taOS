@@ -145,3 +145,14 @@ async def test_recall_finds_what_taos_itself_writes(tmp_path):
     assert conv.status == "ok" and "thursday" in conv.context, conv
     assert final.status == "ok" and "nightly-vault" in final.context, final
     assert "thursday" not in other.context  # another agent's memory stays its own
+
+
+@pytest.mark.asyncio
+async def test_a_missing_data_dir_is_an_error_and_creates_nothing(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    from unittest.mock import MagicMock
+
+    for bad in (None, MagicMock()):
+        r = await recall("hello", agent="tester", data_dir=bad, window_tokens=32768, used_tokens=1000)
+        assert r.status == "error" and "data directory" in r.detail and r.agent_note()
+    assert list(tmp_path.iterdir()) == []  # nothing was created in the working directory

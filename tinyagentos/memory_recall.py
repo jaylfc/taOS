@@ -99,6 +99,12 @@ async def recall(
     if not agent:
         return Recall(status="skipped", detail="no agent identity to look memory up for")
 
+    if not isinstance(data_dir, (str, Path)):
+        # Never let taOSmd turn a missing or wrong data dir into a directory it creates on disk.
+        detail = f"taOS has no memory data directory configured (got {type(data_dir).__name__})"
+        logger.warning("memory recall for %s skipped: %s", agent, detail)
+        return Recall(status="error", detail=detail)
+
     assumed = not window_tokens or window_tokens <= 0
     window = ASSUMED_WINDOW_TOKENS if assumed else int(window_tokens)
     budget = taosmd.default_budget_tokens(window, used_tokens, reasoning_reserve=reasoning_reserve)
