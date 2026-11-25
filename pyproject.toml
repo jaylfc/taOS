@@ -57,7 +57,7 @@ dependencies = [
     # Process-shared lock serialising the local-token bindings RMW
     # (tinyagentos/auth.py bind_local_token_agent). Previously only present
     # transitively; declare it directly so the import is guaranteed.
-    "filelock>=3.12",
+    "filelock>=4.2.1",
     # ES256 signing for APNs JWTs (tinyagentos/push/apns.py), imported at
     # startup via app.py. Previously only pulled in transitively through
     # pywebpush; declare it directly so the import is guaranteed.
@@ -80,7 +80,7 @@ dependencies = [
     # relicence or CVE reached users without tripping any gate. Declared here so
     # it goes through the lockfile like everything else.
     "yt-dlp>=2025.1.15",
-    "pypdf>=6.17",
+    "pypdf>=6.21.4,<7",
 ]
 
 [project.optional-dependencies]
