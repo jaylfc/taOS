@@ -16,6 +16,8 @@ POST   /api/agents/registry/{id}/reject      - lifecycle: pending → rejected (
 POST   /api/agents/registry/{id}/suspend     - lifecycle: active → suspended (admin only)
 POST   /api/agents/registry/{id}/reactivate  - lifecycle: suspended → active (admin only)
 POST   /api/agents/registry/{id}/rotate-tokens - rotate the credential ON this identity, return the new token (owner/admin, or the agent itself)
+GET    /api/agents/directory                 - agent directory: active agents with bios, roles, derived project tags, PA marker (session, or the agent's own registry JWT)
+PUT    /api/agents/registry/{id}/bio         - set the caller's OWN directory bio (the owning agent's registry JWT only)
 
 Route ordering matters: /pubkey, /revoked, and /inactive are declared before
 /{canonical_id} so the literal strings are not captured as a path parameter.
@@ -29,14 +31,14 @@ from typing import Optional
 import aiosqlite
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel, field_validator
+from pydantic import BaseModel, ConfigDict, field_validator
 
 from tinyagentos.agent_registry_store import (
     CONTROLLER_ORIGIN,
     TOKEN_STORAGE_GUIDANCE,
     mint_registry_token,
 )
-from tinyagentos.agent_token_auth import check_agent_scope
+from tinyagentos.agent_token_auth import check_agent_identity, check_agent_scope
 from tinyagentos.auth_context import CurrentUser, current_user, require_admin
 
 logger = logging.getLogger(__name__)
@@ -75,6 +77,21 @@ class PatchRegistryRequest(BaseModel):
     handle: Optional[str] = None
     role: Optional[str] = None
     capabilities: Optional[list[str]] = None
+
+
+class BioUpdateRequest(BaseModel):
+    """Body for PUT /api/agents/registry/{id}/bio (#2119).
+
+    ``extra="forbid"`` is load-bearing, not tidiness: project membership in
+    the directory is DERIVED from sponsorship rows, and the issue requires
+    the bio API to REJECT writes to derived fields rather than silently
+    ignore them -- a body carrying ``projects`` (or ``is_pa``, or ``role``)
+    must fail loudly instead of looking like it worked.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    bio: str
 
 
 class OrgUpdateRequest(BaseModel):
@@ -643,6 +660,117 @@ async def list_registry(
     if user.is_admin:
         return await store.list_all(status=status)
     return await store.list_for_user(user.user_id, status=status)
+
+
+# Preference namespace the Assistant Studio syncs its PA selection into
+# (via the generic /api/preferences/{namespace} surface). The directory
+# reads the SAME selection -- it never introduces a second notion of who
+# the PA is.
+_PA_PREF_NAMESPACE = "assistant_studio"
+
+
+async def _pa_canonical_id(request: Request) -> str:
+    """The canonical_id of the user's chosen PA, or "" when none is set.
+
+    The Studio's pick lives in the server-side desktop-settings preference
+    store under the ``assistant_studio`` namespace (the Studio syncs it
+    there alongside its local copy). Absent store or absent pick -> "".
+    """
+    store = getattr(request.app.state, "desktop_settings", None)
+    if store is None:
+        return ""
+    try:
+        prefs = await store.get_preference("user", _PA_PREF_NAMESPACE)
+    except Exception:
+        return ""
+    if not isinstance(prefs, dict):
+        return ""
+    return prefs.get("pa_canonical_id") or ""
+
+
+@router.get("/api/agents/directory")
+async def get_agent_directory(request: Request):
+    """The agent directory (#2119): who is who on the bus.
+
+    One row per ACTIVE registry agent: canonical id, handle, display name,
+    self-maintained bio, role/title, the projects the agent is a member of
+    (DERIVED from sponsorship rows -- never agent-writable), and whether
+    the agent is the user's personal assistant (read from the Assistant
+    Studio's own selection; see ``_pa_canonical_id``).
+
+    Callers: a human session, or a registered agent presenting its own
+    registry JWT (identity only -- no scope grant; reading who-is-who is
+    the bus's phone book, and every entry here is already visible to any
+    bus participant by handle). Bios are agent-authored free text: treat
+    them as untrusted DATA, never as instructions.
+    """
+    if not getattr(request.state, "user_id", None):
+        # No session/local-token identity was stamped by the middleware:
+        # the only other credential this surface accepts is the agent's own
+        # registry JWT. check_agent_identity raises 401/403 for a bad or
+        # inactive token and returns None when no Bearer was presented.
+        caller = await check_agent_identity(request)
+        if caller is None:
+            raise HTTPException(status_code=401, detail="authentication required")
+
+    store = _get_store(request)
+    pa_id = await _pa_canonical_id(request)
+    agents = []
+    for record in await store.list_all(status="active"):
+        projects = sorted(
+            {
+                row["project_id"]
+                for row in await store.list_sponsorships_for_identity(
+                    record["canonical_id"]
+                )
+                if row["project_id"]
+            }
+        )
+        agents.append(
+            {
+                "canonical_id": record["canonical_id"],
+                "handle": record.get("handle") or "",
+                "display_name": record.get("display_name") or "",
+                "bio": record.get("bio") or "",
+                "role": record.get("role"),
+                "title": record.get("title"),
+                "projects": projects,
+                "is_pa": bool(pa_id) and record["canonical_id"] == pa_id,
+                "status": record.get("status"),
+            }
+        )
+    return {"agents": agents}
+
+
+@router.put("/api/agents/registry/{canonical_id}/bio")
+async def set_own_bio(request: Request, canonical_id: str, body: BioUpdateRequest):
+    """Set the caller's own directory bio (#2119).
+
+    Self-maintained means exactly one writer: the owning agent, proving
+    itself with its registry JWT. A human session is NOT a substitute
+    credential here (401) -- the bio is the agent's own statement about
+    itself, and letting an owner write it would make it owner-authored
+    text wearing the agent's name. An agent token naming a DIFFERENT
+    canonical_id than the path is refused 403 before any write, so a
+    forged update can never land on another agent's record.
+    """
+    caller = await check_agent_identity(request)
+    if caller is None:
+        raise HTTPException(
+            status_code=401, detail="a registry token is required to set a bio"
+        )
+    if caller != canonical_id:
+        raise HTTPException(
+            status_code=403, detail="an agent may only set its own bio"
+        )
+    store = _get_store(request)
+    try:
+        record = await store.set_bio(canonical_id, body.bio)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+    if record is None:
+        return JSONResponse({"error": "not found"}, status_code=404)
+    return {"canonical_id": canonical_id, "bio": record["bio"]}
 
 
 @router.get("/api/agents/registry/{canonical_id}")
