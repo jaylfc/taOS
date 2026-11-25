@@ -21,6 +21,11 @@ def _resolve_chat_data_dir() -> Path:
     return resolve_data_dir()
 
 
+def _bound_agent(request: Request) -> str | None:
+    """Return the agent name bound to the presented local token, or None."""
+    return getattr(request.state, "agent_name", None)
+
+
 _SLASH_GROUP_GUARD_ERROR = (
     "slash commands in group channels must address an agent: "
     "use @<agent> /<cmd> or @all /<cmd>"
@@ -333,6 +338,31 @@ async def post_message(request: Request, user: CurrentUser = Depends(current_use
         if user_id_str not in members:
             from fastapi import HTTPException
             raise HTTPException(status_code=403, detail="Not a member of this channel")
+
+    agent = _bound_agent(request)
+    if agent:
+        body["author_id"] = agent
+        body["author_type"] = "agent"
+
+    # Session user (neither device bearer nor bound agent) via a browser session:
+    # force author_type="user" and validate author_id. Accept only missing,
+    # "user", or the caller's user_id. Every other caller (host local token,
+    # loopback, registry JWT variants) keeps today's dev behaviour: the body
+    # author is stored as sent.
+    elif getattr(request.state, "via", None) == "session":
+        allowed_author_ids = {"user", str(user.user_id)}
+        author_id = body.get("author_id")
+        if author_id is not None and not isinstance(author_id, str):
+            from fastapi import HTTPException
+            raise HTTPException(status_code=403, detail={"error": "author_id must be the caller"})
+        if author_id is not None and author_id not in allowed_author_ids:
+            from fastapi import HTTPException
+            raise HTTPException(status_code=403, detail={"error": "author_id must be the caller"})
+        # Store the caller's user id for both a missing author_id and the literal
+        # "user" (the desktop SPA sends "user"), so edit/delete ownership checks,
+        # which compare against the session user's id, match the sender.
+        body["author_id"] = str(user.user_id)
+        body["author_type"] = "user"
     
     msg_store = request.app.state.chat_messages
     ch_store = request.app.state.chat_channels
@@ -472,14 +502,20 @@ async def post_message(request: Request, user: CurrentUser = Depends(current_use
 async def post_message_delta(request: Request, message_id: str):
     """Stream a token delta for an agent response. Used by framework adapters."""
     body = await request.json()
-    agent = getattr(request.state, "agent_name", None) if getattr(request.state, "via", None) == "agent_token" else None
-    channel_id = body.get("channel_id", "")
+    agent = _bound_agent(request)
     if agent:
-        _m = await request.app.state.chat_messages.get_message(message_id)
-        if _m is None or _m.get("author_type") != "agent" or _m.get("author_id") != agent:
+        msg_store = request.app.state.chat_messages
+        msg = await msg_store.get_message(message_id)
+        if msg is None or msg.get("author_type") != "agent" or msg.get("author_id") != agent:
             return JSONResponse({"error": "forbidden: not the author"}, status_code=403)
-        channel_id = _m.get("channel_id")
+        body_channel_id = body.get("channel_id", "")
+        if body_channel_id and body_channel_id != msg.get("channel_id"):
+            return JSONResponse({"error": "forbidden: wrong channel"}, status_code=403)
     hub = request.app.state.chat_hub
+    if agent:
+        channel_id = msg.get("channel_id")
+    else:
+        channel_id = body.get("channel_id", "")
     await hub.broadcast(channel_id, {
         "type": "message_delta",
         "seq": hub.next_seq(),
@@ -494,6 +530,12 @@ async def post_message_delta(request: Request, message_id: str):
 async def update_message_state(request: Request, message_id: str):
     """Update message state (pending/streaming/complete/error)."""
     body = await request.json()
+    agent = _bound_agent(request)
+    if agent:
+        msg_store = request.app.state.chat_messages
+        msg = await msg_store.get_message(message_id)
+        if msg is None or msg.get("author_type") != "agent" or msg.get("author_id") != agent:
+            return JSONResponse({"error": "forbidden: not the author"}, status_code=403)
     msg_store = request.app.state.chat_messages
     hub = request.app.state.chat_hub
     if getattr(request.state, "via", None) == "agent_token":
@@ -530,7 +572,14 @@ def caller_can_read_channel(request: Request, channel: dict) -> bool:
         bound = getattr(request.state, "agent_name", None)
         return bool(bound) and str(bound) in members
     uid = getattr(request.state, "user_id", None)
-    return bool(uid) and str(uid) in members
+    if not uid:
+        return False
+    if str(uid) in members:
+        return True
+    # An agent DM lists the literal "user" as a member; the agent's registry
+    # owner is recorded on the channel (migrations/agent_dm_owner.py).
+    owner = (channel.get("settings") or {}).get("owner_user_id")
+    return bool(owner) and "user" in members and str(owner) == str(uid)
 
 
 def channel_read_denied(request: Request, channel: dict) -> JSONResponse | None:
@@ -768,28 +817,45 @@ async def search_messages(
         return {"results": [], "query": q}
     msg_store = request.app.state.chat_messages
     ch_store = request.app.state.chat_channels
+
+    # Compute readable channel IDs first
+    is_admin = getattr(request.state, "is_admin", False)
+    is_local_token = getattr(request.state, "via", None) == "local_token"
+    if is_admin or is_local_token:
+        readable_channel_ids = None  # None means all channels
+    else:
+        # caller_can_read_channel decides per channel (member, bound agent, or the
+        # agent DM's recorded owner), so filter the full list rather than a LIKE.
+        all_channels = await ch_store.list_channels()
+        readable_channel_ids = [c["id"] for c in all_channels if caller_can_read_channel(request, c)]
+
+    # If a specific channel_id was requested, intersect with readable
     if channel_id is not None:
-        denied = channel_read_denied(request, await ch_store.get_channel(channel_id) or {})
-        if denied:
-            return denied
-    results = await msg_store.search(q, channel_id=channel_id, limit=limit)
-    # Keep only hits in channels the caller may read.
-    cache: dict[str, bool] = {}
-    visible = []
-    for r in results:
-        cid = r.get("channel_id")
-        if cid not in cache:
-            cache[cid] = caller_can_read_channel(request, await ch_store.get_channel(cid) or {})
-        if cache[cid]:
-            visible.append(r)
-    return {"results": visible, "query": q}
+        if readable_channel_ids is None:
+            readable_channel_ids = [channel_id]
+        elif channel_id in readable_channel_ids:
+            readable_channel_ids = [channel_id]
+        else:
+            readable_channel_ids = []
+
+    # Early return if no readable channels
+    if readable_channel_ids == []:
+        return {"results": [], "query": q}
+
+    results = await msg_store.search(q, channel_ids=readable_channel_ids, limit=limit)
+    return {"results": results, "query": q}
 
 
 @router.get("/api/chat/unread")
 async def get_unread(request: Request):
     ch_store = request.app.state.chat_channels
     counts = await ch_store.get_unread_counts("user")
-    return {"unread": counts}
+    visible: dict[str, int] = {}
+    for cid, n in counts.items():
+        ch = await ch_store.get_channel(cid)
+        if caller_can_read_channel(request, ch or {}):
+            visible[cid] = n
+    return {"unread": visible}
 
 
 @router.post("/api/chat/channels/{channel_id}/read-cursor/rewind")
@@ -837,8 +903,9 @@ async def mark_read(request: Request, channel_id: str):
 @router.post("/api/chat/messages/{message_id}/reactions")
 async def add_reaction(message_id: str, body: dict, request: Request):
     emoji = body.get("emoji")
-    author_id = body.get("author_id")
-    author_type = body.get("author_type", "user")
+    agent = _bound_agent(request)
+    author_id = agent if agent else body.get("author_id")
+    author_type = "agent" if agent else body.get("author_type", "user")
     if not emoji or not author_id:
         return JSONResponse({"error": "emoji and author_id required"}, status_code=400)
     state = request.app.state
@@ -865,6 +932,9 @@ async def add_reaction(message_id: str, body: dict, request: Request):
 @router.delete("/api/chat/messages/{message_id}/reactions/{emoji}")
 async def remove_reaction(message_id: str, emoji: str, author_id: str, request: Request):
     state = request.app.state
+    agent = _bound_agent(request)
+    if agent:
+        author_id = agent
     await state.chat_messages.remove_reaction(message_id, emoji, author_id)
     msg = await state.chat_messages.get_message(message_id)
     if msg:
@@ -892,18 +962,20 @@ VALID_PHASES = {"thinking", "tool", "reading", "writing", "searching", "planning
 @router.post("/api/chat/channels/{channel_id}/typing")
 async def post_typing(channel_id: str, body: dict, request: Request):
     """Mark a human user as typing in the channel. Ephemeral; TTL 3s."""
-    author_id = (body or {}).get("author_id")
+    agent = _bound_agent(request)
+    author_id = agent if agent else (body or {}).get("author_id")
     if not author_id:
         return JSONResponse({"error": "author_id required"}, status_code=400)
     reg = getattr(request.app.state, "typing", None)
     hub = getattr(request.app.state, "chat_hub", None)
     if reg is None:
         return JSONResponse({"error": "typing registry not configured"}, status_code=503)
-    reg.mark(channel_id, author_id, "human")
+    kind = "agent" if agent else "human"
+    reg.mark(channel_id, author_id, kind)
     if hub is not None:
         await hub.broadcast(channel_id, {
             "type": "typing",
-            "kind": "human",
+            "kind": kind,
             "slug": author_id,
         })
     return JSONResponse({"ok": True}, status_code=200)

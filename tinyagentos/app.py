@@ -826,6 +826,17 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
         except Exception:
             logger.exception("agent_owner startup migration failed")
 
+        # Agent DM channels list the literal "user" as a member; record the
+        # agent's registry owner on each so the owner keeps reading their own
+        # DM once channel reads check membership. Idempotent.
+        try:
+            from tinyagentos.migrations.agent_dm_owner import backfill_agent_dm_owners
+            _dm_owned = await backfill_agent_dm_owners(config, agent_registry_store, chat_channels)
+            if _dm_owned:
+                logger.info("agent DM owner backfill: %d channel(s)", len(_dm_owned))
+        except Exception:
+            logger.exception("agent DM owner backfill failed")
+
         # Archive any agent DM channels left live by a removal path that
         # bypassed archive (a cleaned-up failed deploy, a hard-delete of a
         # never-used config row).  Idempotent -- safe on every startup.

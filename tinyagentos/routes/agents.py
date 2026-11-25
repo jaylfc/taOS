@@ -1125,12 +1125,17 @@ async def deploy_agent_endpoint(request: Request, body: DeployAgentRequest):
                         if not agent.get("chat_channel_id"):
                             try:
                                 ch_store = request.app.state.chat_channels
+                                from tinyagentos.migrations.agent_dm_owner import agent_owner_for_slug
+                                _dm_owner = await agent_owner_for_slug(
+                                    config, getattr(request.app.state, "agent_registry", None), body.name
+                                )
                                 channel = await ch_store.create_channel(
                                     name=display_name,
                                     type="dm",
                                     created_by="user",
                                     members=["user", body.name],
                                     description=f"Direct messages with {display_name}",
+                                    settings={"owner_user_id": _dm_owner} if _dm_owner else None,
                                 )
                                 if channel and channel.get("id"):
                                     agent["chat_channel_id"] = channel["id"]
