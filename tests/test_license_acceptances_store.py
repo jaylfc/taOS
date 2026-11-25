@@ -14,8 +14,8 @@ class TestLicenseAcceptancesStore:
     async def test_has_accepted_false_before_any_record(self, tmp_path):
         store = await self._store(tmp_path)
         try:
-            assert await store.has_accepted("u1", "musicgen", "CC-BY-NC 4.0") is False
             assert await store.has_accepted("u1", "musicgen", "CC-BY-NC 4.0", "4.0") is False
+            assert await store.has_accepted("u1", "musicgen", "CC-BY-NC 4.0", "") is False
         finally:
             await store.close()
 
@@ -30,7 +30,7 @@ class TestLicenseAcceptancesStore:
             assert "accepted_at" in row
             assert await store.has_accepted("u1", "musicgen", "CC-BY-NC 4.0", "4.0") is True
             # Without version should not match
-            assert await store.has_accepted("u1", "musicgen", "CC-BY-NC 4.0") is False
+            assert await store.has_accepted("u1", "musicgen", "CC-BY-NC 4.0", "") is False
         finally:
             await store.close()
 
@@ -84,9 +84,9 @@ class TestLicenseAcceptancesStore:
     async def test_record_acceptance_uninitialised_raises(self, tmp_path):
         store = LicenseAcceptancesStore(tmp_path / "license_acceptances.db")
         with pytest.raises(RuntimeError):
-            await store.record_acceptance("u1", "musicgen", "CC-BY-NC 4.0")
+            await store.record_acceptance("u1", "musicgen", "CC-BY-NC 4.0", "4.0")
 
     async def test_has_accepted_uninitialised_raises(self, tmp_path):
         store = LicenseAcceptancesStore(tmp_path / "license_acceptances.db")
         with pytest.raises(RuntimeError):
-            await store.has_accepted("u1", "musicgen", "CC-BY-NC 4.0")
+            await store.has_accepted("u1", "musicgen", "CC-BY-NC 4.0", "4.0")

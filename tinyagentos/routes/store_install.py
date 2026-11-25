@@ -42,6 +42,33 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
+def _get_user_territory(request: Request, user: dict | None) -> str | None:
+    """Return the user's ISO 3166-1 alpha-2 country code, or None if unknown.
+
+    Checks in order:
+    1. User profile 'country' field (if present)
+    2. Cloudflare CF-IPCountry header
+    3. X-Forwarded-For header (would need geoip lookup - not implemented)
+    4. Request client host (would need geoip lookup - not implemented)
+
+    Returns None if territory cannot be determined. A None territory means
+    territory-limited licences cannot be verified and should be treated as
+    "unknown territory" - the install proceeds but with a warning.
+    """
+    # 1. User profile country
+    if user and isinstance(user.get("country"), str) and user["country"]:
+        return user["country"].upper()
+
+    # 2. Cloudflare header (common in production behind CF)
+    cf_country = request.headers.get("cf-ipcountry")
+    if cf_country and len(cf_country) == 2:
+        return cf_country.upper()
+
+    # TODO: Add geoip lookup for X-Forwarded-For or client.host
+    # For now, return None (unknown territory)
+    return None
+
+
 _KNOWN_BACKENDS = {
     "rkllama", "rk-llama-cpp", "ollama", "llama-cpp",
     "mlx", "vllm", "comfyui", "transformers",
@@ -1044,11 +1071,96 @@ async def install_app(request: Request):
         license_version = getattr(manifest, "license_version", "") or ""
         user = _get_current_user(request)
         user_id = (user or {}).get("id") or "anonymous"
+
+        # Territory-limited license enforcement: acceptance never overrides
+        # territory exclusion. Check if user's territory is allowed.
+        if license_class == "territory-limited":
+            allowed_territories = getattr(manifest, "license_territories", None) or []
+            if allowed_territories:
+                user_territory = _get_user_territory(request, user)
+                if user_territory is None:
+                    # Unknown territory - cannot verify, block with clear message
+                    progress.finish(install_id, success=False, error="territory_unknown")
+                    return JSONResponse(
+                        {
+                            "error": "territory_verification_required",
+                            "detail": (
+                                f"{manifest.name} uses a territory-limited licence ({license_id}). "
+                                "Your geographic region could not be determined automatically. "
+                                "Please ensure your profile includes a country, or contact support."
+                            ),
+                            "license_class": license_class,
+                            "license_id": license_id,
+                            "allowed_territories": allowed_territories,
+                            "install_id": install_id,
+                        },
+                        status_code=412,
+                    )
+                if user_territory not in allowed_territories:
+                    # Territory not allowed - block even with acceptance
+                    progress.finish(install_id, success=False, error="territory_excluded")
+                    return JSONResponse(
+                        {
+                            "error": "territory_excluded",
+                            "detail": (
+                                f"{manifest.name} uses a territory-limited licence ({license_id}) "
+                                f"that is not valid in your region ({user_territory}). "
+                                f"Allowed territories: {', '.join(allowed_territories)}. "
+                                "License acceptance does not override this restriction."
+                            ),
+                            "license_class": license_class,
+                            "license_id": license_id,
+                            "user_territory": user_territory,
+                            "allowed_territories": allowed_territories,
+                            "install_id": install_id,
+                        },
+                        status_code=403,
+                    )
+            else:
+                # No allowed territories specified - block by default
+                progress.finish(install_id, success=False, error="territory_not_configured")
+                return JSONResponse(
+                    {
+                        "error": "territory_not_configured",
+                        "detail": (
+                            f"{manifest.name} declares a territory-limited licence but does not "
+                            "specify allowed territories (license_territories). "
+                            "Contact the app maintainer."
+                        ),
+                        "license_class": license_class,
+                        "license_id": license_id,
+                        "install_id": install_id,
+                    },
+                    status_code=403,
+                )
+
+        # Agent consent flow: agents (local_token) cannot accept licences for users.
+        # If the request comes via local_token and tries to pass accepted=true,
+        # reject it and require human consent.
+        via = getattr(request.state, "via", None)
+        is_agent_request = via == "local_token"
+        accepted_now = bool(body.get("accepted", False))
+        if is_agent_request and accepted_now:
+            progress.finish(install_id, success=False, error="agent_cannot_accept_license")
+            return JSONResponse(
+                {
+                    "error": "agent_cannot_accept_license",
+                    "detail": (
+                        "An agent attempted to accept a licence on your behalf. "
+                        "Licence acceptance requires explicit human consent. "
+                        "Please complete the installation manually in the Store app."
+                    ),
+                    "license_class": license_class,
+                    "license_id": license_id,
+                    "install_id": install_id,
+                },
+                status_code=403,
+            )
+
         already_accepted = (
             await license_store.has_accepted(user_id, manifest.id, license_id, license_version)
             if license_store is not None else False
         )
-        accepted_now = bool(body.get("accepted", False))
         if not already_accepted and not accepted_now:
             progress.finish(install_id, success=False, error="needs_license_acceptance")
             # Per-class acceptance text with licence name, version, and link
@@ -1098,17 +1210,28 @@ async def install_app(request: Request):
                 f"({license_name}{version_suffix}).{url_suffix} Continuing means you agree "
                 "to that license for the weights this service uses."
             ))
+            response_data = {
+                "needs_license_acceptance": True,
+                "license_id": license_id,
+                "license_version": license_version,
+                "license_class": license_class,
+                "weights_license": manifest.weights_license,
+                "license_url": getattr(manifest, "license_url", ""),
+                "name": manifest.name,
+                "text": text,
+            }
+            # Include territory info for territory-limited licenses
+            if license_class == "territory-limited":
+                allowed_territories = getattr(manifest, "license_territories", None) or []
+                user_territory = _get_user_territory(request, user)
+                response_data["allowed_territories"] = allowed_territories
+                response_data["user_territory"] = user_territory
+                if user_territory and allowed_territories and user_territory in allowed_territories:
+                    response_data["territory_allowed"] = True
+                elif user_territory and allowed_territories:
+                    response_data["territory_allowed"] = False
             return JSONResponse(
-                {
-                    "needs_license_acceptance": True,
-                    "license_id": license_id,
-                    "license_version": license_version,
-                    "license_class": license_class,
-                    "weights_license": manifest.weights_license,
-                    "license_url": getattr(manifest, "license_url", ""),
-                    "name": manifest.name,
-                    "text": text,
-                },
+                response_data,
                 status_code=412,
             )
         if accepted_now and not already_accepted and license_store is not None:

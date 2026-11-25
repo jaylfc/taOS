@@ -127,6 +127,10 @@ class AppManifest(BaseModel):
     ] = ""
     license_version: str = ""       # Licence version (e.g. "4.0", "3.1") for version-gated re-acceptance
     license_url: str = ""           # Link to full licence text for the acceptance dialog
+    # For territory-limited licences: list of allowed ISO 3166-1 alpha-2 country codes.
+    # Empty list means no territories allowed (install blocked everywhere).
+    # If omitted/empty for non-territory-limited licences, no territory restriction applies.
+    license_territories: list[str] = Field(default_factory=list)
     requires: dict[str, Any] = Field(default_factory=dict)
     install: dict[str, Any] = Field(default_factory=dict)
     hardware_tiers: dict[str, Any] = Field(default_factory=dict)

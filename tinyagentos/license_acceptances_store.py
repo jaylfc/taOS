@@ -62,12 +62,16 @@ class LicenseAcceptancesStore(BaseStore):
             await self._db.commit()
 
     async def record_acceptance(
-        self, user_id: str, app_id: str, license_id: str, license_version: str = ""
+        self, user_id: str, app_id: str, license_id: str, license_version: str
     ) -> dict:
         """Record that user_id accepted license_id (with version) for app_id.
 
         Idempotent via INSERT OR REPLACE: re-accepting the same license+version just
         refreshes accepted_at rather than erroring or duplicating a row.
+
+        license_version must be provided explicitly (empty string if the licence has
+        no version). No default is provided to prevent silent mismatches when a
+        manifest declares a license_version but the caller omits it.
         """
         if self._db is None:
             raise RuntimeError("LicenseAcceptancesStore not initialised — call init() first")
@@ -91,9 +95,14 @@ class LicenseAcceptancesStore(BaseStore):
         return _row_to_dict(row)  # type: ignore[return-value]
 
     async def has_accepted(
-        self, user_id: str, app_id: str, license_id: str, license_version: str = ""
+        self, user_id: str, app_id: str, license_id: str, license_version: str
     ) -> bool:
-        """True if user_id has already accepted license_id (with version) for app_id."""
+        """True if user_id has already accepted license_id (with version) for app_id.
+
+        license_version must be provided explicitly (empty string if the licence has
+        no version). No default is provided to prevent silent mismatches when a
+        manifest declares a license_version but the caller omits it.
+        """
         if self._db is None:
             raise RuntimeError("LicenseAcceptancesStore not initialised")
         cursor = await self._db.execute(

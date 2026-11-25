@@ -19,6 +19,10 @@ install:
   volumes:
   - data:/home/node/.n8n
 license: Sustainable Use License
+weights_license: "Sustainable Use License"
+license_class: non-commercial
+license_version: "51f1246f3b8b"
+license_url: "https://github.com/n8n-io/n8n/blob/master/LICENSE.md"
 name: n8n
 requires:
   disk_mb: 500

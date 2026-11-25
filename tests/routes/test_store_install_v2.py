@@ -425,6 +425,7 @@ def make_restrictive_service_manifest(
     m.weights_license = weights_license
     m.license_version = license_version
     m.license_url = license_url
+    m.license_territories = ["US", "CA", "GB"] if license_class == "territory-limited" else []
     m.install = {"method": "docker", "ports": [8080]}
     m.requires = {}
     m.hardware_tiers = {}
@@ -452,7 +453,11 @@ class TestRestrictiveLicenseGate:
         registry.list_available = MagicMock(return_value=[])
         client._transport.app.state.registry = registry
 
-        r = await client.post("/api/store/install-v2", json={"manifest_id": "nc-service"})
+        headers = {}
+        if license_class == "territory-limited":
+            headers["cf-ipcountry"] = "US"  # Valid territory for the test manifest
+
+        r = await client.post("/api/store/install-v2", json={"manifest_id": "nc-service"}, headers=headers)
 
         assert r.status_code == 412, f"license_class={license_class}: {r.json()}"
         body = r.json()
