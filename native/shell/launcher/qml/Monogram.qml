@@ -18,15 +18,15 @@ Item {
     Rectangle {
         anchors.fill: parent
         radius: width * 0.3
-        color: Qt.rgba(Style.text.r, Style.text.g, Style.text.b, Style.dark ? 0.12 : 0.09)
-        border.width: 1
-        border.color: Qt.rgba(Style.text.r, Style.text.g, Style.text.b, Style.dark ? 0.14 : 0.12)
+        color: Style.raised
+        border.width: Math.max(1, Style.borderWidth)
+        border.color: Style.hairline
     }
     Text {
         anchors.centerIn: parent
         text: mg.initials
         color: Style.textSecondary
-        font.family: "Inter"
+        font.family: Style.fontStack
         font.weight: Font.Medium
         font.pixelSize: mg.diameter * 0.38
     }

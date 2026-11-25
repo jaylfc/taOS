@@ -9,6 +9,7 @@
 #include <QVariantMap>
 #include <cstdio>
 
+#include "applaunch.h"
 #include "cliengine.h"
 #include "swayengine.h"
 
@@ -40,7 +41,11 @@ DockController::DockController(const Options &o, QObject *parent)
         m_o.engine = QStandardPaths::findExecutable(m_o.cliProgram).isEmpty() ? QStringLiteral("sway") : QStringLiteral("cli");
     if (m_o.engine == QLatin1String("cli")) m_engine = new CliEngine(m_o.cliProgram, this);
     else m_engine = new SwayEngine(m_o.swaySocket, this);   // FALLBACK engine, see windowengine.h
-    m_spawn = [](const QString &prog, const QStringList &args) { QProcess::startDetached(prog, args); };
+    m_spawn = [](const QString &prog, const QStringList &args) {
+        // the shell's one launch helper: a clean app environment and an own scope (an app must never inherit the layer-shell integration)
+        QString err;
+        if (!taos::launchApp(prog, args, &err)) fprintf(stderr, "taos-dock: %s\n", qPrintable(err));
+    };
     m_hideTimer.setSingleShot(true);
     m_hideTimer.setInterval(450);
     connect(&m_hideTimer, &QTimer::timeout, this, &DockController::updateReveal);

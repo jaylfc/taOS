@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 #include "runner.h"
 
+#include "applaunch.h"
+
 #include <QDateTime>
 #include <QDir>
 #include <QJsonArray>
@@ -39,28 +41,11 @@ QString focusedOutput() {
     return focusedOutputFromJson(p.readAllStandardOutput());
 }
 
-// The environment a launched program gets: ours minus what the daemon set for itself (a Qt app started
-// from here must not inherit QT_QPA_PLATFORM=wayland and the layer-shell integration, or it would try
-// to be a layer surface). The daemon lists those names in TAOS_LAUNCHER_OWN_ENV.
-QProcessEnvironment childEnvironment() {
-    QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
-    for (const QString &n : env.value(QStringLiteral("TAOS_LAUNCHER_OWN_ENV")).split(QLatin1Char(','), Qt::SkipEmptyParts)) env.remove(n);
-    env.remove(QStringLiteral("TAOS_LAUNCHER_OWN_ENV"));
-    return env;
-}
+QProcessEnvironment childEnvironment() { return taos::cleanAppEnvironment(QProcessEnvironment::systemEnvironment()); }
 
 static bool detached(const QString &prog, const QStringList &args, QString *error) {
-    if (prog.isEmpty()) { if (error) *error = QStringLiteral("nothing to run"); return false; }
-    QProcess p;
-    p.setProgram(prog);
-    p.setArguments(args);
-    p.setWorkingDirectory(QDir::homePath());
-    p.setProcessEnvironment(childEnvironment());
-    if (!p.startDetached()) {
-        if (error) *error = QStringLiteral("could not start %1").arg(prog);
-        return false;
-    }
-    return true;
+    // every program the launcher starts goes through the shell's one launch helper (clean environment, own scope)
+    return taos::launchApp(prog, args, error);
 }
 
 bool runAction(const Action &a, QString *error) {

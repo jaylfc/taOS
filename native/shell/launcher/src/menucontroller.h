@@ -76,6 +76,8 @@ class MenuController : public QObject {
     Q_PROPERTY(QStringList footerLabels READ footerLabels NOTIFY footerChanged)
     Q_PROPERTY(int pinnedCount READ pinnedCount NOTIFY modelsChanged)
     Q_PROPERTY(int allCount READ allCount NOTIFY modelsChanged)
+    Q_PROPERTY(QString currentName READ currentName NOTIFY cursorChanged)
+    Q_PROPERTY(int recentCount READ recentCount NOTIFY modelsChanged)
 public:
     using Perform = std::function<bool(const taos::search::Result &, int)>;
     MenuController(std::shared_ptr<taos::search::AppMenu> apps, std::shared_ptr<taos::search::ActionMenu> actions, QObject *parent = nullptr);
@@ -115,6 +117,10 @@ public:
     QStringList footerLabels() const;
     int pinnedCount() const { return m_pinned.count(); }
     int allCount() const { return m_all.count(); }
+    int recentCount() const { return m_recent.count(); }
+    QString currentName() const { return currentApp().name; }
+    Q_INVOKABLE bool jumpToSection(const QString &title);   // the phone's index rail: first app under a letter or category
+    Q_INVOKABLE bool quickAction(const QString &actionId);     // run one action node by id (the text style's gestures)
     MenuNav &nav() { return m_nav; }
     // the app under the cursor, or an empty one
     taos::search::MenuApp currentApp() const;

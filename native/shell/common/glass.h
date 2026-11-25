@@ -71,6 +71,9 @@ class Style : public QObject {
     Q_PROPERTY(bool scanlines READ scanlines NOTIFY changed)
     Q_PROPERTY(QColor bevelLight READ bevelLight NOTIFY changed)
     Q_PROPERTY(QColor bevelDark READ bevelDark NOTIFY changed)
+    // Type and space follow the theme too: the body size (skin.fontSize) and the density (compact, regular, comfortable).
+    Q_PROPERTY(int fontSize READ fontSize NOTIFY changed)
+    Q_PROPERTY(qreal spacingFactor READ spacingFactor NOTIFY changed)
 public:
     explicit Style(const Theme *t, QObject *parent = nullptr) : QObject(parent), m_t(t) {
         connect(t, &Theme::changed, this, &Style::changed);
@@ -110,6 +113,10 @@ public:
     bool scanlines() const { return m_t->scanlines(); }
     QColor bevelLight() const { return m_t->bevelLight(); }
     QColor bevelDark() const { return m_t->bevelDark(); }
+    int fontSize() const { return m_t->fontSize(); }
+    qreal spacingFactor() const { return m_t->spacingFactor(); }
+    // A spacing in px on the 4 px grid, scaled by the theme's density.
+    Q_INVOKABLE qreal space(qreal base) const { return m_t->space(base); }
     Q_INVOKABLE qreal radius(qreal base) const { return m_t->radius(base); }
     QColor surface() const { return m_t->surface(); }
     QColor raised() const { return m_t->raised(); }

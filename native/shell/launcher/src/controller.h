@@ -34,6 +34,7 @@ class Controller : public QObject {
     Q_PROPERTY(QString currentIcon READ currentIcon NOTIFY currentChanged)
     Q_PROPERTY(QString currentKind READ currentKind NOTIFY currentChanged)
     Q_PROPERTY(QObject *menu READ menuObject CONSTANT)
+    Q_PROPERTY(QString styleOverride READ styleOverride CONSTANT)   // "" = the theme decides; centered anchored ring text phone force one
     Q_PROPERTY(bool menuMode READ menuMode CONSTANT)                  // the app menu is wired in (the daemon); tests of search alone leave it off
     Q_PROPERTY(bool menuVisible READ menuVisible NOTIFY queryChanged)   // open, nothing typed: the menu is what shows
     Q_PROPERTY(bool actionsMode READ actionsMode NOTIFY queryChanged)   // the query starts with ">": the system action menu
@@ -59,6 +60,8 @@ public:
     // The app menu: one model and engine for every layout. Without it the launcher is search only.
     void setMenu(std::shared_ptr<taos::search::AppMenu> apps, std::shared_ptr<taos::search::ActionMenu> actions);
     QObject *menuObject() { return m_menuCtl.get(); }
+    QString styleOverride() const { return m_styleOverride; }
+    void setStyleOverride(const QString &s) { m_styleOverride = s; }
     MenuController *menuController() { return m_menuCtl.get(); }
     bool menuMode() const { return m_menuCtl != nullptr; }
     bool menuVisible() const { return m_menuCtl && m_open && (m_query.isEmpty() || m_query.startsWith(QLatin1Char('>'))); }
@@ -117,6 +120,7 @@ private:
     void setNotice(const QString &n);
     taos::search::SearchEngine *m_engine;
     std::unique_ptr<MenuController> m_menuCtl;
+    QString m_styleOverride;
     std::shared_ptr<taos::search::Frecency> m_frec;
     RowModel m_model;
     QString m_query;

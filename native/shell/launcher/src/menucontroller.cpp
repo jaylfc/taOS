@@ -147,16 +147,28 @@ void MenuController::syncNav() {
     m_nav.setZone(QStringLiteral("pinned"), m_pinned.count(), m_nav.columns(QStringLiteral("pinned")));
     m_nav.setZone(QStringLiteral("recent"), m_style == QLatin1String("centered") ? m_recent.count() : 0, m_nav.columns(QStringLiteral("recent")));
     m_nav.setZone(QStringLiteral("all"), m_all.count(), m_nav.columns(QStringLiteral("all")));
-    m_nav.setZone(QStringLiteral("footer"), m_footer.size(), qMax(1, m_footer.size()));
+    const bool noFooter = m_style.startsWith(QLatin1String("text"));   // the text style has no buttons: swipes and the keyboard do it all
+    m_nav.setZone(QStringLiteral("footer"), noFooter ? 0 : m_footer.size(), qMax(1, m_footer.size()));
 }
 
 void MenuController::setLayout(const QString &style) {
+    const QString z = QStringLiteral("pinned"), r = QStringLiteral("recent"), al = QStringLiteral("all"), f = QStringLiteral("footer");
+    const bool changed = style != m_style;
     m_style = style;
-    if (style == QLatin1String("anchored")) { m_nav.setOrder({ QStringLiteral("all"), QStringLiteral("footer") }); m_nav.setLink(QStringLiteral("all"), QStringLiteral("pinned")); }
-    else if (style == QLatin1String("ring") || style == QLatin1String("text")) { m_nav.setOrder({ QStringLiteral("pinned"), QStringLiteral("footer") }); m_nav.setLink({}, {}); }
-    else if (style == QLatin1String("phone")) { m_nav.setOrder({ QStringLiteral("pinned"), QStringLiteral("all") }); m_nav.setLink({}, {}); }
-    else { m_nav.setOrder({ QStringLiteral("pinned"), QStringLiteral("recent"), QStringLiteral("all"), QStringLiteral("footer") }); m_nav.setLink({}, {}); }
-    reload();
+    if (style == QLatin1String("anchored")) { m_nav.setOrder({ al, f }); m_nav.setLink(al, z); }                 // list left, pinned grid right
+    else if (style == QLatin1String("ring")) { m_nav.setOrder({ z, f }); m_nav.setLink({}, {}); }
+    else if (style == QLatin1String("ring-all")) { m_nav.setOrder({ al, f }); m_nav.setLink({}, {}); }
+    else if (style == QLatin1String("text")) { m_nav.setOrder({ z }); m_nav.setLink({}, {}); setSort(QStringLiteral("az")); }
+    else if (style == QLatin1String("text-all")) { m_nav.setOrder({ al }); m_nav.setLink({}, {}); setSort(QStringLiteral("az")); }
+    else if (style == QLatin1String("phone")) { m_nav.setOrder({ z, al, f }); m_nav.setLink({}, {}); }
+    else { m_nav.setOrder({ z, r, al, f }); m_nav.setLink(z, al); }                                               // centred: pinned left, all apps right
+    if (changed) { m_nav.clear(); reload(); emit cursorChanged(); }
+}
+
+bool MenuController::jumpToSection(const QString &title) {
+    for (int i = 0; i < m_all.count(); ++i)
+        if (m_all.data(m_all.index(i), AppListModel::SectionRole).toString() == title) { m_nav.select(QStringLiteral("all"), i); emit cursorChanged(); return true; }
+    return false;
 }
 
 void MenuController::setColumns(const QString &zone, int columns) {
@@ -451,6 +463,12 @@ void MenuController::runPower(int i) {
     if (!n) return;
     m_powerIdx = i;
     performNode(*n);
+}
+
+bool MenuController::quickAction(const QString &actionId) {
+    const ActionNode n = m_actionsEngine->find(actionId);
+    if (n.id.isEmpty() || n.isGroup) return false;
+    return performNode(n);
 }
 
 // ------------------------------------------------------------- actions

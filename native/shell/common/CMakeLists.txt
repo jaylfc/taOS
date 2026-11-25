@@ -9,6 +9,13 @@ add_library(taos_common STATIC
 target_include_directories(taos_common PUBLIC ${CMAKE_CURRENT_SOURCE_DIR} ${CMAKE_CURRENT_SOURCE_DIR}/cli)
 target_link_libraries(taos_common PUBLIC Qt6::Core Qt6::Gui)
 
+# The one way a shell component starts an application: clean environment, own systemd scope. Qt Core only.
+add_library(taos_applaunch STATIC applaunch.cpp applaunch.h)
+target_include_directories(taos_applaunch PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
+target_link_libraries(taos_applaunch PUBLIC Qt6::Core)
+set_target_properties(taos_applaunch PROPERTIES POSITION_INDEPENDENT_CODE ON)
+target_link_libraries(taos_common PUBLIC taos_applaunch)
+
 # The shipped themes travel inside every binary (":/taos/themes"), so nothing needs installing to run.
 file(GLOB TAOS_THEME_FILES CONFIGURE_DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/resources/themes/*/theme.json)
 qt_add_resources(taos_common taos_themes PREFIX /taos BASE ${CMAKE_CURRENT_SOURCE_DIR}/resources
@@ -33,4 +40,5 @@ if(TARGET Qt6::Test AND TARGET Qt6::Quick AND TARGET Qt6::Qml)
     taos_common_test(test_thememanager)
     taos_common_test(test_themecli)
     taos_common_test(test_skinlayout)
+    taos_common_test(test_applaunch)
 endif()

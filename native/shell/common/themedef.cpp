@@ -202,7 +202,7 @@ void parseLayout(const QJsonObject &o, ThemeDef *d, QStringList &errors) {
     s.enumKey(QStringLiteral("cellShape"), {QStringLiteral("hex"), QStringLiteral("square")}, &l.cellShape);
     s.intKey(QStringLiteral("taskbarHeight"), 28, 64, &l.taskbarHeight);
     s.enumKey(QStringLiteral("dockEdge"), {QStringLiteral("top"), QStringLiteral("bottom")}, &l.dockEdge);
-    s.enumKey(QStringLiteral("launcher"), {QStringLiteral("centered"), QStringLiteral("anchored"), QStringLiteral("ring")}, &l.launcher);
+    s.enumKey(QStringLiteral("launcher"), {QStringLiteral("centered"), QStringLiteral("anchored"), QStringLiteral("ring"), QStringLiteral("text")}, &l.launcher);
     if (o.contains(QStringLiteral("startLabel"))) {
         static const QRegularExpression re(QStringLiteral("^[A-Za-z0-9][A-Za-z0-9 ]{0,15}$"));
         const QJsonValue v = o.value(QStringLiteral("startLabel"));

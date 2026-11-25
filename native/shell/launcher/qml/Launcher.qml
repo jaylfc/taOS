@@ -10,20 +10,30 @@ FocusScope {
     readonly property bool open: Launcher.open
     property real progress: 0
     property bool ctrlHeld: false
-    // layout.launcher "anchored" with a taskbar: a compact menu that opens at the start button's corner
-    // layout.launcher "ring": a wide single line command field low on the screen, with the results as a short list under it
-    readonly property bool ring: Style.launcherPlace === "ring"
-    readonly property bool compact: Style.launcherPlace === "anchored" && Style.dockMode === "taskbar"
+    // The style (layout.launcher) is a renderer of the one shared menu: centered, anchored (needs the taskbar), ring or text.
+    // A narrow screen is a phone: the whole screen, whatever the theme says. `--style` forces one (a phone home screen).
+    readonly property bool phone: Launcher.styleOverride === "phone" || (Launcher.styleOverride === "" && width < 640)
+    readonly property string styleName: phone ? "phone"
+        : Launcher.styleOverride !== "" ? Launcher.styleOverride
+        : Style.launcherPlace === "anchored" ? (Style.dockMode === "taskbar" ? "anchored" : "centered") : Style.launcherPlace
+    readonly property bool ring: styleName === "ring"
+    readonly property bool compact: styleName === "anchored"
+    readonly property bool fullScreen: styleName === "phone" || styleName === "text"
+    readonly property bool menuOn: Launcher.menuMode && Launcher.menuVisible
     readonly property real tbH: Style.taskbarHeight
-    readonly property real panelW: compact ? Math.min(380, width - 8) : ring ? Math.min(Math.max(520, width * 0.4), width - 32) : Math.min(720, width - 32)
-    readonly property real searchH: compact ? 52 : ring ? 56 : 68
+    readonly property real panelW: fullScreen ? width : compact ? Math.min(menuOn ? 680 : 380, width - 8) : ring ? Math.min(Math.max(menuOn ? 600 : 520, width * 0.4), width - 32) : Math.min(menuOn ? 920 : 720, width - 32)
+    readonly property real searchH: fullScreen ? 64 : compact ? 52 : ring ? 56 : 68
     readonly property real compactH: Math.min(520, height - tbH - 16)
+    readonly property real menuH: fullScreen ? height : compact ? Math.min(600, height - tbH - 16) : ring ? Math.min(580, height - 48) : Math.min(700, height - 64)
     readonly property real maxListH: ring ? Math.max(104, height * 0.19) : Math.max(160, Math.min(440, height * 0.5))
     readonly property real listH: Math.min(maxListH, list.contentHeight)
-    readonly property real bodyH: compact ? Math.max(0, compactH - searchH - 1 - noticeH) : Launcher.actionsOpen ? actions.implicitHeight
+    readonly property real bodyH: menuOn ? Math.max(0, menuH - searchH - 1 - noticeH)
+                                  : fullScreen ? Math.max(0, height - searchH - 1 - noticeH)
+                                  : compact ? Math.max(0, compactH - searchH - 1 - noticeH) : Launcher.actionsOpen ? actions.implicitHeight
                                   : (Launcher.count > 0 ? listH + 8 : (noResults.visible ? 76 : 0))
     readonly property real noticeH: Launcher.notice.length > 0 ? 38 : 0
-    readonly property real targetH: compact ? compactH : searchH + (bodyH > 0 ? bodyH + 1 : 0) + noticeH
+    readonly property real targetH: menuOn ? menuH : fullScreen ? height : compact ? compactH : searchH + (bodyH > 0 ? bodyH + 1 : 0) + noticeH
+    onStyleNameChanged: if (Launcher.menuMode) Launcher.menu.setLayout(styleName)
 
     Accessible.role: Accessible.Pane
     Accessible.name: qsTr("Launcher")
@@ -71,8 +81,11 @@ FocusScope {
         id: panel
         width: root.panelW
         height: root.targetH
-        x: root.compact ? 4 : Math.round((root.width - width) / 2)
-        y: root.ring ? Math.round(root.height * 0.60) : root.compact ? (Style.dockEdge === "top" ? root.tbH + 4 : root.height - root.tbH - 4 - height) : Math.round(root.height * 0.17)
+        x: root.fullScreen ? 0 : root.compact ? 4 : Math.round((root.width - width) / 2)
+        y: root.fullScreen ? 0
+           : root.compact ? (Style.dockEdge === "top" ? root.tbH + 4 : root.height - root.tbH - 4 - height)
+           : root.menuOn ? Math.max(16, Math.round((root.height - height) / 2))
+           : root.ring ? Math.round(root.height * 0.60) : Math.round(root.height * 0.17)
         opacity: root.progress
         scale: 0.98 + 0.02 * root.progress
         transformOrigin: root.compact ? (Style.dockEdge === "top" ? Item.TopLeft : Item.BottomLeft) : Item.Top
@@ -81,7 +94,7 @@ FocusScope {
             NumberAnimation { duration: 230; easing.type: Easing.OutQuint }
         }
 
-        Glass { anchors.fill: parent }
+        Glass { anchors.fill: parent; radius: root.fullScreen ? 0 : Math.round((22) * Style.radiusScale); kind: root.fullScreen ? "solid" : Style.dockSurface }
         MouseArea { anchors.fill: parent; Accessible.ignored: true }   // clicks on the panel do not reach the backdrop
 
         // ------------------------------------------------ search field
@@ -171,6 +184,20 @@ FocusScope {
                 Keys.onPressed: (e) => {
                     const ctrl = (e.modifiers & Qt.ControlModifier) !== 0;
                     if (e.key === Qt.Key_Control) root.ctrlHeld = true;
+                    if (root.menuOn) {
+                        // the menu is showing: arrows walk it, Enter opens, Tab or Menu shows what else can be done, and
+                        // typing (anything else) goes to the search field and takes the screen over
+                        const bare = input.text.length === 0 || (Launcher.actionsMode && input.text === ">");
+                        if (e.key === Qt.Key_Up) { Launcher.menuMove(0, -1); e.accepted = true; return; }
+                        if (e.key === Qt.Key_Down) { Launcher.menuMove(0, 1); e.accepted = true; return; }
+                        if (e.key === Qt.Key_Left && bare) { if (Launcher.actionsMode) Launcher.menuBack(); else Launcher.menuMove(-1, 0); e.accepted = true; return; }
+                        if (e.key === Qt.Key_Right && bare) { if (Launcher.actionsMode) Launcher.menuEnter(); else Launcher.menuMove(1, 0); e.accepted = true; return; }
+                        if (e.key === Qt.Key_Return || e.key === Qt.Key_Enter) { Launcher.menuEnter(); e.accepted = true; return; }
+                        if ((e.key === Qt.Key_Tab || e.key === Qt.Key_Menu) && !Launcher.actionsMode) { Launcher.menuContext(); e.accepted = true; return; }
+                        if (e.key === Qt.Key_F10 && (e.modifiers & Qt.ShiftModifier)) { Launcher.menuContext(); e.accepted = true; return; }
+                        if (e.key === Qt.Key_Backspace && Launcher.actionsMode && input.text === ">" && Launcher.menu.actionPath.length > 0) { Launcher.menuBack(); e.accepted = true; return; }
+                        if (e.key === Qt.Key_Escape) { Launcher.escape(); e.accepted = true; return; }
+                    }
                     if (ctrl && e.key >= Qt.Key_1 && e.key <= Qt.Key_9) { Launcher.quickPick(e.key - Qt.Key_0); e.accepted = true; return; }
                     if (ctrl && e.key === Qt.Key_N) { Launcher.move(1); e.accepted = true; return; }
                     if (ctrl && e.key === Qt.Key_P) { Launcher.move(-1); e.accepted = true; return; }
@@ -251,7 +278,7 @@ FocusScope {
 
             ListView {
                 id: list
-                visible: !Launcher.actionsOpen
+                visible: !Launcher.actionsOpen && !root.menuOn
                 anchors.fill: parent
                 anchors.topMargin: 0
                 model: Launcher.rows
@@ -302,7 +329,7 @@ FocusScope {
 
             // a thin scroll indicator, only when the list overflows
             Rectangle {
-                visible: !Launcher.actionsOpen && list.contentHeight > list.height + 1
+                visible: !Launcher.actionsOpen && !root.menuOn && list.contentHeight > list.height + 1
                 x: parent.width - 7
                 width: 3
                 radius: 1.5
@@ -313,10 +340,26 @@ FocusScope {
 
             ActionsView {
                 id: actions
-                visible: Launcher.actionsOpen
+                visible: Launcher.actionsOpen && !root.menuOn
                 width: parent.width
                 height: implicitHeight
             }
+
+            // the shared app menu, drawn by the style the theme asked for
+            Loader {
+                id: menuLoader
+                anchors.fill: parent
+                active: Launcher.menuMode
+                visible: root.menuOn
+                sourceComponent: root.styleName === "phone" ? phoneC : root.styleName === "text" ? textC : root.styleName === "ring" ? ringC : root.styleName === "anchored" ? anchoredC : centeredC
+                onLoaded: Launcher.menu.setLayout(root.styleName)
+            }
+            Component { id: centeredC; MenuCentered {} }
+            Component { id: anchoredC; MenuAnchored {} }
+            Component { id: ringC; MenuRing {} }
+            Component { id: textC; MenuText {} }
+            Component { id: phoneC; MenuPhone {} }
+            Connections { target: menuLoader.item; ignoreUnknownSignals: true; function onRequestText(t) { input.text = t; input.cursorPosition = input.length } }
 
             Item {
                 id: noResults
@@ -337,6 +380,8 @@ FocusScope {
                 }
             }
         }
+
+        Loader { anchors.fill: parent; active: Launcher.menuMode; z: 10; sourceComponent: ContextSheet {} }
 
         // ------------------------------------------------ notice (an action failed, a stub)
         Item {

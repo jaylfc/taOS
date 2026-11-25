@@ -64,6 +64,18 @@ private slots:
         QVERIFY(!p.def.layout.topBar);
         QCOMPARE(p.def.layout.taskbarHeight, 38);
     }
+    void everyLauncherStyleIsAccepted() {
+        // the launcher styles are renderers of one shared menu: the theme only names which one it wants
+        for (const char *style : { "centered", "anchored", "ring", "text" }) {
+            const bool taskbar = QByteArray(style) == "anchored";
+            const ThemeParse p = parse(goodTheme("mine"), {}, taskbar ? QJsonObject{{"dock", "taskbar"}, {"launcher", style}} : QJsonObject{{"launcher", style}});
+            QVERIFY2(p.ok, qPrintable(QString(style) + ": " + p.message()));
+            QCOMPARE(p.def.layout.launcher, QString(style));
+        }
+        const ThemeParse bad = parse(goodTheme("mine"), {}, {{"launcher", "olauncher"}});
+        QVERIFY(!bad.ok);
+        QVERIFY2(bad.message().contains("centered, anchored, ring, text"), qPrintable(bad.message()));   // the refusal names every style
+    }
     void unknownKeysAreRefusedByName() {
         ThemeParse p = parse(goodTheme("mine"), {{"radiusScal", 1}});
         QVERIFY(!p.ok);
