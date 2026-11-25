@@ -1,0 +1,30 @@
+[Desktop Entry]
+Type=Application
+Version=1.5
+Name=Survival Studio
+Comment=Offline library, offline maps, mesh awareness and kits
+Exec=taos-survival %U
+Icon=my.taos.survival
+Terminal=false
+Categories=Utility;Education;
+StartupWMClass=my.taos.survival
+StartupNotify=true
+SingleMainWindow=true
+X-taOS-AppId=my.taos.survival
+Actions=library;map;taostak;kit;
+
+[Desktop Action library]
+Name=Library
+Exec=taos-survival --section library
+
+[Desktop Action map]
+Name=Map
+Exec=taos-survival --section map
+
+[Desktop Action taostak]
+Name=taOStak
+Exec=taos-survival --section taostak
+
+[Desktop Action kit]
+Name=Kit
+Exec=taos-survival --section kit

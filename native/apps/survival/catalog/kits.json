@@ -1,0 +1,69 @@
+{
+  "version": 1,
+  "kits": [
+    {
+      "id": "pocket",
+      "title": "Pocket",
+      "hardware": "A taOS phone",
+      "summary": "The field device: essentials offline, a position, a radio over Bluetooth or USB.",
+      "items": [
+        {"id": "library", "title": "A library pack", "check": "zim", "min": 1},
+        {"id": "map", "title": "A map of your area", "check": "map", "min": 1},
+        {"id": "position", "title": "A position source", "check": "position"},
+        {"id": "battery", "title": "A battery", "check": "battery"},
+        {"id": "radio", "title": "A mesh radio", "check": "radio", "min": 1},
+        {"id": "storage", "title": "Room for packs", "check": "storage", "min": 8}
+      ]
+    },
+    {
+      "id": "laptop",
+      "title": "Field laptop",
+      "hardware": "Any laptop with 8 to 16 GB of memory",
+      "summary": "Standard packs, a regional map and a USB radio.",
+      "items": [
+        {"id": "library", "title": "A library pack", "check": "zim", "min": 1},
+        {"id": "map", "title": "A regional map", "check": "map", "min": 1},
+        {"id": "battery", "title": "A battery", "check": "battery"},
+        {"id": "radio", "title": "A USB mesh radio", "check": "radio", "min": 1},
+        {"id": "storage", "title": "Room for packs", "check": "storage", "min": 20}
+      ]
+    },
+    {
+      "id": "pi",
+      "title": "Pi box",
+      "hardware": "A Raspberry Pi 5 or Orange Pi class board with an SSD and a battery",
+      "summary": "An always-on box that serves the library to nearby devices and can relay for the mesh.",
+      "items": [
+        {"id": "library", "title": "A library pack", "check": "zim", "min": 1},
+        {"id": "map", "title": "A map of your area", "check": "map", "min": 1},
+        {"id": "radio", "title": "A USB mesh radio", "check": "radio", "min": 1},
+        {"id": "storage", "title": "An SSD with room for packs", "check": "storage", "min": 32},
+        {"id": "hotspot", "title": "A Wi-Fi hotspot for guests", "check": "manual", "note": "Guest hotspot is not built yet"},
+        {"id": "power", "title": "A battery or UPS", "check": "manual", "note": "Power sources other than a laptop battery cannot be read yet"}
+      ]
+    },
+    {
+      "id": "radio",
+      "title": "Radio relay",
+      "hardware": "A LoRa board on its own, solar powered",
+      "summary": "A radio that stays out in the field and extends the mesh. It runs no taOS; you set it up from here.",
+      "items": [
+        {"id": "radio", "title": "A radio connected to set up", "check": "radio", "min": 1},
+        {"id": "solar", "title": "Solar panel and battery", "check": "manual", "note": "Cannot be checked from this device"},
+        {"id": "place", "title": "A high place with a view", "check": "manual", "note": "Marked on the map once the relay is set up"}
+      ]
+    },
+    {
+      "id": "home",
+      "title": "Home base",
+      "hardware": "Your main machine",
+      "summary": "Everything: the full library, the country map, a radio, and room to serve the rest.",
+      "items": [
+        {"id": "library", "title": "Library packs", "check": "zim", "min": 2},
+        {"id": "map", "title": "A map pack", "check": "map", "min": 1},
+        {"id": "radio", "title": "A mesh radio", "check": "radio", "min": 1},
+        {"id": "storage", "title": "Room for large packs", "check": "storage", "min": 100}
+      ]
+    }
+  ]
+}

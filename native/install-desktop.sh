@@ -14,6 +14,8 @@
 #   --shell-build DIR   the native/shell build directory (bar, overview, dock, window, display, theme,
 #                       launcher, search, taos-shell-session)
 #   --apps-build DIR    a build directory with taos-* apps in it (repeatable: apps, settings, activity)
+#   --apps-lib DIR      a directory of private shared libraries for the apps (libzim and libxapian for Survival Studio);
+#                       its lib*.so* files are copied to /opt/taos/apps/lib (repeatable, optional)
 #   --root DIR          install into DIR instead of / (a fake root for testing; the validation then reads
 #                       DIR/etc/taos/sway/config). Without it the script must run as root.
 #   --check-only        validate and stage, install nothing
@@ -43,6 +45,7 @@ sway=""
 sway_fallback=""
 shell_build=""
 apps_builds=""
+apps_libs=""
 check_only=0
 with_notifyd=0   # 1 = add, 0 = leave as it is, -1 = remove
 while [ $# -gt 0 ]; do
@@ -52,6 +55,7 @@ while [ $# -gt 0 ]; do
         --validate-with) sway_fallback=${2:?}; shift 2 ;;
         --shell-build) shell_build=${2:?}; shift 2 ;;
         --apps-build) apps_builds="$apps_builds ${2:?}"; shift 2 ;;
+        --apps-lib) apps_libs="$apps_libs ${2:?}"; shift 2 ;;
         --check-only) check_only=1; shift ;;
         --with-notifyd) with_notifyd=1; shift ;;
         --without-notifyd) with_notifyd=-1; shift ;;
@@ -233,6 +237,7 @@ echo "installed shell binaries to $shell_bin, wrappers to $local_bin"
 ( cd "$apps_dir/bin" 2>/dev/null && md5sum -- * 2>/dev/null ) >"$stage/apps-before" || true
 args=""
 for d in $apps_builds; do args="$args --bin-dir $d"; done
+for d in $apps_libs; do args="$args --lib-dir $d"; done
 # shellcheck disable=SC2086
 sh "$here/apps/install-apps.sh" "$R/usr/local" --app-dir "$apps_dir" --runtime-app-dir /opt/taos/apps --no-icon-cache $args
 

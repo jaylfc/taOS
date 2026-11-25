@@ -27,3 +27,9 @@ ShelfCard 1.0 ShelfCard.qml
 CompactRow 1.0 CompactRow.qml
 Hero 1.0 Hero.qml
 DetailHeader 1.0 DetailHeader.qml
+Segmented 1.0 Segmented.qml
+ProgressTrack 1.0 ProgressTrack.qml
+BottomTabBar 1.0 BottomTabBar.qml
+ListRow 1.0 ListRow.qml
+StudioAgentPanel 1.0 StudioAgentPanel.qml
+StableModel 1.0 StableModel.qml

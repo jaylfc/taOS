@@ -33,6 +33,7 @@ kill $FP 2>/dev/null
 run agents "$OUT/agents" bash "$N/apps/agents/tests/shots.sh" "$APPS" "$OUT/agents"
 run messages "$OUT/messages" bash "$N/apps/messages/tests/shots.sh" "$APPS" "$OUT/messages"
 run store "$OUT/store" bash "$N/apps/store/tests/shots.sh" "$APPS" "$OUT/store"
+run survival "$OUT/survival" bash "$N/apps/survival/tests/shots.sh" "$APPS" "$OUT/survival"
 # settings: renders every page against fake engines itself
 mkdir -p "$OUT/settings"
 export XDG_RUNTIME_DIR="$R/rt"; mkdir -p "$XDG_RUNTIME_DIR"; chmod 700 "$XDG_RUNTIME_DIR"
