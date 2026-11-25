@@ -15,7 +15,7 @@ QStringList allowedHosts()
     return {u"edgedl.me.gvt1.com"_s,        u"us-central1-apt.pkg.dev"_s, u"packages.mozilla.org"_s,
             u"deb.opera.com"_s,             u"brave-browser-apt-release.s3.brave.com"_s,
             u"repo.vivaldi.com"_s,          u"deb.librewolf.net"_s,       u"dl.google.com"_s,
-            u"update.librewolf.net"_s};
+            u"update.librewolf.net"_s,      u"downloads.claude.ai"_s,     u"autoupdate.desktop.anaconda.com"_s};
 }
 
 namespace {
@@ -64,6 +64,8 @@ bool parseStep(const QJsonObject &o, const QString &appId, Step *s, QString *e)
             return fail(e, u"apt-source key_fingerprint must be 40 upper case hex characters"_s);
         if (!okToken(o.value(u"suite"_s).toString()))
             return fail(e, u"apt-source suite is invalid"_s);
+        if (!o.value(u"arch"_s).toString().isEmpty() && !QRegularExpression(u"^[a-z0-9]+( [a-z0-9]+)*$"_s).match(o.value(u"arch"_s).toString()).hasMatch())
+            return fail(e, u"apt-source arch is invalid"_s);
         const QStringList comps = strList(o.value(u"components"_s));
         if (comps.isEmpty())
             return fail(e, u"apt-source needs components"_s);
@@ -86,6 +88,8 @@ bool parseStep(const QJsonObject &o, const QString &appId, Step *s, QString *e)
             return false;
         if (!QRegularExpression(u"^[0-9a-f]{64}$"_s).match(o.value(u"sha256"_s).toString()).hasMatch())
             return fail(e, op + u" needs a sha256 (64 lower case hex characters)"_s);
+        if (op == u"download-deb"_s && !okPkg(o.value(u"package"_s).toString()))
+            return fail(e, u"download-deb needs the package name it installs"_s);
         if (op == u"download-tar"_s) {
             const QString dest = o.value(u"dest"_s).toString();
             if (dest != u"/opt/"_s + appId)
@@ -104,16 +108,39 @@ bool parseStep(const QJsonObject &o, const QString &appId, Step *s, QString *e)
             return fail(e, u"symlink link must be /usr/local/bin/<name>"_s);
         return true;
     }
+    if (op == u"etc-default"_s) {
+        // /etc/default/<name>: the only way a recipe may tell a vendor package what to do at install time
+        // (for example "do not register your own apt source"). Values are plain tokens, never shell.
+        if (!okId(o.value(u"name"_s).toString()))
+            return fail(e, u"etc-default needs a valid name"_s);
+        const QJsonObject v = o.value(u"values"_s).toObject();
+        if (v.isEmpty())
+            return fail(e, u"etc-default needs values"_s);
+        for (auto it = v.begin(); it != v.end(); ++it)
+            if (!QRegularExpression(u"^[A-Z][A-Z0-9_]{0,60}$"_s).match(it.key()).hasMatch() || !it.value().isString()
+                || !QRegularExpression(u"^[A-Za-z0-9._-]{1,60}$"_s).match(it.value().toString()).hasMatch())
+                return fail(e, u"etc-default has an invalid entry"_s);
+        return true;
+    }
     if (op == u"suid-helper"_s) {
         const QString p = o.value(u"path"_s).toString();
         if (!p.startsWith(u"/opt/"_s + appId + u"/"_s) || p.contains(u".."_s) || p.contains(u' '))
             return fail(e, u"suid-helper path must be inside /opt/%1 and have no spaces"_s.arg(appId));
         return true;
     }
-    return fail(e, u"unknown recipe step \"%1\" (allowed: apt-source, apt-install, download-tar, download-deb, symlink, suid-helper)"_s.arg(op));
+    return fail(e, u"unknown recipe step \"%1\" (allowed: apt-source, apt-install, download-tar, download-deb, etc-default, symlink, suid-helper)"_s.arg(op));
 }
 
 } // namespace
+
+bool urlAllowed(const QString &url, QString *why)
+{
+    QString e;
+    const bool ok = okUrl(url, &e, u"url"_s);
+    if (!ok && why)
+        *why = e;
+    return ok;
+}
 
 bool parseManifest(const QByteArray &json, Manifest *out, QString *error)
 {
@@ -124,8 +151,11 @@ bool parseManifest(const QByteArray &json, Manifest *out, QString *error)
     const QJsonObject o = d.object();
     Manifest m;
     m.raw = o;
-    if (o.value(u"kind"_s).toString() != u"container-desktop-app"_s || o.value(u"schema"_s).toInt() != 1)
-        return fail(error, u"manifest kind must be container-desktop-app, schema 1"_s);
+    // Schema 2 adds the licence block (and may add more). An engine that only knows schema 1 refuses a schema 2
+    // manifest, so an old engine can never skip the acceptance gate.
+    m.schema = o.value(u"schema"_s).toInt();
+    if (o.value(u"kind"_s).toString() != u"container-desktop-app"_s || (m.schema != 1 && m.schema != 2))
+        return fail(error, u"manifest kind must be container-desktop-app, schema 1 or 2"_s);
     m.id = o.value(u"id"_s).toString();
     if (!okId(m.id))
         return fail(error, u"manifest id is invalid"_s);
@@ -133,7 +163,36 @@ bool parseManifest(const QByteArray &json, Manifest *out, QString *error)
     m.description = o.value(u"description"_s).toString();
     m.publisher = o.value(u"publisher"_s).toString();
     m.homepage = o.value(u"homepage"_s).toString();
-    m.licence = o.value(u"licence"_s).toString();
+    if (m.schema == 2) {
+        const QJsonObject lic = o.value(u"licence"_s).toObject();
+        m.licence = lic.value(u"name"_s).toString();
+        m.licenceUrl = lic.value(u"url"_s).toString();
+        const QString acc = lic.value(u"accept"_s).toString(u"required"_s);
+        if (acc != u"required"_s && acc != u"none"_s)
+            return fail(error, u"licence.accept must be required or none"_s);
+        m.licenceRequired = acc == u"required"_s;
+        if (!m.licenceUrl.startsWith(u"https://"_s))
+            return fail(error, u"licence.url must be https"_s);
+    } else {
+        m.licence = o.value(u"licence"_s).toString();
+    }
+    const QJsonObject feed = o.value(u"update_feed"_s).toObject();
+    if (!feed.isEmpty()) {
+        if (feed.value(u"format"_s).toString() != u"vendor-downloads-v1"_s)
+            return fail(error, u"update_feed format must be vendor-downloads-v1"_s);
+        if (!okUrl(feed.value(u"url"_s).toString(), error, u"update_feed url"_s))
+            return false;
+        m.updateFeedUrl = feed.value(u"url"_s).toString();
+    }
+    m.package = o.value(u"package"_s).toString();
+    if (!m.package.isEmpty() && !okPkg(m.package))
+        return fail(error, u"package is not a valid package name"_s);
+    for (const QJsonValue &v : o.value(u"data"_s).toArray()) {
+        const QString d = v.toString();
+        if (d.isEmpty() || d.startsWith(u'/') || d.contains(u".."_s) || d.contains(u'\n') || d.contains(u'\0') || d == u"."_s)
+            return fail(error, u"data paths must be relative to the app's home, without .."_s);
+        m.data << d;
+    }
     m.version = o.value(u"version"_s).toString();
     m.termsNote = o.value(u"terms"_s).toObject().value(u"note"_s).toString();
     m.termsUrl = o.value(u"terms"_s).toObject().value(u"url"_s).toString();
@@ -212,6 +271,9 @@ QJsonObject manifestSummary(const Manifest &m)
     o[u"publisher"_s] = m.publisher;
     o[u"homepage"_s] = m.homepage;
     o[u"licence"_s] = m.licence;
+    o[u"licence_url"_s] = m.licenceUrl;
+    o[u"licence_required"_s] = m.licenceRequired;
+    o[u"schema"_s] = m.schema;
     o[u"terms_note"_s] = m.termsNote;
     o[u"terms_url"_s] = m.termsUrl;
     o[u"version"_s] = m.version;

@@ -22,7 +22,8 @@ enum Exit {
     ExitStep = 6,      // an install step failed (the log path is in the error)
     ExitConflict = 7,  // already exists or in use
     ExitNoSession = 8, // run: no desktop session to show the window in
-    ExitUnavailable = 9 // the chosen install target exists in the design but is not built yet
+    ExitUnavailable = 9, // the chosen install target exists in the design but is not built yet
+    ExitLicence = 10    // the app's licence has to be accepted first (the licence is in Result::data)
 };
 
 struct Result {
@@ -40,13 +41,25 @@ constexpr const char *kDefaultContainer = "user-apps";
 constexpr const char *kProfile = "user-apps";
 constexpr const char *kDefaultDisplayName = "My apps";
 
+struct InstallOptions {
+    QString acceptLicence;  // the app id whose licence the person accepted (must equal the id being installed)
+    QString acceptedBy;     // recorded with the acceptance; defaults to the account name
+};
+
 class Engine {
 public:
     Engine();
     Result ensureDefault(const Progress &p = {});
     Result groups();
-    Result groupCreate(const QString &name, const Progress &p = {});
-    Result install(const QString &appId, const QString &group, const Progress &p = {});
+    Result groupCreate(const QString &name, const Progress &p = {}, const QString &displayName = {});
+    Result install(const QString &appId, const QString &group, const Progress &p = {}, const InstallOptions &opt = {});
+    // Moves an installed app and its data to another group: staged install there, copy, verify, switch, then the old
+    // data is renamed to a dated backup (never deleted) and the old copy of the app is removed. Refused while running.
+    Result move(const QString &appId, const QString &toGroup, const Progress &p = {});
+    Result backups();
+    Result backupDelete(const QString &appId, const QString &stamp);
+    // Looks for (checkOnly) or installs a newer version: from the app's apt source, or from the publisher's feed.
+    Result update(const QString &appId, bool checkOnly, const Progress &p = {});
     Result remove(const QString &appId, bool purgeData, const Progress &p = {});
     Result list(bool available);
     Result catalog();
@@ -68,6 +81,7 @@ public:
 
     struct Impl;  // public so the implementation's helpers can name it; not API
 private:
+    Result runRecipe(const Manifest &m, const QString &group, bool *created);
     Impl *d;
 };
 

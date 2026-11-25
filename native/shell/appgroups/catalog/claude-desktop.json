@@ -1,0 +1,36 @@
+{
+  "schema": 2,
+  "kind": "container-desktop-app",
+  "id": "claude-desktop",
+  "name": "Claude",
+  "version": "apt",
+  "package": "claude-desktop",
+  "description": "Anthropic's Claude desktop app (Linux beta): chat, Cowork and Claude Code. Installed from Anthropic's own apt repository into an app group, so updates arrive through the group's package updates. Sign in with your Anthropic account.",
+  "publisher": "Anthropic",
+  "homepage": "https://claude.com/download",
+  "licence": {
+    "name": "Anthropic Consumer Terms of Service",
+    "url": "https://www.anthropic.com/legal/consumer-terms",
+    "accept": "required"
+  },
+  "terms": {
+    "note": "Proprietary software. taOS downloads it from Anthropic's apt repository when you install it and never redistributes it. Cowork needs a virtual machine (KVM), which an app group does not have, so Cowork is not available here. The icon shown here is a generic taOS icon.",
+    "url": "https://www.anthropic.com/legal/consumer-terms"
+  },
+  "icon": {"glyph": "app"},
+  "categories": ["Development", "Utility"],
+  "arch": ["amd64", "arm64"],
+  "recipe": [
+    {"op": "etc-default", "name": "claude-desktop", "values": {"CLAUDE_DESKTOP_ADD_REPO": "false"}},
+    {"op": "apt-source", "name": "claude-desktop", "uri": "https://downloads.claude.ai/claude-desktop/apt/stable", "suite": "stable", "components": ["main"], "arch": "amd64 arm64", "key_url": "https://downloads.claude.ai/claude-desktop/key.asc", "key_fingerprint": "31DDDE24DDFAB679F42D7BD2BAA929FF1A7ECACE"},
+    {"op": "apt-install", "packages": ["claude-desktop", "libasound2t64", "libayatana-appindicator3-1"]}
+  ],
+  "binary": "/usr/bin/claude-desktop",
+  "launch": {
+    "argv": ["/usr/bin/claude-desktop", "--ozone-platform=wayland", "--password-store=basic"],
+    "env": {}
+  },
+  "window": {"app_id": "claude-desktop"},
+  "mime_types": ["x-scheme-handler/claude"],
+  "grants": {"network": true, "gpu": true, "documents": true, "downloads": true}
+}

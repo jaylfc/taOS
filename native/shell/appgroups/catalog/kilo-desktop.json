@@ -1,0 +1,35 @@
+{
+  "schema": 2,
+  "kind": "container-desktop-app",
+  "id": "kilo-desktop",
+  "name": "Kilo",
+  "version": "1.0.0",
+  "package": "kilo-desktop",
+  "description": "Kilo Desktop, the Kilo coding agent as a desktop app. Installed from Kilo's own download server into an app group; a newer version is fetched when you choose Update. Sign in with your Kilo account.",
+  "publisher": "Kilo (package built by Anaconda, Inc.)",
+  "homepage": "https://kilo.ai/",
+  "licence": {
+    "name": "Kilo Terms of Service",
+    "url": "https://kilo.ai/terms",
+    "accept": "required"
+  },
+  "terms": {
+    "note": "Proprietary software. taOS downloads the official package from Kilo's update server when you install it and never redistributes it. Kilo publishes the package's SHA-256 checksum in its update feed over HTTPS; it does not sign it. The icon shown here is a generic taOS icon.",
+    "url": "https://kilo.ai/terms"
+  },
+  "icon": {"glyph": "code"},
+  "categories": ["Development", "IDE"],
+  "arch": ["amd64"],
+  "recipe": [
+    {"op": "download-deb", "package": "kilo-desktop", "url": "https://autoupdate.desktop.anaconda.com/kilo-desktop/latest/linux/x64/kilo-desktop_1.0.0_amd64.deb", "sha256": "5d9d8b00ac958cba8722bce54eefc502a6fa092a5dad27cf34984800ed388b81"}
+  ],
+  "update_feed": {"format": "vendor-downloads-v1", "url": "https://autoupdate.desktop.anaconda.com/kilo-desktop/latest/latest.json"},
+  "binary": "/usr/bin/kilo-desktop",
+  "launch": {
+    "argv": ["/usr/bin/kilo-desktop", "--ozone-platform=wayland", "--password-store=basic"],
+    "env": {}
+  },
+  "window": {"app_id": "Kilo"},
+  "mime_types": ["x-scheme-handler/kilo-desktop"],
+  "grants": {"network": true, "gpu": true, "documents": true, "downloads": true}
+}

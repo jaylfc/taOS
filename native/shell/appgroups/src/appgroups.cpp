@@ -352,6 +352,8 @@ Result Engine::list(bool available)
         QJsonObject o = manifestSummary(m);
         o[u"group"_s] = rec.value(u"group"_s);
         o[u"installed_at"_s] = rec.value(u"installed_at"_s);
+        o[u"installed_version"_s] = rec.value(u"installed_version"_s);
+        o[u"licence_accepted"_s] = rec.value(u"licence_accepted"_s);
         o[u"installed"_s] = true;
         a.append(o);
     }
@@ -369,6 +371,19 @@ Result Engine::list(bool available)
 // ------------------------------------------------------------------ groups
 
 namespace {
+
+// "My apps" for the default group; else the name the person gave; else the id made readable ("dev-apps" -> "Dev apps").
+QString displayNameOf(const QJsonObject &c, const QString &g)
+{
+    if (g == QLatin1String(kDefaultGroup))
+        return QString::fromLatin1(kDefaultDisplayName);
+    const QString given = c.value(u"config"_s).toObject().value(u"user.taos.display_name"_s).toString();
+    if (!given.isEmpty())
+        return given;
+    QString n = g;
+    n.replace(u'-', u' ');
+    return n.isEmpty() ? n : n.at(0).toUpper() + n.mid(1);
+}
 
 // The person's own groups only: containers this person created (owner uid) and tagged as app groups.
 bool ownedGroup(const QJsonObject &c)
@@ -398,7 +413,7 @@ Result Engine::groups()
             if (it.value().toObject().value(u"group"_s).toString() == g)
                 apps.append(it.key());
         out.append(QJsonObject{{u"name"_s, g},
-                               {u"display_name"_s, g == QLatin1String(kDefaultGroup) ? QString::fromLatin1(kDefaultDisplayName) : g},
+                               {u"display_name"_s, displayNameOf(c, g)},
                                {u"container"_s, c.value(u"name"_s)},
                                {u"state"_s, c.value(u"status"_s).toString().toLower()},
                                {u"apps"_s, apps}});
@@ -631,10 +646,12 @@ Result Engine::ensureDefault(const Progress &p)
     return r;
 }
 
-Result Engine::groupCreate(const QString &name, const Progress &p)
+Result Engine::groupCreate(const QString &name, const Progress &p, const QString &displayName)
 {
     if (!validGroupName(name) || name == QLatin1String(kDefaultGroup))
         return Result::fail(ExitUsage, u"group names are lower case letters, digits and dashes, starting with a letter (and not \"default\")"_s);
+    if (displayName != oneLine(displayName) || displayName.size() > 40)
+        return Result::fail(ExitUsage, u"the display name must be one line of at most 40 characters"_s);
     d->prog = p;
     d->stepN = 0;
     d->stepOf = 4;
@@ -644,7 +661,10 @@ Result Engine::groupCreate(const QString &name, const Progress &p)
         return r;
     if (!created)
         return Result::fail(ExitConflict, u"the group %1 already exists"_s.arg(name));
+    if (!displayName.isEmpty() && !d->incusRun({u"config"_s, u"set"_s, containerFor(name), u"user.taos.display_name="_s + displayName}).ok())
+        return Result::fail(ExitIncus, u"the group was created but its display name could not be saved"_s);
     r.data[u"group"_s] = name;
+    r.data[u"display_name"_s] = displayName.isEmpty() ? name : displayName;
     r.data[u"container"_s] = containerFor(name);
     return r;
 }
@@ -695,6 +715,15 @@ Result runStep(Engine::Impl *d, const QString &ct, const Manifest &m, const Step
         if (!d->exec(ct, {u"apt-get"_s, u"update"_s}, log, env).ok())
             return fail(u"apt-get update failed after adding the source"_s);
         return {};
+    }
+    if (s.op == u"etc-default"_s) {
+        // The manifest parser only lets plain tokens through, so a value can never close its quotes.
+        QString body;
+        const QJsonObject v = a.value(u"values"_s).toObject();
+        for (auto it = v.begin(); it != v.end(); ++it)
+            body += u"%1=\"%2\"\n"_s.arg(it.key(), it.value().toString());
+        return d->exec(ct, {u"tee"_s, u"/etc/default/"_s + a.value(u"name"_s).toString()}, log, {}, 60000, body.toUtf8()).ok()
+                   ? Result() : fail(u"could not write /etc/default/%1"_s.arg(a.value(u"name"_s).toString()));
     }
     if (s.op == u"apt-install"_s) {
         QStringList pk;
@@ -784,44 +813,122 @@ bool writeLauncher(const Manifest &m, const QString &group, QString *err)
 
 } // namespace
 
-Result Engine::install(const QString &appId, const QString &group, const Progress &p)
+namespace {
+
+// Is any process of this app running in the container? Every launch sets HOME to the app's own home, so a process
+// whose environment says so belongs to the app. false and *known=false when that could not be found out (an unknown
+// answer is never reported as "not running").
+bool appRunning(const Engine::Impl *d, const QString &ct, const QString &appId, bool *known)
 {
-    d->prog = p;
-    d->stepN = 0;
-    Manifest m;
-    QString err;
-    if (!findManifest(*this, appId, &m, &err))
-        return Result::fail(err.startsWith(u"no app"_s) ? ExitNotFound : ExitRefused, err);
-    if (!validGroupName(group))
-        return Result::fail(ExitUsage, u"bad group name"_s);
-    const QString arch = QSysInfo::currentCpuArchitecture() == u"x86_64"_s ? u"amd64"_s : u"arm64"_s;
-    if (!m.arch.contains(arch))
-        return Result::fail(ExitRefused, u"%1 is not available for this machine (%2)"_s.arg(m.name, arch));
-    if (m.grants.camera || m.grants.microphone)
-        return Result::fail(ExitRefused, u"camera and microphone grants are not supported yet"_s);
-    QJsonObject idx = readIndex();
-    QJsonObject apps = idx.value(u"apps"_s).toObject();
-    if (apps.contains(appId))
-        return Result::fail(ExitConflict, u"%1 is already installed in the group %2"_s.arg(m.name, apps.value(appId).toObject().value(u"group"_s).toString()));
-    d->stepOf = 2 + int(m.recipe.size()) + 2;
-    d->step(u"Checking the %1 app group"_s.arg(group));
-    bool created = false;
-    if (group != QLatin1String(kDefaultGroup)) {
-        bool ok = false, exists = false;
-        d->containerInfo(containerFor(group), &exists, &ok);
-        if (!ok)
-            return Result::fail(ExitIncus, u"cannot talk to incus"_s);
-        if (!exists)
-            return Result::fail(ExitNotFound, u"there is no app group called %1 (create it with: taos-appgroups group create %1)"_s.arg(group));
+    const QString home = kHomeBase + u"/"_s + appId;
+    const QString script = u"for p in /proc/[0-9]*; do if tr '\\0' '\\n' < $p/environ 2>/dev/null | grep -qx 'HOME=%1'; then echo $p; fi; done"_s.arg(home);
+    const Proc r = d->exec(ct, {u"sh"_s, u"-c"_s, script});
+    *known = r.ok();
+    return r.ok() && !r.out.trimmed().isEmpty();
+}
+
+QString packageVersion(const Engine::Impl *d, const QString &ct, const QString &package)
+{
+    if (package.isEmpty())
+        return {};
+    const Proc r = d->exec(ct, {u"dpkg-query"_s, u"-W"_s, u"-f=${Version}"_s, package});
+    return r.ok() ? r.out.trimmed() : QString();
+}
+
+QString debSha(const Manifest &m)
+{
+    for (const Step &s : m.recipe)
+        if (s.op == u"download-deb"_s)
+            return s.args.value(u"sha256"_s).toString();
+    return {};
+}
+
+bool hasOp(const Manifest &m, const QString &op)
+{
+    for (const Step &s : m.recipe)
+        if (s.op == op)
+            return true;
+    return false;
+}
+
+// Undo the recipe's files and packages in a container (not the app's data, launcher or index entry). `apps` is the index
+// as it stands, with this app already pointing at its new group, so packages other apps of the group share are kept.
+Result uninstallRecipe(Engine::Impl *d, const QString &ct, const Manifest &m, const QString &group, const QJsonObject &apps, const QString &log)
+{
+    const QString appId = m.id;
+    const QStringList env = {u"DEBIAN_FRONTEND=noninteractive"_s};
+    for (const Step &s : m.recipe) {
+        Proc r;
+        if (s.op == u"apt-install"_s) {
+            QStringList pk;
+            for (const QJsonValue &v : s.args.value(u"packages"_s).toArray()) {
+                const QString name = v.toString();
+                bool shared = basePackages().contains(name);
+                for (auto it = apps.begin(); it != apps.end() && !shared; ++it) {
+                    if (it.key() == appId || it.value().toObject().value(u"group"_s).toString() != group)
+                        continue;
+                    for (const QJsonValue &st : it.value().toObject().value(u"manifest"_s).toObject().value(u"recipe"_s).toArray())
+                        if (st.toObject().value(u"packages"_s).toArray().contains(v))
+                            shared = true;
+                }
+                if (!shared)
+                    pk << name;
+            }
+            if (pk.isEmpty())
+                continue;
+            // Mark the app's packages as automatic and let apt remove what nothing else needs. Removing them by
+            // name would also remove anything that depends on them, including the base graphics stack.
+            r = d->exec(ct, QStringList{u"apt-mark"_s, u"auto"_s} + pk, log, env);
+            if (r.ok())
+                r = d->exec(ct, {u"apt-get"_s, u"autoremove"_s, u"-y"_s, u"--purge"_s}, log, env);
+            if (!r.ok())
+                return Result::fail(ExitStep, u"removing the packages failed (log: %1)"_s.arg(log));
+        } else if (s.op == u"download-deb"_s) {
+            r = d->exec(ct, {u"apt-get"_s, u"remove"_s, u"-y"_s, u"--purge"_s, s.args.value(u"package"_s).toString()}, log, env);
+            if (r.ok())
+                r = d->exec(ct, {u"apt-get"_s, u"autoremove"_s, u"-y"_s, u"--purge"_s}, log, env);
+            if (!r.ok())
+                return Result::fail(ExitStep, u"removing the package failed (log: %1)"_s.arg(log));
+        } else if (s.op == u"download-tar"_s) {
+            d->exec(ct, {u"rm"_s, u"-rf"_s, s.args.value(u"dest"_s).toString()}, log);
+        } else if (s.op == u"symlink"_s) {
+            d->exec(ct, {u"rm"_s, u"-f"_s, s.args.value(u"link"_s).toString()}, log);
+        } else if (s.op == u"etc-default"_s) {
+            d->exec(ct, {u"rm"_s, u"-f"_s, u"/etc/default/"_s + s.args.value(u"name"_s).toString()}, log);
+        } else if (s.op == u"apt-source"_s) {
+            bool used = false;
+            for (auto it = apps.begin(); it != apps.end(); ++it) {
+                if (it.key() == appId || it.value().toObject().value(u"group"_s).toString() != group)
+                    continue;
+                for (const QJsonValue &st : it.value().toObject().value(u"manifest"_s).toObject().value(u"recipe"_s).toArray())
+                    if (st.toObject().value(u"op"_s).toString() == u"apt-source"_s
+                        && st.toObject().value(u"name"_s).toString() == s.args.value(u"name"_s).toString())
+                        used = true;
+            }
+            if (!used) {
+                d->exec(ct, {u"rm"_s, u"-f"_s, sourcesFile(s.args.value(u"name"_s).toString()), keyFile(s.args.value(u"name"_s).toString())}, log);
+                d->exec(ct, {u"apt-get"_s, u"update"_s}, log, env);
+            }
+        }
     }
-    if (Result r = ensureGroupImpl(d, group, &created); !r.ok)
+    return {};
+}
+
+} // namespace
+
+// Everything an install does inside the container, up to a verified binary: grants, recipe, checks, the app home. No
+// launcher and no index entry (the caller writes those once it is satisfied), so move can stage an app in a second
+// group without the app ever being listed twice.
+Result Engine::runRecipe(const Manifest &m, const QString &group, bool *created)
+{
+    if (Result r = ensureGroupImpl(d, group, created); !r.ok)
         return r;
     const QString ct = containerFor(group);
     d->step(u"Setting up access for %1"_s.arg(m.name));
     // Downloads need the network whether or not the finished app does.
-    if (Result r = applyGrants(d, ct, unionGrants(group, appId, &m.grants), true); !r.ok)
+    if (Result r = applyGrants(d, ct, unionGrants(group, m.id, &m.grants), true); !r.ok)
         return r;
-    const QString log = dataRoot() + u"/logs/install-"_s + appId + u".log"_s;
+    const QString log = dataRoot() + u"/logs/install-"_s + m.id + u".log"_s;
     QDir().mkpath(QFileInfo(log).absolutePath());
     QFile::remove(log);
     for (const Step &s : m.recipe) {
@@ -841,14 +948,70 @@ Result Engine::install(const QString &appId, const QString &group, const Progres
         applyGrants(d, ct, unionGrants(group), false);
         return Result::fail(ExitStep, u"the install finished but %1 is not there (log: %2)"_s.arg(m.binary, log));
     }
-    d->exec(ct, {u"install"_s, u"-d"_s, u"-o"_s, u"1000"_s, u"-g"_s, u"1000"_s, kHomeBase + u"/"_s + appId});
+    d->exec(ct, {u"install"_s, u"-d"_s, u"-o"_s, u"1000"_s, u"-g"_s, u"1000"_s, kHomeBase + u"/"_s + m.id});
+    return {};
+}
+
+Result Engine::install(const QString &appId, const QString &group, const Progress &p, const InstallOptions &opt)
+{
+    d->prog = p;
+    d->stepN = 0;
+    Manifest m;
+    QString err;
+    if (!findManifest(*this, appId, &m, &err))
+        return Result::fail(err.startsWith(u"no app"_s) ? ExitNotFound : ExitRefused, err);
+    if (!validGroupName(group))
+        return Result::fail(ExitUsage, u"bad group name"_s);
+    const QString arch = QSysInfo::currentCpuArchitecture() == u"x86_64"_s ? u"amd64"_s : u"arm64"_s;
+    if (!m.arch.contains(arch))
+        return Result::fail(ExitRefused, u"%1 is not available for this machine (%2)"_s.arg(m.name, arch));
+    if (m.grants.camera || m.grants.microphone)
+        return Result::fail(ExitRefused, u"camera and microphone grants are not supported yet"_s);
+    // The licence gate comes before anything is created or downloaded.
+    QJsonObject accepted;
+    if (m.licenceRequired) {
+        if (opt.acceptLicence != appId) {
+            Result r = Result::fail(ExitLicence, u"%1 needs you to accept its licence (%2) before it is installed"_s.arg(m.name, m.licenceUrl));
+            r.data[u"licence"_s] = QJsonObject{{u"app"_s, appId}, {u"name"_s, m.licence}, {u"url"_s, m.licenceUrl}};
+            return r;
+        }
+        accepted = QJsonObject{{u"name"_s, m.licence}, {u"url"_s, m.licenceUrl},
+                               {u"accepted_at"_s, QDateTime::currentDateTimeUtc().toString(Qt::ISODate)},
+                               {u"accepted_by"_s, opt.acceptedBy.isEmpty() ? qEnvironmentVariable("USER") : opt.acceptedBy}};
+    }
+    QJsonObject idx = readIndex();
+    QJsonObject apps = idx.value(u"apps"_s).toObject();
+    if (apps.contains(appId))
+        return Result::fail(ExitConflict, u"%1 is already installed in the group %2"_s.arg(m.name, apps.value(appId).toObject().value(u"group"_s).toString()));
+    d->stepOf = 2 + int(m.recipe.size()) + 2;
+    d->step(u"Checking the %1 app group"_s.arg(group));
+    bool created = false;
+    if (group != QLatin1String(kDefaultGroup)) {
+        bool ok = false, exists = false;
+        d->containerInfo(containerFor(group), &exists, &ok);
+        if (!ok)
+            return Result::fail(ExitIncus, u"cannot talk to incus"_s);
+        if (!exists)
+            return Result::fail(ExitNotFound, u"there is no app group called %1 (create it with: taos-appgroups group create %1)"_s.arg(group));
+    }
+    if (Result r = runRecipe(m, group, &created); !r.ok)
+        return r;
+    const QString ct = containerFor(group);
     d->step(u"Adding %1 to the launcher"_s.arg(m.name));
     if (!writeLauncher(m, group, &err))
         return Result::fail(ExitFailed, err);
-    apps[appId] = QJsonObject{{u"group"_s, group},
-                              {u"target"_s, QJsonObject{{u"kind"_s, u"group"_s}, {u"id"_s, group}}},
-                              {u"installed_at"_s, QDateTime::currentDateTimeUtc().toString(Qt::ISODate)},
-                              {u"manifest"_s, m.raw}};
+    QJsonObject rec{{u"group"_s, group},
+                    {u"target"_s, QJsonObject{{u"kind"_s, u"group"_s}, {u"id"_s, group}}},
+                    {u"installed_at"_s, QDateTime::currentDateTimeUtc().toString(Qt::ISODate)},
+                    {u"manifest"_s, m.raw}};
+    if (!accepted.isEmpty())
+        rec[u"licence_accepted"_s] = accepted;
+    const QString ver = packageVersion(d, ct, m.package);
+    if (!ver.isEmpty())
+        rec[u"installed_version"_s] = ver;
+    if (!debSha(m).isEmpty())
+        rec[u"installed_sha256"_s] = debSha(m);
+    apps[appId] = rec;
     idx[u"apps"_s] = apps;
     if (!writeIndex(idx, &err))
         return Result::fail(ExitFailed, err);
@@ -861,6 +1024,7 @@ Result Engine::install(const QString &appId, const QString &group, const Progres
     r.data[u"launcher"_s] = desktopPath(appId);
     r.data[u"desktop_id"_s] = u"taos-appgroups-"_s + appId;
     r.data[u"window_app_id"_s] = m.windowAppId;
+    r.data[u"version"_s] = ver;
     return r;
 }
 
@@ -890,53 +1054,8 @@ Result Engine::remove(const QString &appId, bool purgeData, const Progress &p)
             d->incusRun({u"start"_s, ct}, {}, 120000);
         const QString log = dataRoot() + u"/logs/remove-"_s + appId + u".log"_s;
         QDir().mkpath(QFileInfo(log).absolutePath());
-        const QStringList env = {u"DEBIAN_FRONTEND=noninteractive"_s};
-        for (const Step &s : m.recipe) {
-            Proc r;
-            if (s.op == u"apt-install"_s) {
-                QStringList pk;
-                for (const QJsonValue &v : s.args.value(u"packages"_s).toArray()) {
-                    const QString name = v.toString();
-                    bool shared = basePackages().contains(name);
-                    for (auto it = apps.begin(); it != apps.end() && !shared; ++it) {
-                        if (it.key() == appId || it.value().toObject().value(u"group"_s).toString() != group)
-                            continue;
-                        for (const QJsonValue &st : it.value().toObject().value(u"manifest"_s).toObject().value(u"recipe"_s).toArray())
-                            if (st.toObject().value(u"packages"_s).toArray().contains(v))
-                                shared = true;
-                    }
-                    if (!shared)
-                        pk << name;
-                }
-                if (pk.isEmpty())
-                    continue;
-                // Mark the app's packages as automatic and let apt remove what nothing else needs. Removing them by
-                // name would also remove anything that depends on them, including the base graphics stack.
-                r = d->exec(ct, QStringList{u"apt-mark"_s, u"auto"_s} + pk, log, env);
-                if (r.ok())
-                    r = d->exec(ct, {u"apt-get"_s, u"autoremove"_s, u"-y"_s, u"--purge"_s}, log, env);
-                if (!r.ok())
-                    return Result::fail(ExitStep, u"removing the packages failed (log: %1)"_s.arg(log));
-            } else if (s.op == u"download-tar"_s) {
-                d->exec(ct, {u"rm"_s, u"-rf"_s, s.args.value(u"dest"_s).toString()}, log);
-            } else if (s.op == u"symlink"_s) {
-                d->exec(ct, {u"rm"_s, u"-f"_s, s.args.value(u"link"_s).toString()}, log);
-            } else if (s.op == u"apt-source"_s) {
-                bool used = false;
-                for (auto it = apps.begin(); it != apps.end(); ++it) {
-                    if (it.key() == appId || it.value().toObject().value(u"group"_s).toString() != group)
-                        continue;
-                    for (const QJsonValue &st : it.value().toObject().value(u"manifest"_s).toObject().value(u"recipe"_s).toArray())
-                        if (st.toObject().value(u"op"_s).toString() == u"apt-source"_s
-                            && st.toObject().value(u"name"_s).toString() == s.args.value(u"name"_s).toString())
-                            used = true;
-                }
-                if (!used) {
-                    d->exec(ct, {u"rm"_s, u"-f"_s, sourcesFile(s.args.value(u"name"_s).toString()), keyFile(s.args.value(u"name"_s).toString())}, log);
-                    d->exec(ct, {u"apt-get"_s, u"update"_s}, log, env);
-                }
-            }
-        }
+        if (Result r = uninstallRecipe(d, ct, m, group, apps, log); !r.ok)
+            return r;
         if (purgeData)
             d->exec(ct, {u"rm"_s, u"-rf"_s, kHomeBase + u"/"_s + appId});
     }
@@ -952,6 +1071,350 @@ Result Engine::remove(const QString &appId, bool purgeData, const Progress &p)
     Result r;
     r.data[u"id"_s] = appId;
     r.data[u"data_kept"_s] = !purgeData;
+    return r;
+}
+
+// ------------------------------------------------------------------ move
+
+namespace {
+
+// tar from one container straight into another, process to process (no buffering through this program).
+Result copyData(const Engine::Impl *d, const QString &fromCt, const QString &toCt, const QString &home, const QStringList &rels, const QString &appName)
+{
+    QProcess src, dst;
+    src.setProcessEnvironment(d->penv);
+    dst.setProcessEnvironment(d->penv);
+    src.setStandardOutputProcess(&dst);
+    dst.setProcessChannelMode(QProcess::MergedChannels);
+    src.setStandardErrorFile(QProcess::nullDevice());
+    dst.start(d->incus, QStringList{u"exec"_s, toCt, u"--"_s, u"tar"_s, u"-C"_s, home, u"-xpf"_s, u"-"_s, u"--numeric-owner"_s});
+    src.start(d->incus, QStringList{u"exec"_s, fromCt, u"--"_s, u"tar"_s, u"-C"_s, home, u"-cf"_s, u"-"_s, u"--numeric-owner"_s} + rels);
+    if (!src.waitForStarted(5000) || !dst.waitForStarted(5000))
+        return Result::fail(ExitIncus, u"cannot start incus to copy %1's data"_s.arg(appName));
+    src.waitForFinished(-1);
+    dst.waitForFinished(-1);
+    if (src.exitStatus() != QProcess::NormalExit || src.exitCode() != 0 || dst.exitStatus() != QProcess::NormalExit || dst.exitCode() != 0)
+        return Result::fail(ExitStep, u"copying %1's data failed: %2"_s.arg(appName, QString::fromUtf8(dst.readAll()).trimmed().left(200)));
+    return {};
+}
+
+// "<file count> <bytes>" of the given paths under the home, or empty when it could not be measured.
+QString dataFingerprint(const Engine::Impl *d, const QString &ct, const QString &home, const QStringList &rels)
+{
+    const Proc r = d->exec(ct, QStringList{u"sh"_s, u"-c"_s, u"cd \"$1\" && shift && find \"$@\" -type f -printf '%s\\n' | awk '{n++;s+=$1} END{print n+0, s+0}'"_s, u"sh"_s, home} + rels);
+    return r.ok() ? r.out.trimmed() : QString();
+}
+
+void cleanTargetHome(const Engine::Impl *d, const QString &ct, const QString &home)
+{
+    d->exec(ct, {u"find"_s, home, u"-mindepth"_s, u"1"_s, u"-maxdepth"_s, u"1"_s, u"-exec"_s, u"rm"_s, u"-rf"_s, u"{}"_s, u"+"_s});
+}
+
+} // namespace
+
+Result Engine::move(const QString &appId, const QString &toGroup, const Progress &p)
+{
+    d->prog = p;
+    d->stepN = 0;
+    QJsonObject idx = readIndex();
+    QJsonObject apps = idx.value(u"apps"_s).toObject();
+    if (!apps.contains(appId))
+        return Result::fail(ExitNotFound, u"%1 is not installed"_s.arg(appId));
+    const QJsonObject rec = apps.value(appId).toObject();
+    Manifest m;
+    QString err;
+    if (!parseManifest(QJsonDocument(rec.value(u"manifest"_s).toObject()).toJson(), &m, &err))
+        return Result::fail(ExitRefused, err);
+    d->stepOf = 8;
+    if (!validGroupName(toGroup))
+        return Result::fail(ExitUsage, u"bad group name"_s);
+    const QString from = rec.value(u"group"_s).toString();
+    if (from == toGroup)
+        return Result::fail(ExitConflict, u"%1 is already in the group %2"_s.arg(m.name, toGroup));
+    if (m.licenceRequired && rec.value(u"licence_accepted"_s).toObject().isEmpty())
+        return Result::fail(ExitLicence, u"%1 has no recorded licence acceptance; accept it again by installing it first"_s.arg(m.name));
+    const QString srcCt = containerFor(from), dstCt = containerFor(toGroup);
+    d->step(u"Checking %1 can be moved"_s.arg(m.name));
+    bool ok = false, sExists = false, tExists = false;
+    QJsonObject sc = d->containerInfo(srcCt, &sExists, &ok);
+    if (!ok)
+        return Result::fail(ExitIncus, u"cannot talk to incus"_s);
+    const QJsonObject tc = d->containerInfo(dstCt, &tExists, &ok);
+    if (!tExists || !ownedGroup(tc))
+        return Result::fail(ExitNotFound, u"there is no app group called %1 (create it first)"_s.arg(toGroup));
+    if (!sExists || !ownedGroup(sc))
+        return Result::fail(ExitNotFound, u"the app group %1 that holds %2 does not exist"_s.arg(from, m.name));
+    if (sc.value(u"status"_s).toString() != u"Running"_s && !d->incusRun({u"start"_s, srcCt}, {}, 120000).ok())
+        return Result::fail(ExitIncus, u"cannot start %1"_s.arg(srcCt));
+    bool known = false;
+    if (appRunning(d, srcCt, appId, &known))
+        return Result::fail(ExitConflict, u"%1 is running. Close it and try again; nothing was changed."_s.arg(m.name));
+    if (!known)
+        return Result::fail(ExitIncus, u"could not tell whether %1 is running, so it was not moved; nothing was changed"_s.arg(m.name));
+    bool created = false;
+    if (Result r = ensureGroupImpl(d, toGroup, &created); !r.ok)
+        return r;
+    const QString home = kHomeBase + u"/"_s + appId;
+    const Proc occupied = d->exec(dstCt, {u"find"_s, home, u"-mindepth"_s, u"1"_s, u"-maxdepth"_s, u"1"_s, u"-print"_s, u"-quit"_s});
+    if (!occupied.out.trimmed().isEmpty())
+        return Result::fail(ExitConflict, u"the group %1 already holds data for %2; it was not overwritten and nothing was changed"_s.arg(toGroup, m.name));
+    // Which of the app's data paths exist in the source: the manifest's list, or the whole home.
+    const bool wholeHome = m.data.isEmpty();
+    QStringList rels;
+    if (wholeHome) {
+        rels << u"."_s;
+    } else {
+        for (const QString &r : m.data)
+            if (d->exec(srcCt, {u"test"_s, u"-e"_s, home + u"/"_s + r}).ok())
+                rels << r;
+    }
+    // 1. the app itself, staged in the target (not listed, no launcher)
+    d->step(u"Installing %1 in %2"_s.arg(m.name, toGroup));
+    if (Result r = runRecipe(m, toGroup, &created); !r.ok)
+        return r;
+    // 2. its data
+    d->step(u"Copying %1's data"_s.arg(m.name));
+    if (!rels.isEmpty()) {
+        if (Result r = copyData(d, srcCt, dstCt, home, rels, m.name); !r.ok) {
+            cleanTargetHome(d, dstCt, home);
+            return r;
+        }
+        const QString a = dataFingerprint(d, srcCt, home, rels), b = dataFingerprint(d, dstCt, home, rels);
+        if (a.isEmpty() || b.isEmpty() || a != b) {
+            cleanTargetHome(d, dstCt, home);
+            return Result::fail(ExitStep, u"the copy of %1's data does not match the original (%2 against %3); nothing was changed"_s.arg(m.name, a.isEmpty() ? u"unknown"_s : a, b.isEmpty() ? u"unknown"_s : b));
+        }
+    }
+    // 3. it can start there: the program is in place and every library it needs is found
+    d->step(u"Checking %1 can start in %2"_s.arg(m.name, toGroup));
+    const Proc ldd = d->exec(dstCt, {u"ldd"_s, m.binary});
+    if (!d->exec(dstCt, {u"test"_s, u"-x"_s, m.binary}).ok() || ldd.out.contains(u"not found"_s)) {
+        cleanTargetHome(d, dstCt, home);
+        return Result::fail(ExitStep, u"%1 would not start in %2 (a program or library is missing); nothing was changed. %3"_s.arg(m.name, toGroup, ldd.out.trimmed().left(200)));
+    }
+    // 4. switch: index and launcher
+    d->step(u"Switching %1 to %2"_s.arg(m.name, toGroup));
+    QJsonObject newRec = rec;
+    newRec[u"group"_s] = toGroup;
+    newRec[u"target"_s] = QJsonObject{{u"kind"_s, u"group"_s}, {u"id"_s, toGroup}};
+    newRec[u"previous_group"_s] = from;
+    newRec[u"moved_at"_s] = QDateTime::currentDateTimeUtc().toString(Qt::ISODate);
+    apps[appId] = newRec;
+    idx[u"apps"_s] = apps;
+    if (!writeIndex(idx, &err)) {
+        cleanTargetHome(d, dstCt, home);
+        return Result::fail(ExitFailed, err);
+    }
+    if (!writeLauncher(m, toGroup, &err)) {
+        QJsonObject back = readIndex();
+        QJsonObject bapps = back.value(u"apps"_s).toObject();
+        bapps[appId] = rec;
+        back[u"apps"_s] = bapps;
+        QString e2;
+        writeIndex(back, &e2);
+        return Result::fail(ExitFailed, err);
+    }
+    applyGrants(d, dstCt, unionGrants(toGroup), false);
+    // 5. the old data is renamed, never deleted
+    d->step(u"Keeping a backup of the old data"_s);
+    const QString stamp = QDateTime::currentDateTime().toString(u"yyyyMMdd-HHmmss"_s);
+    const QString backup = kHomeBase + u"/.backup/"_s + appId + u"-"_s + stamp;
+    Proc bk;
+    if (wholeHome)
+        bk = d->exec(srcCt, {u"sh"_s, u"-c"_s, u"mkdir -p \"$1\" && find \"$2\" -mindepth 1 -maxdepth 1 -exec mv -t \"$1\" {} +"_s, u"sh"_s, backup, home});
+    else
+        bk = d->exec(srcCt, QStringList{u"sh"_s, u"-c"_s, u"set -e; b=$1; h=$2; shift 2; mkdir -p \"$b\"; cd \"$h\"; for r in \"$@\"; do mkdir -p \"$b/$(dirname \"$r\")\"; mv \"$r\" \"$b/$r\"; done"_s, u"sh"_s, backup, home} + rels);
+    Result r;
+    r.data[u"id"_s] = appId;
+    r.data[u"group"_s] = toGroup;
+    r.data[u"from"_s] = from;
+    r.data[u"container"_s] = dstCt;
+    r.data[u"launcher"_s] = desktopPath(appId);
+    if (!bk.ok()) {
+        r.ok = false;
+        r.exit = ExitStep;
+        r.error = u"%1 now lives in %2, but its old data could not be set aside in %3 (it is still there, untouched); the old copy of the app was not removed"_s.arg(m.name, toGroup, from);
+        return r;
+    }
+    if (!rels.isEmpty()) {
+        QJsonObject cur = readIndex();
+        QJsonArray bks = cur.value(u"backups"_s).toArray();
+        bks.append(QJsonObject{{u"app"_s, appId}, {u"group"_s, from}, {u"stamp"_s, stamp}, {u"path"_s, backup},
+                               {u"created_at"_s, QDateTime::currentDateTimeUtc().toString(Qt::ISODate)}});
+        cur[u"backups"_s] = bks;
+        writeIndex(cur, &err);
+        r.data[u"backup"_s] = backup;
+    }
+    // 6. the old copy of the app
+    d->step(u"Removing the old copy of %1 from %2"_s.arg(m.name, from));
+    const QString log = dataRoot() + u"/logs/move-"_s + appId + u".log"_s;
+    QDir().mkpath(QFileInfo(log).absolutePath());
+    if (Result u = uninstallRecipe(d, srcCt, m, from, apps, log); !u.ok) {
+        r.ok = false;
+        r.exit = u.exit;
+        r.error = u"%1 now lives in %2, but removing the old copy from %3 failed: %4"_s.arg(m.name, toGroup, from, u.error);
+        return r;
+    }
+    applyGrants(d, srcCt, unionGrants(from), false);
+    return r;
+}
+
+Result Engine::backups()
+{
+    Result r;
+    r.data[u"backups"_s] = readIndex().value(u"backups"_s).toArray();
+    return r;
+}
+
+Result Engine::backupDelete(const QString &appId, const QString &stamp)
+{
+    if (!QRegularExpression(u"^[a-z][a-z0-9-]{1,40}$"_s).match(appId).hasMatch() || !QRegularExpression(u"^\\d{8}-\\d{6}$"_s).match(stamp).hasMatch())
+        return Result::fail(ExitUsage, u"usage: backups delete <app-id> <yyyymmdd-hhmmss>"_s);
+    QJsonObject idx = readIndex();
+    QJsonArray bks = idx.value(u"backups"_s).toArray(), keep;
+    QJsonObject found;
+    for (const QJsonValue &v : bks) {
+        const QJsonObject b = v.toObject();
+        if (b.value(u"app"_s).toString() == appId && b.value(u"stamp"_s).toString() == stamp)
+            found = b;
+        else
+            keep.append(v);
+    }
+    if (found.isEmpty())
+        return Result::fail(ExitNotFound, u"no such backup"_s);
+    const QString ct = containerFor(found.value(u"group"_s).toString());
+    bool ok = false, exists = false;
+    const QJsonObject c = d->containerInfo(ct, &exists, &ok);
+    if (!ok)
+        return Result::fail(ExitIncus, u"cannot talk to incus"_s);
+    if (exists) {
+        if (c.value(u"status"_s).toString() != u"Running"_s)
+            d->incusRun({u"start"_s, ct}, {}, 120000);
+        if (!d->exec(ct, {u"rm"_s, u"-rf"_s, found.value(u"path"_s).toString()}).ok())
+            return Result::fail(ExitStep, u"could not delete the backup"_s);
+    }
+    idx[u"backups"_s] = keep;
+    QString err;
+    if (!writeIndex(idx, &err))
+        return Result::fail(ExitFailed, err);
+    Result r;
+    r.data[u"deleted"_s] = found;
+    return r;
+}
+
+// ------------------------------------------------------------------ update
+
+Result Engine::update(const QString &appId, bool checkOnly, const Progress &p)
+{
+    d->prog = p;
+    d->stepN = 0;
+    d->stepOf = 4;
+    QJsonObject idx = readIndex();
+    QJsonObject apps = idx.value(u"apps"_s).toObject();
+    if (!apps.contains(appId))
+        return Result::fail(ExitNotFound, u"%1 is not installed"_s.arg(appId));
+    QJsonObject rec = apps.value(appId).toObject();
+    Manifest m;
+    QString err;
+    if (!parseManifest(QJsonDocument(rec.value(u"manifest"_s).toObject()).toJson(), &m, &err))
+        return Result::fail(ExitRefused, err);
+    const bool feed = !m.updateFeedUrl.isEmpty() && hasOp(m, u"download-deb"_s);
+    const bool apt = !feed && !m.package.isEmpty() && (hasOp(m, u"apt-source"_s) || hasOp(m, u"apt-install"_s));
+    if (!feed && !apt)
+        return Result::fail(ExitRefused, u"%1 has no update path: it is updated by a new catalogue entry"_s.arg(m.name));
+    const QString ct = containerFor(rec.value(u"group"_s).toString());
+    bool ok = false, exists = false;
+    const QJsonObject c = d->containerInfo(ct, &exists, &ok);
+    if (!ok)
+        return Result::fail(ExitIncus, u"cannot talk to incus"_s);
+    if (!exists)
+        return Result::fail(ExitNotFound, u"the app group %1 does not exist"_s.arg(rec.value(u"group"_s).toString()));
+    if (c.value(u"status"_s).toString() != u"Running"_s && !d->incusRun({u"start"_s, ct}, {}, 120000).ok())
+        return Result::fail(ExitIncus, u"cannot start %1"_s.arg(ct));
+    if (!checkOnly) {
+        bool known = false;
+        if (appRunning(d, ct, appId, &known))
+            return Result::fail(ExitConflict, u"%1 is running. Close it and try again; nothing was changed."_s.arg(m.name));
+        if (!known)
+            return Result::fail(ExitIncus, u"could not tell whether %1 is running, so it was not updated"_s.arg(m.name));
+    }
+    const QString log = dataRoot() + u"/logs/update-"_s + appId + u".log"_s;
+    QDir().mkpath(QFileInfo(log).absolutePath());
+    const QStringList env = {u"DEBIAN_FRONTEND=noninteractive"_s};
+    Result r;
+    r.data[u"id"_s] = appId;
+    const QString installedVersion = rec.value(u"installed_version"_s).toString(m.version);
+    r.data[u"installed_version"_s] = installedVersion;
+    if (feed) {
+        d->step(u"Asking the publisher for the current version"_s);
+        const Proc f = d->exec(ct, {u"curl"_s, u"-fsSL"_s, u"--retry"_s, u"3"_s, m.updateFeedUrl});
+        const QJsonObject doc = QJsonDocument::fromJson(f.out.toUtf8()).object();
+        const QString want = QSysInfo::currentCpuArchitecture() == u"x86_64"_s ? u"x64"_s : u"arm64"_s;
+        QJsonObject entry;
+        for (const QJsonValue &v : doc.value(u"downloads"_s).toArray()) {
+            const QJsonObject e = v.toObject();
+            if (e.value(u"platform"_s).toString() == u"linux"_s && e.value(u"arch"_s).toString() == want && e.value(u"type"_s).toString() == u"deb"_s)
+                entry = e;
+        }
+        QString why;
+        if (!f.ok() || entry.isEmpty() || !QRegularExpression(u"^[0-9a-f]{64}$"_s).match(entry.value(u"sha256"_s).toString()).hasMatch()
+            || !urlAllowed(entry.value(u"url"_s).toString(), &why) || doc.value(u"version"_s).toString().isEmpty())
+            return Result::fail(ExitStep, u"could not read a usable update feed from the publisher%1"_s.arg(why.isEmpty() ? QString() : u" ("_s + why + u")"_s));
+        const QString sha = entry.value(u"sha256"_s).toString();
+        const bool available = sha != rec.value(u"installed_sha256"_s).toString(debSha(m));
+        r.data[u"latest_version"_s] = doc.value(u"version"_s).toString();
+        r.data[u"update_available"_s] = available;
+        if (checkOnly || !available)
+            return r;
+        d->step(u"Downloading %1 %2"_s.arg(m.name, doc.value(u"version"_s).toString()));
+        const QString tmp = u"/var/tmp/taos-dl-"_s + appId;
+        if (!d->exec(ct, {u"curl"_s, u"-fL"_s, u"--retry"_s, u"3"_s, u"-o"_s, tmp, entry.value(u"url"_s).toString()}, log).ok())
+            return Result::fail(ExitStep, u"the download failed (log: %1)"_s.arg(log));
+        const Proc sum = d->exec(ct, {u"sha256sum"_s, tmp});
+        const QString got = sum.out.left(64);
+        if (!sum.ok() || got != sha) {
+            d->exec(ct, {u"rm"_s, u"-f"_s, tmp});
+            return Result::fail(ExitStep, u"the download does not match the checksum in the publisher's feed (got %1); it was deleted and not installed"_s.arg(got));
+        }
+        d->step(u"Installing the new version"_s);
+        const Proc ins = d->exec(ct, {u"apt-get"_s, u"install"_s, u"-y"_s, tmp}, log, env);
+        d->exec(ct, {u"rm"_s, u"-f"_s, tmp});
+        if (!ins.ok())
+            return Result::fail(ExitStep, u"installing the new version failed (log: %1)"_s.arg(log));
+        rec[u"installed_sha256"_s] = sha;
+    } else {
+        d->step(u"Asking the software source for the current version"_s);
+        if (!d->exec(ct, {u"apt-get"_s, u"update"_s}, log, env).ok())
+            return Result::fail(ExitStep, u"apt-get update failed (log: %1)"_s.arg(log));
+        const Proc pol = d->exec(ct, {u"apt-cache"_s, u"policy"_s, m.package});
+        QString inst, cand;
+        for (const QString &l : pol.out.split(u'\n')) {
+            const QString t = l.trimmed();
+            if (t.startsWith(u"Installed:"_s)) inst = t.mid(10).trimmed();
+            if (t.startsWith(u"Candidate:"_s)) cand = t.mid(10).trimmed();
+        }
+        if (!pol.ok() || cand.isEmpty() || cand == u"(none)"_s)
+            return Result::fail(ExitStep, u"could not find out the current version of %1"_s.arg(m.package));
+        const bool available = cand != inst;
+        r.data[u"installed_version"_s] = inst;
+        r.data[u"latest_version"_s] = cand;
+        r.data[u"update_available"_s] = available;
+        if (checkOnly || !available)
+            return r;
+        d->step(u"Installing the new version"_s);
+        if (!d->exec(ct, {u"apt-get"_s, u"install"_s, u"-y"_s, u"--no-install-recommends"_s, u"--only-upgrade"_s, m.package}, log, env).ok())
+            return Result::fail(ExitStep, u"the upgrade failed (log: %1)"_s.arg(log));
+    }
+    const QString ver = packageVersion(d, ct, m.package);
+    if (!ver.isEmpty())
+        rec[u"installed_version"_s] = ver;
+    rec[u"updated_at"_s] = QDateTime::currentDateTimeUtc().toString(Qt::ISODate);
+    apps[appId] = rec;
+    idx[u"apps"_s] = apps;
+    if (!writeIndex(idx, &err))
+        return Result::fail(ExitFailed, err);
+    r.data[u"installed_version"_s] = ver;
+    r.data[u"updated"_s] = true;
     return r;
 }
 
