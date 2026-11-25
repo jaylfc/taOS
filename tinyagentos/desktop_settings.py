@@ -114,3 +114,26 @@ class DesktopSettingsStore(BaseStore):
         """
         safe_key = f"pref:{namespace}"
         await self._set(user_id, safe_key, value)
+
+    async def export_all(self) -> dict:
+        """Every user's settings rows, keyed by user then row key (backup
+        export, #620).
+
+        Values are the stored JSON blobs parsed back to objects. The
+        ``pref:<namespace>`` keys keep their prefix so a future import can
+        restore each row verbatim.
+        """
+        assert self._db is not None
+        cursor = await self._db.execute(
+            "SELECT user_id, key, value FROM desktop_settings "
+            "ORDER BY user_id, key"
+        )
+        rows = await cursor.fetchall()
+        export: dict[str, dict] = {}
+        for user_id, key, value in rows:
+            try:
+                parsed = json.loads(value)
+            except (ValueError, TypeError):
+                parsed = value
+            export.setdefault(user_id, {})[key] = parsed
+        return export

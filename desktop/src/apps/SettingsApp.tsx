@@ -593,6 +593,8 @@ function BackupSection() {
   const [backupStatus, setBackupStatus] = useState<string | null>(null);
   const [creating, setCreating] = useState(false);
   const [restoreStatus, setRestoreStatus] = useState<string | null>(null);
+  const [exportStatus, setExportStatus] = useState<string | null>(null);
+  const [exporting, setExporting] = useState(false);
 
   const createBackup = async () => {
     setCreating(true);
@@ -608,6 +610,29 @@ function BackupSection() {
       setBackupStatus("Could not reach backup endpoint. API not available yet.");
     }
     setCreating(false);
+  };
+
+  const exportBundle = async () => {
+    setExporting(true);
+    setExportStatus(null);
+    try {
+      const res = await fetch("/api/settings/export");
+      if (res.ok) {
+        const blob = await res.blob();
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = url;
+        a.download = `taos-export-${Math.floor(Date.now() / 1000)}.json`;
+        a.click();
+        URL.revokeObjectURL(url);
+        setExportStatus("Export downloaded successfully.");
+      } else {
+        setExportStatus(`Export failed (${res.status}).`);
+      }
+    } catch {
+      setExportStatus("Could not reach export endpoint.");
+    }
+    setExporting(false);
   };
 
   const handleRestore = async (file: File) => {
@@ -650,6 +675,33 @@ function BackupSection() {
           {backupStatus && (
             <p className={`mt-2 text-xs ${backupStatus.includes("success") ? "text-emerald-400" : "text-amber-400"}`}>
               {backupStatus}
+            </p>
+          )}
+        </div>
+
+        <hr className="border-white/5" />
+
+        <div>
+          <h3 className="text-sm font-medium mb-2">Export Configuration Bundle</h3>
+          <p className="text-xs text-shell-text-tertiary mb-3">
+            Download a JSON bundle of configuration, agents, projects and
+            preferences. Secret values are never included — secret-bearing
+            fields are marked as redacted in the bundle and listed in its
+            manifest.
+          </p>
+          <p className="text-xs text-amber-400 mb-3">
+            Warning: this bundle contains every user&rsquo;s data on this
+            install — all accounts&rsquo; preferences and settings, not just
+            yours. Treat the downloaded file like a full backup of the
+            install and store it somewhere private.
+          </p>
+          <Button size="sm" onClick={exportBundle} disabled={exporting}>
+            <Download size={14} className={exporting ? "animate-bounce" : ""} />
+            {exporting ? "Exporting..." : "Export Bundle (JSON)"}
+          </Button>
+          {exportStatus && (
+            <p className={`mt-2 text-xs ${exportStatus.includes("success") ? "text-emerald-400" : "text-amber-400"}`}>
+              {exportStatus}
             </p>
           )}
         </div>

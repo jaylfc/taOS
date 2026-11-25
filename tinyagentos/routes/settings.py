@@ -18,7 +18,7 @@ from urllib.parse import urlparse
 import httpx
 import yaml
 from fastapi import APIRouter, Depends, HTTPException, Request, UploadFile
-from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi.responses import JSONResponse, Response, StreamingResponse
 from pydantic import BaseModel
 
 from tinyagentos.auto_update import PREF_NAMESPACE, is_valid_branch_name, resolve_tracked_branch
@@ -421,6 +421,48 @@ async def restore_backup(request: Request, file: UploadFile):
         except Exception:
             pass
     return {"status": "restored", "message": "Backup restored successfully"}
+
+
+@router.get("/api/settings/export")
+async def export_settings_bundle(request: Request):
+    """Download the structured backup/export bundle (#620, slice 1).
+
+    Unlike ``POST /api/backup`` -- a raw tarball of data-dir files,
+    config.yaml included verbatim -- this bundle is built to be kept and
+    shared: secret values never appear in it. Secret-bearing fields carry
+    the redaction marker instead, the secrets store contributes only
+    name/category references, and the bundle's manifest lists every
+    redaction and omission. Admin-gated by this router's dependency, like
+    every handler in this module. Import/restore of a bundle is the
+    follow-on slice, not this endpoint. The serialized bundle is
+    size-capped (backup_export.MAX_EXPORT_BYTES): an oversized bundle is
+    refused with 413 rather than served unbounded.
+    """
+    from tinyagentos.backup_export import (
+        ExportTooLargeError,
+        build_export_bundle,
+        serialize_export_bundle,
+    )
+
+    state = request.app.state
+    bundle = await build_export_bundle(
+        config=state.config,
+        notifications=getattr(state, "notifications", None),
+        projects=getattr(state, "project_store", None),
+        desktop_settings=getattr(state, "desktop_settings", None),
+        secrets=getattr(state, "secrets", None),
+        agent_registry=getattr(state, "agent_registry", None),
+    )
+    try:
+        payload = serialize_export_bundle(bundle)
+    except ExportTooLargeError as exc:
+        return JSONResponse({"error": str(exc)}, status_code=413)
+    filename = f"taos-export-{int(time.time())}.json"
+    return Response(
+        content=payload,
+        media_type="application/json",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
 
 
 class BackupSchedule(BaseModel):
