@@ -1,0 +1,3 @@
+### Added
+
+- **Chat: new-chat button and session selector for agent conversations (#2123)** — a DM with an agent is now one of possibly several conversation sessions: the conversation header gains a selector listing previous conversations with that agent (most recent first, titled from the first user message, with the model the session is bound to) and a **New chat** button that starts a fresh conversation bound to the agent's current model without discarding the old one. Backed by `GET`/`POST /api/chat/agents/{slug}/conversations`; creating a session is a pure controller operation, so a conversation stuck on a broken model is escapable from the UI with no operator intervention.

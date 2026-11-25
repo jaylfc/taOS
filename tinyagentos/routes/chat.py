@@ -571,6 +571,94 @@ def channel_read_denied(request: Request, channel: dict) -> JSONResponse | None:
     return JSONResponse({"error": "forbidden: not a member"}, status_code=403)
 
 
+# ── Agent conversation sessions (#2123) ─────────────────────────────
+#
+# A conversation session with an agent is a DM channel between the
+# user and that agent. Deploy/import creates the first one; "New chat"
+# creates additional ones. Nothing here talks to the agent: starting a
+# fresh conversation is a pure controller operation, so it works even
+# when the agent cannot reply (the stuck-conversation case). Previous
+# sessions are kept, never discarded. Replies still route back to the
+# channel the user wrote in, via the bridge's trace -> origin-channel
+# lookup in bridge_session.record_reply.
+
+def _find_config_agent(request: Request, slug: str) -> dict | None:
+    config = getattr(request.app.state, "config", None)
+    agents = getattr(config, "agents", None) or []
+    return next((a for a in agents if a.get("name") == slug), None)
+
+
+def _serialize_conversation(channel: dict, agent: dict, title: str | None) -> dict:
+    settings = channel.get("settings") or {}
+    return {
+        "id": channel["id"],
+        "agent": agent["name"],
+        "title": title or "New conversation",
+        # The model this session started under (stamped at creation);
+        # unstamped legacy sessions report the agent's current model.
+        "model": settings.get("model") or agent.get("model"),
+        "created_at": channel.get("created_at"),
+        "last_message_at": channel.get("last_message_at"),
+    }
+
+
+async def _agent_conversations(request: Request, agent: dict) -> list[dict]:
+    slug = agent["name"]
+    ch_store = request.app.state.chat_channels
+    channels = await ch_store.list_channels(member_id=slug)
+    convs = [
+        c for c in channels
+        if c.get("type") == "dm"
+        and "user" in (c.get("members") or [])
+        and caller_can_read_channel(request, c)
+    ]
+    titles: dict[str, dict] = {}
+    if convs:
+        msg_store = request.app.state.chat_messages
+        titles = await msg_store.first_user_previews([c["id"] for c in convs])
+    out = [
+        _serialize_conversation(c, agent, (titles.get(c["id"]) or {}).get("text"))
+        for c in convs
+    ]
+    out.sort(
+        key=lambda c: c["last_message_at"] or c["created_at"] or 0,
+        reverse=True,
+    )
+    return out
+
+
+@router.get("/api/chat/agents/{slug}/conversations")
+async def list_agent_conversations(request: Request, slug: str):
+    agent = _find_config_agent(request, slug)
+    if agent is None:
+        return JSONResponse({"error": "agent not found"}, status_code=404)
+    conversations = await _agent_conversations(request, agent)
+    return {"conversations": conversations}
+
+
+@router.post("/api/chat/agents/{slug}/conversations")
+async def create_agent_conversation(request: Request, slug: str):
+    agent = _find_config_agent(request, slug)
+    if agent is None:
+        return JSONResponse({"error": "agent not found"}, status_code=404)
+    ch_store = request.app.state.chat_channels
+    settings: dict = {}
+    if agent.get("model"):
+        # Stamp the model this session starts under, so a session left
+        # on a stale/broken model is visible as such in the selector.
+        settings["model"] = agent["model"]
+    display_name = agent.get("display_name") or slug
+    channel = await ch_store.create_channel(
+        name=display_name,
+        type="dm",
+        created_by="user",
+        members=["user", slug],
+        description=f"Direct messages with {display_name}",
+        settings=settings,
+    )
+    return {"conversation": _serialize_conversation(channel, agent, None)}
+
+
 @router.get("/api/chat/channels")
 async def list_channels(
     request: Request,
