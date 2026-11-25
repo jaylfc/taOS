@@ -2477,7 +2477,8 @@ install_linux_systemd_system() {
     cat <<'SUDOERS_EOF' | $sudo_cmd tee /etc/sudoers.d/taos-storage > /dev/null
 # taOS storage helper - narrowly scoped passwordless sudo for taos user
 # Only allows /usr/local/bin/taos-storage-helper with specific allowed commands
-taos ALL=(root) NOPASSWD: /usr/local/bin/taos-storage-helper partition-disk /dev/disk/by-id/* *
+# partition-disk takes: <by-id-path> <model> <serial> (confirm string = two words)
+taos ALL=(root) NOPASSWD: /usr/local/bin/taos-storage-helper partition-disk /dev/disk/by-id/* * *
 taos ALL=(root) NOPASSWD: /usr/local/bin/taos-storage-helper luks-format /dev/disk/by-id/* * /etc/taos/keys/*.key
 taos ALL=(root) NOPASSWD: /usr/local/bin/taos-storage-helper luks-open /dev/disk/by-id/* * /etc/taos/keys/*.key
 taos ALL=(root) NOPASSWD: /usr/local/bin/taos-storage-helper luks-close *

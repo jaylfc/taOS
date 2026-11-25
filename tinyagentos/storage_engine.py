@@ -18,7 +18,7 @@ import os
 import re
 import time
 import uuid
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal
 
@@ -161,17 +161,9 @@ class DiskSafetyClassifier:
             reasons.append(PROTECTED_ZFS_MEMBER)
 
         if reasons:
-            return DiskInfo(
-                **{k: v for k, v in disk.__dict__.items() if k != "safety_class" and k != "safety_reason"},
-                safety_class=SAFETY_PROTECTED,
-                safety_reason=",".join(reasons),
-            )
+            return replace(disk, safety_class=SAFETY_PROTECTED, safety_reason=",".join(reasons))
 
-        return DiskInfo(
-            **{k: v for k, v in disk.__dict__.items() if k != "safety_class" and k != "safety_reason"},
-            safety_class=SAFETY_AVAILABLE,
-            safety_reason=None,
-        )
+        return replace(disk, safety_class=SAFETY_AVAILABLE, safety_reason=None)
 
     def _has_data_fs(self, disk: DiskInfo) -> bool:
         """Check if disk or any partition has a data filesystem."""
@@ -245,7 +237,7 @@ async def _run_cmd(cmd: list[str], timeout: int = 30) -> tuple[int, str]:
 
 async def _get_system_disk_paths() -> set[str] | None:
     """Get the block device paths that hold the running system (root, boot).
-    
+
     Returns None on failure (caller must treat as unknown -> PROTECTED).
     """
     paths: set[str] = set()
@@ -286,31 +278,27 @@ async def _get_system_disk_paths() -> set[str] | None:
     return paths
 
 
-async def _verify_signatures(disk_path: str, partitions: list[PartitionInfo]) -> None:
+async def _verify_signatures(disk_path: str, partitions: list[PartitionInfo]) -> list[PartitionInfo]:
     """Verify filesystem/raid/lvm signatures on disk and partitions using blkid and wipefs.
-    
-    Updates partition fstype in-place based on blkid/wipefs output.
+
+    Returns updated partitions list with fstype corrected from blkid/wipefs.
     Fail-closed: any error marks the disk as having unknown signatures (protected).
     """
-    # Check disk itself
-    disk_fstype = await _probe_device_signatures(disk_path)
-    # Note: DiskInfo is frozen, so we can't update it here. The classifier uses
-    # the fstype from lsblk which should be consistent with blkid.
-    
-    # Check each partition and update fstype if blkid/wipefs finds something different
+    updated_partitions = []
     for part in partitions:
         part_fstype = await _probe_device_signatures(part.path)
         if part_fstype and part_fstype != part.fstype:
-            # PartitionInfo is frozen, so we need to create a new one
-            # This is handled by the caller replacing the partition in the list
-            pass  # For now, we log the discrepancy
             logger.debug("storage_engine: signature mismatch on %s: lsblk=%s blkid/wipefs=%s",
-                        part.path, part.fstype, part_fstype)
+                         part.path, part.fstype, part_fstype)
+            updated_partitions.append(replace(part, fstype=part_fstype))
+        else:
+            updated_partitions.append(part)
+    return updated_partitions
 
 
 async def _probe_device_signatures(device_path: str) -> str | None:
     """Run blkid -p and wipefs -n on a device to detect signatures.
-    
+
     Returns the detected fstype or None if no signature/error.
     """
     # Try blkid -p first (more detailed)
@@ -320,11 +308,10 @@ async def _probe_device_signatures(device_path: str) -> str | None:
         for line in out.strip().splitlines():
             if "TYPE=" in line:
                 # Extract TYPE="value"
-                import re
                 match = re.search(r'TYPE="([^"]+)"', line)
                 if match:
                     return match.group(1)
-    
+
     # Fallback to wipefs -n (lists all signatures)
     rc, out = await _run_cmd(["wipefs", "-n", device_path])
     if rc == 0 and out.strip():
@@ -335,7 +322,7 @@ async def _probe_device_signatures(device_path: str) -> str | None:
                 parts = line.split()
                 if len(parts) >= 2:
                     return parts[1]  # fstype column
-    
+
     return None
 
 
@@ -422,7 +409,7 @@ async def discover_disks() -> list[DiskInfo]:
 
         # Get filesystem info (whole disk)
         fstype = block.get("fstype")
-        uuid = block.get("uuid")
+        uuid_ = block.get("uuid")
         label = block.get("label")
 
         # Get partition table type from lsblk output
@@ -484,7 +471,7 @@ async def discover_disks() -> list[DiskInfo]:
                 ))
 
         # Verify signatures with blkid and wipefs on disk and all partitions
-        await _verify_signatures(path, partitions)
+        partitions = await _verify_signatures(path, partitions)
 
         disk = DiskInfo(
             path=path,
@@ -498,7 +485,7 @@ async def discover_disks() -> list[DiskInfo]:
             partitions=partitions,
             mountpoints=mountpoints,
             fstype=fstype,
-            uuid=uuid,
+            uuid=uuid_,
             label=label,
             parttable_type=parttable,
             ro=ro,
@@ -511,18 +498,10 @@ async def discover_disks() -> list[DiskInfo]:
         # If system disks unknown or partition parse error, mark as PROTECTED unknown
         if system_disks_unknown or partition_parse_error:
             if disk.safety_class == SAFETY_AVAILABLE:
-                disk = DiskInfo(
-                    **{k: v for k, v in disk.__dict__.items() if k != "safety_class" and k != "safety_reason"},
-                    safety_class=SAFETY_PROTECTED,
-                    safety_reason=PROTECTED_UNKNOWN,
-                )
+                disk = replace(disk, safety_class=SAFETY_PROTECTED, safety_reason=PROTECTED_UNKNOWN)
             else:
                 # Add unknown to existing reasons
-                disk = DiskInfo(
-                    **{k: v for k, v in disk.__dict__.items() if k != "safety_class" and k != "safety_reason"},
-                    safety_class=SAFETY_PROTECTED,
-                    safety_reason=disk.safety_reason + "," + PROTECTED_UNKNOWN,
-                )
+                disk = replace(disk, safety_class=SAFETY_PROTECTED, safety_reason=disk.safety_reason + "," + PROTECTED_UNKNOWN)
 
         disks.append(disk)
 
@@ -703,7 +682,8 @@ async def add_storage_area(
     4. Create ext4 filesystem with label
     5. Create /etc/crypttab entry (if encrypted) with key file and nofail
     6. Create systemd mount unit at /srv/taos/storage/<area_name> with nofail
-    7. Register in storage registry
+    7. Mount filesystem
+    8. Register in storage registry
     """
     # 1. Re-discover and verify disk
     disks = await discover_disks()

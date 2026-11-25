@@ -27,7 +27,7 @@ import re
 import secrets
 import subprocess
 import sys
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Literal
 
@@ -72,7 +72,7 @@ DATA_FS_TYPES = frozenset({
 ENCRYPTED_TYPES = frozenset({"crypto_LUKS", "crypto_LUKS1", "crypto_LUKS2", "BitLocker"})
 
 
-@dataclass
+@dataclass(frozen=True)
 class PartitionInfo:
     path: str
     name: str
@@ -85,7 +85,7 @@ class PartitionInfo:
     partlabel: str | None = None
 
 
-@dataclass
+@dataclass(frozen=True)
 class DiskInfo:
     path: str
     name: str
@@ -102,6 +102,8 @@ class DiskInfo:
     label: str | None = None
     parttable_type: str | None = None
     ro: bool = False
+    safety_class: str = SAFETY_PROTECTED
+    safety_reason: str | None = None
 
 
 def run_cmd(cmd: list[str], check: bool = True, capture: bool = True, input_data: bytes | str | None = None) -> subprocess.CompletedProcess:
@@ -139,167 +141,51 @@ def _parse_size(size_str: str) -> int:
         return 0
 
 
-def discover_disk(disk_by_id_path: str) -> DiskInfo | None:
-    """Discover a single disk by its by-id path and classify it.
-    
-    Returns DiskInfo with safety classification, or None if not found.
+def _probe_device_signatures(device_path: str) -> str | None:
+    """Run blkid -p and wipefs -n on a device to detect signatures.
+
+    Returns the detected fstype or None if no signature/error.
     """
-    # Resolve by-id path to real device
-    try:
-        real_path = os.path.realpath(disk_by_id_path)
-    except OSError:
-        logger.error("Failed to resolve path: %s", disk_by_id_path)
-        return None
-    
-    # Get device name (e.g., sda from /dev/sda)
-    device_name = os.path.basename(real_path)
-    if device_name.startswith("dm-") or device_name.startswith("loop"):
-        logger.error("Device %s is a virtual device, refusing", device_name)
-        return None
-    
-    # Run lsblk for this disk and its children
-    rc, out = run_cmd([
-        "lsblk", "-J", "-o",
-        "NAME,SIZE,ROTA,TRAN,RO,MODEL,VENDOR,SERIAL,TYPE,MOUNTPOINTS,FSTYPE,UUID,LABEL,PARTTYPE,PARTLABEL,PTTYPE",
-        real_path
-    ], check=False)
-    if rc != 0:
-        logger.error("lsblk failed for %s: %s", real_path, out)
-        return None
-    
-    try:
-        data = json.loads(out)
-    except json.JSONDecodeError:
-        logger.error("Failed to parse lsblk JSON: %s", out[:200])
-        return None
-    
-    blockdevices = data.get("blockdevices", [])
-    if not blockdevices:
-        logger.error("No block device found for %s", real_path)
-        return None
-    
-    block = blockdevices[0]
-    if block.get("type") != "disk":
-        logger.error("Path %s is not a disk (type=%s)", real_path, block.get("type"))
-        return None
-    
-    name = block.get("name", "")
-    if not name:
-        logger.error("Disk has no name")
-        return None
-    
-    # Parse disk metadata
-    size_str = block.get("size", "0")
-    size_bytes = _parse_size(size_str)
-    rota = block.get("rota", "1")
-    rotational = rota == "1"
-    transport = block.get("tran", "unknown")
-    ro_str = block.get("ro", "0")
-    ro = ro_str == "1"
-    vendor = (block.get("vendor") or "").strip()
-    model = (block.get("model") or "").strip()
-    serial = (block.get("serial") or "").strip()
-    make = vendor or "Unknown"
-    
-    mountpoints = []
-    mp = block.get("mountpoints")
-    if mp:
-        if isinstance(mp, list):
-            mountpoints = [m for m in mp if m]
-        elif isinstance(mp, str):
-            mountpoints = [mp] if mp else []
-    
-    fstype = block.get("fstype")
-    uuid = block.get("uuid")
-    label = block.get("label")
-    parttable = block.get("pttype")
-    if parttable and parttable.lower() in ("gpt", "dos", "msdos"):
-        parttable = parttable.lower()
-    else:
-        parttable = None
-    
-    # Get partitions
-    partitions = []
-    for part in block.get("children", []):
-        part_name = part.get("name", "")
-        if not part_name:
-            continue
-        part_size_str = part.get("size", "0")
-        part_size = _parse_size(part_size_str)
-        part_fstype = part.get("fstype")
-        part_uuid = part.get("uuid")
-        part_label = part.get("label")
-        part_mount = part.get("mountpoints")
-        part_mountpoint = None
-        if part_mount:
-            if isinstance(part_mount, list) and part_mount:
-                part_mountpoint = part_mount[0]
-            elif isinstance(part_mount, str):
-                part_mountpoint = part_mount
-        part_parttype = part.get("parttype")
-        part_partlabel = part.get("partlabel")
-        
-        partitions.append(PartitionInfo(
-            path=f"/dev/{part_name}",
-            name=part_name,
-            size_bytes=part_size,
-            fstype=part_fstype,
-            uuid=part_uuid,
-            label=part_label,
-            mountpoint=part_mountpoint,
-            parttype=part_parttype,
-            partlabel=part_partlabel,
-        ))
-    
-    # Verify signatures with blkid and wipefs on disk and all partitions
-    _verify_signatures(real_path)
-    for part in partitions:
-        _verify_signatures(part.path)
-    
-    disk = DiskInfo(
-        path=real_path,
-        name=name,
-        make=make,
-        model=model,
-        serial=serial,
-        size_bytes=size_bytes,
-        transport=transport,
-        rotational=rotational,
-        partitions=partitions,
-        mountpoints=mountpoints,
-        fstype=fstype,
-        uuid=uuid,
-        label=label,
-        parttable_type=parttable,
-        ro=ro,
-    )
-    
-    # Classify safety (no system disk check in helper - controller handles that)
-    return _classify_disk(disk)
-
-
-def _verify_signatures(device_path: str) -> None:
-    """Run blkid -p and wipefs -n to verify signatures. Log discrepancies."""
-    # Try blkid -p first
+    # Try blkid -p first (more detailed)
     rc, out = run_cmd(["blkid", "-p", device_path], check=False)
     if rc == 0 and out.strip():
+        # Parse blkid output: /dev/sda1: UUID="..." TYPE="ext4" PARTLABEL="..." PARTUUID="..."
         for line in out.strip().splitlines():
             if "TYPE=" in line:
+                # Extract TYPE="value"
                 match = re.search(r'TYPE="([^"]+)"', line)
                 if match:
-                    logger.debug("blkid signature on %s: %s", device_path, match.group(1))
-                    return
-    
-    # Fallback to wipefs -n
+                    return match.group(1)
+
+    # Fallback to wipefs -n (lists all signatures)
     rc, out = run_cmd(["wipefs", "-n", device_path], check=False)
     if rc == 0 and out.strip():
+        # Parse wipefs output: /dev/sda1   ext4   <uuid>   <label>
         lines = out.strip().splitlines()
-        if len(lines) > 1:
+        if len(lines) > 1:  # Skip header
             for line in lines[1:]:
                 parts = line.split()
                 if len(parts) >= 2:
-                    logger.debug("wipefs signature on %s: %s", device_path, parts[1])
-                    return
+                    return parts[1]  # fstype column
+
+    return None
+
+
+def _verify_signatures(partitions: list[PartitionInfo]) -> list[PartitionInfo]:
+    """Verify filesystem/raid/lvm signatures on partitions using blkid and wipefs.
+
+    Returns updated partitions list with fstype corrected from blkid/wipefs.
+    """
+    updated_partitions = []
+    for part in partitions:
+        part_fstype = _probe_device_signatures(part.path)
+        if part_fstype and part_fstype != part.fstype:
+            logger.debug("storage_helper: signature mismatch on %s: lsblk=%s blkid/wipefs=%s",
+                         part.path, part.fstype, part_fstype)
+            updated_partitions.append(replace(part, fstype=part_fstype))
+        else:
+            updated_partitions.append(part)
+    return updated_partitions
 
 
 def _has_data_fs(disk: DiskInfo) -> bool:
@@ -350,45 +236,178 @@ def _is_zfs_member(disk: DiskInfo) -> bool:
 def _classify_disk(disk: DiskInfo) -> DiskInfo:
     """Classify disk safety (without system disk check)."""
     reasons: list[str] = []
-    
+
     if disk.ro:
         reasons.append(PROTECTED_READ_ONLY)
-    
+
     if disk.mountpoints:
         reasons.append(PROTECTED_MOUNTED)
     for part in disk.partitions:
         if part.mountpoint:
             reasons.append(PROTECTED_MOUNTED)
             break
-    
+
     if _has_data_fs(disk):
         reasons.append(PROTECTED_HAS_DATA)
-    
+
     if _is_encrypted_foreign(disk):
         reasons.append(PROTECTED_ENCRYPTED_FOREIGN)
-    
+
     if _is_raid_member(disk):
         reasons.append(PROTECTED_RAID_MEMBER)
-    
+
     if _is_lvm_member(disk):
         reasons.append(PROTECTED_LVM_MEMBER)
-    
+
     if _is_zfs_member(disk):
         reasons.append(PROTECTED_ZFS_MEMBER)
-    
+
     if reasons:
-        disk.safety_class = SAFETY_PROTECTED
-        disk.safety_reason = ",".join(reasons)
+        return replace(disk, safety_class=SAFETY_PROTECTED, safety_reason=",".join(reasons))
     else:
-        disk.safety_class = SAFETY_AVAILABLE
-        disk.safety_reason = None
-    
-    return disk
+        return replace(disk, safety_class=SAFETY_AVAILABLE, safety_reason=None)
+
+
+def discover_disk(disk_by_id_path: str) -> DiskInfo | None:
+    """Discover a single disk by its by-id path and classify it.
+
+    Returns DiskInfo with safety classification, or None if not found.
+    """
+    # Resolve by-id path to real device
+    try:
+        real_path = os.path.realpath(disk_by_id_path)
+    except OSError:
+        logger.error("Failed to resolve path: %s", disk_by_id_path)
+        return None
+
+    # Get device name (e.g., sda from /dev/sda)
+    device_name = os.path.basename(real_path)
+    if device_name.startswith("dm-") or device_name.startswith("loop"):
+        logger.error("Device %s is a virtual device, refusing", device_name)
+        return None
+
+    # Run lsblk for this disk and its children
+    rc, out = run_cmd([
+        "lsblk", "-J", "-o",
+        "NAME,SIZE,ROTA,TRAN,RO,MODEL,VENDOR,SERIAL,TYPE,MOUNTPOINTS,FSTYPE,UUID,LABEL,PARTTYPE,PARTLABEL,PTTYPE",
+        real_path
+    ], check=False)
+    if rc != 0:
+        logger.error("lsblk failed for %s: %s", real_path, out)
+        return None
+
+    try:
+        data = json.loads(out)
+    except json.JSONDecodeError:
+        logger.error("Failed to parse lsblk JSON: %s", out[:200])
+        return None
+
+    blockdevices = data.get("blockdevices", [])
+    if not blockdevices:
+        logger.error("No block device found for %s", real_path)
+        return None
+
+    block = blockdevices[0]
+    if block.get("type") != "disk":
+        logger.error("Path %s is not a disk (type=%s)", real_path, block.get("type"))
+        return None
+
+    name = block.get("name", "")
+    if not name:
+        logger.error("Disk has no name")
+        return None
+
+    # Parse disk metadata
+    size_str = block.get("size", "0")
+    size_bytes = _parse_size(size_str)
+    rota = block.get("rota", "1")
+    rotational = rota == "1"
+    transport = block.get("tran", "unknown")
+    ro_str = block.get("ro", "0")
+    ro = ro_str == "1"
+    vendor = (block.get("vendor") or "").strip()
+    model = (block.get("model") or "").strip()
+    serial = (block.get("serial") or "").strip()
+    make = vendor or "Unknown"
+
+    mountpoints = []
+    mp = block.get("mountpoints")
+    if mp:
+        if isinstance(mp, list):
+            mountpoints = [m for m in mp if m]
+        elif isinstance(mp, str):
+            mountpoints = [mp] if mp else []
+
+    fstype = block.get("fstype")
+    uuid = block.get("uuid")
+    label = block.get("label")
+    parttable = block.get("pttype")
+    if parttable and parttable.lower() in ("gpt", "dos", "msdos"):
+        parttable = parttable.lower()
+    else:
+        parttable = None
+
+    # Get partitions
+    partitions = []
+    for part in block.get("children", []):
+        part_name = part.get("name", "")
+        if not part_name:
+            continue
+        part_size_str = part.get("size", "0")
+        part_size = _parse_size(part_size_str)
+        part_fstype = part.get("fstype")
+        part_uuid = part.get("uuid")
+        part_label = part.get("label")
+        part_mount = part.get("mountpoints")
+        part_mountpoint = None
+        if part_mount:
+            if isinstance(part_mount, list) and part_mount:
+                part_mountpoint = part_mount[0]
+            elif isinstance(part_mount, str):
+                part_mountpoint = part_mount
+        part_parttype = part.get("parttype")
+        part_partlabel = part.get("partlabel")
+
+        partitions.append(PartitionInfo(
+            path=f"/dev/{part_name}",
+            name=part_name,
+            size_bytes=part_size,
+            fstype=part_fstype,
+            uuid=part_uuid,
+            label=part_label,
+            mountpoint=part_mountpoint,
+            parttype=part_parttype,
+            partlabel=part_partlabel,
+        ))
+
+    # Verify signatures with blkid and wipefs on all partitions
+    partitions = _verify_signatures(partitions)
+
+    disk = DiskInfo(
+        path=real_path,
+        name=name,
+        make=make,
+        model=model,
+        serial=serial,
+        size_bytes=size_bytes,
+        transport=transport,
+        rotational=rotational,
+        partitions=partitions,
+        mountpoints=mountpoints,
+        fstype=fstype,
+        uuid=uuid,
+        label=label,
+        parttable_type=parttable,
+        ro=ro,
+    )
+
+    # Classify safety (no system disk check in helper - controller handles that)
+    return _classify_disk(disk)
 
 
 def cmd_partition_disk(disk_by_id_path: str, confirm: str) -> int:
     """Create GPT partition table with single partition covering whole disk.
-    
+
     Re-validates disk safety and confirm string before any write.
     """
     # Re-validate disk
@@ -396,33 +415,33 @@ def cmd_partition_disk(disk_by_id_path: str, confirm: str) -> int:
     if not disk:
         logger.error("Disk not found or invalid: %s", disk_by_id_path)
         return 1
-    
+
     # Verify confirm string matches exactly: "<model> <serial>"
     expected_confirm = f"{disk.model} {disk.serial}".strip()
     if confirm != expected_confirm:
         logger.error("Confirm string mismatch. Expected: %s, Got: %s", expected_confirm, confirm)
         return 1
-    
+
     # Refuse unless available
     if disk.safety_class != SAFETY_AVAILABLE:
         logger.error("Disk is not available: %s", disk.safety_reason)
         return 1
-    
+
     logger.info("Disk validated as available: %s (%s)", disk_by_id_path, disk.serial)
-    
+
     # Wipe any existing partition table (with check=True now!)
     run_cmd(["wipefs", "-a", disk.path], check=True)
-    
+
     # Create GPT with single partition
     run_cmd(["parted", "-s", disk.path, "mklabel", "gpt"])
     run_cmd(["parted", "-s", disk.path, "mkpart", "primary", "0%", "100%"])
     run_cmd(["parted", "-s", disk.path, "set", "1", "legacy_boot", "on"])
-    
+
     # Trigger udev to create partition symlinks
     run_cmd(["udevadm", "settle"], check=False)
     run_cmd(["partprobe", disk.path], check=False)
     run_cmd(["udevadm", "settle"], check=False)
-    
+
     return 0
 
 
