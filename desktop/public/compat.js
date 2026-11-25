@@ -36,10 +36,58 @@
 
   /* ---- Fail loudly instead of a blank screen --------------------------
    * Installed first, before the polyfills, so even a failure inside this
-   * file is reported. The painter only fires while #root is still empty:
-   * once the app has rendered, a runtime error must not pave over the UI,
-   * so post-boot errors keep the default behaviour. */
+   * file is reported. An early error does not paint at once, though: a
+   * harmless error during startup (a ResizeObserver loop, a late
+   * extension script) must not pave over an app that then mounts fine.
+   * So the first error starts a grace period (BOOT_ERROR_GRACE_MS); the
+   * overlay is painted only if #root is still empty when it elapses, and
+   * a MutationObserver on #root settles boot the moment the app renders:
+   * a pending paint is cancelled and a painted overlay is removed. Once
+   * boot has settled, later errors keep the default behaviour. */
+  var BOOT_ERROR_GRACE_MS = 2000;
   var pendingBootError = null;
+  var bootErrorTimer = null;
+  var bootObserver = null;
+  var bootSettled = false;
+
+  function rootHasContent() {
+    var root = document.getElementById("root");
+    return !!(root && root.childNodes.length > 0);
+  }
+
+  function removeBootError() {
+    var box = document.getElementById("taos-boot-error");
+    if (box && box.parentNode) box.parentNode.removeChild(box);
+  }
+
+  function settleBoot() {
+    // The app rendered: no overlay may appear or remain for this boot.
+    bootSettled = true;
+    if (bootErrorTimer !== null) {
+      clearTimeout(bootErrorTimer);
+      bootErrorTimer = null;
+    }
+    removeBootError();
+    if (bootObserver) {
+      bootObserver.disconnect();
+      bootObserver = null;
+    }
+  }
+
+  function watchForMount() {
+    if (bootSettled || bootObserver) return;
+    if (typeof MutationObserver !== "function") return;
+    var root = document.getElementById("root");
+    if (!root) return; // not parsed yet; retried on DOMContentLoaded
+    if (root.childNodes.length > 0) {
+      settleBoot();
+      return;
+    }
+    bootObserver = new MutationObserver(function () {
+      if (rootHasContent()) settleBoot();
+    });
+    bootObserver.observe(root, { childList: true });
+  }
 
   function paintBootError(message) {
     try {
@@ -77,17 +125,21 @@
   }
 
   function showBootError(message) {
-    if (document.body) {
-      paintBootError(message);
-    } else if (pendingBootError === null) {
-      // <body> not parsed yet (this script runs in <head>): remember the
-      // first failure and paint it as soon as the document has a body.
-      pendingBootError = message;
-      document.addEventListener("DOMContentLoaded", function () {
-        paintBootError(pendingBootError);
-      });
-    }
+    if (bootSettled || rootHasContent()) return;
+    if (pendingBootError === null) pendingBootError = message;
+    if (bootErrorTimer !== null) return;
+    // Defer the paint by the grace period: if the app mounts first, the
+    // mount observer cancels this timer and nothing is ever painted.
+    bootErrorTimer = setTimeout(function () {
+      bootErrorTimer = null;
+      if (!bootSettled) paintBootError(pendingBootError);
+    }, BOOT_ERROR_GRACE_MS);
   }
+
+  // This script runs in <head>, before #root is parsed: try now, and
+  // again once the document has been parsed.
+  watchForMount();
+  document.addEventListener("DOMContentLoaded", watchForMount);
 
   var previousOnError = window.onerror;
   window.onerror = function (message, source, lineno, colno, error) {

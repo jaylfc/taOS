@@ -76,6 +76,134 @@ function makeWindow() {
   return sandbox;
 }
 
+/** A vm window with a working fake DOM — element tree, id lookup,
+ *  MutationObserver and controllable timers — so the boot-error overlay
+ *  lifecycle (grace period, removal on mount) can be exercised. */
+interface FakeEl {
+  tagName: string;
+  id: string;
+  childNodes: FakeEl[];
+  parentNode: FakeEl | null;
+  style: Record<string, string>;
+  textContent: string;
+  setAttribute: (name: string, value: string) => void;
+  appendChild: (child: FakeEl) => FakeEl;
+  removeChild: (child: FakeEl) => FakeEl;
+}
+
+function makeDomWindow() {
+  const observers: { target: FakeEl; cb: () => void; active: boolean }[] = [];
+  const timers = new Map<number, { fn: () => void; ms: number }>();
+  let nextTimer = 1;
+  const listeners: Record<string, (() => void)[]> = {};
+
+  function notify(el: FakeEl) {
+    for (const o of observers.slice()) {
+      if (o.active && o.target === el) o.cb();
+    }
+  }
+  function makeEl(tag: string): FakeEl {
+    const el: FakeEl = {
+      tagName: tag,
+      id: "",
+      childNodes: [],
+      parentNode: null,
+      style: {},
+      textContent: "",
+      setAttribute: () => {},
+      appendChild: (child: FakeEl) => {
+        child.parentNode = el;
+        el.childNodes.push(child);
+        notify(el);
+        return child;
+      },
+      removeChild: (child: FakeEl) => {
+        const i = el.childNodes.indexOf(child);
+        if (i >= 0) el.childNodes.splice(i, 1);
+        child.parentNode = null;
+        notify(el);
+        return child;
+      },
+    };
+    return el;
+  }
+  const documentElement = makeEl("html");
+  const body = makeEl("body");
+  const root = makeEl("div");
+  root.id = "root";
+  documentElement.appendChild(body);
+  body.appendChild(root);
+
+  function findById(el: FakeEl, id: string): FakeEl | null {
+    if (el.id === id) return el;
+    for (const c of el.childNodes) {
+      const r = findById(c, id);
+      if (r) return r;
+    }
+    return null;
+  }
+  class FakeMutationObserver {
+    private obs: { target: FakeEl; cb: () => void; active: boolean } | null = null;
+    constructor(private cb: () => void) {}
+    observe(target: FakeEl) {
+      this.obs = { target, cb: this.cb, active: true };
+      observers.push(this.obs);
+    }
+    disconnect() {
+      if (this.obs) this.obs.active = false;
+    }
+  }
+  const document = {
+    documentElement,
+    body,
+    getElementById: (id: string) => findById(documentElement, id),
+    createElement: (tag: string) => makeEl(tag),
+    addEventListener: (name: string, fn: () => void) => {
+      (listeners[name] = listeners[name] || []).push(fn);
+    },
+  };
+  const sandbox: Record<string, unknown> = {
+    console,
+    document,
+    MutationObserver: FakeMutationObserver,
+    setTimeout: (fn: () => void, ms: number) => {
+      const id = nextTimer++;
+      timers.set(id, { fn, ms });
+      return id;
+    },
+    clearTimeout: (id: number) => {
+      timers.delete(id);
+    },
+  };
+  sandbox.window = sandbox;
+  sandbox.globalThis = sandbox;
+  vm.createContext(sandbox);
+  const win = sandbox as unknown as {
+    onerror: (m: string, s: string, l: number, c: number, e: Error) => boolean;
+  };
+  return {
+    sandbox,
+    root,
+    fireDOMContentLoaded() {
+      for (const fn of (listeners.DOMContentLoaded || []).slice()) fn();
+    },
+    runTimers() {
+      const pending = [...timers.values()];
+      timers.clear();
+      for (const t of pending) t.fn();
+    },
+    overlay() {
+      return document.getElementById("taos-boot-error");
+    },
+    error(message: string) {
+      win.onerror(message, "test.js", 1, 1, new Error(message));
+    },
+    mount() {
+      root.appendChild(makeEl("div"));
+    },
+  };
+}
+
 describe("built compat.js webview shim (#2082)", () => {
   it("ships at the output root and parses as a classic script", () => {
     expect(compat.length).toBeGreaterThan(0);
@@ -254,5 +382,35 @@ describe("built compat.js webview shim (#2082)", () => {
       valueCloned: true,
       prototypeIntact: true,
     });
+  });
+
+  it("does not paint the boot error when the app mounts within the grace period", () => {
+    const w = makeDomWindow();
+    vm.runInContext(compat, w.sandbox);
+    w.fireDOMContentLoaded();
+    w.error("ResizeObserver loop completed with undelivered notifications");
+    w.mount();
+    w.runTimers();
+    expect(w.overlay()).toBeNull();
+  });
+
+  it("removes a painted boot error as soon as the app mounts", () => {
+    const w = makeDomWindow();
+    vm.runInContext(compat, w.sandbox);
+    w.fireDOMContentLoaded();
+    w.error("TypeError: Object.hasOwn is not a function");
+    w.runTimers();
+    expect(w.overlay()).not.toBeNull();
+    w.mount();
+    expect(w.overlay()).toBeNull();
+  });
+
+  it("still paints the boot error when the app never mounts", () => {
+    const w = makeDomWindow();
+    vm.runInContext(compat, w.sandbox);
+    w.fireDOMContentLoaded();
+    w.error("TypeError: structuredClone is not a function");
+    w.runTimers();
+    expect(w.overlay()).not.toBeNull();
   });
 });
