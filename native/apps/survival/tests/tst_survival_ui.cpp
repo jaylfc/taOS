@@ -314,7 +314,14 @@ private Q_SLOTS:
         QVERIFY(!flash->isEnabled());                       // the name must be typed exactly
         typed->setProperty("text", u"Heltec V3"_s);
         QTest::qWait(100);
+        QVERIFY(!flash->isEnabled());                       // unsigned image: the acknowledgement is a separate step
+        auto *ack = visibleByName(m_win, u"ackUnsigned"_s);
+        QVERIFY(ack);
+        QVERIFY(visibleByName(m_win, u"fwWarnings"_s));
+        ack->setProperty("checked", true);
+        QTest::qWait(100);
         QVERIFY(flash->isEnabled());
+        QCOMPARE(m_fw->mints.size(), 0);                    // no permission is asked for until the button is pressed
         QCOMPARE(m_fw->count(u"POST"_s, u"/v1/flash/run"_s), 0);   // nothing flashes until the person presses it
         QMetaObject::invokeMethod(page, "back");
         QTest::qWait(100);

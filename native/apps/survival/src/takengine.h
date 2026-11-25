@@ -159,7 +159,9 @@ public:
     Q_INVOKABLE void clearPlan();
     /// Runs the flash the plan described. The caller (the confirm step) passes what the person typed. This is the only
     /// path that can write to a board and it is never called in tests or screenshots with a real device.
-    Q_INVOKABLE void runFlash(const QString &deviceId, const QString &entryId, const QString &typedName, bool allowNoBackup);
+    Q_INVOKABLE void runFlash(const QString &deviceId, const QString &entryId, const QString &typedName, bool ackUnsigned, bool allowNoBackup);
+    /// The board's name as the person sees and types it (from the engine's board list).
+    Q_INVOKABLE QString boardName(const QString &boardId) const;
     Q_INVOKABLE void clearResult();
     Q_INVOKABLE QString sizeText(double bytes) const;
     Q_INVOKABLE QString dateText(const QString &iso) const;

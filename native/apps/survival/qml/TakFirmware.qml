@@ -30,7 +30,7 @@ C.ScrollView {
         if (demoWant === "choose") { step = "choose"; demoWant = ""; return }
         if (entryId === "") { entryId = "meshtastic:heltec-v3:2.7.26.54e0d8d"; fw.planFlash(deviceId, entryId); step = "plan"; return }
         if (demoWant === "plan") { demoWant = ""; return }
-        if (demoWant === "result" && fw.plan.confirm_phrase) { demoWant = ""; step = "result"; fw.runFlash(deviceId, entryId, fw.plan.confirm_phrase, false) }
+        if (demoWant === "result" && fw.plan.board) { demoWant = ""; step = "result"; fw.runFlash(deviceId, entryId, fw.boardName(fw.plan.board), fw.plan.requires_unsigned_ack === true, false) }
     }
     function networkName(n) { return n === "meshtastic" ? "Meshtastic" : n === "meshcore" ? "MeshCore" : n === "rnode" ? "RNode (Reticulum)" : n }
     function boardName(id) { for (const b of (fw.boards.boards || [])) if (b.id === id) return b.name; return id }
@@ -242,12 +242,12 @@ C.ScrollView {
             property var plan: root.fw.plan
             TaosText { text: qsTr("The plan"); font.pixelSize: Look.cardTitle; font.weight: Font.DemiBold }
             TaosText { visible: root.fw.planError !== ""; objectName: "planError"; Layout.fillWidth: true; wrapMode: Text.Wrap; font.pixelSize: Look.body; color: Look.danger; text: root.fw.planError }
-            TaosText { visible: root.fw.planError === "" && !root.fw.plan.confirm_phrase; Layout.fillWidth: true; font.pixelSize: Look.body; color: Look.textSecondary; text: qsTr("Checking the board...") }
+            TaosText { visible: root.fw.planError === "" && !root.fw.plan.board; Layout.fillWidth: true; font.pixelSize: Look.body; color: Look.textSecondary; text: qsTr("Checking the board...") }
             ColumnLayout {
-                visible: !!root.fw.plan.confirm_phrase
+                visible: !!root.fw.plan.board
                 Layout.fillWidth: true; spacing: Look.space2
                 TaosText { Layout.fillWidth: true; wrapMode: Text.Wrap; font.pixelSize: Look.bodyMedium
-                           text: qsTr("%1 to %2 %3. Nothing has been written yet.").arg(root.fw.plan.confirm_phrase).arg(root.networkName(root.fw.plan.network || "")).arg(root.fw.plan.version || "") }
+                           text: qsTr("%1 to %2 %3. Nothing has been written yet.").arg(root.fw.boardName(root.fw.plan.board)).arg(root.networkName(root.fw.plan.network || "")).arg(root.fw.plan.version || "") }
                 Repeater {
                     model: root.fw.plan.steps || []
                     delegate: RowLayout {
@@ -263,6 +263,7 @@ C.ScrollView {
                     }
                 }
                 Repeater {
+                    objectName: "fwWarnings"
                     model: root.fw.plan.warnings || []
                     delegate: RowLayout {
                         required property string modelData
@@ -271,14 +272,23 @@ C.ScrollView {
                         TaosText { Layout.fillWidth: true; wrapMode: Text.Wrap; font.pixelSize: Look.small; color: Look.warning; text: modelData }
                     }
                 }
-                TaosCheck { id: noBackup; visible: false; text: qsTr("Flash even if the settings cannot be backed up") }
-                TaosText { text: qsTr("Type %1 to confirm").arg(root.fw.plan.confirm_phrase); font.pixelSize: Look.body; font.weight: Font.DemiBold; Layout.topMargin: Look.space2 }
-                TaosField { id: typed; objectName: "confirmField"; text: root.nav && root.nav.demo.typed !== undefined ? root.nav.demo.typed : ""; Layout.fillWidth: true; placeholderText: root.fw.plan.confirm_phrase || ""; accessibleName: qsTr("Type the board name to confirm") }
+                RowLayout {
+                    visible: !!root.fw.plan.requires_unsigned_ack
+                    Layout.fillWidth: true; spacing: Look.space2
+                    TaosCheck { id: ackBox; objectName: "ackUnsigned"; Layout.alignment: Qt.AlignTop
+                                checked: root.nav && root.nav.demo.ack !== undefined
+                                accessibleName: qsTr("I have read this. The publisher does not sign this image and I want to flash it anyway.") }
+                    TaosText { Layout.fillWidth: true; wrapMode: Text.Wrap; font.pixelSize: Look.body
+                               text: qsTr("I have read this. The publisher does not sign this image and I want to flash it anyway.")
+                               TapHandler { onTapped: ackBox.toggle() } }
+                }
+                TaosText { text: qsTr("Type %1 to confirm").arg(root.fw.boardName(root.fw.plan.board)); font.pixelSize: Look.body; font.weight: Font.DemiBold; Layout.topMargin: Look.space2 }
+                TaosField { id: typed; objectName: "confirmField"; text: root.nav && root.nav.demo.typed !== undefined ? root.nav.demo.typed : ""; Layout.fillWidth: true; placeholderText: root.fw.boardName(root.fw.plan.board); accessibleName: qsTr("Type the board name to confirm") }
                 RowLayout {
                     spacing: Look.space2
                     PillButton { objectName: "flashButton"; variant: "primary"; text: root.fw.busy ? qsTr("Flashing...") : qsTr("Flash the board")
-                                 enabled: !root.fw.busy && typed.text === root.fw.plan.confirm_phrase
-                                 onClicked: { root.step = "result"; root.fw.runFlash(root.deviceId, root.entryId, typed.text, false) } }
+                                 enabled: !root.fw.busy && typed.text === root.fw.boardName(root.fw.plan.board) && (!root.fw.plan.requires_unsigned_ack || ackBox.checked)
+                                 onClicked: { root.step = "result"; root.fw.runFlash(root.deviceId, root.entryId, typed.text, ackBox.checked, false) } }
                     PillButton { text: qsTr("Cancel"); variant: "outline"; enabled: !root.fw.busy; onClicked: { root.fw.clearPlan(); root.step = "list" } }
                 }
             }

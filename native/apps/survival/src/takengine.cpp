@@ -539,13 +539,22 @@ void FirmwareEngine::refreshLibrary()
 
 void FirmwareEngine::acceptLicence(const QString &network)
 {
-    m_c->request(u"POST"_s, u"/v1/licences/accept"_s, QJsonObject{{u"network"_s, network}, {u"by"_s, m_account.isEmpty() ? u"owner"_s : m_account}}, this, [this](const FwReply &r) {
-        if (!r.error.isEmpty()) {
-            m_refreshNote = r.error;
+    // called only from the Accept button: the permission is asked for now, for this network, and used once
+    m_c->mintNonce(u"licence.accept"_s, network, this, [this, network](const QString &nonce, const QString &err) {
+        if (nonce.isEmpty()) {
+            m_refreshNote = err;
             Q_EMIT changed();
             return;
         }
-        reload();
+        m_c->request(u"POST"_s, u"/v1/licences/accept"_s, QJsonObject{{u"network"_s, network}, {u"by"_s, m_account.isEmpty() ? u"owner"_s : m_account}, {u"owner_nonce"_s, nonce}}, this,
+                     [this](const FwReply &r) {
+                         if (!r.error.isEmpty()) {
+                             m_refreshNote = r.error;
+                             Q_EMIT changed();
+                             return;
+                         }
+                         reload();
+                     });
     });
 }
 
@@ -584,9 +593,18 @@ void FirmwareEngine::clearPlan()
     Q_EMIT planChanged();
 }
 
-void FirmwareEngine::runFlash(const QString &deviceId, const QString &entryId, const QString &typedName, bool allowNoBackup)
+QString FirmwareEngine::boardName(const QString &boardId) const
 {
-    // the engine checks the typed name again; this side only refuses to send an empty confirmation
+    for (const QJsonValue &b : QJsonArray::fromVariantList(m_boards.value(u"boards"_s).toList()))
+        if (b.toObject().value(u"id"_s).toString() == boardId)
+            return b.toObject().value(u"name"_s).toString();
+    return boardId;
+}
+
+void FirmwareEngine::runFlash(const QString &deviceId, const QString &entryId, const QString &typedName, bool ackUnsigned, bool allowNoBackup)
+{
+    // The engine checks the typed name and the acknowledgement again; this side only refuses to send nothing at all.
+    // Called only from the Flash button: one permission is asked for now, for this device and image, and used once.
     if (typedName.trimmed().isEmpty() || m_plan.isEmpty()) {
         m_result = {{u"ok"_s, false}, {u"message"_s, tr("Type the board name to confirm.")}};
         Q_EMIT resultChanged();
@@ -594,17 +612,31 @@ void FirmwareEngine::runFlash(const QString &deviceId, const QString &entryId, c
     }
     m_busy = true;
     Q_EMIT changed();
-    QJsonObject body{{u"device"_s, deviceId}, {u"entry"_s, entryId}, {u"confirm"_s, typedName.trimmed()}, {u"actor"_s, u"person"_s}};   // exactly "person": the engine takes no other word for the human at the screen
-    if (allowNoBackup)
-        body.insert(u"allow_no_backup"_s, true);
-    m_c->request(u"POST"_s, u"/v1/flash/run"_s, body, this, [this](const FwReply &r) {
-        m_busy = false;
-        m_result = r.json.toVariantMap();
-        if (!r.reached)
-            m_result = {{u"ok"_s, false}, {u"message"_s, r.error}};
-        Q_EMIT resultChanged();
-        Q_EMIT changed();
-    }, 1800000);
+    m_c->mintNonce(u"flash.run"_s, deviceId + u"|"_s + entryId, this, [this, deviceId, entryId, typedName, ackUnsigned, allowNoBackup](const QString &nonce, const QString &err) {
+        if (nonce.isEmpty()) {
+            m_busy = false;
+            m_result = {{u"ok"_s, false}, {u"message"_s, tr("The firmware manager did not give permission to flash: %1").arg(err)}};
+            Q_EMIT resultChanged();
+            Q_EMIT changed();
+            return;
+        }
+        QJsonObject body{{u"device"_s, deviceId}, {u"entry"_s, entryId}, {u"confirm"_s, typedName.trimmed()}, {u"owner_nonce"_s, nonce},
+                         {u"actor"_s, u"person"_s}};   // exactly "person": the engine takes no other word for the human at the screen
+        if (ackUnsigned)
+            body.insert(u"ack_unsigned"_s, true);
+        if (allowNoBackup)
+            body.insert(u"allow_no_backup"_s, true);
+        m_c->request(u"POST"_s, u"/v1/flash/run"_s, body, this, [this](const FwReply &r) {
+            m_busy = false;
+            m_result = r.json.toVariantMap();
+            if (!r.reached)
+                m_result = {{u"ok"_s, false}, {u"message"_s, r.error}};
+            else if (r.http == 403)
+                m_result = {{u"ok"_s, false}, {u"message"_s, tr("The firmware manager refused: the owner permission was not accepted.")}};
+            Q_EMIT resultChanged();
+            Q_EMIT changed();
+        }, 1800000);
+    });
 }
 
 void FirmwareEngine::clearResult()

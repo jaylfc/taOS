@@ -3,19 +3,20 @@
   "plan": {
     "backup": "will try the Meshtastic config export, then save MeshCore companion info; says so if neither answers",
     "board": "heltec-v3",
-    "confirm_phrase": "Heltec V3",
+    "chip_probe": "after confirmation",
     "device": {
       "candidates": [
-        "heltec-v3"
+        "heltec-v3",
+        "tbeam"
       ],
-      "chip": "esp32s3",
+      "chip": null,
       "family": "esp32",
       "id": "usb-10c4-ea60-SN1-1-1",
       "kind": "serial",
       "mount": null,
       "pid": "ea60",
       "port": "/dev/ttyUSB0",
-      "probe": "ok",
+      "probe": "skipped",
       "product": "Fake board",
       "serial_number": "SN1",
       "uf2_board_id": null,
@@ -26,6 +27,7 @@
     "method": "esptool",
     "network": "meshtastic",
     "recovery": "Hold the PRG (BOOT) button, tap RST, then release PRG to enter the ROM bootloader. Unplug and replug the USB cable, then run the flash again. If the port does not appear, try another cable (many are charge-only). Unplug the board and replug it. If it no longer shows as a serial port or drive, put it in its bootloader (see the board recovery steps) and run the flash again. A board is very rarely bricked: the ROM bootloader on ESP32 and the UF2 bootloader on nRF52 survive a failed flash.",
+    "requires_unsigned_ack": true,
     "steps": [
       {
         "argv": null,
@@ -66,7 +68,7 @@
     ],
     "version": "2.7.26.54e0d8d",
     "warnings": [
-      "unsigned by publisher: checked against the release host digest only (sha256 0d8fd0895c485071b0df4d7e69799d6fbb25a0b5457373603fe34e4bf127e67a)"
+      "Verified: the file matches sha256 0d8fd0895c485071b0df4d7e69799d6fbb25a0b5457373603fe34e4bf127e67a, the digest the release host (GitHub) lists for the asset, and it was downloaded from http://127.0.0.1:41661/dl/x/firmware-esp32s3-2.7.26.54e0d8d.zip. Not verified: the meshtastic project does not sign its releases or publish checksums, so nothing proves the file is what the project built. Flashing needs a separate acknowledgement of this."
     ]
   }
 }

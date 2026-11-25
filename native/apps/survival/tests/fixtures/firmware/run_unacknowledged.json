@@ -1,0 +1,6 @@
+{
+  "code": "unsigned_ack_required",
+  "message": "Verified: the file matches sha256 0d8fd0895c485071b0df4d7e69799d6fbb25a0b5457373603fe34e4bf127e67a, the digest the release host (GitHub) lists for the asset, and it was downloaded from http://127.0.0.1:41661/dl/x/firmware-esp32s3-2.7.26.54e0d8d.zip. Not verified: the meshtastic project does not sign its releases or publish checksums, so nothing proves the file is what the project built. Flashing needs a separate acknowledgement of this.",
+  "ok": false,
+  "stage": "refused"
+}

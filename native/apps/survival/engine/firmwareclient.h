@@ -31,6 +31,10 @@ public:
     void setDir(const QString &d) { m_dir = d; }
     void setPort(int p) { m_port = p; }
     using Callback = std::function<void(const FwReply &)>;
+    /// Asks the engine for a single-use permission to do one thing the person just asked for (accept a licence, flash a
+    /// board), over its private owner socket: the engine checks with the kernel that this process runs as the owner.
+    /// The nonce is scoped to `action` and `subject`, handed to the callback once and never kept here.
+    void mintNonce(const QString &action, const QString &subject, QObject *ctx, std::function<void(const QString &nonce, const QString &error)> cb);
     void request(const QString &method, const QString &path, const QJsonObject &body, QObject *ctx, Callback cb, int timeoutMs = 20000);
 
 private:

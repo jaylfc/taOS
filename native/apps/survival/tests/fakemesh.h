@@ -193,8 +193,26 @@ public:
                 connect(s, &QTcpSocket::readyRead, this, [this, s] { read(s); });
         });
         m_srv.listen(QHostAddress::LocalHost, 0);
+        // the owner socket: mints a nonce per request, like the engine's 0600 socket (which also checks the peer uid)
+        QLocalServer::removeServer(dataDir + QStringLiteral("/owner.sock"));
+        m_owner.listen(dataDir + QStringLiteral("/owner.sock"));
+        connect(&m_owner, &QLocalServer::newConnection, this, [this] {
+            while (QLocalSocket *c = m_owner.nextPendingConnection())
+                connect(c, &QLocalSocket::readyRead, c, [this, c] {
+                    if (!c->canReadLine())
+                        return;
+                    const QJsonObject o = QJsonDocument::fromJson(c->readLine()).object();
+                    const QString n = QStringLiteral("nonce-%1").arg(mints.size() + 1);
+                    mints.append({o.value(QStringLiteral("action")).toString(), o.value(QStringLiteral("subject")).toString(), n});
+                    c->write(QJsonDocument(QJsonObject{{QStringLiteral("ok"), true}, {QStringLiteral("nonce"), n}, {QStringLiteral("expires_in"), 300}}).toJson(QJsonDocument::Compact) + '\n');
+                    c->disconnectFromServer();
+                });
+        });
     }
     int port() const { return m_srv.serverPort(); }
+    struct Mint { QString action, subject, nonce; };
+    QList<Mint> mints;
+    QStringList used;
     QList<Req> requests;
     QString mode = QStringLiteral("ready");   // ready | pending
     int count(const QString &method, const QString &path) const { int n = 0; for (const auto &r : requests) n += r.method == method && r.path == path; return n; }
@@ -227,7 +245,24 @@ private:
         requests << r;
         QJsonValue out;
         int code = 200;
-        if (r.auth != "Bearer test-token") { out = QJsonObject{{QStringLiteral("ok"), false}, {QStringLiteral("error"), QStringLiteral("unauthorized")}}; code = 401; }
+        // the engine's rule: accepting a licence and running a flash need a nonce minted for exactly that action and subject, used once
+        auto nonceOk = [this](const Req &q, const QString &action, const QString &subject) {
+            const QString n = q.body.value(QStringLiteral("owner_nonce")).toString();
+            if (n.isEmpty() || used.contains(n))
+                return false;
+            used << n;
+            for (const Mint &m : mints)
+                if (m.nonce == n)
+                    return m.action == action && m.subject == subject;
+            return false;
+        };
+        const bool needsNonce = r.path == QLatin1String("/v1/licences/accept") || r.path == QLatin1String("/v1/flash/run");
+        const QString subject = r.path == QLatin1String("/v1/licences/accept") ? r.body.value(QStringLiteral("network")).toString()
+                                                                                : r.body.value(QStringLiteral("device")).toString() + QLatin1Char('|') + r.body.value(QStringLiteral("entry")).toString();
+        if (r.auth == "Bearer test-token" && needsNonce && !nonceOk(r, r.path == QLatin1String("/v1/licences/accept") ? QStringLiteral("licence.accept") : QStringLiteral("flash.run"), subject)) {
+            out = QJsonObject{{QStringLiteral("ok"), false}, {QStringLiteral("error"), QStringLiteral("owner nonce required")}};
+            code = 403;
+        } else if (r.auth != "Bearer test-token") { out = QJsonObject{{QStringLiteral("ok"), false}, {QStringLiteral("error"), QStringLiteral("unauthorized")}}; code = 401; }
         else out = route(r);
         const QByteArray payload = QJsonDocument(out.toObject()).toJson(QJsonDocument::Compact);
         s->write("HTTP/1.1 " + QByteArray::number(code) + " OK\r\nContent-Type: application/json\r\nContent-Length: " + QByteArray::number(payload.size()) + "\r\nConnection: close\r\n\r\n" + payload);
@@ -247,12 +282,18 @@ private:
         if (r.path == QLatin1String("/v1/flash/run") && r.body.contains(QStringLiteral("actor")) && r.body.value(QStringLiteral("actor")).toString() != QLatin1String("person")
             && !r.body.value(QStringLiteral("actor")).toString().startsWith(QLatin1String("agent:")))
             return QJsonObject{{QStringLiteral("ok"), false}, {QStringLiteral("stage"), QStringLiteral("refused")}, {QStringLiteral("code"), QStringLiteral("consent_required")}, {QStringLiteral("message"), QStringLiteral("actor must be person or agent:<id>")}};
-        if (r.path == QLatin1String("/v1/flash/run"))
-            return r.body.value(QStringLiteral("confirm")).toString() == QLatin1String("Heltec V3") ? fx(QStringLiteral("run_done")) : fx(QStringLiteral("run_unconfirmed"));
+        if (r.path == QLatin1String("/v1/flash/run")) {
+            if (r.body.value(QStringLiteral("confirm")).toString() != QLatin1String("Heltec V3"))
+                return fx(QStringLiteral("run_unconfirmed"));
+            if (!r.body.value(QStringLiteral("ack_unsigned")).toBool())
+                return fx(QStringLiteral("run_unacknowledged"));
+            return fx(QStringLiteral("run_done"));
+        }
         return QJsonObject{{QStringLiteral("ok"), false}, {QStringLiteral("error"), QStringLiteral("no route")}};
     }
     QString m_fx;
     QTcpServer m_srv;
+    QLocalServer m_owner;
     QHash<QTcpSocket *, QByteArray> m_buf;
 };
 

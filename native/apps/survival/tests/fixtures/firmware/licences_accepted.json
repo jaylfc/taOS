@@ -1,7 +1,7 @@
 {
   "accepted": [
     {
-      "accepted_at": "2026-11-25T04:54:16Z",
+      "accepted_at": "2026-11-25T07:27:20Z",
       "accepted_by": "Test Owner",
       "licence_id": "GPL-3.0-only",
       "licence_url": "https://github.com/meshtastic/firmware/blob/master/LICENSE",
@@ -9,7 +9,7 @@
       "version": ""
     },
     {
-      "accepted_at": "2026-11-25T04:54:16Z",
+      "accepted_at": "2026-11-25T07:27:20Z",
       "accepted_by": "Test Owner",
       "licence_id": "MIT",
       "licence_url": "https://github.com/meshcore-dev/MeshCore/blob/main/license.txt",
@@ -17,7 +17,7 @@
       "version": ""
     },
     {
-      "accepted_at": "2026-11-25T04:54:16Z",
+      "accepted_at": "2026-11-25T07:27:20Z",
       "accepted_by": "Test Owner",
       "licence_id": "GPL-3.0-only",
       "licence_url": "https://github.com/markqvist/RNode_Firmware/blob/master/LICENSE",

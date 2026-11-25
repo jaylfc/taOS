@@ -588,7 +588,7 @@ private Q_SLOTS:
         QVERIFY(e.error().contains(u"not running"_s));
         QCOMPARE(e.library().size(), 0);
     }
-    void a_pending_licence_is_accepted_by_name_once()
+    void a_pending_licence_is_accepted_by_name_once_with_a_nonce_minted_for_that_network()
     {
         QTemporaryDir d;
         FakeFirmware fw(fwFx(), d.path());
@@ -600,13 +600,47 @@ private Q_SLOTS:
         e.reload();
         QTRY_COMPARE_WITH_TIMEOUT(e.pending().size(), 3, 5000);
         QCOMPARE(e.pending().first().toMap().value(u"licence_id"_s).toString(), u"GPL-3.0-only"_s);
+        QCOMPARE(fw.mints.size(), 0);                                    // nothing is minted by loading the screen
         e.acceptLicence(u"meshtastic"_s);
         QTRY_COMPARE_WITH_TIMEOUT(fw.count(u"POST"_s, u"/v1/licences/accept"_s), 1, 3000);
         const QJsonObject b = fw.last(u"/v1/licences/accept"_s).body;
         QCOMPARE(b.value(u"network"_s).toString(), u"meshtastic"_s);
         QCOMPARE(b.value(u"by"_s).toString(), u"Test Owner"_s);   // a named person, never anonymous
+        QCOMPARE(fw.mints.size(), 1);
+        QCOMPARE(fw.mints.first().action, u"licence.accept"_s);
+        QCOMPARE(fw.mints.first().subject, u"meshtastic"_s);
+        QCOMPARE(b.value(u"owner_nonce"_s).toString(), fw.mints.first().nonce);
+        QTRY_VERIFY_WITH_TIMEOUT(e.refreshNote().isEmpty(), 3000);       // accepted, not refused
     }
-    void flashing_needs_a_plan_and_the_typed_board_name_and_never_runs_otherwise()
+    void the_bearer_token_alone_and_a_reused_nonce_are_refused()
+    {
+        QTemporaryDir d;
+        FakeFirmware fw(fwFx(), d.path());
+        FirmwareClient c;
+        c.setDir(d.path());
+        c.setPort(fw.port());
+        int http = 0;
+        c.request(u"POST"_s, u"/v1/licences/accept"_s, QJsonObject{{u"network"_s, u"meshtastic"_s}, {u"by"_s, u"x"_s}}, this, [&](const FwReply &r) { http = r.http; });
+        QTRY_COMPARE_WITH_TIMEOUT(http, 403, 3000);
+        FirmwareEngine e(&c, u"Test Owner"_s);
+        e.reload();
+        QTRY_VERIFY_WITH_TIMEOUT(!e.library().isEmpty(), 3000);
+        e.acceptLicence(u"meshtastic"_s);
+        QTRY_COMPARE_WITH_TIMEOUT(fw.count(u"POST"_s, u"/v1/licences/accept"_s), 2, 3000);
+        const QString used = fw.mints.first().nonce;
+        // replaying that nonce does nothing
+        http = 0;
+        c.request(u"POST"_s, u"/v1/licences/accept"_s, QJsonObject{{u"network"_s, u"meshtastic"_s}, {u"by"_s, u"x"_s}, {u"owner_nonce"_s, used}}, this, [&](const FwReply &r) { http = r.http; });
+        QTRY_COMPARE_WITH_TIMEOUT(http, 403, 3000);
+        // and one minted for another network is refused for this one
+        QString other;
+        c.mintNonce(u"licence.accept"_s, u"rnode"_s, this, [&](const QString &n, const QString &) { other = n; });
+        QTRY_VERIFY_WITH_TIMEOUT(!other.isEmpty(), 3000);
+        http = 0;
+        c.request(u"POST"_s, u"/v1/licences/accept"_s, QJsonObject{{u"network"_s, u"meshcore"_s}, {u"by"_s, u"x"_s}, {u"owner_nonce"_s, other}}, this, [&](const FwReply &r) { http = r.http; });
+        QTRY_COMPARE_WITH_TIMEOUT(http, 403, 3000);
+    }
+    void flashing_needs_a_plan_the_typed_board_name_the_acknowledgement_and_a_fresh_nonce_each_time()
     {
         QTemporaryDir d;
         FakeFirmware fw(fwFx(), d.path());
@@ -616,36 +650,101 @@ private Q_SLOTS:
         FirmwareEngine e(&c, u"Test Owner"_s);
         e.reload();
         e.detect();
-        QTRY_VERIFY_WITH_TIMEOUT(!e.devices().isEmpty() && !e.library().isEmpty(), 5000);
+        QTRY_VERIFY_WITH_TIMEOUT(!e.devices().isEmpty() && !e.library().isEmpty() && !e.boards().isEmpty(), 5000);
+        QCOMPARE(e.boardName(u"heltec-v3"_s), u"Heltec V3"_s);
         const QString dev = e.devices().first().toMap().value(u"id"_s).toString();
         const QString entry = u"meshtastic:heltec-v3:2.7.26.54e0d8d"_s;
-        // no plan yet: nothing is sent
-        e.runFlash(dev, entry, u"Heltec V3"_s, false);
+        // no plan yet: nothing is minted or sent
+        e.runFlash(dev, entry, u"Heltec V3"_s, true, false);
         QCOMPARE(fw.count(u"POST"_s, u"/v1/flash/run"_s), 0);
+        QCOMPARE(fw.mints.size(), 0);
         QVERIFY(!e.result().value(u"ok"_s).toBool());
-        // the plan only plans
+        // the plan only plans: no board name in it, the unsigned acknowledgement flagged, the engine's own wording kept
         e.planFlash(dev, entry);
         QTRY_VERIFY_WITH_TIMEOUT(!e.plan().isEmpty(), 3000);
-        QCOMPARE(e.plan().value(u"confirm_phrase"_s).toString(), u"Heltec V3"_s);
-        QVERIFY(!e.plan().value(u"warnings"_s).toList().isEmpty());     // unsigned-by-publisher warning is carried
+        QVERIFY(!e.plan().contains(u"confirm_phrase"_s));
+        QCOMPARE(e.plan().value(u"board"_s).toString(), u"heltec-v3"_s);
+        QVERIFY(e.plan().value(u"requires_unsigned_ack"_s).toBool());
+        QVERIFY(e.plan().value(u"warnings"_s).toList().first().toString().contains(u"Not verified"_s));
         QCOMPARE(fw.count(u"POST"_s, u"/v1/flash/run"_s), 0);
-        // an empty confirmation is refused on this side
-        e.runFlash(dev, entry, u"  "_s, false);
-        QCOMPARE(fw.count(u"POST"_s, u"/v1/flash/run"_s), 0);
-        // the typed name goes to the engine, which checks it again; a wrong name is refused there
-        e.runFlash(dev, entry, u"heltec"_s, false);
+        QCOMPARE(fw.mints.size(), 0);
+        // an empty confirmation is refused on this side, before any permission is asked for
+        e.runFlash(dev, entry, u"  "_s, true, false);
+        QCOMPARE(fw.mints.size(), 0);
+        // a wrong name: asked for permission, the engine refuses
+        e.runFlash(dev, entry, u"heltec"_s, true, false);
         QTRY_COMPARE_WITH_TIMEOUT(fw.count(u"POST"_s, u"/v1/flash/run"_s), 1, 3000);
         QTRY_VERIFY_WITH_TIMEOUT(!e.busy() && e.result().contains(u"code"_s), 3000);
         QCOMPARE(e.result().value(u"code"_s).toString(), u"confirmation_required"_s);
-        // the right name (against the fake board) completes, and the actor is the person, not an agent
-        e.runFlash(dev, entry, u"Heltec V3"_s, false);
+        // the right name without the acknowledgement: refused by the engine with its own wording
+        e.runFlash(dev, entry, u"Heltec V3"_s, false, false);
         QTRY_COMPARE_WITH_TIMEOUT(fw.count(u"POST"_s, u"/v1/flash/run"_s), 2, 3000);
+        QTRY_VERIFY_WITH_TIMEOUT(!e.busy() && e.result().value(u"code"_s).toString() == u"unsigned_ack_required"_s, 3000);
+        QVERIFY(e.result().value(u"message"_s).toString().contains(u"Not verified"_s));
+        QVERIFY(!fw.last(u"/v1/flash/run"_s).body.contains(u"ack_unsigned"_s));
+        // both: it completes against the fake board, as the person, with an acknowledgement
+        e.runFlash(dev, entry, u"Heltec V3"_s, true, false);
+        QTRY_COMPARE_WITH_TIMEOUT(fw.count(u"POST"_s, u"/v1/flash/run"_s), 3, 3000);
         QTRY_VERIFY_WITH_TIMEOUT(e.result().value(u"ok"_s).toBool(), 3000);
         const QJsonObject body = fw.last(u"/v1/flash/run"_s).body;
         QCOMPARE(body.value(u"confirm"_s).toString(), u"Heltec V3"_s);
-        QCOMPARE(body.value(u"actor"_s).toString(), u"person"_s);   // the engine accepts exactly this word
+        QCOMPARE(body.value(u"actor"_s).toString(), u"person"_s);
+        QCOMPARE(body.value(u"ack_unsigned"_s).toBool(), true);
         QVERIFY(!body.contains(u"allow_no_backup"_s));
         QCOMPARE(e.result().value(u"verify"_s).toMap().value(u"status"_s).toString(), u"confirmed"_s);
+        // one permission per press, each scoped to this device and image, none reused
+        QCOMPARE(fw.mints.size(), 3);
+        QSet<QString> seen;
+        for (const auto &m : fw.mints) {
+            QCOMPARE(m.action, u"flash.run"_s);
+            QCOMPARE(m.subject, dev + u"|"_s + entry);
+            seen << m.nonce;
+        }
+        QCOMPARE(seen.size(), 3);
+    }
+    void the_real_firmware_engine_takes_the_apps_nonce_flow()
+    {
+        const QString bin = QStringLiteral(TAOS_FIRMWARE_BIN);
+        if (bin.isEmpty() || !QFileInfo::exists(bin))
+            QSKIP("set TAOS_FIRMWARE_BIN (the release taos-firmware binary) to run this against the real engine");
+        QTemporaryDir d;
+        QDir().mkpath(d.path() + u"/empty/usb"_s);
+        QDir().mkpath(d.path() + u"/empty/dev"_s);
+        QDir().mkpath(d.path() + u"/empty/uf2"_s);
+        QProcess p;
+        QProcessEnvironment env;
+        env.insert(u"PATH"_s, u"/usr/bin:/bin"_s);
+        env.insert(u"HOME"_s, d.path());
+        env.insert(u"TAOS_FIRMWARE_DIR"_s, d.path() + u"/fw"_s);
+        env.insert(u"TAOS_FW_USB_ROOT"_s, d.path() + u"/empty/usb"_s);
+        env.insert(u"TAOS_FW_DEV_ROOT"_s, d.path() + u"/empty/dev"_s);
+        env.insert(u"TAOS_FW_UF2_ROOTS"_s, d.path() + u"/empty/uf2"_s);
+        p.setProcessEnvironment(env);
+        p.start(bin, {u"serve"_s, u"--port"_s, u"0"_s});
+        QVERIFY(p.waitForStarted(5000));
+        QVERIFY(p.waitForReadyRead(8000));
+        const int port = QJsonDocument::fromJson(p.readLine()).object().value(u"port"_s).toInt();
+        QVERIFY(port > 0);
+        FirmwareClient c;
+        c.setDir(d.path() + u"/fw"_s);
+        c.setPort(port);
+        // the token alone cannot accept a licence
+        int http = 0;
+        c.request(u"POST"_s, u"/v1/licences/accept"_s, QJsonObject{{u"network"_s, u"meshtastic"_s}, {u"by"_s, u"x"_s}}, this, [&](const FwReply &r) { http = r.http; });
+        QTRY_COMPARE_WITH_TIMEOUT(http, 403, 5000);
+        // the app's own flow: a nonce from the owner socket (the kernel checks this process's uid), then the accept
+        FirmwareEngine e(&c, u"Test Owner"_s);
+        e.reload();
+        QTRY_COMPARE_WITH_TIMEOUT(e.pending().size(), 3, 5000);
+        e.acceptLicence(u"meshtastic"_s);
+        QTRY_COMPARE_WITH_TIMEOUT(e.accepted().size(), 1, 5000);
+        QCOMPARE(e.accepted().first().toMap().value(u"accepted_by"_s).toString(), u"Test Owner"_s);
+        QCOMPARE(e.pending().size(), 2);
+        // asking for the plan of a board that is not there is refused in words; nothing can be flashed here
+        e.planFlash(u"usb-none"_s, u"meshtastic:heltec-v3:1"_s);
+        QTRY_VERIFY_WITH_TIMEOUT(!e.planError().isEmpty(), 5000);
+        p.terminate();
+        QVERIFY(p.waitForFinished(5000));
     }
     void the_firmware_client_only_ever_talks_to_loopback()
     {
