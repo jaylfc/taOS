@@ -39,6 +39,12 @@ Secret handling, in order of strength:
    and ``workspace`` keys are rewritten relative to the data dir when
    they live under it, and reduced to their final component otherwise.
 
+6. **Keys and metadata are scrubbed too.** Mapping keys are output,
+   and redaction paths are built from them, so a key carrying credential
+   material is replaced before either is written; rewritten paths and
+   the secret references' own free-text fields pass through the string
+   scrub before they are stored.
+
 The manifest flags ``contains_all_users_data`` -- the bundle holds every
 account's preferences, not just the exporting admin's -- and the
 serialized bundle is size-capped (``MAX_EXPORT_BYTES``), so runaway
@@ -143,6 +149,33 @@ def _is_secret_key(key: str) -> bool:
     )
 
 
+def _sanitize_key(
+    key: str,
+    known_values: list[str] | tuple[str, ...],
+) -> str:
+    """Scrub a mapping key.
+
+    Keys are part of the output, and redaction paths are built from
+    them, so a key carrying credential material -- a known secret value
+    used as a lookup key, a bare credential shape -- must not survive
+    into either place. Ordinary keys pass through unchanged.
+    """
+    for val in known_values:
+        if len(val) >= _MIN_KNOWN_VALUE_LEN and val in key:
+            return PLACEHOLDER
+    cleaned = _PEM_RE.sub(
+        lambda m: m.group("begin") + PLACEHOLDER + m.group("end"), key
+    )
+    cleaned = _CONN_STR_RE.sub(
+        lambda m: m.group("pre") + PLACEHOLDER + m.group("post"), cleaned
+    )
+    cleaned = _WEBHOOK_URL_RE.sub(
+        lambda m: m.group("pre") + PLACEHOLDER, cleaned
+    )
+    cleaned = _TOKEN_SHAPE_RE.sub(PLACEHOLDER, cleaned)
+    return cleaned
+
+
 def _sanitize_string(
     text: str,
     path: str,
@@ -224,7 +257,16 @@ def sanitize_for_export(
     if isinstance(value, dict):
         out: dict = {}
         for k, v in value.items():
-            child = f"{path}.{k}"
+            safe_k = (
+                _sanitize_key(k, known_values) if isinstance(k, str) else k
+            )
+            child = f"{path}.{safe_k}"
+            if safe_k != k:
+                redactions.append({
+                    "path": child,
+                    "reason": "mapping key contained credential material; "
+                              "key replaced with the redaction marker",
+                })
             if isinstance(k, str) and _is_secret_key(k):
                 if v not in (None, "", [], {}):
                     redactions.append({
@@ -232,9 +274,9 @@ def sanitize_for_export(
                         "reason": "secret-bearing key; value replaced "
                                   "with the redaction marker",
                     })
-                    out[k] = PLACEHOLDER
+                    out[safe_k] = PLACEHOLDER
                 else:
-                    out[k] = v
+                    out[safe_k] = v
                 continue
             if _in_webhooks and isinstance(k, str) and k.lower() == "url":
                 # A webhook URL is itself a credential (Discord/Slack
@@ -247,9 +289,9 @@ def sanitize_for_export(
                         "reason": "webhook URL; webhook URLs are "
                                   "credentials and are never exported",
                     })
-                    out[k] = PLACEHOLDER
+                    out[safe_k] = PLACEHOLDER
                 else:
-                    out[k] = v
+                    out[safe_k] = v
                 continue
             if (
                 isinstance(k, str)
@@ -258,9 +300,14 @@ def sanitize_for_export(
             ):
                 rewritten = _rewrite_path(v, child, redactions, data_dir)
                 if rewritten is not None:
-                    out[k] = rewritten
+                    # The rewritten form can itself carry a secret (a
+                    # basename that is a stored value), so it goes
+                    # through the string scrub before it is stored.
+                    out[safe_k] = _sanitize_string(
+                        rewritten, child, redactions, list(known_values)
+                    )
                     continue
-            out[k] = sanitize_for_export(
+            out[safe_k] = sanitize_for_export(
                 v, child, redactions, known_values=known_values,
                 data_dir=data_dir,
                 _in_webhooks=_in_webhooks
@@ -422,7 +469,10 @@ async def build_export_bundle(
             "reason": "desktop settings store unavailable on this install",
         })
 
-    bundle["secret_references"] = secret_references
+    # Reference metadata is free text -- a description can quote the
+    # very value it describes -- so it goes through the same scrub as
+    # every other section, now that known_values is fully collected.
+    bundle["secret_references"] = clean(secret_references, "secret_references")
 
     exported_at = (now or datetime.now(timezone.utc)).isoformat()
     manifest = {

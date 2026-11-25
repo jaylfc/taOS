@@ -456,3 +456,47 @@ class TestExportSizeCap:
         resp = await client.get("/api/settings/export")
         assert resp.status_code == 413
         assert "error" in resp.json()
+
+
+@pytest.mark.asyncio
+class TestExportScrubCompleteness:
+    # CodeRabbit review 6064158878 on PR #4560: three spots where secret
+    # material bypassed the scrub entirely.
+
+    def test_mapping_keys_containing_secrets_are_scrubbed(self):
+        redactions: list[dict] = []
+        data = {"lookup": {STORE_SECRET: "value", "ordinary": "keep"}}
+        out = sanitize_for_export(
+            data, "config", redactions, known_values=[STORE_SECRET]
+        )
+        assert STORE_SECRET not in json.dumps(out)
+        # Redaction paths are built from key names; they must not leak
+        # the secret into manifest.excluded either.
+        assert STORE_SECRET not in json.dumps(redactions)
+        assert out["lookup"]["ordinary"] == "keep"
+
+    def test_rewritten_path_result_is_scrubbed(self):
+        # The basename of an outside-data-dir workspace can itself be a
+        # stored secret; the rewrite branch must not emit it raw.
+        data = {"agents": [{"name": "a", "workspace": f"/home/admin/{STORE_SECRET}"}]}
+        out = sanitize_for_export(
+            data, "agents", [], known_values=[STORE_SECRET], data_dir="/srv/taos"
+        )
+        assert STORE_SECRET not in json.dumps(out)
+        assert out["agents"][0]["workspace"] == "[REDACTED]"
+
+    async def test_secret_reference_description_scrubbed(self, tmp_path):
+        config = AppConfig(config_path=tmp_path / "config.yaml")
+        secrets = SecretsStore(tmp_path / "secrets.db")
+        await secrets.init()
+        await secrets.add(
+            "PROVIDER_KEY", STORE_SECRET, category="api-keys",
+            description=f"the value is {STORE_SECRET} ok", agents=["agent-one"],
+        )
+        bundle = await build_export_bundle(config=config, secrets=secrets)
+        await secrets.close()
+        assert STORE_SECRET not in json.dumps(bundle)
+        ref = bundle["secret_references"][0]
+        assert ref["name"] == "PROVIDER_KEY"
+        assert ref["category"] == "api-keys"
+        assert ref["description"] == "[REDACTED]"
