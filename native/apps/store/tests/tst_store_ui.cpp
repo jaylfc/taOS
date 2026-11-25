@@ -123,15 +123,20 @@ private Q_SLOTS:
                                   && (visibleByName(m_win, u"statusSignIn"_s) != nullptr || visibleByName(m_win, u"errorSignIn"_s) != nullptr); }));
         QVERIFY(!m_host->session().unreachable());
 
+        const QString shots = qEnvironmentVariable("TAOS_STORE_SHOT_DIR");   // opt-in: look at the states (README of the PR)
+        const auto shot = [&](const QString &name) { if (!shots.isEmpty()) { m_win->resize(1500, 950); QTest::qWait(400); m_win->grabWindow().save(shots + u"/"_s + name); } };
+        shot(u"store-signed-out.png"_s);
         auto *pop = m_win->findChild<QObject *>(u"signInPopover"_s);
         QVERIFY(pop);
         QVERIFY(!pop->property("opened").toBool());
         click(visibleByName(m_win, u"deviceSignIn"_s));
         QVERIFY(waitFor([&] { return pop->property("opened").toBool(); }));
+        shot(u"store-sign-in-open.png"_s);
 
         m_host->session().signIn(u"alex"_s, u"hunter2-secret-pw"_s);
         QVERIFY(waitFor([&] { return !pop->property("opened").toBool(); }));   // closes itself once signed in
         QVERIFY(waitFor([&] { return engine->property("loaded").toBool() && !engine->property("usingSnapshot").toBool(); }));
+        shot(u"store-signed-in.png"_s);
         QVERIFY(waitFor([&] { return visibleByName(m_win, u"deviceSignIn"_s) == nullptr && visibleByName(m_win, u"statusSignIn"_s) == nullptr
                                   && visibleByName(m_win, u"errorSignIn"_s) == nullptr; }));
     }
