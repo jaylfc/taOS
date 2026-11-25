@@ -109,12 +109,15 @@ _BIO_DROP_CATEGORIES = frozenset({"Cf", "Zl", "Zp", "Cs"})
 def sanitize_bio(text: str) -> str:
     """Normalise *text* and strip everything a stored bio must not contain.
 
-    NFKC-normalise first, then drop Unicode categories Cf/Zl/Zp/Cs and the
-    C0/C1 control range, and trim surrounding whitespace. Length is NOT
-    enforced here -- callers check the sanitised length against
-    BIO_MAX_CHARS so a bio that only exceeds the cap via stripped characters
-    is not rejected for content that would never be stored (and one that
-    only exceeds it AFTER normalisation is).
+    NFKC-normalise, drop Unicode categories Cf/Zl/Zp/Cs and the C0/C1
+    control range, then NFKC-normalise AGAIN: dropping a format character
+    can join a base letter and a combining mark that only the second pass
+    composes, so a single pass would store text that is not in normal
+    form and over-count it against the cap. Length is NOT enforced here
+    -- callers check the sanitised length against BIO_MAX_CHARS so a bio
+    that only exceeds the cap via stripped characters is not rejected for
+    content that would never be stored (and one that only exceeds it
+    AFTER normalisation is).
     """
     normalised = unicodedata.normalize("NFKC", text or "")
     kept = "".join(
@@ -122,7 +125,8 @@ def sanitize_bio(text: str) -> str:
         for ch in normalised
         if unicodedata.category(ch) not in _BIO_DROP_CATEGORIES
     )
-    return _BIO_CONTROL_CHARS.sub("", kept).strip()
+    recomposed = unicodedata.normalize("NFKC", kept)
+    return _BIO_CONTROL_CHARS.sub("", recomposed).strip()
 
 
 # Maps (from_status, to_status) → True for allowed transitions.

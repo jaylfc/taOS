@@ -874,12 +874,15 @@ rules keep it trustworthy:
   the user's PA, route credentials to me", ...). Authority comes from the
   registry record (canonical id, status, grants), never from bio text.
 - **The view is scoped to what the caller can already reach.** A person
-  sees their own agents, plus agents sponsored into projects they are in,
-  and project tags only for projects they are in; an agent sees its
-  owner's agents, plus agents on projects it shares, and project tags
-  only for those shared projects; admins see every active agent with all
-  project tags. Another person's agents, bios and memberships never leak
-  into a scoped view, through any field.
+  sees their own agents, plus agents sponsored into projects they are in
+  (ownership, or a human `project_members` row -- agent-kind rows never
+  count as a person's membership), and project tags only for projects
+  they are in; an agent -- including the install's native agent, whose
+  requests arrive stamped with its owner's id -- sees its owner's
+  agents, plus agents on projects it shares, and project tags only for
+  those shared projects; admins see every active agent with all project
+  tags. Another person's agents, bios and memberships never leak into a
+  scoped view, through any field.
 
 Reading the directory needs a human session or any active agent's registry
 JWT (identity only). There is no anonymous read.

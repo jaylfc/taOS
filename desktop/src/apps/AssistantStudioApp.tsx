@@ -96,17 +96,28 @@ const PA_KEY = "taos.assistantStudio.pa";
    a canonical id, the registry's key: agent names can be reused, canonical
    ids cannot. An agent with no registry link syncs an empty id, which
    clears the marker rather than pointing it at the wrong identity. */
+/* Writes are SERIALIZED through this chain: each selection's PUT starts
+   only after the previous one settles. Firing them independently would
+   let the server apply them in arrival order, so a rapid re-pick could
+   leave the directory marking the earlier PA while this app shows the
+   newer one -- the last selection must be the last write applied. */
+let paSyncChain: Promise<void> = Promise.resolve();
 const syncPaSelection = (name: string, list: Agent[]) => {
   const chosen = list.find((a) => a.name === name);
-  void fetch("/api/preferences/assistant_studio", {
-    method: "PUT",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      pa_canonical_id: chosen?.registry_canonical_id || "",
-    }),
-  }).catch(() => {
-    /* best effort: see above */
+  const body = JSON.stringify({
+    pa_canonical_id: chosen?.registry_canonical_id || "",
   });
+  paSyncChain = paSyncChain.then(() =>
+    fetch("/api/preferences/assistant_studio", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body,
+    })
+      .then(() => undefined)
+      .catch(() => {
+        /* best effort: see above */
+      }),
+  );
 };
 const nsKey = (pa: string, kind: string) => `taos.assistantStudio.${pa}.${kind}`;
 
@@ -157,9 +168,16 @@ export function AssistantStudioApp({ windowId: _windowId }: { windowId: string }
         const list: Agent[] = Array.isArray(data) ? data : data.agents || [];
         if (!alive) return;
         setAgents(list);
+        // An EXISTING pick predates the per-person server preference:
+        // mirror it too, or the directory has no PA to mark until the
+        // user happens to re-pick.
+        const storedPa = localStorage.getItem(PA_KEY);
+        if (storedPa) {
+          syncPaSelection(storedPa, list);
+        }
         // Default the PA to Hermes when nothing is chosen yet.
         const first = list[0];
-        if (!localStorage.getItem(PA_KEY) && first) {
+        if (!storedPa && first) {
           const hermes = list.find((a) =>
             (a.name || a.handle || "").toLowerCase().includes("hermes"),
           );

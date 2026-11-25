@@ -365,6 +365,26 @@ class TestBioSanitisingCategories:
         # Full-width letters and the fi ligature fold under NFKC.
         assert await self._stored_bio(tmp_path, "ＡＢＣ ﬁ") == "ABC fi"
 
+    async def test_nfkc_applies_after_filtering(self, tmp_path):
+        # Dropping the zero-width space joins "A" + combining ring above;
+        # only a post-filter NFKC pass composes them into one code point.
+        assert await self._stored_bio(tmp_path, "A\u200b\u030a") == "\u00c5"
+
+    async def test_cap_counts_the_fully_normalised_form(self, tmp_path):
+        store = AgentRegistryStore(tmp_path / "reg.db")
+        await store.init()
+        try:
+            rec = await store.register(framework="hermes", display_name="Cap3 Agent")
+            # 101 x (A + ZWSP + combining ring): 202 code points after
+            # filtering alone, 101 after the post-filter NFKC -- under cap.
+            updated = await store.set_bio(
+                rec["canonical_id"], ("A\u200b\u030a") * 101
+            )
+            assert updated is not None
+            assert updated["bio"] == "\u00c5" * 101
+        finally:
+            await store.close()
+
     async def test_cap_applies_after_nfkc(self, tmp_path):
         store = AgentRegistryStore(tmp_path / "reg.db")
         await store.init()
@@ -510,6 +530,80 @@ class TestDirectoryVisibility:
         )
         assert entries[world["cid_outsider"]]["bio"] == "outsider secret bio"
 
+
+
+    async def test_native_member_row_with_a_user_id_grants_nothing(
+        self, directory_client
+    ):
+        """A native project_members row whose member_id equals a person's
+        user id is not that person's membership: only human rows count."""
+        app = directory_client._app
+        member = await _member_client(app)
+        world = await _visibility_world(app, member._member_uid)
+        pstore = app.state.project_store
+        await pstore.add_member(world["outsider_only"], member._member_uid, "native")
+        async with member:
+            resp = await member.get("/api/agents/directory")
+        assert resp.status_code == 200, resp.text
+        entries = {e["canonical_id"]: e for e in resp.json()["agents"]}
+        assert world["cid_outsider"] not in entries
+        assert "outsider secret bio" not in resp.text
+
+    async def test_native_agent_caller_gets_the_agent_view(self, directory_client):
+        """The middleware stamps a native agent's OWNER as user_id; the
+        directory must still answer with the agent view (owner's agents +
+        shared projects), never the owner's human view."""
+        app = directory_client._app
+        member = await _member_client(app)
+        world = await _visibility_world(app, member._member_uid)
+        registry = app.state.agent_registry
+        priv, _pub = app.state.agent_registry_keypair
+        rec = await registry.register(
+            framework="taos-native",
+            display_name="Native Agent",
+            user_id=member._member_uid,
+            origin="taos-native",
+            handle="@nativeagent",
+        )
+        token = mint_registry_token(
+            rec["canonical_id"],
+            priv,
+            user_id=member._member_uid,
+            framework="taos-native",
+        )
+        async with _bare(app) as bare:
+            resp = await bare.get(
+                "/api/agents/directory",
+                headers={"Authorization": f"Bearer {token}"},
+            )
+        assert resp.status_code == 200, resp.text
+        entries = {e["canonical_id"]: e for e in resp.json()["agents"]}
+        # The owner's agents (itself + the member's own agent). The admin's
+        # agent is reachable by the owner-PERSON via the shared project,
+        # but this agent shares no project with it: absent.
+        assert set(entries) == {rec["canonical_id"], world["cid_member"]}
+        assert "admin agent bio" not in resp.text
+
+    async def test_agent_with_empty_owner_sees_only_itself_and_sharers(
+        self, directory_client
+    ):
+        """Owner matching must not key on an empty user_id: two ownerless
+        agents are not each other's owner's agents."""
+        app = directory_client._app
+        cid_a, token_a = await _register_agent(
+            app, display_name="Orphan A", handle="@orphana", user_id=""
+        )
+        await _register_agent(
+            app, display_name="Orphan B", handle="@orphanb", user_id=""
+        )
+        async with _bare(app) as bare:
+            resp = await bare.get(
+                "/api/agents/directory",
+                headers={"Authorization": f"Bearer {token_a}"},
+            )
+        assert resp.status_code == 200, resp.text
+        ids = [e["canonical_id"] for e in resp.json()["agents"]]
+        assert ids == [cid_a]
 
 @pytest.mark.asyncio
 class TestPaPerOwner:

@@ -740,16 +740,28 @@ async def get_agent_directory(request: Request):
     session_user_id = getattr(request.state, "user_id", None)
     caller_agent_id: Optional[str] = None
     caller_is_admin = False
-    if session_user_id:
-        caller_is_admin = bool(getattr(request.state, "is_admin", False))
-    else:
-        # No session/local-token identity was stamped by the middleware:
-        # the only other credential this surface accepts is the agent's own
-        # registry JWT. check_agent_identity raises 401/403 for a bad or
-        # inactive token and returns None when no Bearer <redacted> presented.
+    # The middleware stamps a registry-agent request with the agent's
+    # OWNER as user_id (via="registry_jwt_native_agent" /
+    # "registry_jwt_deployed_agent"): that stamp means "authenticated as
+    # this agent", NOT "the owner is browsing". Agent callers must take
+    # the agent branch below, or a native agent would receive its owner's
+    # full human view -- every project the owner is in, not just the
+    # projects the agent itself shares.
+    agent_via = getattr(request.state, "via", None) in (
+        "registry_jwt_native_agent",
+        "registry_jwt_deployed_agent",
+    )
+    if agent_via or not session_user_id:
+        # No session/local-token identity was stamped by the middleware
+        # (or the stamp names an agent, above): the credential this
+        # surface accepts is the agent's own registry JWT.
+        # check_agent_identity raises 401/403 for a bad or inactive token
+        # and returns None when no Bearer <redacted> presented.
         caller_agent_id = await check_agent_identity(request)
         if caller_agent_id is None:
             raise HTTPException(status_code=401, detail="authentication required")
+    else:
+        caller_is_admin = bool(getattr(request.state, "is_admin", False))
 
     records = await store.list_all(status="active")
     sponsorships: dict[str, list[str]] = {}
@@ -777,9 +789,14 @@ async def get_agent_directory(request: Request):
         visible = [
             record
             for record in records
-            if record["user_id"] == pa_person
+            if record["canonical_id"] == caller_agent_id
+            or (pa_person and record["user_id"] == pa_person)
             or reachable.intersection(sponsorships[record["canonical_id"]])
         ]
+        # The own-row clause is by canonical id, and the owner clause
+        # requires a NON-EMPTY owner: two ownerless agents (user_id "")
+        # are not each other's owner's agents and must not see each other
+        # without a shared project.
     elif caller_is_admin:
         pa_person = session_user_id
         reachable = None  # admins see all project tags unfiltered

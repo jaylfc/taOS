@@ -157,6 +157,55 @@ describe("PA change confirmation", () => {
     expect(screen.queryByRole("dialog")).toBeNull();
     expect(localStorage.getItem("taos.assistantStudio.pa")).toBe("atlas");
   });
+
+  it("syncs an existing PA pick on load, and serializes preference writes", async () => {
+    const putBodies: string[] = [];
+    let releaseFirstPut: (() => void) | null = null;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn((url: string, init?: RequestInit) => {
+        if (String(url).includes("/api/agents")) {
+          return Promise.resolve({
+            ok: true,
+            json: async () => [
+              { name: "hermes", display_name: "Hermes", registry_canonical_id: "cid-hermes" },
+              { name: "atlas", display_name: "Atlas", registry_canonical_id: "cid-atlas" },
+            ],
+          });
+        }
+        if (String(url).includes("/api/preferences/assistant_studio")) {
+          putBodies.push(String(init?.body ?? ""));
+          if (putBodies.length === 1) {
+            return new Promise((resolve) => {
+              releaseFirstPut = () =>
+                resolve({ ok: true, json: async () => ({}) });
+            });
+          }
+          return Promise.resolve({ ok: true, json: async () => ({}) });
+        }
+        return Promise.resolve({ ok: true, json: async () => [] });
+      }),
+    );
+    localStorage.setItem("taos.assistantStudio.pa", "hermes");
+    const select = await openStudio();
+
+    // The pre-existing pick is mirrored to the per-person preference on
+    // load -- without this, the directory shows no PA until a re-pick.
+    await waitFor(() => expect(putBodies.length).toBe(1));
+    expect(JSON.parse(putBodies[0]).pa_canonical_id).toBe("cid-hermes");
+
+    // A re-pick while the first write is in flight must not start its
+    // own write until the first settles, or the server can apply them
+    // out of order and the directory marks a stale PA.
+    fireEvent.change(select, { target: { value: "atlas" } });
+    fireEvent.click(screen.getByText("Change PA"));
+    await new Promise((r) => setTimeout(r, 50));
+    expect(putBodies.length).toBe(1);
+    expect(releaseFirstPut).not.toBeNull();
+    releaseFirstPut!();
+    await waitFor(() => expect(putBodies.length).toBe(2));
+    expect(JSON.parse(putBodies[1]).pa_canonical_id).toBe("cid-atlas");
+  });
 });
 
 describe("AssistantStudioApp theming", () => {
