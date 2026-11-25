@@ -89,13 +89,19 @@ async def test_deploy_stamps_the_deployer_as_dm_owner(client, app, monkeypatch):
         return {"success": True, "name": req.name, "ip": "10.0.0.43", "llm_key": None,
                 "steps": ["deployment_complete"], "container": f"taos-agent-{req.name}"}
     monkeypatch.setattr("tinyagentos.deployer.deploy_agent", fake_deploy)
-    resp = await client.post("/api/agents/deploy", json={"name": "dmstamp", "framework": "none", "color": "#112233"})
-    assert resp.status_code == 200, resp.text
-    import asyncio
-    await asyncio.sleep(0.3)
-    agent = (await client.get("/api/agents/dmstamp")).json()
-    ch = await app.state.chat_channels.get_channel(agent["chat_channel_id"])
-    assert ch["settings"]["owner_user_id"] == app.state.auth.get_primary_user()["id"]
+    registry = app.state.agent_registry
+    if registry._db is None:
+        await registry.init()
+    try:
+        resp = await client.post("/api/agents/deploy", json={"name": "dmstamp", "framework": "none", "color": "#112233"})
+        assert resp.status_code == 200, resp.text
+        import asyncio
+        await asyncio.sleep(0.3)
+        agent = (await client.get("/api/agents/dmstamp")).json()
+        ch = await app.state.chat_channels.get_channel(agent["chat_channel_id"])
+        assert ch["settings"]["owner_user_id"] == app.state.auth.get_primary_user()["id"]
+    finally:
+        await registry.close()
 
 
 @pytest.mark.asyncio

@@ -90,10 +90,12 @@ async def test_rotated_out_native_token_no_longer_acts_as_the_owner(env):
 
 @pytest.mark.asyncio
 async def test_rotated_out_native_token_is_refused_on_skill_exec(env):
-    fresh = await env.get(
-        "/api/skill-exec/tools", headers={"Authorization": f"Bearer {env.mint()}"})
-    assert fresh.status_code == 200, fresh.text
+    url = "/api/skill-exec/no_such_skill/call"
+    body = {"args": {"agent_name": "x"}}
+    fresh = await env.post(url, json=body, headers={"Authorization": f"Bearer {env.mint()}"})
+    # The current token passes the gate (the skill itself does not exist).
+    assert fresh.status_code != 403, fresh.text
     old = env.mint()
     await env.registry.bump_token_min_iat(env.cid, int(time.time()) + 3600)
-    stale = await env.get("/api/skill-exec/tools", headers={"Authorization": f"Bearer {old}"})
-    assert stale.status_code in (401, 403), stale.text
+    stale = await env.post(url, json=body, headers={"Authorization": f"Bearer {old}"})
+    assert stale.status_code == 403, stale.text
