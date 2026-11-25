@@ -1149,7 +1149,10 @@ async def mint_collab_invite(
             if peer_link is None or not peer_link.get("endpoints"):
                 delivery_error = "no peer endpoints for contact"
             else:
-                import httpx
+                from tinyagentos.routes.desktop_browser.ssrf import (
+                    guarded_async_client,
+                    validate_url_or_raise,
+                )
 
                 outbound_token = peer_link.get("outbound_token", "")
                 delivered = False
@@ -1159,7 +1162,11 @@ async def mint_collab_invite(
                 ):
                     inbox_url = f"{ep['url'].rstrip('/')}/api/peer/inbox"
                     try:
-                        async with httpx.AsyncClient(timeout=10.0) as client:
+                        # The endpoint URL is peer-supplied: refuse loopback,
+                        # link-local, private and CGNAT targets, and connect
+                        # only to the address that was checked.
+                        validate_url_or_raise(inbox_url)
+                        async with guarded_async_client(timeout=10.0) as client:
                             resp = await client.post(
                                 inbox_url,
                                 json={"envelope": envelope},
