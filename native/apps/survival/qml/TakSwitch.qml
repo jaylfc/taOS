@@ -50,6 +50,9 @@ C.ScrollView {
             const want = root.nav.demo.entry !== undefined ? root.nav.demo.entry : (root.choices.length > 0 ? root.choices[0].id : "")
             if (want === "" ) return
             if (root.entryId === "") { root.entryId = want; root.fw.planFlash(root.row.fwDeviceId, want); root.chosen = "review"; return }
+            // swgo=run starts the switch with the board name typed right, swgo=wrong with a wrong one (the manager refuses it)
+            if (root.nav.demo.swgo !== undefined && root.fw.plan.board && root.sw.step === "idle")
+                root.sw.begin(root.rowKey, root.entryId, root.nav.demo.swgo === "wrong" ? qsTr("Wrong name") : root.fw.boardName(root.fw.plan.board), true)
             stop()
         }
     }

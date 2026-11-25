@@ -133,9 +133,9 @@ C.ScrollView {
                 RowLayout {
                     spacing: Look.space2
                     Glyph { name: "clock"; size: 16; stroke: 1.8; color: Look.textSecondary }
-                    TaosText { text: qsTr("Reticulum is coming"); font.pixelSize: Look.bodyMedium; font.weight: Font.DemiBold; Layout.fillWidth: true }
-                    Chip { text: qsTr("Not available yet") }
+                    TaosText { text: qsTr("Reticulum is coming"); font.pixelSize: Look.bodyMedium; font.weight: Font.DemiBold; Layout.fillWidth: true; wrapMode: Text.Wrap }
                 }
+                Chip { text: qsTr("Not available yet") }
                 TaosText { Layout.fillWidth: true; wrapMode: Text.Wrap; font.pixelSize: Look.small; color: Look.textSecondary
                            text: qsTr("There is no Reticulum driver in the mesh engine yet, so nothing can be connected or sent on it.") }
                 TaosText { Layout.fillWidth: true; wrapMode: Text.Wrap; font.pixelSize: Look.small; font.weight: Font.DemiBold; text: qsTr("What it will need") }

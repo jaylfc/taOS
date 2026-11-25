@@ -69,3 +69,9 @@ add_executable(fake-survival-engines fake_engines_main.cpp fakemesh.h)
 target_link_libraries(fake-survival-engines PRIVATE Qt6::Test Qt6::Network Qt6::Core)
 target_include_directories(fake-survival-engines PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 target_compile_definitions(fake-survival-engines PRIVATE MESH_FIXTURES_DIR="${CMAKE_CURRENT_SOURCE_DIR}/fixtures")
+
+# Writes the test ZIM and PMTiles into a folder, for pictures. Never installed.
+add_executable(make-survival-fixture-packs make_fixture_packs.cpp fixtures.h)
+target_link_libraries(make-survival-fixture-packs PRIVATE taos_survival_core)
+target_include_directories(make-survival-fixture-packs PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+taos_survival_rpath(make-survival-fixture-packs)
