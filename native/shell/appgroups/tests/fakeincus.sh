@@ -30,8 +30,18 @@ case "$1" in
   exec)
     ct="$2"
     case "$*" in
+      *content-sum*) h=aaaa; [ -n "$FAKE_CONTENT_MISMATCH" ] && [ "$ct" != "user-apps" ] && h=bbbb
+                     if [ -n "$FAKE_COUNT_MISMATCH" ] && [ "$ct" != "user-apps" ]; then echo "2 50 $h"; else echo "3 100 $h"; fi ;;
       *sha256sum*) echo "$FAKE_SHA  /var/tmp/x" ;;
-      *--show-keys*) echo "fpr:::::::::$FAKE_FPR:" ;;
+      *--show-keys*)
+        # a key listing: one primary key by default. FAKE_KEY_EXTRA adds a second primary key, FAKE_KEY_SUBONLY puts the
+        # expected fingerprint on a subkey of some other primary key, FAKE_KEY_SWAP_AFTER_INSTALL makes the key stored
+        # on disk (the /etc/apt/keyrings file) a different one from what was downloaded.
+        case "$*" in *keyrings*) [ -n "$FAKE_STORED_FPR" ] && FAKE_FPR="$FAKE_STORED_FPR" ;; esac
+        if [ -n "$FAKE_KEY_SUBONLY" ]; then echo "pub:-:4096:1:1111111111111111:1700000000:::-:::scESC::::::23::0:"; echo "fpr:::::::::0000000000000000000000000000000000000000:"; echo "sub:-:4096:1:2222222222222222:1700000000::::::s::::::23:"; echo "fpr:::::::::$FAKE_FPR:"
+        else echo "pub:-:4096:1:1111111111111111:1700000000:::-:::scESC::::::23::0:"; echo "fpr:::::::::$FAKE_FPR:"; echo "sub:-:4096:1:3333333333333333:1700000000::::::e::::::23:"; echo "fpr:::::::::5555555555555555555555555555555555555555:"
+          [ -n "$FAKE_KEY_EXTRA" ] && { echo "pub:-:4096:1:4444444444444444:1700000000:::-:::scESC::::::23::0:"; echo "fpr:::::::::9999999999999999999999999999999999999999:"; }
+        fi ;;
       *"/proc/"*environ*) [ -n "$FAKE_RUNNING" ] && echo "/proc/4242" ;;
       *"-printf"*) if [ -n "$FAKE_COUNT_MISMATCH" ] && [ "$ct" != "user-apps" ]; then echo "2 50"; else echo "3 100"; fi ;;
       # a bare `find <home>` on a home that does not exist yet prints an error on the merged output (seen on a real container)

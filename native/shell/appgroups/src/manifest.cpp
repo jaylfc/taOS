@@ -142,6 +142,13 @@ bool urlAllowed(const QString &url, QString *why)
     return ok;
 }
 
+bool validMimeType(const QString &t)
+{
+    static const QRegularExpression scheme(u"\\Ax-scheme-handler/[a-z][a-z0-9+.-]{0,40}\\z"_s);
+    static const QRegularExpression plain(u"\\A(application|audio|font|image|inode|message|model|multipart|text|video)/[A-Za-z0-9][A-Za-z0-9.+_-]{0,100}\\z"_s);
+    return scheme.match(t).hasMatch() || plain.match(t).hasMatch();
+}
+
 bool parseManifest(const QByteArray &json, Manifest *out, QString *error)
 {
     QJsonParseError pe;
@@ -212,6 +219,9 @@ bool parseManifest(const QByteArray &json, Manifest *out, QString *error)
     if (m.arch.isEmpty())
         return fail(error, u"manifest needs arch"_s);
     m.mimeTypes = strList(o.value(u"mime_types"_s));
+    for (const QString &mt : m.mimeTypes)
+        if (!validMimeType(mt))
+            return fail(error, u"mime_types has an entry that is not a plain type (%1)"_s.arg(mt.left(40).replace(QRegularExpression(u"[^A-Za-z0-9/+._-]"_s), u"?"_s)));
     const QJsonObject launch = o.value(u"launch"_s).toObject();
     m.launchArgv = strList(launch.value(u"argv"_s));
     m.launchEnv = launch.value(u"env"_s).toObject();

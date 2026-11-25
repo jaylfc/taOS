@@ -758,8 +758,16 @@ void StoreEngine::checkAppUpdate(const QString &id)
         if (code != 0 || !o.contains(u"update_available"_s)) {
             m_update[id] = QVariantMap{{u"state"_s, u"failed"_s}, {u"text"_s, o.value(u"error"_s).toString(tr("Could not find out what is current."))}};
         } else if (o.value(u"update_available"_s).toBool()) {
+            // What was and was not verified is shown with the version, and a version only the publisher's feed vouches for
+            // is installed only by the person's own press, with a confirmation for exactly this version and checksum.
+            const QJsonObject ver = o.value(u"verification"_s).toObject();
+            const bool unverified = !ver.isEmpty() && !ver.value(u"checksum_pinned_in_catalogue"_s).toBool();
+            QString text = tr("Version %1 is available.").arg(o.value(u"latest_version"_s).toString());
+            if (!ver.isEmpty())
+                text += u" "_s + ver.value(u"summary"_s).toString();
             m_update[id] = QVariantMap{{u"state"_s, u"available"_s}, {u"latest"_s, o.value(u"latest_version"_s).toString()},
-                                       {u"text"_s, tr("Version %1 is available.").arg(o.value(u"latest_version"_s).toString())}};
+                                       {u"unverified"_s, unverified}, {u"text"_s, text},
+                                       {u"confirmSubject"_s, unverified ? u"%1@%2#%3"_s.arg(id, o.value(u"latest_version"_s).toString(), ver.value(u"sha256"_s).toString()) : QString()}};
         } else {
             m_update[id] = QVariantMap{{u"state"_s, u"current"_s}, {u"text"_s, tr("Up to date.")}};
         }
@@ -785,9 +793,10 @@ void StoreEngine::updateContainerApp(const QString &id)
     s.op = u"update"_s;
     s.state = u"installing"_s;
     s.text = tr("Updating");
+    const QString subject = m_update.value(id).value(u"confirmSubject"_s).toString();
     m_update[id] = QVariantMap{{u"state"_s, u"updating"_s}, {u"text"_s, tr("Updating")}};
     bump();
-    m_capps->update(id);
+    m_capps->update(id, subject);
 }
 
 void StoreEngine::refreshContainerInfo()

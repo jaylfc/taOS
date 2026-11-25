@@ -10,6 +10,9 @@
 
 namespace TaosAppGroups {
 
+// x-scheme-handler/<scheme> or a plain type/subtype token: no newline, ";", "=" or anything else a launcher entry reads.
+bool validMimeType(const QString &t);
+
 struct Step {
     QString op;          // apt-source | apt-install | download-tar | download-deb | symlink | suid-helper
     QJsonObject args;

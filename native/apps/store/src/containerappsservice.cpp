@@ -7,12 +7,22 @@
 #include <QJsonObject>
 #include <QPointer>
 #include <QProcess>
+#include <QProcessEnvironment>
 
 using namespace Qt::StringLiterals;
 
 namespace Taos::Store {
 
-ContainerAppsService::ContainerAppsService(QObject *parent) : QObject(parent) {}
+ContainerAppsService::ContainerAppsService(QObject *parent) : QObject(parent), m_gate(std::make_unique<TaosAppGroups::OwnerGate>())
+{
+    QString err;
+    if (!m_gate->start(&err))
+        qWarning("Store: licence confirmations are unavailable: %s", qPrintable(err));
+}
+
+ContainerAppsService::~ContainerAppsService() = default;
+
+QString ContainerAppsService::confirm(const QString &action, const QString &subject) { return m_gate->mint(action, subject); }
 
 QString ContainerAppsService::program()
 {
@@ -60,7 +70,7 @@ QSet<QString> ContainerAppsService::installedIds() const
 }
 
 static void runStreaming(QObject *owner, ContainerAppsService *svc, const QString &id, const QStringList &args, const QString &okText,
-                         const QString &failPrefix);
+                         const QString &failPrefix, const QString &confirmation = {});
 
 QHash<QString, QJsonObject> ContainerAppsService::installedInfo() const
 {
@@ -106,9 +116,14 @@ void ContainerAppsService::move(const QString &id, const QString &group)
 }
 
 static void runStreaming(QObject *owner, ContainerAppsService *svc, const QString &id, const QStringList &args, const QString &okText,
-                         const QString &failPrefix)
+                         const QString &failPrefix, const QString &confirmation)
 {
     auto *p = new QProcess(owner);
+    if (!confirmation.isEmpty()) {
+        QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
+        env.insert(u"TAOS_OWNER_NONCE"_s, confirmation);   // not on the command line, where other programs can list it
+        p->setProcessEnvironment(env);
+    }
     auto buf = std::make_shared<QByteArray>();
     auto doneLine = std::make_shared<QJsonObject>();   // the engine's closing line, even when it was read with the progress lines
     QObject::connect(p, &QProcess::readyReadStandardOutput, owner, [=] {
@@ -143,23 +158,45 @@ static void runStreaming(QObject *owner, ContainerAppsService *svc, const QStrin
 void ContainerAppsService::install(const QString &id, const QString &target, bool acceptedHostWarning, bool licenceAccepted)
 {
     QStringList a = {u"install"_s, id, u"--json"_s, u"--target"_s, target.isEmpty() ? u"group:default"_s : target};
-    if (licenceAccepted)
-        a << u"--accept-licence"_s << id << u"--accepted-by"_s << qEnvironmentVariable("USER", u"the person using this computer"_s) + u" (in the Store)"_s;
     if (acceptedHostWarning)
         a << u"--accept-host-warning"_s;
-    runStreaming(this, this, id, a, tr("Installed."), tr("The install did not finish."));
+    // The licence was shown on the consent card and the person pressed "I agree and install": that press mints the
+    // confirmation the engine insists on (one per press; the person is named from this session, not from text).
+    QString nonce;
+    if (licenceAccepted) {
+        nonce = confirm(QLatin1String(TaosAppGroups::kActionLicence), id);
+        if (nonce.isEmpty()) {
+            Q_EMIT finished(id, false, tr("taOS could not record that you accepted the licence, so nothing was installed."));
+            return;
+        }
+    }
+    runStreaming(this, this, id, a, tr("Installed."), tr("The install did not finish."), nonce);
 }
 
 bool ContainerAppsService::acceptLicence(const QString &id)
 {
+    const QString nonce = confirm(QLatin1String(TaosAppGroups::kActionLicence), id);
+    if (nonce.isEmpty())
+        return false;
     QProcess p;
-    p.start(program(), {u"licence"_s, u"accept"_s, id, u"--accepted-by"_s, qEnvironmentVariable("USER", u"the person using this computer"_s) + u" (in the Store)"_s, u"--json"_s});
+    QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
+    env.insert(u"TAOS_OWNER_NONCE"_s, nonce);
+    p.setProcessEnvironment(env);
+    p.start(program(), {u"licence"_s, u"accept"_s, id, u"--json"_s});
     return p.waitForFinished(8000) && p.exitCode() == 0;
 }
 
-void ContainerAppsService::update(const QString &id)
+void ContainerAppsService::update(const QString &id, const QString &confirmSubject)
 {
-    runStreaming(this, this, id, {u"update"_s, id, u"--json"_s}, tr("Updated."), tr("The update did not finish."));
+    QString nonce;
+    if (!confirmSubject.isEmpty()) {
+        nonce = confirm(QLatin1String(TaosAppGroups::kActionUpdate), confirmSubject);
+        if (nonce.isEmpty()) {
+            Q_EMIT finished(id, false, tr("taOS could not record your confirmation, so nothing was updated."));
+            return;
+        }
+    }
+    runStreaming(this, this, id, {u"update"_s, id, u"--json"_s}, tr("Updated."), tr("The update did not finish."), nonce);
 }
 
 void ContainerAppsService::remove(const QString &id, bool purgeData)

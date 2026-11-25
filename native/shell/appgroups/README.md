@@ -6,15 +6,14 @@ launcher entry on the host and runs the app's window in the person's own desktop
 
     taos-appgroups ensure-default | groups | group create <name> [--display-name TEXT] | catalog | list [--available]
     taos-appgroups install <app-id> [--target group:<name>|host|worker:<name>] [--accept-host-warning]
-                           [--accept-licence <app-id>] [--accepted-by TEXT]
     taos-appgroups move <app-id> --to group:<name>
     taos-appgroups update <app-id> [--check] | backups | backups delete <app-id> <stamp>
     taos-appgroups remove <app-id> [--purge-data] | run <app-id> [args] | status | launchers sync
 
 Every command takes `--json`. Exit codes: 0 ok, 1 failed, 2 usage, 3 not found, 4 incus unavailable or not allowed,
 5 refused (manifest, machine, policy), 6 an install step failed, 7 conflict (also: the app is running), 8 no desktop session,
-9 target not available yet (`host` and `worker:` are designed but not built; they never fall back to a group), 10 the
-app's licence has not been accepted.
+9 target not available yet (`host` and `worker:` are designed but not built; they never fall back to a group), 10 needs
+the person's own confirmation in the Store (a licence to accept, or an update only the publisher's feed vouches for).
 
 ## Manifest (`catalog/<id>.json`, kind `container-desktop-app`, schema 1 or 2)
 
@@ -53,9 +52,23 @@ entries of kind `containerapp`. The Store UI calls `StoreEngine::install/remove/
 
 Schema 2 changes `licence` from a string to `{name, url, accept: required|none}`. An engine that only knows schema 1
 refuses a schema 2 manifest, so it can never skip the gate. With `accept: required`, `install` refuses (exit 10, the
-licence name and URL in the result) until the caller passes `--accept-licence <app-id>`; the acceptance is stored in
-`installed.json` as `licence_accepted` {name, url, accepted_at, accepted_by}. The Store shows the licence and passes the
-flag only after the person agrees. Schema 1 manifests keep working and need no acceptance.
+licence name and URL in the result, and a sentence saying the person must accept it in the Store) until the person's
+confirmation arrives; the acceptance is stored in `installed.json` as `licence_accepted` {name, url, accepted_at,
+accepted_by}. Schema 1 manifests keep working and need no acceptance.
+
+### The person's confirmation (owner nonce)
+
+No flag, environment value or text on the command line can accept a licence. The Store (the person's UI) shows the
+licence, and when the person presses "I agree" it mints a single-use nonce scoped to that action and subject
+(`licence.accept` for the app id, `update.unverified` for `<id>@<version>#<sha256>`), valid for two minutes, never cached
+(one per press). It hands the nonce to the command in the environment variable `TAOS_OWNER_NONCE`. The engine asks the
+Store over a 0600 socket in a 0700 per-user directory (`$XDG_RUNTIME_DIR/taos/`) to use the nonce up; the Store checks the
+peer uid with SO_PEERCRED, the engine checks the Store's uid the same way, and the socket has no request that mints.
+`accepted_by` is the account the Store runs as, taken from that answer, never from text. Without a valid nonce the
+command exits 10 and prints what the person must accept. The same pattern as `native/firmware` (`owner_nonce`). Limit,
+as there: a process running as the same user can still reach the socket (or serve its own); keeping an agent away from it
+takes a separate uid or a sandbox that hides the directory. `--accept-licence` and `--accepted-by` are accepted on the
+command line only so old callers fail with the exit 10 sentence instead of a usage error; they do nothing.
 
 Optional fields: `package` (the apt package left installed; its version is recorded as `installed_version`), `data`
 (paths in the app's home that hold its state; absent means the whole home, which is what `move` copies), `update_feed`
@@ -74,9 +87,13 @@ listed by `backups` and removed only by `backups delete`.
 ## Updates
 
 `update <id> --check` asks the app's apt source (`apt-cache policy`) or the publisher's feed what is current; `update <id>`
-installs it, never while the app runs. An apt app upgrades only its own package. A feed app downloads the feed's deb and
-installs it only if its SHA-256 equals the one in the feed. The feed and the checksum come from the same publisher over
-HTTPS; a publisher that does not sign them cannot be verified further.
+installs it, never while the app runs. An apt app upgrades only its own package; the stored signing key is checked again
+on every update (exactly one primary key, the pinned fingerprint), as it is when it is added. A feed app downloads the
+feed's deb and installs it only if its SHA-256 equals the one in the feed, and: for the version the catalogue pins, the
+feed's checksum must equal the catalogue's (a feed that disagrees is refused). For a newer version the checksum comes only
+from the same publisher feed as the download, which proves nothing about who wrote the feed: `--check` reports that in
+`verification` (what was and was not verified), the Store shows it and the install needs the person's own press
+(`update.unverified` confirmation, exit 10 without it). It is recorded in `update_history` with who confirmed.
 
 ## Icons
 
@@ -96,7 +113,7 @@ container lock and retry when Incus answers "ETag doesn't match", so two launche
 ## Licence accepted later
 
 `licence accept <id>` records the acceptance of the licence the catalogue now names, for an app installed before licences
-were recorded. It installs nothing.
+were recorded. It installs nothing, and needs the Store's confirmation like `install`.
 
 ## Links and sign-in (the URL broker, engine part)
 
@@ -106,7 +123,12 @@ opens a link the way the desktop should: only `http(s)` links (in the chosen bro
 custom schemes an installed app registers in its manifest `mime_types` (`antigravity://`, `claude://`: the link goes back to
 that app, in its group). Everything else (`file:`, `javascript:`, `data:`, an unregistered scheme, control characters) is
 refused with exit 5. When a web link carries `redirect_uri=http://127.0.0.1:PORT/...` and the browser lives in another
-group, that one port is forwarded: a proxy on the app's group exposes its loopback port on the host loopback, a proxy on the
-browser's group listens on its own loopback and reaches it. Both are removed after the first connection (plus a short grace)
-or after `TAOS_APPGROUPS_FORWARD_SECONDS` (default 180). Not built yet: the shim inside each group that sends `xdg-open`,
+group, that one port is forwarded through a listener of this command on the host loopback: the browser's group reaches it, and it
+passes on only an HTTP GET for the exact path of the `redirect_uri` (anything else gets a 404 and does not count); the app's
+group is reached over a unix socket that only the person's uid can open (the proxy device sets uid and mode 0600). The
+browser-side connection comes from the container runtime's proxy under another uid, so it cannot be told from another
+local user: what a local user could do there is limited to that one path, once, with the app's own state/PKCE check still
+to pass. Everything is removed after the callback was relayed or after `TAOS_APPGROUPS_FORWARD_SECONDS` (default 180).
+A move also compares the copy by content (file count, bytes and a SHA-256 over every file's path and content) and holds a
+per-app lock from before its running check until the switch, so a launch cannot slip in between. Not built yet: the shim inside each group that sends `xdg-open`,
 `$BROWSER` and the portal's OpenURI to `open-url`, and the Store/Settings screens for the choices.

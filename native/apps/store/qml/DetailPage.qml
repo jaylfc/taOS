@@ -209,7 +209,7 @@ Item {
                     TaosButton {
                         objectName: "updateButton"
                         readonly property string us: parent.up.state ? parent.up.state : "idle"
-                        text: us === "available" ? qsTr("Update") : qsTr("Check for updates")
+                        text: us === "available" ? (parent.up.unverified ? qsTr("Install anyway") : qsTr("Update")) : qsTr("Check for updates")
                         variant: us === "available" ? "primary" : "outline"; compact: true
                         enabled: us !== "checking" && us !== "updating" && (page.st.state === "idle" || page.st.state === "installed")
                         accessibleName: us === "available" ? qsTr("Install the new version of %1").arg(page.e.name) : qsTr("Check whether %1 has an update").arg(page.e.name)

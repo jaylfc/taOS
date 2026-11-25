@@ -8,8 +8,22 @@
 #include <QtTest>
 
 #include <unistd.h>
+#include <fcntl.h>
+#include <sys/file.h>
 
+#include "appgroups.h"
 #include "manifest.h"
+#include "owner.h"
+#include "callbackbroker.h"
+
+#include <memory>
+#include <thread>
+#include <pwd.h>
+#include <poll.h>
+#include <sys/socket.h>
+#include <sys/un.h>
+#include <netinet/in.h>
+#include <arpa/inet.h>
 
 using namespace Qt::StringLiterals;
 using namespace TaosAppGroups;
@@ -36,10 +50,27 @@ class TstAppGroups : public QObject
     QString fakeDir, dataDir, xdgData, catDir;
 
     struct Run { int code; QJsonObject last; QString err; QString raw; };
-    Run cli(const QStringList &args, const QMap<QString, QString> &env = {})
+    std::unique_ptr<OwnerGate> gate;   // stands in for the Store: the only thing that can mint a confirmation
+    QString runDir;
+    // The marker "--test-owner-ok <app-id>" in the arguments means "the person pressed the Store's accept button for
+    // that app": a real nonce is minted by the gate and handed to the CLI the way the Store does. Without the marker the
+    // CLI gets nothing, exactly like an agent with only a command line.
+    Run cli(QStringList args, QMap<QString, QString> env = {})
     {
+        const int mk = int(args.indexOf(u"--test-owner-ok"_s));
+        if (mk >= 0 && mk + 1 < args.size()) {
+            env.insert(u"TAOS_OWNER_NONCE"_s, gate->mint(QLatin1String(kActionLicence), args[mk + 1]));
+            args.remove(mk, 2);
+        }
+        const int mu = int(args.indexOf(u"--test-owner-update"_s));
+        if (mu >= 0 && mu + 1 < args.size()) {
+            env.insert(u"TAOS_OWNER_NONCE"_s, gate->mint(QLatin1String(kActionUpdate), args[mu + 1]));
+            args.remove(mu, 2);
+        }
         QProcess p;
         QProcessEnvironment e = QProcessEnvironment::systemEnvironment();
+        e.insert(u"TAOS_APPGROUPS_OWNER_DIR"_s, runDir);
+        e.remove(u"TAOS_OWNER_NONCE"_s);
         e.insert(u"TAOS_APPGROUPS_INCUS"_s, QStringLiteral(FAKE_INCUS));
         e.insert(u"FAKE_DIR"_s, fakeDir);
         e.insert(u"FAKE_OWNER"_s, QString::number(::getuid()));
@@ -80,12 +111,18 @@ private slots:
         xdgData = m_tmp.path() + u"/xdg"_s;
         catDir = m_tmp.path() + u"/cat"_s;
         QDir().mkpath(fakeDir);
+        runDir = m_tmp.path() + u"/run"_s;
+        qputenv("TAOS_APPGROUPS_OWNER_DIR", runDir.toUtf8());
+        gate = std::make_unique<OwnerGate>();
+        QString gerr;
+        QVERIFY2(gate->start(&gerr), qPrintable(gerr));
         QDir().mkpath(m_tmp.path() + u"/home"_s);
         // a GPU with two render nodes and a card node: the lowest render node is granted, never the card
         QDir().mkpath(m_tmp.path() + u"/dri"_s);
         for (const char *n : {"card0", "renderD129", "renderD130"})
             writeFile(m_tmp.path() + u"/dri/"_s + QLatin1String(n), "x");
     }
+    void cleanupTestCase() { gate.reset(); }
     void init()
     {
         QFile::remove(fakeDir + u"/calls.log"_s);
@@ -131,7 +168,7 @@ private slots:
     }
     void installWritesLauncherAndRecord()
     {
-        const Run r = cli({u"install"_s, u"antigravity"_s, u"--accept-licence"_s, u"antigravity"_s, u"--json"_s});
+        const Run r = cli({u"install"_s, u"antigravity"_s, u"--test-owner-ok"_s, u"antigravity"_s, u"--json"_s});
         QVERIFY2(r.code == 0, qPrintable(r.raw + r.err));
         QCOMPARE(r.last.value(u"desktop_id"_s).toString(), u"taos-appgroups-antigravity"_s);
         const QString d = QString::fromUtf8(readAll(xdgData + u"/applications/taos-appgroups-antigravity.desktop"_s));
@@ -150,12 +187,12 @@ private slots:
         // Every event line is one JSON object (the Store parses them).
         for (const QString &l : r.raw.trimmed().split(u'\n'))
             QVERIFY2(!QJsonDocument::fromJson(l.toUtf8()).isNull(), qPrintable(l));
-        const Run again = cli({u"install"_s, u"antigravity"_s, u"--accept-licence"_s, u"antigravity"_s});
+        const Run again = cli({u"install"_s, u"antigravity"_s, u"--test-owner-ok"_s, u"antigravity"_s});
         QCOMPARE(again.code, 7);
     }
     void wrongChecksumIsRefusedAndLeavesNothing()
     {
-        const Run r = cli({u"install"_s, u"antigravity"_s, u"--accept-licence"_s, u"antigravity"_s}, {{u"FAKE_SHA"_s, u"00"_s}});
+        const Run r = cli({u"install"_s, u"antigravity"_s, u"--test-owner-ok"_s, u"antigravity"_s}, {{u"FAKE_SHA"_s, u"00"_s}});
         QCOMPARE(r.code, 6);
         QVERIFY2(r.err.contains(u"pinned checksum"_s), qPrintable(r.err));
         QVERIFY(!QFileInfo::exists(xdgData + u"/applications/taos-appgroups-antigravity.desktop"_s));
@@ -165,7 +202,7 @@ private slots:
     {
         const QString empty = m_tmp.path() + u"/nodri"_s;
         QDir().mkpath(empty);
-        const Run r = cli({u"install"_s, u"antigravity"_s, u"--accept-licence"_s, u"antigravity"_s}, {{u"TAOS_APPGROUPS_DRI_DIR"_s, empty}});
+        const Run r = cli({u"install"_s, u"antigravity"_s, u"--test-owner-ok"_s, u"antigravity"_s}, {{u"TAOS_APPGROUPS_DRI_DIR"_s, empty}});
         QVERIFY2(r.code == 0, qPrintable(r.raw + r.err));
         QVERIFY2(r.err.contains(u"no GPU render node"_s), qPrintable(r.err));
         QVERIFY(!QString::fromUtf8(readAll(fakeDir + u"/calls.log"_s)).contains(u"unix-char"_s));
@@ -179,7 +216,7 @@ private slots:
             .replace(u"\"description\": \"Google's"_s, u"\"description\": \"line one\\nHidden=true\\n Google's"_s)
             .replace(u"/opt/antigravity"_s, u"/opt/nl"_s);
         writeFile(catDir + u"/nl.json"_s, text.toUtf8());
-        const Run r = cli({u"install"_s, u"nl"_s, u"--accept-licence"_s, u"nl"_s}, {{u"TAOS_APPGROUPS_CATALOG"_s, catDir}});
+        const Run r = cli({u"install"_s, u"nl"_s, u"--test-owner-ok"_s, u"nl"_s}, {{u"TAOS_APPGROUPS_CATALOG"_s, catDir}});
         QVERIFY2(r.code == 0, qPrintable(r.raw + r.err));
         const QString d = QString::fromUtf8(readAll(xdgData + u"/applications/taos-appgroups-nl.desktop"_s));
         QVERIFY(d.contains(u"Name=Evil Exec=/bin/false X-Bad=1\n"_s));
@@ -196,7 +233,7 @@ private slots:
             .replace(u"\"op\": \"symlink\""_s, u"\"op\": \"apt-source\", \"name\": \"keyed\", \"uri\": \"https://us-central1-apt.pkg.dev/x/\", \"suite\": \"s\", \"components\": [\"main\"], \"key_url\": \"https://us-central1-apt.pkg.dev/k.gpg\", \"key_fingerprint\": \"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\" }, {\"op\": \"symlink\""_s)
             .replace(u"/opt/antigravity"_s, u"/opt/keyed"_s);
         writeFile(catDir + u"/keyed.json"_s, text.toUtf8());
-        const Run r = cli({u"install"_s, u"keyed"_s, u"--accept-licence"_s, u"keyed"_s}, {{u"TAOS_APPGROUPS_CATALOG"_s, catDir}});
+        const Run r = cli({u"install"_s, u"keyed"_s, u"--test-owner-ok"_s, u"keyed"_s}, {{u"TAOS_APPGROUPS_CATALOG"_s, catDir}});
         QCOMPARE(r.code, 6);
         QVERIFY2(r.err.contains(u"expected fingerprint"_s), qPrintable(r.err));
     }
@@ -211,7 +248,7 @@ private slots:
     }
     void removeKeepsDataUnlessAsked()
     {
-        QCOMPARE(cli({u"install"_s, u"antigravity"_s, u"--accept-licence"_s, u"antigravity"_s}).code, 0);
+        QCOMPARE(cli({u"install"_s, u"antigravity"_s, u"--test-owner-ok"_s, u"antigravity"_s}).code, 0);
         QFile::remove(fakeDir + u"/calls.log"_s);
         const Run r = cli({u"remove"_s, u"antigravity"_s, u"--json"_s});
         QCOMPARE(r.code, 0);
@@ -225,7 +262,7 @@ private slots:
         QVERIFY(!calls.contains(u"libgbm1"_s));
         QVERIFY(!calls.contains(u"libxkbcommon0"_s));
         QVERIFY(!QFileInfo::exists(xdgData + u"/applications/taos-appgroups-antigravity.desktop"_s));
-        QCOMPARE(cli({u"install"_s, u"antigravity"_s, u"--accept-licence"_s, u"antigravity"_s}).code, 0);
+        QCOMPARE(cli({u"install"_s, u"antigravity"_s, u"--test-owner-ok"_s, u"antigravity"_s}).code, 0);
         QFile::remove(fakeDir + u"/calls.log"_s);
         QCOMPARE(cli({u"remove"_s, u"antigravity"_s, u"--purge-data"_s}).code, 0);
         QVERIFY(QString::fromUtf8(readAll(fakeDir + u"/calls.log"_s)).contains(u"rm -rf /home/taos/apps/antigravity"_s));
@@ -245,18 +282,19 @@ private slots:
     }
     void targetsHostAndWorkerAreNotSilentlyFallenBack()
     {
-        const Run h = cli({u"install"_s, u"antigravity"_s, u"--accept-licence"_s, u"antigravity"_s, u"--target"_s, u"host"_s, u"--accept-host-warning"_s, u"--json"_s});
+        const Run h = cli({u"install"_s, u"antigravity"_s, u"--test-owner-ok"_s, u"antigravity"_s, u"--target"_s, u"host"_s, u"--accept-host-warning"_s, u"--json"_s});
         QCOMPARE(h.code, 9);
         QVERIFY(h.last.value(u"error"_s).toString().contains(u"not available yet"_s));
-        QCOMPARE(cli({u"install"_s, u"antigravity"_s, u"--accept-licence"_s, u"antigravity"_s, u"--target"_s, u"worker:desk2"_s}).code, 9);
-        QCOMPARE(cli({u"install"_s, u"antigravity"_s, u"--accept-licence"_s, u"antigravity"_s, u"--target"_s, u"bogus"_s}).code, 2);
+        QCOMPARE(cli({u"install"_s, u"antigravity"_s, u"--test-owner-ok"_s, u"antigravity"_s, u"--target"_s, u"worker:desk2"_s}).code, 9);
+        QCOMPARE(cli({u"install"_s, u"antigravity"_s, u"--test-owner-ok"_s, u"antigravity"_s, u"--target"_s, u"bogus"_s}).code, 2);
         QVERIFY(!QFileInfo::exists(xdgData + u"/applications/taos-appgroups-antigravity.desktop"_s));
         QVERIFY(!QString::fromUtf8(readAll(fakeDir + u"/calls.log"_s)).contains(u"exec"_s));
-        QCOMPARE(cli({u"install"_s, u"antigravity"_s, u"--accept-licence"_s, u"antigravity"_s, u"--target"_s, u"group:default"_s}).code, 0);
+        QCOMPARE(cli({u"install"_s, u"antigravity"_s, u"--test-owner-ok"_s, u"antigravity"_s, u"--target"_s, u"group:default"_s}).code, 0);
     }
 
     // ---------------------------------------------------------------- schema 2, licence, new manifests
 
+    static QString theAccount() { return QString::fromLocal8Bit(::getpwuid(::geteuid())->pw_name); }
     QString callsLog() { return QString::fromUtf8(readAll(fakeDir + u"/calls.log"_s)); }
     QJsonObject indexRec(const QString &id)
     {
@@ -350,12 +388,12 @@ private slots:
         QVERIFY(!QFileInfo::exists(xdgData + u"/applications/taos-appgroups-claude-desktop.desktop"_s));
         QVERIFY2(!callsLog().contains(u"apt-get"_s), "nothing is installed before the licence is accepted");
         QCOMPARE(cli({u"install"_s, u"claude-desktop"_s, u"--accept-licence"_s, u"kilo-desktop"_s}, claudeEnv()).code, 2);   // wrong id
-        const Run ok = cli({u"install"_s, u"claude-desktop"_s, u"--accept-licence"_s, u"claude-desktop"_s, u"--accepted-by"_s, u"jay (in session)"_s, u"--json"_s}, claudeEnv());
+        const Run ok = cli({u"install"_s, u"claude-desktop"_s, u"--test-owner-ok"_s, u"claude-desktop"_s, u"--accepted-by"_s, u"someone else entirely"_s, u"--json"_s}, claudeEnv());
         QVERIFY2(ok.code == 0, qPrintable(ok.raw + ok.err));
         const QJsonObject acc = indexRec(u"claude-desktop"_s).value(u"licence_accepted"_s).toObject();
         QCOMPARE(acc.value(u"url"_s).toString(), u"https://www.anthropic.com/legal/consumer-terms"_s);
         QCOMPARE(acc.value(u"name"_s).toString(), u"Anthropic Consumer Terms of Service"_s);
-        QCOMPARE(acc.value(u"accepted_by"_s).toString(), u"jay (in session)"_s);
+        QCOMPARE(acc.value(u"accepted_by"_s).toString(), theAccount() + u" (confirmed in the Store)"_s);   // from the Store's session, never the flag
         QVERIFY(QDateTime::fromString(acc.value(u"accepted_at"_s).toString(), Qt::ISODate).isValid());
         const QString calls = callsLog();
         QVERIFY(calls.contains(u"tee /etc/default/claude-desktop"_s));
@@ -368,15 +406,15 @@ private slots:
     }
     void kiloInstallsOnlyWithItsPinnedChecksum()
     {
-        QCOMPARE(cli({u"install"_s, u"kilo-desktop"_s, u"--accept-licence"_s, u"kilo-desktop"_s}).code, 6);   // default FAKE_SHA is not Kilo's
+        QCOMPARE(cli({u"install"_s, u"kilo-desktop"_s, u"--test-owner-ok"_s, u"kilo-desktop"_s}).code, 6);   // default FAKE_SHA is not Kilo's
         QVERIFY(!QFileInfo::exists(xdgData + u"/applications/taos-appgroups-kilo-desktop.desktop"_s));
-        const Run r = cli({u"install"_s, u"kilo-desktop"_s, u"--accept-licence"_s, u"kilo-desktop"_s}, kiloEnv());
+        const Run r = cli({u"install"_s, u"kilo-desktop"_s, u"--test-owner-ok"_s, u"kilo-desktop"_s}, kiloEnv());
         QVERIFY2(r.code == 0, qPrintable(r.raw + r.err));
         QVERIFY(callsLog().contains(u"apt-get install -y /var/tmp/taos-dl-kilo-desktop.deb"_s));
     }
     void removingADebAppRemovesItsPackage()
     {
-        QCOMPARE(cli({u"install"_s, u"kilo-desktop"_s, u"--accept-licence"_s, u"kilo-desktop"_s}, kiloEnv()).code, 0);
+        QCOMPARE(cli({u"install"_s, u"kilo-desktop"_s, u"--test-owner-ok"_s, u"kilo-desktop"_s}, kiloEnv()).code, 0);
         QFile::remove(fakeDir + u"/calls.log"_s);
         QCOMPARE(cli({u"remove"_s, u"kilo-desktop"_s}).code, 0);
         QVERIFY2(callsLog().contains(u"apt-get remove -y --purge kilo-desktop"_s), qPrintable(callsLog()));
@@ -413,7 +451,7 @@ private slots:
 
     void moveInstallsCopiesVerifiesSwitchesThenBacksUp()
     {
-        QCOMPARE(cli({u"install"_s, u"antigravity"_s, u"--accept-licence"_s, u"antigravity"_s}).code, 0);
+        QCOMPARE(cli({u"install"_s, u"antigravity"_s, u"--test-owner-ok"_s, u"antigravity"_s}).code, 0);
         QFile::remove(fakeDir + u"/calls.log"_s);
         const Run r = cli({u"move"_s, u"antigravity"_s, u"--to"_s, u"group:dev-apps"_s, u"--json"_s});
         QVERIFY2(r.code == 0, qPrintable(r.raw + r.err));
@@ -454,7 +492,7 @@ private slots:
         writeFile(catDir + u"/claude-desktop.json"_s, text.toUtf8());
         QMap<QString, QString> env = claudeEnv();
         env.insert(u"TAOS_APPGROUPS_CATALOG"_s, catDir);
-        QCOMPARE(cli({u"install"_s, u"claude-desktop"_s, u"--accept-licence"_s, u"claude-desktop"_s}, env).code, 0);
+        QCOMPARE(cli({u"install"_s, u"claude-desktop"_s, u"--test-owner-ok"_s, u"claude-desktop"_s}, env).code, 0);
         QFile::remove(fakeDir + u"/calls.log"_s);
         const Run r = cli({u"move"_s, u"claude-desktop"_s, u"--to"_s, u"group:dev-apps"_s}, env);
         QVERIFY2(r.code == 0, qPrintable(r.raw + r.err));
@@ -464,7 +502,7 @@ private slots:
     }
     void moveRefusesARunningApp()
     {
-        QCOMPARE(cli({u"install"_s, u"antigravity"_s, u"--accept-licence"_s, u"antigravity"_s}).code, 0);
+        QCOMPARE(cli({u"install"_s, u"antigravity"_s, u"--test-owner-ok"_s, u"antigravity"_s}).code, 0);
         QFile::remove(fakeDir + u"/calls.log"_s);
         const Run r = cli({u"move"_s, u"antigravity"_s, u"--to"_s, u"group:dev-apps"_s}, {{u"FAKE_RUNNING"_s, u"1"_s}});
         QCOMPARE(r.code, 7);
@@ -475,7 +513,7 @@ private slots:
     void moveRefusalsAreSpecific()
     {
         QCOMPARE(cli({u"move"_s, u"antigravity"_s, u"--to"_s, u"group:dev-apps"_s}).code, 3);           // not installed
-        QCOMPARE(cli({u"install"_s, u"antigravity"_s, u"--accept-licence"_s, u"antigravity"_s}).code, 0);
+        QCOMPARE(cli({u"install"_s, u"antigravity"_s, u"--test-owner-ok"_s, u"antigravity"_s}).code, 0);
         QCOMPARE(cli({u"move"_s, u"antigravity"_s, u"--to"_s, u"group:nope"_s}).code, 3);               // no such group
         QCOMPARE(cli({u"move"_s, u"antigravity"_s, u"--to"_s, u"group:default"_s}).code, 7);            // already there
         QCOMPARE(cli({u"move"_s, u"antigravity"_s, u"--to"_s, u"host"_s}).code, 9);
@@ -496,7 +534,7 @@ private slots:
         QFETCH(QString, knob);
         QFETCH(int, code);
         QFETCH(bool, targetTouched);
-        QCOMPARE(cli({u"install"_s, u"antigravity"_s, u"--accept-licence"_s, u"antigravity"_s}).code, 0);
+        QCOMPARE(cli({u"install"_s, u"antigravity"_s, u"--test-owner-ok"_s, u"antigravity"_s}).code, 0);
         const QByteArray before = readAll(dataDir + u"/installed.json"_s);
         const QByteArray launcher = readAll(xdgData + u"/applications/taos-appgroups-antigravity.desktop"_s);
         QFile::remove(fakeDir + u"/calls.log"_s);
@@ -531,7 +569,7 @@ private slots:
     }
     void backupsAreListedAndDeletedOnlyOnRequest()
     {
-        QCOMPARE(cli({u"install"_s, u"antigravity"_s, u"--accept-licence"_s, u"antigravity"_s}).code, 0);
+        QCOMPARE(cli({u"install"_s, u"antigravity"_s, u"--test-owner-ok"_s, u"antigravity"_s}).code, 0);
         QCOMPARE(cli({u"move"_s, u"antigravity"_s, u"--to"_s, u"group:dev-apps"_s}).code, 0);
         const QJsonObject b = cli({u"backups"_s, u"--json"_s}).last.value(u"backups"_s).toArray()[0].toObject();
         QCOMPARE(b.value(u"app"_s).toString(), u"antigravity"_s);
@@ -551,7 +589,7 @@ private slots:
     }
     void updateCheckReadsTheVendorFeed()
     {
-        QCOMPARE(cli({u"install"_s, u"kilo-desktop"_s, u"--accept-licence"_s, u"kilo-desktop"_s}, kiloEnv()).code, 0);
+        QCOMPARE(cli({u"install"_s, u"kilo-desktop"_s, u"--test-owner-ok"_s, u"kilo-desktop"_s}, kiloEnv()).code, 0);
         const QString newSha = u"aa"_s.repeated(32);
         Run r = cli({u"update"_s, u"kilo-desktop"_s, u"--check"_s, u"--json"_s}, {{u"FAKE_FEED"_s, feed(u"1.1.0"_s, newSha)}});
         QCOMPARE(r.code, 0);
@@ -565,32 +603,32 @@ private slots:
     }
     void updateInstallsTheFeedsDebOnlyWithTheFeedsChecksum()
     {
-        QCOMPARE(cli({u"install"_s, u"kilo-desktop"_s, u"--accept-licence"_s, u"kilo-desktop"_s}, kiloEnv()).code, 0);
+        QCOMPARE(cli({u"install"_s, u"kilo-desktop"_s, u"--test-owner-ok"_s, u"kilo-desktop"_s}, kiloEnv()).code, 0);
         const QString newSha = u"aa"_s.repeated(32);
         QFile::remove(fakeDir + u"/calls.log"_s);
         // the download's checksum is not the feed's: refused, nothing installed
-        Run r = cli({u"update"_s, u"kilo-desktop"_s}, {{u"FAKE_FEED"_s, feed(u"1.1.0"_s, newSha)}});
+        Run r = cli({u"update"_s, u"kilo-desktop"_s, u"--test-owner-update"_s, u"kilo-desktop@1.1.0#"_s + newSha}, {{u"FAKE_FEED"_s, feed(u"1.1.0"_s, newSha)}});
         QCOMPARE(r.code, 6);
         QVERIFY2(r.err.contains(u"does not match"_s), qPrintable(r.err));
         QVERIFY(!callsLog().contains(u"apt-get install -y /var/tmp"_s));
         // matching checksum and a stopped app: installed, version recorded
         QFile::remove(fakeDir + u"/calls.log"_s);
-        r = cli({u"update"_s, u"kilo-desktop"_s, u"--json"_s}, {{u"FAKE_FEED"_s, feed(u"1.1.0"_s, newSha)}, {u"FAKE_SHA"_s, newSha}, {u"FAKE_VERSION"_s, u"1.1.0"_s}});
+        r = cli({u"update"_s, u"kilo-desktop"_s, u"--test-owner-update"_s, u"kilo-desktop@1.1.0#"_s + newSha, u"--json"_s}, {{u"FAKE_FEED"_s, feed(u"1.1.0"_s, newSha)}, {u"FAKE_SHA"_s, newSha}, {u"FAKE_VERSION"_s, u"1.1.0"_s}});
         QVERIFY2(r.code == 0, qPrintable(r.raw + r.err));
         QVERIFY(callsLog().contains(u"kilo-desktop_1.1.0_amd64.deb"_s));
         QCOMPARE(indexRec(u"kilo-desktop"_s).value(u"installed_version"_s).toString(), u"1.1.0"_s);
         // a running app is never replaced
-        r = cli({u"update"_s, u"kilo-desktop"_s}, {{u"FAKE_FEED"_s, feed(u"1.2.0"_s, u"bb"_s.repeated(32))}, {u"FAKE_RUNNING"_s, u"1"_s}});
+        r = cli({u"update"_s, u"kilo-desktop"_s, u"--test-owner-update"_s, u"kilo-desktop@1.2.0#"_s + u"bb"_s.repeated(32)}, {{u"FAKE_FEED"_s, feed(u"1.2.0"_s, u"bb"_s.repeated(32))}, {u"FAKE_RUNNING"_s, u"1"_s}});
         QCOMPARE(r.code, 7);
     }
     void updateOfAnAptAppUpgradesOnlyItsPackages()
     {
-        QCOMPARE(cli({u"install"_s, u"claude-desktop"_s, u"--accept-licence"_s, u"claude-desktop"_s}, claudeEnv()).code, 0);
-        Run r = cli({u"update"_s, u"claude-desktop"_s, u"--check"_s, u"--json"_s}, {{u"FAKE_CANDIDATE"_s, u"2.0.0"_s}});
+        QCOMPARE(cli({u"install"_s, u"claude-desktop"_s, u"--test-owner-ok"_s, u"claude-desktop"_s}, claudeEnv()).code, 0);
+        Run r = cli({u"update"_s, u"claude-desktop"_s, u"--check"_s, u"--json"_s}, [&] { auto e = claudeEnv(); e.insert(u"FAKE_CANDIDATE"_s, u"2.0.0"_s); return e; }());
         QCOMPARE(r.last.value(u"update_available"_s).toBool(), true);
         QCOMPARE(r.last.value(u"latest_version"_s).toString(), u"2.0.0"_s);
         QFile::remove(fakeDir + u"/calls.log"_s);
-        r = cli({u"update"_s, u"claude-desktop"_s, u"--json"_s}, {{u"FAKE_CANDIDATE"_s, u"2.0.0"_s}, {u"FAKE_VERSION_AFTER"_s, u"2.0.0"_s}});
+        r = cli({u"update"_s, u"claude-desktop"_s, u"--json"_s}, [&] { auto e = claudeEnv(); e.insert(u"FAKE_CANDIDATE"_s, u"2.0.0"_s); e.insert(u"FAKE_VERSION_AFTER"_s, u"2.0.0"_s); return e; }());
         QVERIFY2(r.code == 0, qPrintable(r.raw + r.err));
         const QString c = callsLog();
         QVERIFY(c.contains(u"apt-get install -y --no-install-recommends --only-upgrade claude-desktop"_s));
@@ -612,18 +650,18 @@ private slots:
 
     void installTakesTheIconFromThePackage()
     {
-        QCOMPARE(cli({u"install"_s, u"kilo-desktop"_s, u"--accept-licence"_s, u"kilo-desktop"_s}, kiloEnv()).code, 0);
+        QCOMPARE(cli({u"install"_s, u"kilo-desktop"_s, u"--test-owner-ok"_s, u"kilo-desktop"_s}, kiloEnv()).code, 0);
         QCOMPARE(iconLine(u"kilo-desktop"_s), iconsDir() + u"/kilo-desktop.pkg.png"_s);
         QVERIFY(readAll(iconsDir() + u"/kilo-desktop.pkg.png"_s).startsWith("\x89PNG"));
         QVERIFY(callsLog().contains(u"file pull user-apps/usr/share/icons/hicolor/256x256/apps/found.png"_s));
         // a manifest can name the file inside the container (a tarball has no .desktop file)
-        QCOMPARE(cli({u"install"_s, u"antigravity"_s, u"--accept-licence"_s, u"antigravity"_s}).code, 0);
+        QCOMPARE(cli({u"install"_s, u"antigravity"_s, u"--test-owner-ok"_s, u"antigravity"_s}).code, 0);
         QVERIFY2(callsLog().contains(u"file pull user-apps/opt/antigravity/resources/app/resources/linux/code.png"_s), qPrintable(callsLog()));
         QCOMPARE(iconLine(u"antigravity"_s), iconsDir() + u"/antigravity.pkg.png"_s);
     }
     void aPackageWithoutAnIconKeepsTheGenericOne()
     {
-        QCOMPARE(cli({u"install"_s, u"claude-desktop"_s, u"--accept-licence"_s, u"claude-desktop"_s}, {{u"FAKE_NO_ICON"_s, u"1"_s}, {u"FAKE_FPR"_s, u"31DDDE24DDFAB679F42D7BD2BAA929FF1A7ECACE"_s}}).code, 0);
+        QCOMPARE(cli({u"install"_s, u"claude-desktop"_s, u"--test-owner-ok"_s, u"claude-desktop"_s}, {{u"FAKE_NO_ICON"_s, u"1"_s}, {u"FAKE_FPR"_s, u"31DDDE24DDFAB679F42D7BD2BAA929FF1A7ECACE"_s}}).code, 0);
         QCOMPARE(iconLine(u"claude-desktop"_s), iconsDir() + u"/claude-desktop.svg"_s);
         QVERIFY(QFileInfo::exists(iconsDir() + u"/claude-desktop.svg"_s));
     }
@@ -635,9 +673,9 @@ private slots:
         const QString old = u"[Desktop Entry]\nType=Application\nName=Antigravity\nExec=/stable/bin/taos-appgroups run antigravity %U\nIcon=%1/antigravity-nobg.png\n"_s.arg(iconsDir());
         writeFile(xdgData + u"/applications/taos-appgroups-antigravity.desktop"_s, old.toUtf8());
         const QString hand = iconsDir() + u"/kilo-desktop.png"_s, nobg = iconsDir() + u"/antigravity-nobg.png"_s;
-        QCOMPARE(cli({u"install"_s, u"kilo-desktop"_s, u"--accept-licence"_s, u"kilo-desktop"_s}, kiloEnv()).code, 0);
+        QCOMPARE(cli({u"install"_s, u"kilo-desktop"_s, u"--test-owner-ok"_s, u"kilo-desktop"_s}, kiloEnv()).code, 0);
         QCOMPARE(iconLine(u"kilo-desktop"_s), hand);                       // install did not replace it
-        QCOMPARE(cli({u"install"_s, u"antigravity"_s, u"--accept-licence"_s, u"antigravity"_s}).code, 0);
+        QCOMPARE(cli({u"install"_s, u"antigravity"_s, u"--test-owner-ok"_s, u"antigravity"_s}).code, 0);
         QCOMPARE(readAll(iconLine(u"antigravity"_s)), QByteArray("\x89PNG-nobg"));   // the launcher's own icon was adopted
         QCOMPARE(cli({u"move"_s, u"kilo-desktop"_s, u"--to"_s, u"group:dev-apps"_s}, kiloEnv()).code, 0);
         QCOMPARE(iconLine(u"kilo-desktop"_s), hand);
@@ -647,7 +685,7 @@ private slots:
         QCOMPARE(iconLine(u"kilo-desktop"_s), hand);
         QCOMPARE(readAll(iconLine(u"antigravity"_s)), QByteArray("\x89PNG-nobg"));
         const QString newSha = u"aa"_s.repeated(32);
-        const Run u = cli({u"update"_s, u"kilo-desktop"_s, u"--json"_s}, {{u"FAKE_FEED"_s, feed(u"1.1.0"_s, newSha)}, {u"FAKE_SHA"_s, newSha}});
+        const Run u = cli({u"update"_s, u"kilo-desktop"_s, u"--test-owner-update"_s, u"kilo-desktop@1.1.0#"_s + newSha, u"--json"_s}, {{u"FAKE_FEED"_s, feed(u"1.1.0"_s, newSha)}, {u"FAKE_SHA"_s, newSha}});
         QVERIFY2(u.code == 0, qPrintable(u.raw + u.err));
         QCOMPARE(iconLine(u"kilo-desktop"_s), hand);                       // and the bytes are untouched
         QCOMPARE(readAll(hand), QByteArray("\x89PNG-by-hand"));
@@ -658,7 +696,7 @@ private slots:
     }
     void anOverrideAlwaysWinsAndCanBeCleared()
     {
-        QCOMPARE(cli({u"install"_s, u"kilo-desktop"_s, u"--accept-licence"_s, u"kilo-desktop"_s}, kiloEnv()).code, 0);
+        QCOMPARE(cli({u"install"_s, u"kilo-desktop"_s, u"--test-owner-ok"_s, u"kilo-desktop"_s}, kiloEnv()).code, 0);
         const QString mine = m_tmp.path() + u"/mine.png"_s;
         writeFile(mine, "\x89PNG-mine");
         QCOMPARE(cli({u"icon"_s, u"set"_s, u"kilo-desktop"_s, mine}).code, 0);
@@ -683,7 +721,7 @@ private slots:
     }
     void aDeviceEditThatLosesTheRaceIsRetried()
     {
-        QCOMPARE(cli({u"install"_s, u"antigravity"_s, u"--accept-licence"_s, u"antigravity"_s}).code, 0);
+        QCOMPARE(cli({u"install"_s, u"antigravity"_s, u"--test-owner-ok"_s, u"antigravity"_s}).code, 0);
         QMap<QString, QString> env = sessionEnv();
         env.insert(u"FAKE_ETAG_FAILS"_s, u"2"_s);
         QFile::remove(fakeDir + u"/etag.count"_s);
@@ -693,7 +731,7 @@ private slots:
     }
     void twoLaunchesOfOneGroupDoNotEditItsDevicesAtTheSameTime()
     {
-        QCOMPARE(cli({u"install"_s, u"antigravity"_s, u"--accept-licence"_s, u"antigravity"_s}).code, 0);
+        QCOMPARE(cli({u"install"_s, u"antigravity"_s, u"--test-owner-ok"_s, u"antigravity"_s}).code, 0);
         QCOMPARE(cli({u"install"_s, u"chromium"_s}).code, 0);
         QDir(fakeDir + u"/busy"_s).removeRecursively();
         QFile::remove(fakeDir + u"/conflicts"_s);
@@ -730,14 +768,314 @@ private slots:
                         {u"installed_at"_s, u"2026-11-24T01:50:51Z"_s}, {u"manifest"_s, man}};
         writeFile(dataDir + u"/installed.json"_s, QJsonDocument(QJsonObject{{u"apps"_s, QJsonObject{{u"antigravity"_s, rec}}}}).toJson());
         QCOMPARE(indexRec(u"antigravity"_s).value(u"licence_accepted"_s).toObject().isEmpty(), true);
-        const Run r = cli({u"licence"_s, u"accept"_s, u"antigravity"_s, u"--accepted-by"_s, u"jay (in the Store)"_s, u"--json"_s});
+        const Run r = cli({u"licence"_s, u"accept"_s, u"antigravity"_s, u"--test-owner-ok"_s, u"antigravity"_s, u"--json"_s});
         QVERIFY2(r.code == 0, qPrintable(r.raw + r.err));
         const QJsonObject acc = indexRec(u"antigravity"_s).value(u"licence_accepted"_s).toObject();
         QCOMPARE(acc.value(u"url"_s).toString(), u"https://policies.google.com/terms"_s);
-        QCOMPARE(acc.value(u"accepted_by"_s).toString(), u"jay (in the Store)"_s);
+        QCOMPARE(acc.value(u"accepted_by"_s).toString(), theAccount() + u" (confirmed in the Store)"_s);
         QCOMPARE(indexRec(u"antigravity"_s).value(u"installed_at"_s).toString(), u"2026-11-24T01:50:51Z"_s);   // nothing else changed
         QCOMPARE(cli({u"licence"_s, u"accept"_s, u"nosuchapp"_s}).code, 3);
         QCOMPARE(cli({u"licence"_s, u"accept"_s, u"chromium"_s}).code, 3);   // not installed
+    }
+
+
+    // ---------------------------------------------------------------- the person's own confirmation (review round)
+
+    void aCommandLineFlagAloneCanNeverAcceptALicence()
+    {
+        // the old way: --accept-licence <id> --accepted-by <text>, no confirmation from the Store
+        const Run r = cli({u"install"_s, u"claude-desktop"_s, u"--accept-licence"_s, u"claude-desktop"_s, u"--accepted-by"_s, u"the person"_s, u"--json"_s}, claudeEnv());
+        QCOMPARE(r.code, 10);
+        QCOMPARE(r.last.value(u"licence"_s).toObject().value(u"url"_s).toString(), u"https://www.anthropic.com/legal/consumer-terms"_s);
+        QVERIFY(r.last.value(u"error"_s).toString().contains(u"Store"_s));
+        QVERIFY(!QFileInfo::exists(dataDir + u"/installed.json"_s) || indexRec(u"claude-desktop"_s).isEmpty());
+        QVERIFY2(!callsLog().contains(u"apt-get"_s), "nothing is installed");
+        // a made-up nonce is no better
+        const Run fake = cli({u"install"_s, u"claude-desktop"_s, u"--json"_s}, [&] { auto e = claudeEnv(); e.insert(u"TAOS_OWNER_NONCE"_s, u"00"_s.repeated(24)); return e; }());
+        QCOMPARE(fake.code, 10);
+        // and neither does `licence accept`
+        QJsonObject man = QJsonDocument::fromJson(readAll(QStringLiteral(CATALOG_DIR) + u"/antigravity.json"_s)).object();
+        QJsonObject rec{{u"group"_s, u"default"_s}, {u"manifest"_s, man}};
+        writeFile(dataDir + u"/installed.json"_s, QJsonDocument(QJsonObject{{u"apps"_s, QJsonObject{{u"antigravity"_s, rec}}}}).toJson());
+        QCOMPARE(cli({u"licence"_s, u"accept"_s, u"antigravity"_s, u"--accepted-by"_s, u"the person"_s}).code, 10);
+        QVERIFY(indexRec(u"antigravity"_s).value(u"licence_accepted"_s).toObject().isEmpty());
+    }
+    void aConfirmationIsSingleUseAndForThatAppOnly()
+    {
+        QMap<QString, QString> env = claudeEnv();
+        const QString nonce = gate->mint(QLatin1String(kActionLicence), u"claude-desktop"_s);
+        env.insert(u"TAOS_OWNER_NONCE"_s, nonce);
+        QCOMPARE(cli({u"install"_s, u"claude-desktop"_s}, env).code, 0);
+        // the same nonce again, for a fresh install: refused
+        QCOMPARE(cli({u"remove"_s, u"claude-desktop"_s}).code, 0);
+        const Run again = cli({u"install"_s, u"claude-desktop"_s, u"--json"_s}, env);
+        QCOMPARE(again.code, 10);
+        QVERIFY2(again.last.value(u"error"_s).toString().contains(u"already used"_s), qPrintable(again.raw));
+        // a confirmation for another app, or for another action, is no use here
+        QMap<QString, QString> other = claudeEnv();
+        other.insert(u"TAOS_OWNER_NONCE"_s, gate->mint(QLatin1String(kActionLicence), u"kilo-desktop"_s));
+        QCOMPARE(cli({u"install"_s, u"claude-desktop"_s}, other).code, 10);
+        other.insert(u"TAOS_OWNER_NONCE"_s, gate->mint(QLatin1String(kActionUpdate), u"claude-desktop"_s));
+        QCOMPARE(cli({u"install"_s, u"claude-desktop"_s}, other).code, 10);
+    }
+    void theStoreCanMintButTheSocketOffersNoWayToMint()
+    {
+        // the Store path works (everything else in this file goes through it); the socket only consumes
+        const QString nonce = gate->mint(QLatin1String(kActionLicence), u"x"_s);
+        QVERIFY(!nonce.isEmpty());
+        QVERIFY(!consumeOwnerNonce(nonce, QLatin1String(kActionLicence), u"y"_s).ok);     // wrong subject, and now used up
+        QVERIFY(!consumeOwnerNonce(nonce, QLatin1String(kActionLicence), u"x"_s).ok);
+        const QString n2 = gate->mint(QLatin1String(kActionLicence), u"x"_s);
+        const OwnerProof ok = consumeOwnerNonce(n2, QLatin1String(kActionLicence), u"x"_s);
+        QVERIFY(ok.ok);
+        QCOMPARE(ok.by, theAccount() + u" (confirmed in the Store)"_s);
+        // raw socket: a "mint" request is refused
+        const int fd = ::socket(AF_UNIX, SOCK_STREAM, 0);
+        sockaddr_un a{};
+        a.sun_family = AF_UNIX;
+        const QByteArray sp = ownerSocketPath().toUtf8();
+        ::memcpy(a.sun_path, sp.constData(), size_t(sp.size()));
+        QCOMPARE(::connect(fd, reinterpret_cast<sockaddr *>(&a), sizeof a), 0);
+        const QByteArray q = "{\"op\":\"mint\",\"action\":\"licence.accept\",\"subject\":\"x\"}\n";
+        QVERIFY(::write(fd, q.constData(), size_t(q.size())) > 0);
+        char buf[512] = {};
+        const ssize_t n = ::read(fd, buf, sizeof buf - 1);
+        ::close(fd);
+        QVERIFY(n > 0 && QByteArray(buf).contains("\"ok\":false") && !QByteArray(buf).contains("nonce"));
+        // the socket is private to the person
+        QCOMPARE(QFileInfo(ownerSocketPath()).permissions() & (QFile::ReadGroup | QFile::WriteGroup | QFile::ReadOther | QFile::WriteOther), QFileDevice::Permissions());
+    }
+
+    // ---------------------------------------------------------------- keys, mime types, updates, callbacks, moves
+
+    void aKeyFileWithAnExtraKeyOrOnlyASubkeyMatchIsRefused_data()
+    {
+        QTest::addColumn<QString>("knob");
+        QTest::newRow("two primary keys") << u"FAKE_KEY_EXTRA"_s;
+        QTest::newRow("fingerprint only on a subkey") << u"FAKE_KEY_SUBONLY"_s;
+    }
+    void aKeyFileWithAnExtraKeyOrOnlyASubkeyMatchIsRefused()
+    {
+        QFETCH(QString, knob);
+        // claude-desktop pins 31DD...; the fake key listing carries it as the primary key unless a knob changes that
+        QMap<QString, QString> env = claudeEnv();
+        env.insert(knob, u"1"_s);
+        const Run r = cli({u"install"_s, u"claude-desktop"_s, u"--test-owner-ok"_s, u"claude-desktop"_s}, env);
+        QCOMPARE(r.code, 6);
+        QVERIFY2(r.err.contains(u"exactly one key"_s), qPrintable(r.err));
+        QVERIFY2(!callsLog().contains(u"--dearmor"_s), "an untrusted key is never prepared for apt");
+        // the clean listing (one primary key plus a decoy subkey) is accepted
+        QCOMPARE(cli({u"install"_s, u"claude-desktop"_s, u"--test-owner-ok"_s, u"claude-desktop"_s}, claudeEnv()).code, 0);
+    }
+    void theStoredKeyIsCheckedAgainOnEveryUpdate()
+    {
+        QCOMPARE(cli({u"install"_s, u"claude-desktop"_s, u"--test-owner-ok"_s, u"claude-desktop"_s}, claudeEnv()).code, 0);
+        QFile::remove(fakeDir + u"/calls.log"_s);
+        QMap<QString, QString> env = claudeEnv();
+        env.insert(u"FAKE_CANDIDATE"_s, u"2.0.0"_s);
+        QCOMPARE(cli({u"update"_s, u"claude-desktop"_s, u"--check"_s}, env).code, 0);
+        env.insert(u"FAKE_STORED_FPR"_s, u"1234567890123456789012345678901234567890"_s);   // the key on disk is not the pinned one any more
+        const Run r = cli({u"update"_s, u"claude-desktop"_s, u"--json"_s}, env);
+        QCOMPARE(r.code, 6);
+        QVERIFY2(r.last.value(u"error"_s).toString().contains(u"not exactly the pinned key"_s), qPrintable(r.raw));
+        QVERIFY(!callsLog().contains(u"--only-upgrade"_s));
+    }
+    void mimeTypesThatCouldInjectIntoALauncherAreRefused_data()
+    {
+        QTest::addColumn<QString>("mime");
+        QTest::newRow("newline") << u"text/html\\nExec=/bin/false"_s;
+        QTest::newRow("semicolon") << u"text/html;x-scheme-handler/evil"_s;
+        QTest::newRow("equals") << u"text/html=1"_s;
+        QTest::newRow("trailing newline") << u"x-scheme-handler/claude\\n"_s;
+        QTest::newRow("upper scheme") << u"x-scheme-handler/Claude"_s;
+        QTest::newRow("no subtype") << u"text/"_s;
+        QTest::newRow("unknown type") << u"evil/thing"_s;
+    }
+    void mimeTypesThatCouldInjectIntoALauncherAreRefused()
+    {
+        QFETCH(QString, mime);
+        QString text = QString::fromUtf8(readAll(QStringLiteral(CATALOG_DIR) + u"/claude-desktop.json"_s));
+        QVERIFY(text.contains(u"x-scheme-handler/claude"_s));
+        text.replace(u"x-scheme-handler/claude"_s, mime);
+        Manifest m;
+        QString err;
+        QVERIFY2(!parseManifest(text.toUtf8(), &m, &err), qPrintable(mime));
+        QVERIFY2(err.contains(u"mime_types"_s), qPrintable(err));
+        // through the real caller: a catalogue entry carrying it is refused at install, and no launcher is written
+        QDir().mkpath(catDir);
+        writeFile(catDir + u"/claude-desktop.json"_s, text.toUtf8());
+        const Run r = cli({u"install"_s, u"claude-desktop"_s, u"--test-owner-ok"_s, u"claude-desktop"_s}, [&] { auto e = claudeEnv(); e.insert(u"TAOS_APPGROUPS_CATALOG"_s, catDir); return e; }());
+        QCOMPARE(r.code, 5);
+        QVERIFY(!QFileInfo::exists(xdgData + u"/applications/taos-appgroups-claude-desktop.desktop"_s));
+        QFile::remove(catDir + u"/claude-desktop.json"_s);
+    }
+    void aNewerVersionFromTheFeedAloneNeedsThePersonAndIsRecorded()
+    {
+        QCOMPARE(cli({u"install"_s, u"kilo-desktop"_s, u"--test-owner-ok"_s, u"kilo-desktop"_s}, kiloEnv()).code, 0);
+        const QString newSha = u"aa"_s.repeated(32);
+        QMap<QString, QString> env{{u"FAKE_FEED"_s, feed(u"1.1.0"_s, newSha)}, {u"FAKE_SHA"_s, newSha}, {u"FAKE_VERSION"_s, u"1.1.0"_s}};
+        // --check shows exactly what was and was not verified
+        const Run chk = cli({u"update"_s, u"kilo-desktop"_s, u"--check"_s, u"--json"_s}, env);
+        const QJsonObject v = chk.last.value(u"verification"_s).toObject();
+        QCOMPARE(v.value(u"checksum_pinned_in_catalogue"_s).toBool(), false);
+        QCOMPARE(v.value(u"signed_source"_s).toBool(), false);
+        QVERIFY(v.value(u"summary"_s).toString().startsWith(u"NOT verified"_s));
+        QFile::remove(fakeDir + u"/calls.log"_s);
+        // no silent update: without the person's confirmation nothing is downloaded or installed
+        const Run bare = cli({u"update"_s, u"kilo-desktop"_s, u"--json"_s}, env);
+        QCOMPARE(bare.code, 10);
+        QCOMPARE(bare.last.value(u"confirm"_s).toObject().value(u"subject"_s).toString(), u"kilo-desktop@1.1.0#"_s + newSha);
+        QVERIFY(!callsLog().contains(u"curl -fL"_s));
+        // a confirmation for a different checksum is no use
+        QCOMPARE(cli({u"update"_s, u"kilo-desktop"_s, u"--test-owner-update"_s, u"kilo-desktop@1.1.0#"_s + u"bb"_s.repeated(32)}, env).code, 10);
+        // the person confirms: installed, and the history says what was and was not verified and who confirmed
+        const Run ok = cli({u"update"_s, u"kilo-desktop"_s, u"--test-owner-update"_s, u"kilo-desktop@1.1.0#"_s + newSha, u"--json"_s}, env);
+        QVERIFY2(ok.code == 0, qPrintable(ok.raw + ok.err));
+        const QJsonArray hist = indexRec(u"kilo-desktop"_s).value(u"update_history"_s).toArray();
+        QCOMPARE(hist.size(), 1);
+        QCOMPARE(hist[0].toObject().value(u"confirmed_by"_s).toString(), theAccount() + u" (confirmed in the Store)"_s);
+        QCOMPARE(hist[0].toObject().value(u"verification"_s).toObject().value(u"checksum_pinned_in_catalogue"_s).toBool(), false);
+    }
+    void theVersionTheCatalogueCoversIsCheckedAgainstItsPinnedChecksum()
+    {
+        QCOMPARE(cli({u"install"_s, u"kilo-desktop"_s, u"--test-owner-ok"_s, u"kilo-desktop"_s}, kiloEnv()).code, 0);
+        // the feed claims the pinned version but with another checksum: refused outright, even before any confirmation
+        const Run r = cli({u"update"_s, u"kilo-desktop"_s, u"--check"_s, u"--json"_s}, {{u"FAKE_FEED"_s, feed(u"1.0.0"_s, u"cc"_s.repeated(32))}});
+        QCOMPARE(r.code, 6);
+        QVERIFY2(r.last.value(u"error"_s).toString().contains(u"pinned in the catalogue"_s), qPrintable(r.raw));
+    }
+    void onlyTheRedirectPathIsForwardedAsTheCallback()
+    {
+        QVERIFY(callbackRequestMatches("GET /oauth-callback?code=a&state=b HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n", u"/oauth-callback"_s));
+        QVERIFY(!callbackRequestMatches("GET /other HTTP/1.1\r\n\r\n", u"/oauth-callback"_s));
+        QVERIFY(!callbackRequestMatches("POST /oauth-callback HTTP/1.1\r\n\r\n", u"/oauth-callback"_s));
+        QVERIFY(!callbackRequestMatches("GET /oauth-callback/../x HTTP/1.1\r\n\r\n", u"/oauth-callback"_s));
+        QVERIFY(!callbackRequestMatches("GET //evil/oauth-callback HTTP/1.1\r\n\r\n", u"/oauth-callback"_s));
+        QVERIFY(!callbackRequestMatches("\x16\x03\x01 not http at all", u"/oauth-callback"_s));
+        // real sockets: a stray connection and a wrong path are answered 404 and do not count; the callback is relayed once
+        const QString up = m_tmp.path() + u"/up.sock"_s;
+        const int ufd = ::socket(AF_UNIX, SOCK_STREAM, 0);
+        sockaddr_un ua{};
+        ua.sun_family = AF_UNIX;
+        ::memcpy(ua.sun_path, up.toUtf8().constData(), size_t(up.toUtf8().size()));
+        QCOMPARE(::bind(ufd, reinterpret_cast<sockaddr *>(&ua), sizeof ua), 0);
+        QCOMPARE(::listen(ufd, 2), 0);
+        QString err;
+        const int port = 51901;
+        const int lfd = listenCallbackPort(port, &err);
+        QVERIFY2(lfd >= 0, qPrintable(err));
+        QString again;
+        QVERIFY(listenCallbackPort(port, &again) < 0);   // a port somebody holds is refused
+        bool relayed = false;
+        std::thread server([&] { relayed = serveCallback(lfd, u"/oauth-callback"_s, up, 10); });
+        std::thread app([&] {
+            const int c = ::accept(ufd, nullptr, nullptr);
+            char b[1024] = {};
+            const ssize_t n = ::read(c, b, sizeof b - 1);
+            if (n > 0 && QByteArray(b).contains("/oauth-callback"))
+                if (::write(c, "HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok", 40) < 0) {}
+            ::close(c);
+        });
+        auto fetch = [&](const QByteArray &req) {
+            const int s = ::socket(AF_INET, SOCK_STREAM, 0);
+            sockaddr_in a{};
+            a.sin_family = AF_INET;
+            a.sin_port = htons(port);
+            a.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+            QByteArray got;
+            if (::connect(s, reinterpret_cast<sockaddr *>(&a), sizeof a) == 0) {
+                if (::write(s, req.constData(), size_t(req.size())) < 0) {}
+                char b[1024];
+                ssize_t n;
+                while ((n = ::read(s, b, sizeof b)) > 0)
+                    got.append(b, int(n));
+            }
+            ::close(s);
+            return got;
+        };
+        QVERIFY(fetch("GET /favicon.ico HTTP/1.1\r\n\r\n").startsWith("HTTP/1.1 404"));
+        { const int s = ::socket(AF_INET, SOCK_STREAM, 0); sockaddr_in a{}; a.sin_family = AF_INET; a.sin_port = htons(port); a.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+          QCOMPARE(::connect(s, reinterpret_cast<sockaddr *>(&a), sizeof a), 0); ::close(s); }   // connects and sends nothing: not the callback
+        QVERIFY(fetch("GET /oauth-callback?code=1 HTTP/1.1\r\n\r\n").contains("200 OK"));
+        server.join();
+        app.join();
+        QVERIFY(relayed);
+        ::close(lfd);
+        ::close(ufd);
+    }
+    void aMovedProfileDropsPerHostLocksAndSockets()
+    {
+        // the real cleanup script on a real directory shaped like a Chromium + Firefox profile
+        QTemporaryDir t;
+        const QString home = t.path();
+        QDir().mkpath(home + u"/.config/chromium/Default"_s);
+        QDir().mkpath(home + u"/.mozilla/firefox/p.default"_s);
+        writeFile(home + u"/.config/chromium/Default/Preferences"_s, "{}");
+        writeFile(home + u"/.mozilla/firefox/p.default/prefs.js"_s, "x");
+        writeFile(home + u"/.mozilla/firefox/p.default/.parentlock"_s, "");
+        for (const char *n : {"SingletonLock", "SingletonCookie", "SingletonSocket"})
+            QVERIFY(QFile::link(u"user-apps-123"_s, home + u"/.config/chromium/"_s + QLatin1String(n)));
+        QVERIFY(QFile::link(u"10.0.0.1:+1234"_s, home + u"/.mozilla/firefox/p.default/lock"_s));
+        const int sfd = ::socket(AF_UNIX, SOCK_STREAM, 0);
+        sockaddr_un ua{};
+        ua.sun_family = AF_UNIX;
+        const QByteArray sp = (home + u"/.config/chromium/ipc.sock"_s).toUtf8();
+        ::memcpy(ua.sun_path, sp.constData(), size_t(sp.size()));
+        QCOMPARE(::bind(sfd, reinterpret_cast<sockaddr *>(&ua), sizeof ua), 0);
+        QProcess p;
+        p.start(u"sh"_s, {u"-c"_s, hostLockCleanupScript(), u"sh"_s, home, u".config"_s, u".mozilla"_s});
+        QVERIFY(p.waitForFinished(20000) && p.exitCode() == 0);
+        ::close(sfd);
+        for (const QString &gone : {u"/.config/chromium/SingletonLock"_s, u"/.config/chromium/SingletonCookie"_s, u"/.config/chromium/SingletonSocket"_s,
+                                    u"/.config/chromium/ipc.sock"_s, u"/.mozilla/firefox/p.default/.parentlock"_s, u"/.mozilla/firefox/p.default/lock"_s})
+            QVERIFY2(!QFileInfo(home + gone).isSymLink() && !QFileInfo::exists(home + gone), qPrintable(gone));
+        QVERIFY(QFileInfo::exists(home + u"/.config/chromium/Default/Preferences"_s));   // the profile itself stays
+        QVERIFY(QFileInfo::exists(home + u"/.mozilla/firefox/p.default/prefs.js"_s));
+        // through the real caller: a move runs it on the copy before comparing, and the comparison ignores those files
+        QCOMPARE(cli({u"install"_s, u"antigravity"_s, u"--test-owner-ok"_s, u"antigravity"_s}).code, 0);
+        QFile::remove(fakeDir + u"/calls.log"_s);
+        QCOMPARE(cli({u"move"_s, u"antigravity"_s, u"--to"_s, u"group:dev-apps"_s}).code, 0);
+        const QString c = callsLog();
+        QVERIFY(c.contains(u"host-locks"_s) && c.indexOf(u"host-locks"_s) < c.indexOf(u"content-sum"_s));
+        QVERIFY(c.contains(u"! -name SingletonLock"_s));
+    }
+    void theGtkDarkSettingIsOwnedAndKeptInStepOnEveryLaunch()
+    {
+        // the real script: a hand-set value is replaced, other keys stay, a missing file is made
+        QTemporaryDir t;
+        const QString f3 = t.path() + u"/.config/gtk-3.0/settings.ini"_s;
+        writeFile(f3, "[Settings]\ngtk-application-prefer-dark-theme=1\ngtk-font-name=Sans 10\n");
+        QProcess p;
+        p.start(u"sh"_s, {u"-c"_s, gtkDarkSettingScript(), u"sh"_s, t.path(), u"0"_s});
+        QVERIFY(p.waitForFinished(20000) && p.exitCode() == 0);
+        QCOMPARE(QString::fromUtf8(readAll(f3)), u"[Settings]\ngtk-application-prefer-dark-theme=0\ngtk-font-name=Sans 10\n"_s);
+        QCOMPARE(QString::fromUtf8(readAll(t.path() + u"/.config/gtk-4.0/settings.ini"_s)), u"[Settings]\ngtk-application-prefer-dark-theme=0\n"_s);
+        p.start(u"sh"_s, {u"-c"_s, gtkDarkSettingScript(), u"sh"_s, t.path(), u"1"_s});
+        QVERIFY(p.waitForFinished(20000) && p.exitCode() == 0);
+        QVERIFY(QString::fromUtf8(readAll(f3)).contains(u"prefer-dark-theme=1\n"_s));
+        QCOMPARE(QString::fromUtf8(readAll(t.path() + u"/.config/gtk-4.0/settings.ini"_s)).count(u"prefer-dark"_s), 1);
+    }
+    void aMoveWhoseCopyHasTheSameSizeButOtherContentIsRefused()
+    {
+        QCOMPARE(cli({u"install"_s, u"antigravity"_s, u"--test-owner-ok"_s, u"antigravity"_s}).code, 0);
+        const Run r = cli({u"move"_s, u"antigravity"_s, u"--to"_s, u"group:dev-apps"_s, u"--json"_s}, {{u"FAKE_CONTENT_MISMATCH"_s, u"1"_s}});
+        QCOMPARE(r.code, 6);
+        QVERIFY2(r.last.value(u"error"_s).toString().contains(u"does not match"_s), qPrintable(r.raw));
+        QCOMPARE(indexRec(u"antigravity"_s).value(u"group"_s).toString(), u"default"_s);
+        QVERIFY2(callsLog().contains(u"content-sum"_s), "the copy is compared by content, not only by size");
+    }
+    void aLaunchIsRefusedWhileAMoveOfThatAppIsBetweenItsChecksAndTheSwitch()
+    {
+        QCOMPARE(cli({u"install"_s, u"antigravity"_s, u"--test-owner-ok"_s, u"antigravity"_s}).code, 0);
+        // another command holds the app exclusively, as a move does from before its running check until the switch
+        QDir().mkpath(dataDir + u"/locks"_s);
+        const int fd = ::open(QFile::encodeName(dataDir + u"/locks/app-antigravity.lock"_s).constData(), O_RDWR | O_CREAT, 0600);
+        QCOMPARE(::flock(fd, LOCK_EX | LOCK_NB), 0);
+        QMap<QString, QString> env = launcherEnv();
+        QCOMPARE(cli({u"run"_s, u"antigravity"_s}, env).code, 7);
+        QCOMPARE(cli({u"move"_s, u"antigravity"_s, u"--to"_s, u"group:dev-apps"_s}).code, 7);
+        ::close(fd);
+        QCOMPARE(cli({u"move"_s, u"antigravity"_s, u"--to"_s, u"group:dev-apps"_s}).code, 0);
     }
 
     // ---------------------------------------------------------------- appearance
@@ -752,6 +1090,7 @@ private slots:
         QFile::remove(fakeDir + u"/calls.log"_s);
         QCOMPARE(cli({u"run"_s, u"chromium"_s}, env).code, 0);
         QVERIFY2(callsLog().contains(u"--env GTK_THEME=Adwaita:dark"_s), qPrintable(callsLog()));
+        QVERIFY2(callsLog().contains(u"gtk-dark"_s) && callsLog().contains(u"/home/taos/apps/"_s) , qPrintable(callsLog()));
         writeFile(cfg + u"/taos/appearance.json"_s, "{\"mode\": \"light\", \"theme\": \"graphite\"}");
         QFile::remove(fakeDir + u"/calls.log"_s);
         QCOMPARE(cli({u"run"_s, u"chromium"_s}, env).code, 0);
@@ -776,7 +1115,7 @@ private slots:
     void setUpBrokerApps()
     {
         QCOMPARE(cli({u"install"_s, u"chromium"_s}).code, 0);
-        QCOMPARE(cli({u"install"_s, u"antigravity"_s, u"--accept-licence"_s, u"antigravity"_s}).code, 0);
+        QCOMPARE(cli({u"install"_s, u"antigravity"_s, u"--test-owner-ok"_s, u"antigravity"_s}).code, 0);
         QFile::remove(fakeDir + u"/launch.log"_s);
         QFile::remove(fakeDir + u"/calls.log"_s);
     }
@@ -836,8 +1175,10 @@ private slots:
         QVERIFY2(r.code == 0, qPrintable(r.raw + r.err));
         QCOMPARE(r.last.value(u"forwarded_port"_s).toInt(), 51234);
         const QString c = callsLog();
-        // the app's group exposes the port on the host loopback, the browser's group listens on its own loopback and reaches it
-        QVERIFY2(c.contains(u"config device add appgroup-dev-apps fwd-51234 proxy listen=tcp:127.0.0.1:51234 connect=tcp:127.0.0.1:51234 bind=host"_s), qPrintable(c));
+        // the app's group is reached over a unix socket only this uid can open (not a host TCP port anyone could use);
+        // the browser's group listens on its own loopback and reaches this command's own checking listener on the host
+        QVERIFY2(QRegularExpression(u"config device add appgroup-dev-apps fwd-51234 proxy listen=unix:\\S+\\.sock connect=tcp:127\\.0\\.0\\.1:51234 bind=host uid=%1 gid=\\d+ mode=0600\n"_s.arg(::getuid())).match(c).hasMatch(), qPrintable(c));
+        QVERIFY(!c.contains(u"listen=tcp:127.0.0.1:51234 connect=tcp:127.0.0.1:51234 bind=host"_s));
         QVERIFY2(c.contains(u"config device add user-apps fwd-51234 proxy listen=tcp:127.0.0.1:51234 connect=tcp:127.0.0.1:51234 bind=container"_s), qPrintable(c));
         QVERIFY(!c.contains(u"fwd-80"_s) && !c.contains(u"0.0.0.0"_s));
         // closed again after the timeout
@@ -846,7 +1187,7 @@ private slots:
     void usageAndRunWithoutSession()
     {
         QCOMPARE(cli({u"bogus"_s}).code, 2);
-        QCOMPARE(cli({u"install"_s, u"antigravity"_s, u"--accept-licence"_s, u"antigravity"_s}).code, 0);
+        QCOMPARE(cli({u"install"_s, u"antigravity"_s, u"--test-owner-ok"_s, u"antigravity"_s}).code, 0);
         QCOMPARE(cli({u"run"_s, u"antigravity"_s}, {{u"XDG_RUNTIME_DIR"_s, u"/nonexistent"_s}}).code, 8);
         QCOMPARE(cli({u"run"_s, u"notinstalled"_s}).code, 3);
     }

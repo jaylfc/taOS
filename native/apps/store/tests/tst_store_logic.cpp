@@ -7,6 +7,7 @@
 #include <QTemporaryDir>
 
 #include "apphost.h"
+#include "owner.h"
 #include "appsoverview.h"
 #include "storeengine.h"
 
@@ -20,6 +21,12 @@ QJsonArray builtinWebapps()
     QFile f(QStringLiteral(WEBAPPS_JSON));
     f.open(QIODevice::ReadOnly);
     return QJsonDocument::fromJson(f.readAll()).object().value(u"apps"_s).toArray();
+}
+
+QByteArray readAll(const QString &p)
+{
+    QFile f(p);
+    return f.open(QIODevice::ReadOnly) ? f.readAll() : QByteArray();
 }
 
 // JSON with single quotes (moc cannot read raw strings that hold a URL), as bytes
@@ -127,6 +134,7 @@ private Q_SLOTS:
         qunsetenv("TAOS_THEME_VARIANT");
         qputenv("TAOS_WEBAPP_BROWSER", QByteArray(FAKE_BROWSER));
         // no container apps engine unless a test brings its own: a taos-appgroups on this machine's PATH is not a fixture
+        qputenv("TAOS_APPGROUPS_OWNER_DIR", (m_tmp.path() + u"/owner"_s).toUtf8());   // where the Store serves the person's confirmations
         qputenv("TAOS_APPGROUPS_BIN", "/nonexistent/taos-appgroups");
         m_stop = m_tmp.path() + u"/stop"_s;
         qputenv("FAKE_BROWSER_STOP", m_stop.toUtf8());
@@ -229,7 +237,14 @@ private Q_SLOTS:
         m_e->chooseGroup(u"claude-desktop"_s, u"dev-apps"_s);
         m_e->acceptConsent(u"claude-desktop"_s);
         QVERIFY(waitFor([&] { return stateOf(u"claude-desktop"_s) == u"installed"_s; }));
-        QVERIFY2(log().contains(u"install claude-desktop --json --target group:dev-apps --accept-licence claude-desktop --accepted-by "_s), qPrintable(log()));
+        QVERIFY2(log().contains(u"install claude-desktop --json --target group:dev-apps"_s), qPrintable(log()));
+        QVERIFY2(!log().contains(u"--accept-licence"_s) && !log().contains(u"--accepted-by"_s), "no flag stands in for the person");
+        // the press minted a single-use confirmation for exactly this licence, handed over in the environment
+        const QString nonce = QString::fromUtf8(readAll(d + u"/nonce-install"_s)).trimmed();
+        QVERIFY2(!nonce.isEmpty(), "the install was handed a confirmation");
+        QVERIFY(!TaosAppGroups::consumeOwnerNonce(nonce, QLatin1String(TaosAppGroups::kActionUpdate), u"claude-desktop"_s).ok);   // spent by the wrong try
+        QVERIFY(!TaosAppGroups::consumeOwnerNonce(nonce, QLatin1String(TaosAppGroups::kActionLicence), u"claude-desktop"_s).ok);   // single use
+        QVERIFY(!log().contains(nonce));
         // 3. an open source app is asked about the group too, with no licence flag
         m_e->install(u"chromium"_s);
         QCOMPARE(stateOf(u"chromium"_s), u"consent"_s);
@@ -287,6 +302,35 @@ private Q_SLOTS:
     }
 
 
+    void container_update_of_a_version_only_the_feed_vouches_for_is_shown_and_needs_the_press()
+    {
+        QTemporaryDir ag;
+        const QString d = ag.path();
+        writeFile(d + u"/catalog.json"_s, jq("{'ok':true,'apps':[{'id':'kilo-desktop','name':'Kilo','type':'container-desktop-app','description':'d','publisher':'Kilo','homepage':'https://x.example/','licence':'Kilo','licence_url':'https://kilo.ai/terms','licence_required':true,'terms_note':'P','version':'1.0.0','categories':['Development'],'can_update':true,'window_app_id':'kilo','grants':{}}]}"));
+        writeFile(d + u"/list.json"_s, jq("{'ok':true,'apps':[{'id':'kilo-desktop','name':'Kilo','group':'default','installed_version':'1.0.0','licence_accepted':{'url':'https://kilo.ai/terms'}}]}"));
+        writeFile(d + u"/groups.json"_s, jq("{'ok':true,'groups':[{'name':'default','display_name':'My apps','state':'running','apps':['kilo-desktop']}]}"));
+        qputenv("TAOS_APPGROUPS_OWNER_DIR", (m_tmp.path() + u"/owner"_s).toUtf8());
+        qputenv("TAOS_APPGROUPS_BIN", QByteArray(FAKE_APPGROUPS));
+        qputenv("FAKE_AG_DIR", d.toUtf8());
+        qputenv("FAKE_AG_UNVERIFIED", "1");
+        qunsetenv("FAKE_AG_FAIL");
+        start();
+        loaded();
+        QVERIFY(waitFor([this] { return m_e->app(u"kilo-desktop"_s)[u"installed"_s].toBool(); }));
+        m_e->checkAppUpdate(u"kilo-desktop"_s);
+        QVERIFY(waitFor([this] { return m_e->updateState(u"kilo-desktop"_s).value(u"state"_s).toString() == u"available"_s; }));
+        const QVariantMap up = m_e->updateState(u"kilo-desktop"_s);
+        QVERIFY(up.value(u"unverified"_s).toBool());
+        QVERIFY2(up.value(u"text"_s).toString().contains(u"NOT verified"_s), "the person is told what was not verified");
+        // checking alone never confirms anything
+        QVERIFY(!QFileInfo::exists(d + u"/nonce-update"_s));
+        m_e->updateContainerApp(u"kilo-desktop"_s);   // the press
+        QVERIFY(waitFor([&] { return QFileInfo::exists(d + u"/nonce-update"_s); }));
+        const QString nonce = QString::fromUtf8(readAll(d + u"/nonce-update"_s)).trimmed();
+        QVERIFY(!TaosAppGroups::consumeOwnerNonce(nonce, QLatin1String(TaosAppGroups::kActionUpdate), u"kilo-desktop@2.0#other"_s).ok);   // scoped to what was shown (and now spent)
+        qunsetenv("FAKE_AG_UNVERIFIED");
+        qputenv("TAOS_APPGROUPS_BIN", "/nonexistent/taos-appgroups");
+    }
     void container_apps_show_the_launchers_icon_a_real_version_and_ask_for_a_missing_licence()
     {
         QTemporaryDir ag;
@@ -316,7 +360,12 @@ private Q_SLOTS:
         m_e->acceptInstalledLicence(u"antigravity"_s);
         QFile f(d + u"/args.log"_s);
         QVERIFY(f.open(QIODevice::ReadOnly));
-        QVERIFY(QString::fromUtf8(f.readAll()).contains(u"licence accept antigravity --accepted-by "_s));
+        QVERIFY(QString::fromUtf8(f.readAll()).contains(u"licence accept antigravity --json"_s));
+        const QString n2 = QString::fromUtf8(readAll(d + u"/nonce-licence"_s)).trimmed();
+        const TaosAppGroups::OwnerProof pr = TaosAppGroups::consumeOwnerNonce(n2, QLatin1String(TaosAppGroups::kActionLicence), u"antigravity"_s);
+        QVERIFY2(pr.ok, qPrintable(pr.error));
+        QVERIFY(pr.by.endsWith(u" (confirmed in the Store)"_s));
+        QVERIFY(!TaosAppGroups::consumeOwnerNonce(n2, QLatin1String(TaosAppGroups::kActionLicence), u"antigravity"_s).ok);
         QCOMPARE(m_e->app(u"antigravity"_s)[u"needsLicenceAcceptance"_s].toBool(), false);
         // the group made last is remembered, for the next picker
         m_e->createAppGroup(u"Internet apps"_s);

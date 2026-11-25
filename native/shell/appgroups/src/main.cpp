@@ -4,7 +4,7 @@
 // one {"event":...} object per line before the final {"ok":...} line).
 //
 // Exit codes: 0 ok, 1 failed, 2 usage, 3 not found, 4 incus unavailable or not allowed, 5 refused (invalid manifest,
-// unsupported machine, policy), 6 an install step failed, 7 conflict (already exists), 8 no desktop session, 9 target not available yet, 10 licence not accepted.
+// unsupported machine, policy), 6 an install step failed, 7 conflict (already exists), 8 no desktop session, 9 target not available yet, 10 needs the person's own confirmation in the Store (a licence, or an unverified update).
 #include <QCoreApplication>
 #include <QJsonArray>
 #include <QJsonDocument>
@@ -28,30 +28,32 @@ QString usage()
                                  create another app group (its own container and grant set)
   catalog                        apps that can be installed
   list [--available]             installed apps (and what else could be installed)
-  install <app-id> [--target T] [--accept-licence <app-id>] [--accepted-by TEXT]
-                                 install an app; T is group:<name> (default group:default), host or worker:<name>
+  install <app-id> [--target T]  install an app; T is group:<name> (default group:default), host or worker:<name>
                                  (host and worker are not available yet; --accept-host-warning is carried for the Store).
-                                 Apps with a proprietary licence need --accept-licence <app-id> (exit 10 without it);
-                                 the acceptance is recorded with the time, the licence URL and who accepted
+                                 Apps with a proprietary licence are accepted by the person in the Store, which hands
+                                 this command a single-use confirmation (environment TAOS_OWNER_NONCE). Without a valid
+                                 one the command exits 10 and says what the person must accept; no flag can stand in.
   move <app-id> --to group:<name> move an installed app and its data to another group (refused while it runs);
                                  the old data is kept as a dated backup until you delete it
   open-url [--from <group>] <url> open a link the way the desktop would: web links in the chosen browser, sign-in
                                  callbacks back to the app that registered their scheme; nothing else
   browser get | set <app-id>|host [--group G] | clear [--group G]
                                  the browser links open in (for everything, or for one group)
-  licence accept <app-id> [--accepted-by TEXT]
-                                 record that you accept the licence of an app installed before licences were recorded
+  licence accept <app-id>        record the person's acceptance for an app installed before licences were recorded
+                                 (needs the Store's single-use confirmation, like install)
   icon set <app-id> <file>       use your own icon for an app (PNG or SVG); it is never replaced
   icon clear <app-id>            go back to the app's own icon
   backups                        data backups left behind by moves
   backups delete <app-id> <stamp> delete one backup
-  update <app-id> [--check]      look for (--check) or install a newer version of an app
+  update <app-id> [--check]      look for (--check) or install a newer version of an app; a newer version that only the
+                                 publisher's own feed vouches for shows what was and was not verified and needs the
+                                 person's confirmation from the Store (exit 10 without it)
   remove <app-id> [--purge-data] remove an app; its data is kept unless --purge-data
   run <app-id> [args...]         show the app in the current desktop session
   launchers sync                 rewrite the launcher entries of installed apps
   status                         containers, grants and devices
 exit codes: 0 ok, 1 failed, 2 usage, 3 not found, 4 incus unavailable, 5 refused, 6 install step failed,
-            7 conflict, 8 no desktop session, 9 target not available yet, 10 licence not accepted)"_s;
+            7 conflict, 8 no desktop session, 9 target not available yet, 10 needs the person's confirmation)"_s;
 }
 
 QString line(const QJsonObject &o) { return QString::fromUtf8(QJsonDocument(o).toJson(QJsonDocument::Compact)); }
@@ -84,7 +86,7 @@ int main(int argc, char *argv[])
     QCoreApplication app(argc, argv);
     QStringList a = app.arguments().mid(1);
     bool json = false, available = false, purge = false, acceptHost = false;
-    QString target, to, displayName, acceptLicence, acceptedBy, fromGroup;
+    QString target, to, displayName, acceptLicence, fromGroup;
     bool check = false, groupGiven = false;
     QString group = QString::fromLatin1(kDefaultGroup);
     QStringList pos, rest;
@@ -112,7 +114,7 @@ int main(int argc, char *argv[])
         } else if (s == u"--accept-licence"_s && i + 1 < a.size()) {
             acceptLicence = a[++i];
         } else if (s == u"--accepted-by"_s && i + 1 < a.size()) {
-            acceptedBy = a[++i];
+            ++i;   // accepted and ignored: who accepted is taken from the Store's confirmation, never from text
         } else if (s == u"--target"_s && i + 1 < a.size()) {
             target = a[++i];
         } else if (s == u"--group"_s && i + 1 < a.size()) {
@@ -131,6 +133,10 @@ int main(int argc, char *argv[])
         QTextStream(stderr) << usage() << '\n';
         return ExitUsage;
     }
+    // The person's confirmation, handed over by the Store for this one command. It is read from the environment (not
+    // the argument list, which other programs can list) and is useless without the Store's socket vouching for it.
+    const QString ownerNonce = qEnvironmentVariable("TAOS_OWNER_NONCE");
+    qunsetenv("TAOS_OWNER_NONCE");
     Engine e;
     const Progress prog = [json](const QJsonObject &ev) {
         if (json) {
@@ -182,7 +188,7 @@ int main(int argc, char *argv[])
             QTextStream(stderr) << "taos-appgroups: --accept-licence must name the app being installed (" << pos[1] << ")\n";
             return ExitUsage;
         }
-        return finish(e.install(pos[1], group, prog, InstallOptions{acceptLicence, acceptedBy}), json, [](const QJsonObject &d) { return u"installed %1 into %2"_s.arg(d.value(u"id"_s).toString(), d.value(u"container"_s).toString()); });
+        return finish(e.install(pos[1], group, prog, InstallOptions{ownerNonce}), json, [](const QJsonObject &d) { return u"installed %1 into %2"_s.arg(d.value(u"id"_s).toString(), d.value(u"container"_s).toString()); });
     }
     if (cmd == u"move"_s && pos.size() == 2) {
         QString dest;
@@ -203,7 +209,7 @@ int main(int argc, char *argv[])
     if (cmd == u"browser"_s && pos.value(1) == u"clear"_s)
         return finish(e.browserClear(group == QLatin1String(kDefaultGroup) && !groupGiven ? QString() : group), json, [](const QJsonObject &) { return QString(); });
     if (cmd == u"licence"_s && pos.value(1) == u"accept"_s && pos.size() == 3)
-        return finish(e.acceptLicence(pos[2], acceptedBy), json, [](const QJsonObject &d) { return u"recorded your acceptance for %1"_s.arg(d.value(u"id"_s).toString()); });
+        return finish(e.acceptLicence(pos[2], ownerNonce), json, [](const QJsonObject &d) { return u"recorded your acceptance for %1"_s.arg(d.value(u"id"_s).toString()); });
     if (cmd == u"icon"_s && pos.value(1) == u"set"_s && pos.size() == 4)
         return finish(e.iconSet(pos[2], pos[3]), json, [](const QJsonObject &d) { return d.value(u"icon_path"_s).toString(); });
     if (cmd == u"icon"_s && pos.value(1) == u"clear"_s && pos.size() == 3)
@@ -220,7 +226,7 @@ int main(int argc, char *argv[])
     if (cmd == u"backups"_s && pos.value(1) == u"delete"_s && pos.size() == 4)
         return finish(e.backupDelete(pos[2], pos[3]), json, [](const QJsonObject &) { return u"backup deleted"_s; });
     if (cmd == u"update"_s && pos.size() == 2)
-        return finish(e.update(pos[1], check, prog), json, [](const QJsonObject &d) {
+        return finish(e.update(pos[1], check, prog, ownerNonce), json, [](const QJsonObject &d) {
             if (d.contains(u"update_available"_s) && !d.value(u"updated"_s).toBool())
                 return d.value(u"update_available"_s).toBool() ? u"%1: version %2 is available (installed: %3)"_s.arg(d.value(u"id"_s).toString(), d.value(u"latest_version"_s).toString(), d.value(u"installed_version"_s).toString())
                                                               : u"%1 is up to date"_s.arg(d.value(u"id"_s).toString());

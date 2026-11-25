@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 #include "appgroups.h"
+#include "callbackbroker.h"
 
 #include <QCoreApplication>
 #include <QCryptographicHash>
@@ -12,6 +13,7 @@
 #include <QJsonDocument>
 #include <QLockFile>
 #include <QProcess>
+#include <QRandomGenerator>
 #include <QRegularExpression>
 #include <QSaveFile>
 #include <QStandardPaths>
@@ -22,6 +24,8 @@
 
 #include <memory>
 
+#include <sys/file.h>
+#include <fcntl.h>
 #include <unistd.h>
 
 using namespace Qt::StringLiterals;
@@ -516,6 +520,27 @@ struct DeviceLock {
     }
 };
 
+// One lock per app. A launch holds it shared for as long as the app runs; a move holds it exclusively from before it
+// looks at whether the app runs until the app has been switched, so no launch can slip in between the copy being
+// checked and the switch (and a move cannot start under a launch that has not shown a process yet).
+struct AppLock {
+    int fd = -1;
+    bool held = false;
+    AppLock(const QString &appId, bool exclusive)
+    {
+        QDir().mkpath(Engine::dataRoot() + u"/locks"_s);
+        fd = ::open(QFile::encodeName(Engine::dataRoot() + u"/locks/app-"_s + appId + u".lock"_s).constData(), O_RDWR | O_CREAT | O_CLOEXEC, 0600);
+        held = fd >= 0 && ::flock(fd, (exclusive ? LOCK_EX : LOCK_SH) | LOCK_NB) == 0;
+    }
+    ~AppLock()
+    {
+        if (fd >= 0)
+            ::close(fd);
+    }
+    AppLock(const AppLock &) = delete;
+    AppLock &operator=(const AppLock &) = delete;
+};
+
 Grants unionGrants(const QString &group, const QString &withApp = {}, const Grants *extra = nullptr)
 {
     Grants g;
@@ -714,12 +739,25 @@ namespace {
 QString sourcesFile(const QString &name) { return u"/etc/apt/sources.list.d/"_s + name + u".sources"_s; }
 QString keyFile(const QString &name) { return u"/etc/apt/keyrings/"_s + name + u".gpg"_s; }
 
-bool fingerprintsInclude(const QString &gpgColons, const QString &want)
+// The key file must hold exactly one primary key and it must be the pinned one. A file with an extra key (which apt
+// would also trust for that source) or one that only carries the pinned fingerprint on a subkey is refused.
+bool singlePrimaryKeyIs(const QString &gpgColons, const QString &want)
 {
-    for (const QString &l : gpgColons.split(u'\n'))
-        if (l.startsWith(u"fpr:"_s) && l.split(u':').value(9) == want)
-            return true;
-    return false;
+    int primaries = 0;
+    bool afterPrimary = false;
+    QString primaryFpr;
+    for (const QString &l : gpgColons.split(u'\n')) {
+        const QString kind = l.section(u':', 0, 0);
+        if (kind == u"pub"_s || kind == u"sec"_s) {
+            ++primaries;
+            afterPrimary = true;
+        } else if (kind == u"sub"_s || kind == u"ssb"_s) {
+            afterPrimary = false;
+        } else if (kind == u"fpr"_s && afterPrimary && primaryFpr.isEmpty()) {
+            primaryFpr = l.section(u':', 9, 9);
+        }
+    }
+    return primaries == 1 && !want.isEmpty() && primaryFpr.compare(want, Qt::CaseInsensitive) == 0;
 }
 
 Result runStep(Engine::Impl *d, const QString &ct, const Manifest &m, const Step &s, const QString &log)
@@ -734,14 +772,14 @@ Result runStep(Engine::Impl *d, const QString &ct, const Manifest &m, const Step
             return fail(u"could not download the signing key"_s);
         const QString want = a.value(u"key_fingerprint"_s).toString();
         const Proc fp = d->exec(ct, {u"gpg"_s, u"--show-keys"_s, u"--with-colons"_s, tmp}, {});
-        if (!fp.ok() || !fingerprintsInclude(fp.out, want))
-            return Result::fail(ExitStep, u"the signing key does not have the expected fingerprint %1; refusing to trust it"_s.arg(want));
+        if (!fp.ok() || !singlePrimaryKeyIs(fp.out, want))
+            return Result::fail(ExitStep, u"the downloaded signing key is not exactly one key with the expected fingerprint %1; refusing to trust it"_s.arg(want));
         d->exec(ct, {u"mkdir"_s, u"-p"_s, u"/etc/apt/keyrings"_s});
         if (!d->exec(ct, {u"gpg"_s, u"--batch"_s, u"--yes"_s, u"--dearmor"_s, u"-o"_s, keyFile(name), tmp}, log).ok())
             return fail(u"could not prepare the signing key"_s);
         const Proc fp2 = d->exec(ct, {u"gpg"_s, u"--show-keys"_s, u"--with-colons"_s, keyFile(name)}, {});
-        if (!fingerprintsInclude(fp2.out, want))
-            return Result::fail(ExitStep, u"the stored key does not match the expected fingerprint"_s);
+        if (!fp2.ok() || !singlePrimaryKeyIs(fp2.out, want))
+            return Result::fail(ExitStep, u"the stored key is not exactly one key with the expected fingerprint"_s);
         QString src = u"Types: deb\nURIs: %1\nSuites: %2\nComponents: %3\nSigned-By: %4\n"_s
                           .arg(a.value(u"uri"_s).toString(), a.value(u"suite"_s).toString(),
                                QStringList([&] { QStringList l; for (const QJsonValue &v : a.value(u"components"_s).toArray()) l << v.toString(); return l; }()).join(u' '),
@@ -928,8 +966,12 @@ bool writeLauncher(const Manifest &m, const QString &group, QString *err)
     t += u"Exec=%1 run %2 %U\n"_s.arg(desktopQuote(selfExec()), m.id);
     t += u"Icon=%1\nTerminal=false\nStartupWMClass=%2\n"_s.arg(iconPath(m.id), m.windowAppId);
     t += u"Categories=%1\n"_s.arg((m.categories.isEmpty() ? QStringList{u"Utility"_s} : m.categories).join(u';') + u';');
-    if (!m.mimeTypes.isEmpty())
-        t += u"MimeType=%1;\n"_s.arg(m.mimeTypes.join(u';'));
+    QStringList mimes;   // already validated by the manifest parser; checked again before it reaches a launcher file
+    for (const QString &mt : m.mimeTypes)
+        if (validMimeType(mt))
+            mimes << mt;
+    if (!mimes.isEmpty())
+        t += u"MimeType=%1;\n"_s.arg(mimes.join(u';'));
     t += u"X-taOS-AppId=%1\nX-taOS-ContainerApp=%2\nX-taOS-AppGroup=%3\n"_s.arg(m.windowAppId, m.id, group);
     QSaveFile f(desktopPath(m.id));
     if (!f.open(QIODevice::WriteOnly) || f.write(t.toUtf8()) < 0 || !f.commit()) {
@@ -1098,14 +1140,18 @@ Result Engine::install(const QString &appId, const QString &group, const Progres
     // The licence gate comes before anything is created or downloaded.
     QJsonObject accepted;
     if (m.licenceRequired) {
-        if (opt.acceptLicence != appId) {
-            Result r = Result::fail(ExitLicence, u"%1 needs you to accept its licence (%2) before it is installed"_s.arg(m.name, m.licenceUrl));
-            r.data[u"licence"_s] = QJsonObject{{u"app"_s, appId}, {u"name"_s, m.licence}, {u"url"_s, m.licenceUrl}};
-            return r;
+        Result need = Result::fail(ExitLicence, u"%1 needs you to accept its licence (%2) before it is installed. Accept it in the Store: nothing on the command line can accept it for you."_s.arg(m.name, m.licenceUrl));
+        need.data[u"licence"_s] = QJsonObject{{u"app"_s, appId}, {u"name"_s, m.licence}, {u"url"_s, m.licenceUrl}};
+        if (opt.ownerNonce.isEmpty())
+            return need;
+        const OwnerProof proof = consumeOwnerNonce(opt.ownerNonce, QLatin1String(kActionLicence), appId);
+        if (!proof.ok) {
+            need.error += u" ("_s + proof.error + u")"_s;
+            return need;
         }
         accepted = QJsonObject{{u"name"_s, m.licence}, {u"url"_s, m.licenceUrl},
                                {u"accepted_at"_s, QDateTime::currentDateTimeUtc().toString(Qt::ISODate)},
-                               {u"accepted_by"_s, opt.acceptedBy.isEmpty() ? qEnvironmentVariable("USER") : opt.acceptedBy}};
+                               {u"accepted_by"_s, proof.by}};
     }
     QJsonObject idx = readIndex();
     QJsonObject apps = idx.value(u"apps"_s).toObject();
@@ -1209,6 +1255,23 @@ Result Engine::remove(const QString &appId, bool purgeData, const Progress &p)
 
 namespace {
 
+} // namespace
+
+QString hostLockCleanupScript()
+{
+    return u"# host-locks\ncd \"$1\" && shift && find \"$@\" \\( -type s -o -name SingletonLock -o -name SingletonCookie -o -name SingletonSocket -o -name .parentlock -o \\( -type l -name lock \\) \\) -exec rm -f {} +"_s;
+}
+
+QString gtkDarkSettingScript()
+{
+    return u"# gtk-dark\nfor v in 3.0 4.0; do f=\"$1/.config/gtk-$v/settings.ini\"; mkdir -p \"$(dirname \"$f\")\"; "
+           "if [ -f \"$f\" ] && grep -q '^gtk-application-prefer-dark-theme' \"$f\"; then sed -i \"s/^gtk-application-prefer-dark-theme.*/gtk-application-prefer-dark-theme=$2/\" \"$f\"; "
+           "elif [ -f \"$f\" ] && grep -q '^\\[Settings\\]' \"$f\"; then sed -i \"/^\\[Settings\\]/a gtk-application-prefer-dark-theme=$2\" \"$f\"; "
+           "else printf '[Settings]\\ngtk-application-prefer-dark-theme=%s\\n' \"$2\" >> \"$f\"; fi; done"_s;
+}
+
+namespace {
+
 // tar from one container straight into another, process to process (no buffering through this program).
 Result copyData(const Engine::Impl *d, const QString &fromCt, const QString &toCt, const QString &home, const QStringList &rels, const QString &appName)
 {
@@ -1229,10 +1292,13 @@ Result copyData(const Engine::Impl *d, const QString &fromCt, const QString &toC
     return {};
 }
 
-// "<file count> <bytes>" of the given paths under the home, or empty when it could not be measured.
+// "<file count> <bytes> <sha256 of every file's path and content>" of the given paths under the home, or empty when it
+// could not be measured. The content hash is what proves the copy is the same data, not just the same size.
 QString dataFingerprint(const Engine::Impl *d, const QString &ct, const QString &home, const QStringList &rels)
 {
-    const Proc r = d->exec(ct, QStringList{u"sh"_s, u"-c"_s, u"cd \"$1\" && shift && find \"$@\" -type f -printf '%s\\n' | awk '{n++;s+=$1} END{print n+0, s+0}'"_s, u"sh"_s, home} + rels);
+    const Proc r = d->exec(ct, QStringList{u"sh"_s, u"-c"_s,
+        u"# content-sum\ncd \"$1\" && shift && { find \"$@\" -type f ! -name SingletonLock ! -name SingletonCookie ! -name SingletonSocket ! -name .parentlock -printf '%s\\n' | awk '{n++;s+=$1} END{printf \"%d %d \", n+0, s+0}'; "
+        "find \"$@\" -type f ! -name SingletonLock ! -name SingletonCookie ! -name SingletonSocket ! -name .parentlock -print0 | LC_ALL=C sort -z | xargs -0 -r sha256sum | sha256sum | cut -d' ' -f1; }"_s, u"sh"_s, home} + rels);
     return r.ok() ? r.out.trimmed() : QString();
 }
 
@@ -1277,6 +1343,9 @@ Result Engine::move(const QString &appId, const QString &toGroup, const Progress
         return Result::fail(ExitNotFound, u"the app group %1 that holds %2 does not exist"_s.arg(from, m.name));
     if (sc.value(u"status"_s).toString() != u"Running"_s && !d->incusRun({u"start"_s, srcCt}, {}, 120000).ok())
         return Result::fail(ExitIncus, u"cannot start %1"_s.arg(srcCt));
+    AppLock moveLock(appId, true);
+    if (!moveLock.held)
+        return Result::fail(ExitConflict, u"%1 is being opened or changed by another command; nothing was changed"_s.arg(m.name));
     bool known = false;
     if (appRunning(d, srcCt, appId, &known))
         return Result::fail(ExitConflict, u"%1 is running. Close it and try again; nothing was changed."_s.arg(m.name));
@@ -1313,6 +1382,9 @@ Result Engine::move(const QString &appId, const QString &toGroup, const Progress
             cleanTargetHome(d, dstCt, home);
             return r;
         }
+        // a profile carries per-host lock and runtime files (a Chromium "in use on another computer" lock, a socket):
+        // they are dropped from the copy and are not part of what the two sides are compared on
+        d->exec(dstCt, QStringList{u"sh"_s, u"-c"_s, hostLockCleanupScript(), u"sh"_s, home} + rels);
         const QString a = dataFingerprint(d, srcCt, home, rels), b = dataFingerprint(d, dstCt, home, rels);
         if (a.isEmpty() || b.isEmpty() || a != b) {
             cleanTargetHome(d, dstCt, home);
@@ -1395,7 +1467,7 @@ Result Engine::move(const QString &appId, const QString &toGroup, const Progress
     return r;
 }
 
-Result Engine::acceptLicence(const QString &appId, const QString &acceptedBy)
+Result Engine::acceptLicence(const QString &appId, const QString &ownerNonce)
 {
     QJsonObject idx = readIndex();
     QJsonObject apps = idx.value(u"apps"_s).toObject();
@@ -1407,10 +1479,19 @@ Result Engine::acceptLicence(const QString &appId, const QString &acceptedBy)
         return Result::fail(ExitNotFound, err);
     if (!cat.licenceRequired)
         return Result::fail(ExitRefused, u"%1 has no licence to accept"_s.arg(cat.name));
+    Result need = Result::fail(ExitLicence, u"%1 needs you to accept its licence (%2). Accept it in the Store: nothing on the command line can accept it for you."_s.arg(cat.name, cat.licenceUrl));
+    need.data[u"licence"_s] = QJsonObject{{u"app"_s, appId}, {u"name"_s, cat.licence}, {u"url"_s, cat.licenceUrl}};
+    if (ownerNonce.isEmpty())
+        return need;
+    const OwnerProof proof = consumeOwnerNonce(ownerNonce, QLatin1String(kActionLicence), appId);
+    if (!proof.ok) {
+        need.error += u" ("_s + proof.error + u")"_s;
+        return need;
+    }
     QJsonObject rec = apps.value(appId).toObject();
     rec[u"licence_accepted"_s] = QJsonObject{{u"name"_s, cat.licence}, {u"url"_s, cat.licenceUrl},
                                              {u"accepted_at"_s, QDateTime::currentDateTimeUtc().toString(Qt::ISODate)},
-                                             {u"accepted_by"_s, acceptedBy.isEmpty() ? qEnvironmentVariable("USER") : acceptedBy}};
+                                             {u"accepted_by"_s, proof.by}};
     apps[appId] = rec;
     idx[u"apps"_s] = apps;
     if (!writeIndex(idx, &err))
@@ -1506,8 +1587,10 @@ Result Engine::backupDelete(const QString &appId, const QString &stamp)
 
 // ------------------------------------------------------------------ update
 
-Result Engine::update(const QString &appId, bool checkOnly, const Progress &p)
+Result Engine::update(const QString &appId, bool checkOnly, const Progress &p, const QString &ownerNonce)
 {
+    QString confirmedBy;
+    QJsonObject confirmedVerification;
     d->prog = p;
     d->stepN = 0;
     d->stepOf = 4;
@@ -1563,11 +1646,49 @@ Result Engine::update(const QString &appId, bool checkOnly, const Progress &p)
             || !urlAllowed(entry.value(u"url"_s).toString(), &why) || doc.value(u"version"_s).toString().isEmpty())
             return Result::fail(ExitStep, u"could not read a usable update feed from the publisher%1"_s.arg(why.isEmpty() ? QString() : u" ("_s + why + u")"_s));
         const QString sha = entry.value(u"sha256"_s).toString();
-        const bool available = sha != rec.value(u"installed_sha256"_s).toString(debSha(m));
-        r.data[u"latest_version"_s] = doc.value(u"version"_s).toString();
+        const QString feedVersion = doc.value(u"version"_s).toString();
+        // The pin is the current catalogue entry's when there is one (it can carry a newer version), else the one stored at install.
+        Manifest pinM = m;
+        Manifest cat;
+        QString catErr;
+        if (findManifest(*this, appId, &cat, &catErr) && hasOp(cat, u"download-deb"_s))
+            pinM = cat;
+        const QString pinned = debSha(pinM);
+        const bool pinnedVersion = !pinM.version.isEmpty() && feedVersion == pinM.version;
+        // The feed vouches for its own download, which proves nothing about who wrote the feed. For the version the
+        // catalogue pins, the catalogue's checksum decides; a feed that disagrees with it is refused.
+        if (pinnedVersion && sha != pinned)
+            return Result::fail(ExitStep, u"the publisher's feed names a different checksum for version %1 than the one pinned in the catalogue; nothing was installed"_s.arg(feedVersion));
+        const bool available = sha != rec.value(u"installed_sha256"_s).toString(pinned);
+        r.data[u"latest_version"_s] = feedVersion;
         r.data[u"update_available"_s] = available;
+        QJsonObject ver{{u"checksum_pinned_in_catalogue"_s, pinnedVersion},
+                        {u"signed_source"_s, false},
+                        {u"checksum_source"_s, pinnedVersion ? u"the catalogue's pinned checksum"_s : u"the publisher's own feed, the same place the download comes from"_s},
+                        {u"feed"_s, m.updateFeedUrl},
+                        {u"download"_s, entry.value(u"url"_s).toString()},
+                        {u"sha256"_s, sha},
+                        {u"summary"_s, pinnedVersion
+                             ? u"Matches the checksum pinned in the catalogue for this exact version. The download's signature was not checked."_s
+                             : u"NOT verified: version %1 is newer than anything the catalogue pins, and its checksum comes from the same publisher feed as the download. If that feed were tampered with, the checksum would match a bad file. The download's signature was not checked."_s.arg(feedVersion)}};
+        r.data[u"verification"_s] = ver;
         if (checkOnly || !available)
             return r;
+        if (!pinnedVersion) {
+            const QString subject = u"%1@%2#%3"_s.arg(appId, feedVersion, sha);
+            Result need = Result::fail(ExitLicence, u"Version %1 of %2 is not covered by the catalogue's pinned checksum; installing it needs your confirmation in the Store. %3"_s.arg(feedVersion, m.name, ver.value(u"summary"_s).toString()));
+            need.data = r.data;
+            need.data[u"confirm"_s] = QJsonObject{{u"action"_s, QLatin1String(kActionUpdate)}, {u"subject"_s, subject}};
+            if (ownerNonce.isEmpty())
+                return need;
+            const OwnerProof proof = consumeOwnerNonce(ownerNonce, QLatin1String(kActionUpdate), subject);
+            if (!proof.ok) {
+                need.error += u" ("_s + proof.error + u")"_s;
+                return need;
+            }
+            confirmedBy = proof.by;
+        }
+        confirmedVerification = ver;
         d->step(u"Downloading %1 %2"_s.arg(m.name, doc.value(u"version"_s).toString()));
         const QString tmp = u"/var/tmp/taos-dl-"_s + appId + u".deb"_s;
         if (!d->exec(ct, {u"curl"_s, u"-fL"_s, u"--retry"_s, u"3"_s, u"-o"_s, tmp, entry.value(u"url"_s).toString()}, log).ok())
@@ -1584,7 +1705,22 @@ Result Engine::update(const QString &appId, bool checkOnly, const Progress &p)
         if (!ins.ok())
             return Result::fail(ExitStep, u"installing the new version failed (log: %1)"_s.arg(log));
         rec[u"installed_sha256"_s] = sha;
+        QJsonArray hist = rec.value(u"update_history"_s).toArray();
+        QJsonObject h{{u"at"_s, QDateTime::currentDateTimeUtc().toString(Qt::ISODate)}, {u"version"_s, feedVersion}, {u"sha256"_s, sha},
+                      {u"verification"_s, confirmedVerification}};
+        if (!confirmedBy.isEmpty())
+            h[u"confirmed_by"_s] = confirmedBy;
+        hist.append(h);
+        rec[u"update_history"_s] = hist;
     } else {
+        // The stored signing key is checked on every update, not only when it was added: one key, the pinned one.
+        for (const Step &st : m.recipe) {
+            if (st.op != u"apt-source"_s)
+                continue;
+            const Proc fp = d->exec(ct, {u"gpg"_s, u"--show-keys"_s, u"--with-colons"_s, keyFile(st.args.value(u"name"_s).toString())}, {});
+            if (!fp.ok() || !singlePrimaryKeyIs(fp.out, st.args.value(u"key_fingerprint"_s).toString()))
+                return Result::fail(ExitStep, u"the stored signing key for %1 is not exactly the pinned key any more; nothing was updated"_s.arg(m.name));
+        }
         d->step(u"Asking the software source for the current version"_s);
         if (!d->exec(ct, {u"apt-get"_s, u"update"_s}, log, env).ok())
             return Result::fail(ExitStep, u"apt-get update failed (log: %1)"_s.arg(log));
@@ -1647,6 +1783,12 @@ bool findSession(Session *s)
 
 Result Engine::run(const QString &appId, const QStringList &extra)
 {
+    // Held for as long as the app runs: a move of this app is refused meanwhile, and a launch is refused while a move
+    // of it is between its checks and its switch. Taken before the index is read so a move cannot change the group
+    // under this launch.
+    AppLock runLock(appId, false);
+    if (!runLock.held)
+        return Result::fail(ExitConflict, u"%1 is being moved to another app group; try again in a moment"_s.arg(appId));
     const QJsonObject rec = readIndex().value(u"apps"_s).toObject().value(appId).toObject();
     if (rec.isEmpty())
         return Result::fail(ExitNotFound, u"%1 is not installed"_s.arg(appId));
@@ -1718,10 +1860,13 @@ Result Engine::run(const QString &appId, const QStringList &extra)
         QFile af(cfgHome + u"/taos/appearance.json"_s);
         if (af.open(QIODevice::ReadOnly)) {
             const QString mode = QJsonDocument::fromJson(af.readAll()).object().value(u"mode"_s).toString();
-            if (mode == u"dark"_s)
-                a << u"--env"_s << u"GTK_THEME=Adwaita:dark"_s;
-            else if (mode == u"light"_s)
-                a << u"--env"_s << u"GTK_THEME=Adwaita"_s;
+            if (mode == u"dark"_s || mode == u"light"_s) {
+                a << u"--env"_s << (mode == u"dark"_s ? u"GTK_THEME=Adwaita:dark"_s : u"GTK_THEME=Adwaita"_s);
+                // The settings.ini the toolkits also read is owned here and kept in step on every launch (a hand-set
+                // value from before would otherwise outlive a switch of the desktop's mode).
+                d->incusRun({u"exec"_s, ct, u"--user"_s, u"1000"_s, u"--group"_s, u"1000"_s, u"--"_s, u"sh"_s, u"-c"_s, gtkDarkSettingScript(), u"sh"_s,
+                             home, mode == u"dark"_s ? u"1"_s : u"0"_s});
+            }
         }
     }
     for (auto it = m.launchEnv.begin(); it != m.launchEnv.end(); ++it)
@@ -1798,8 +1943,10 @@ bool writeSettings(const QJsonObject &o, QString *err)
 
 bool isWebScheme(const QString &s) { return s == u"http"_s || s == u"https"_s; }
 
-// A port that a sign-in asked the browser to call back on: redirect_uri=http://127.0.0.1:PORT/... (also localhost, ::1).
-int localhostCallbackPort(const QUrl &u)
+// A port (and path) that a sign-in asked the browser to call back on: redirect_uri=http://127.0.0.1:PORT/path (also localhost, ::1).
+struct LocalCallback { int port = 0; QString path; };
+
+LocalCallback localhostCallback(const QUrl &u)
 {
     const QRegularExpression re(u"^http://(127\\.0\\.0\\.1|localhost|\\[::1\\]):(\\d{2,5})(/|$)"_s);
     for (const auto &kv : QUrlQuery(u).queryItems(QUrl::FullyDecoded)) {
@@ -1807,25 +1954,21 @@ int localhostCallbackPort(const QUrl &u)
         if (m.hasMatch()) {
             const int port = m.captured(2).toInt();
             if (port >= 1024 && port <= 65535)
-                return port;
+                return {port, QUrl(kv.second).path()};
         }
     }
-    return 0;
+    return {};
 }
 
-// True once something has connected to the local port (any TCP state but LISTEN in /proc/net/tcp).
-bool callbackSeen(int port)
+// A directory only this person can enter, for the hand-over socket of a forward.
+QString forwardSocketPath(int port, const QString &token)
 {
-    QFile f(u"/proc/net/tcp"_s);
-    if (!f.open(QIODevice::ReadOnly))
-        return false;
-    const QString want = u":%1"_s.arg(port, 4, 16, QLatin1Char('0')).toUpper();
-    for (const QString &l : QString::fromLatin1(f.readAll()).split(u'\n').mid(1)) {
-        const QStringList c = l.simplified().split(u' ');
-        if (c.size() > 3 && c[1].endsWith(want) && c[3] != u"0A"_s)
-            return true;
-    }
-    return false;
+    QString dir = ownerDir();
+    if (dir.isEmpty())
+        dir = Engine::dataRoot() + u"/run"_s;
+    QDir().mkpath(dir);
+    QFile::setPermissions(dir, QFile::ReadOwner | QFile::WriteOwner | QFile::ExeOwner);
+    return u"%1/fwd-%2-%3.sock"_s.arg(dir).arg(port).arg(token);
 }
 
 } // namespace
@@ -1897,7 +2040,8 @@ Result Engine::openUrl(const QString &url, const QString &fromGroup)
         return Result::fail(ExitRefused, u"that is not a link taOS will open"_s);
     const QJsonObject apps = readIndex().value(u"apps"_s).toObject();
     QString target;           // the app that gets the link
-    int fwdPort = 0;
+    LocalCallback cb;
+    
     if (isWebScheme(scheme)) {
         if (u.host().isEmpty())
             return Result::fail(ExitRefused, u"that web link has no address"_s);
@@ -1916,7 +2060,7 @@ Result Engine::openUrl(const QString &url, const QString &fromGroup)
         if (!apps.contains(choice))
             return Result::fail(ExitNotFound, u"the browser chosen for links (%1) is not installed"_s.arg(choice));
         target = choice;
-        fwdPort = localhostCallbackPort(u);
+        cb = localhostCallback(u);
     } else {
         // only the schemes an installed app has registered, and the link goes back to that app
         for (auto it = apps.begin(); it != apps.end() && target.isEmpty(); ++it)
@@ -1931,21 +2075,32 @@ Result Engine::openUrl(const QString &url, const QString &fromGroup)
     r.data[u"routed"_s] = u"app"_s;
     r.data[u"app"_s] = target;
     r.data[u"group"_s] = targetGroup;
+    const int fwdPort = cb.port;
     const bool forward = fwdPort > 0 && !fromGroup.isEmpty() && fromGroup != targetGroup && validGroupName(fromGroup);
     const QString fromCt = containerFor(fromGroup), toCt = containerFor(targetGroup);
     const QString dev = u"fwd-%1"_s.arg(fwdPort);
     QString err;
+    int lfd = -1;
+    QString upstream;
     if (forward) {
-        // app's group -> host loopback; browser's group loopback -> host loopback: that port, nothing else
+        // The host end is this command's own listener, so it can insist on the exact callback path. The app's group
+        // reaches it over a unix socket only this uid can open; the browser's group reaches the loopback port.
+        if (lfd = listenCallbackPort(fwdPort, &err); lfd < 0)
+            return Result::fail(ExitConflict, u"cannot forward the sign-in port: %1"_s.arg(err));
+        upstream = forwardSocketPath(fwdPort, QString::number(QRandomGenerator::system()->generate(), 16));
         const QString p = QString::number(fwdPort);
         {
             DeviceLock l1(fromCt);
-            if (!addDevice(d, fromCt, dev, {u"proxy"_s, u"listen=tcp:127.0.0.1:"_s + p, u"connect=tcp:127.0.0.1:"_s + p, u"bind=host"_s}, &err))
+            if (!addDevice(d, fromCt, dev, {u"proxy"_s, u"listen=unix:"_s + upstream, u"connect=tcp:127.0.0.1:"_s + p, u"bind=host"_s,
+                                            u"uid=%1"_s.arg(::getuid()), u"gid=%1"_s.arg(::getgid()), u"mode=0600"_s}, &err)) {
+                ::close(lfd);
                 return Result::fail(ExitIncus, u"cannot forward the sign-in port: %1"_s.arg(err));
+            }
         }
         DeviceLock l2(toCt);
         if (!addDevice(d, toCt, dev, {u"proxy"_s, u"listen=tcp:127.0.0.1:"_s + p, u"connect=tcp:127.0.0.1:"_s + p, u"bind=container"_s}, &err)) {
             removeDevice(d, fromCt, dev, &err);
+            ::close(lfd);
             return Result::fail(ExitIncus, u"cannot forward the sign-in port: %1"_s.arg(err));
         }
     }
@@ -1953,24 +2108,19 @@ Result Engine::openUrl(const QString &url, const QString &fromGroup)
         if (forward) {
             removeDevice(d, fromCt, dev, &err);
             removeDevice(d, toCt, dev, &err);
+            ::close(lfd);
         }
         return Result::fail(ExitFailed, u"could not start %1"_s.arg(target));
     }
     if (forward) {
         r.data[u"forwarded_port"_s] = fwdPort;
-        // wait for the callback (something connecting to the port) or the timeout, then close the port again
+        // Wait for the callback (a request for the redirect path) or the timeout, then close the port again.
         const int secs = qEnvironmentVariableIntValue("TAOS_APPGROUPS_FORWARD_SECONDS") > 0 ? qEnvironmentVariableIntValue("TAOS_APPGROUPS_FORWARD_SECONDS") : 180;
-        QElapsedTimer t;
-        t.start();
-        bool seen = false;
-        while (t.elapsed() < qint64(secs) * 1000 && !seen) {
-            QThread::msleep(250);
-            seen = callbackSeen(fwdPort);
-        }
-        if (seen)
-            QThread::sleep(3);   // let the answer finish
+        const bool seen = serveCallback(lfd, cb.path, upstream, secs);
+        ::close(lfd);
         { DeviceLock l1(fromCt); removeDevice(d, fromCt, dev, &err); }
         { DeviceLock l2(toCt); removeDevice(d, toCt, dev, &err); }
+        QFile::remove(upstream);
         r.data[u"forward_closed"_s] = seen ? u"after the callback"_s : u"after the timeout"_s;
     }
     return r;

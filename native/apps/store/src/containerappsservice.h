@@ -10,6 +10,9 @@
 #include <QObject>
 #include <QSet>
 #include <QString>
+#include <memory>
+
+#include "owner.h"
 
 namespace Taos::Store {
 
@@ -17,6 +20,7 @@ class ContainerAppsService : public QObject {
     Q_OBJECT
 public:
     explicit ContainerAppsService(QObject *parent = nullptr);
+    ~ContainerAppsService() override;
     /// The command to run: $TAOS_APPGROUPS_BIN, else the sibling of this program, else `taos-appgroups` on PATH.
     static QString program();
 
@@ -38,9 +42,17 @@ public:
     /// licenceAccepted: the person agreed to the licence the Store showed (recorded by the engine with the time and who).
     void install(const QString &id, const QString &target = {}, bool acceptedHostWarning = false, bool licenceAccepted = false);
     void remove(const QString &id, bool purgeData = false);
-    /// Installs the newer version of an app (never while it runs; the engine refuses).
-    void update(const QString &id);
+    /// Installs the newer version of an app (never while it runs; the engine refuses). A version that only the
+    /// publisher's own feed vouches for needs the person's confirmation: pass the subject the check showed
+    /// ("<id>@<version>#<sha256>") and a single-use confirmation for exactly that is minted here, from this press.
+    void update(const QString &id, const QString &confirmSubject = {});
     bool open(const QString &id, const QStringList &args = {});
+
+private:
+    /// A fresh single-use confirmation for one action and subject, valid only because the person just pressed the
+    /// button. Never kept: every press mints its own. Empty when the confirmation channel is not available.
+    QString confirm(const QString &action, const QString &subject);
+    std::unique_ptr<TaosAppGroups::OwnerGate> m_gate;
 
 Q_SIGNALS:
     /// A group was created (ok) or not (the engine's own sentence).

@@ -17,7 +17,7 @@ endif()
 file(GLOB TAOS_APPGROUPS_CATALOG CONFIGURE_DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/catalog/*.json)
 file(GLOB TAOS_APPGROUPS_ICONS CONFIGURE_DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/icons/*.svg)
 
-add_library(taos_appgroups_core STATIC src/appgroups.cpp src/appgroups.h src/manifest.cpp src/manifest.h)
+add_library(taos_appgroups_core STATIC src/appgroups.cpp src/appgroups.h src/manifest.cpp src/manifest.h src/owner.cpp src/owner.h src/callbackbroker.cpp src/callbackbroker.h)
 target_include_directories(taos_appgroups_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
 target_link_libraries(taos_appgroups_core PUBLIC Qt6::Core)
 set_target_properties(taos_appgroups_core PROPERTIES POSITION_INDEPENDENT_CODE ON)
