@@ -621,6 +621,7 @@ class AuthManager:
             "last_login_at": record.get("last_login_at"),
             "created_at": record.get("created_at"),
             "capabilities": caps,
+            "country": record.get("country", ""),
             # Whether a PIN exists, never the PIN or its hash. Settings needs
             # this to show which sign-in methods are active; this dict is a
             # whitelist, so `pin_hash` cannot escape through it by accident.

@@ -45,27 +45,20 @@ router = APIRouter()
 def _get_user_territory(request: Request, user: dict | None) -> str | None:
     """Return the user's ISO 3166-1 alpha-2 country code, or None if unknown.
 
-    Checks in order:
-    1. User profile 'country' field (if present)
-    2. Cloudflare CF-IPCountry header
-    3. X-Forwarded-For header (would need geoip lookup - not implemented)
-    4. Request client host (would need geoip lookup - not implemented)
+    Only checks the user's explicitly-set profile 'country' field.
+    Does NOT use cf-ipcountry or any other header, as those can be spoofed.
+    Territory-limited licences require the user to confirm their region explicitly.
 
     Returns None if territory cannot be determined. A None territory means
-    territory-limited licences cannot be verified and should be treated as
-    "unknown territory" - the install proceeds but with a warning.
+    territory-limited licences cannot be verified and the install is blocked
+    with a clear message requiring manual territory confirmation.
     """
-    # 1. User profile country
+    # Only user profile country (explicitly set by the user)
     if user and isinstance(user.get("country"), str) and user["country"]:
         return user["country"].upper()
 
-    # 2. Cloudflare header (common in production behind CF)
-    cf_country = request.headers.get("cf-ipcountry")
-    if cf_country and len(cf_country) == 2:
-        return cf_country.upper()
-
-    # TODO: Add geoip lookup for X-Forwarded-For or client.host
-    # For now, return None (unknown territory)
+    # No header-based or implicit territory detection — territory-limited
+    # licences require explicit user confirmation.
     return None
 
 
@@ -1134,11 +1127,18 @@ async def install_app(request: Request):
                     status_code=403,
                 )
 
-        # Agent consent flow: agents (local_token) cannot accept licences for users.
-        # If the request comes via local_token and tries to pass accepted=true,
+        # Agent consent flow: agents cannot accept licences for users.
+        # If the request comes via any agent credential and tries to pass accepted=true,
         # reject it and require human consent.
         via = getattr(request.state, "via", None)
-        is_agent_request = via == "local_token"
+        agent_vias = {
+            "local_token",
+            "registry_jwt_deployed_agent",
+            "registry_jwt_native_agent",
+            "device_bearer",
+            "device_bearer_candidate",
+        }
+        is_agent_request = via in agent_vias
         accepted_now = bool(body.get("accepted", False))
         if is_agent_request and accepted_now:
             progress.finish(install_id, success=False, error="agent_cannot_accept_license")
@@ -1170,22 +1170,22 @@ async def install_app(request: Request):
             class_text = {
                 "non-commercial": (
                     f"{manifest.name} uses model weights licensed under {license_name}{version_suffix}, "
-                    "for non-commercial use only.{url_suffix} Continuing means you agree to that "
+                    f"for non-commercial use only.{url_suffix} Continuing means you agree to that "
                     "license for the weights this service uses."
                 ),
                 "revenue-capped": (
                     f"{manifest.name} uses model weights licensed under {license_name}{version_suffix}, "
-                    "which permits commercial use only below a revenue threshold.{url_suffix} "
+                    f"which permits commercial use only below a revenue threshold.{url_suffix} "
                     "Continuing means you agree to that license for the weights this service uses."
                 ),
                 "research-only": (
                     f"{manifest.name} uses model weights licensed under {license_name}{version_suffix}, "
-                    "for research use only.{url_suffix} Continuing means you agree to that "
+                    f"for research use only.{url_suffix} Continuing means you agree to that "
                     "license for the weights this service uses."
                 ),
                 "territory-limited": (
                     f"{manifest.name} uses model weights licensed under {license_name}{version_suffix}, "
-                    "which is restricted to specific jurisdictions.{url_suffix} "
+                    f"which is restricted to specific jurisdictions.{url_suffix} "
                     "Acceptance does not override territory exclusions. Continuing means you agree "
                     "to that license for the weights this service uses."
                 ),
@@ -1201,7 +1201,7 @@ async def install_app(request: Request):
                 ),
                 "unlicensed": (
                     f"{manifest.name} uses model weights with no declared licence "
-                    "(all rights reserved).{url_suffix} Continuing means you accept the risk of "
+                    f"(all rights reserved).{url_suffix} Continuing means you accept the risk of "
                     "using unlicensed weights."
                 ),
             }

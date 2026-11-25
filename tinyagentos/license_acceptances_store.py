@@ -47,6 +47,10 @@ class LicenseAcceptancesStore(BaseStore):
         if self._db is not None:
             self._db.row_factory = aiosqlite.Row
         # Migration: add license_version column if missing (for existing installs)
+        # and ensure the UNIQUE constraint includes license_version.
+        # If the old schema had UNIQUE(user_id, app_id, license_id), we must
+        # recreate the table because SQLite doesn't allow dropping a UNIQUE
+        # constraint that's part of the table definition.
         if self._db is not None:
             cursor = await self._db.execute("PRAGMA table_info(license_acceptances)")
             columns = [row[1] for row in await cursor.fetchall()]
@@ -54,11 +58,56 @@ class LicenseAcceptancesStore(BaseStore):
                 await self._db.execute("""
                     ALTER TABLE license_acceptances ADD COLUMN license_version TEXT NOT NULL DEFAULT ''
                 """)
-            # Recreate unique index to include license_version
-            await self._db.execute("""
-                CREATE UNIQUE INDEX IF NOT EXISTS idx_license_acceptances_unique
-                ON license_acceptances (user_id, app_id, license_id, license_version)
+            
+            # Check if the UNIQUE constraint includes license_version
+            cursor = await self._db.execute("""
+                SELECT sql FROM sqlite_master 
+                WHERE type='table' AND name='license_acceptances'
             """)
+            table_row = await cursor.fetchone()
+            if table_row and table_row[0]:
+                table_sql = table_row[0]
+                # Check if the UNIQUE constraint mentions license_version
+                import re
+                unique_match = re.search(r'UNIQUE\s*\(([^)]+)\)', table_sql, re.IGNORECASE)
+                needs_recreate = False
+                if unique_match:
+                    unique_cols = unique_match.group(1).upper()
+                    if 'LICENSE_VERSION' not in unique_cols:
+                        needs_recreate = True
+                else:
+                    # No UNIQUE constraint in table definition, ensure index exists
+                    pass
+                
+                if needs_recreate:
+                    # Recreate table with correct schema
+                    await self._db.execute("""
+                        CREATE TABLE license_acceptances_new (
+                            id              INTEGER PRIMARY KEY AUTOINCREMENT,
+                            user_id         TEXT NOT NULL,
+                            app_id          TEXT NOT NULL,
+                            license_id      TEXT NOT NULL,
+                            license_version TEXT NOT NULL DEFAULT '',
+                            accepted_at     TEXT NOT NULL,
+                            UNIQUE (user_id, app_id, license_id, license_version)
+                        )
+                    """)
+                    await self._db.execute("""
+                        INSERT INTO license_acceptances_new 
+                        (id, user_id, app_id, license_id, license_version, accepted_at)
+                        SELECT id, user_id, app_id, license_id, license_version, accepted_at
+                        FROM license_acceptances
+                    """)
+                    await self._db.execute("DROP TABLE license_acceptances")
+                    await self._db.execute("""
+                        ALTER TABLE license_acceptances_new RENAME TO license_acceptances
+                    """)
+                else:
+                    # Table schema is correct or has no UNIQUE constraint, just ensure index exists
+                    await self._db.execute("""
+                        CREATE UNIQUE INDEX IF NOT EXISTS idx_license_acceptances_unique
+                        ON license_acceptances (user_id, app_id, license_id, license_version)
+                    """)
             await self._db.commit()
 
     async def record_acceptance(
