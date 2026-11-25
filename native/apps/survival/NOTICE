@@ -1,0 +1,22 @@
+Survival Studio: third-party material
+
+Code
+  libzim (GPL-2.0-or-later) reads ZIM files. It comes from the distribution package (libzim-dev) and is linked
+  dynamically; its dependency libxapian (GPL-2.0-or-later) comes with it. Neither is copied into this repository.
+  zlib (zlib licence) inflates PMTiles directories and tiles.
+
+Formats
+  ZIM (openZIM), PMTiles (Protomaps, BSD-3-Clause specification) and Mapbox Vector Tile (the open tile encoding)
+  are read by code written for taOS from the public format descriptions.
+
+Data (never in the repository; downloaded or imported by the person into their own data folder)
+  catalog/packs.json lists packs with the publisher's own checksums and licences. The Wikipedia packs are CC BY-SA 4.0
+  (Wikipedia contributors, packaged by Kiwix). Map packs made from the Protomaps basemap carry OpenStreetMap data
+  under the ODbL: the attribution is shown on the map and in the pack list.
+
+Icons
+  The line icons added to Taos.Apps Glyph.qml for this app (book, map, radio, backpack, map-pin, locate, minus, user,
+  users, message, battery, hard-drive, sparkles, panel-right, home, check-circle, circle-dashed, circle-x, shuffle, usb)
+  follow the 24 unit, round-cap style of the existing set, whose shapes are those of the Lucide icon set
+  (ISC licence, Copyright (c) Lucide Contributors). The application icon (icons/hicolor/scalable/apps/my.taos.survival.svg)
+  was drawn for taOS from plain shapes.

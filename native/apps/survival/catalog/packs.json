@@ -1,0 +1,56 @@
+{
+  "version": 1,
+  "note": "Freely licensed packs. Checksums are the publisher's own. Nothing here is bundled: packs are downloaded on request into the person's data folder.",
+  "packs": [
+    {
+      "id": "wikipedia-medicine-mini",
+      "title": "Wikipedia: medicine (intro text)",
+      "description": "The introduction of every Wikipedia article on medicine and health, English, without pictures. A good first pack.",
+      "kind": "zim", "language": "en",
+      "file": "wikipedia_en_medicine_mini_2026-10.zim",
+      "url": "https://download.kiwix.org/zim/wikipedia/wikipedia_en_medicine_mini_2026-10.zim",
+      "bytes": 174350854,
+      "sha256": "c66f27274775870cec7e0c230c7e7626d367633b1f26c4a74499c249ddac0822",
+      "licence": "CC-BY-SA-4.0", "licenceUrl": "https://creativecommons.org/licenses/by-sa/4.0/",
+      "attribution": "Wikipedia contributors, CC BY-SA 4.0. Packaged by Kiwix.",
+      "publisher": "Kiwix", "version": "2026-10"
+    },
+    {
+      "id": "wikipedia-top-mini",
+      "title": "Wikipedia: top articles (intro text)",
+      "description": "The introductions of Wikipedia's most read English articles, without pictures.",
+      "kind": "zim", "language": "en",
+      "file": "wikipedia_en_top_mini_2026-09.zim",
+      "url": "https://download.kiwix.org/zim/wikipedia/wikipedia_en_top_mini_2026-09.zim",
+      "bytes": 296858160,
+      "sha256": "9e75b5f03b4ff61864772d811bd9715c9cdc27a429229abb779aaa3cc3aa8e05",
+      "licence": "CC-BY-SA-4.0", "licenceUrl": "https://creativecommons.org/licenses/by-sa/4.0/",
+      "attribution": "Wikipedia contributors, CC BY-SA 4.0. Packaged by Kiwix.",
+      "publisher": "Kiwix", "version": "2026-09"
+    },
+    {
+      "id": "wikipedia-climate-nopic",
+      "title": "Wikipedia: climate change (no pictures)",
+      "description": "Wikipedia's articles on climate change and the environment, English, full text without pictures.",
+      "kind": "zim", "language": "en",
+      "file": "wikipedia_en_climate-change_nopic_2026-10.zim",
+      "url": "https://download.kiwix.org/zim/wikipedia/wikipedia_en_climate-change_nopic_2026-10.zim",
+      "bytes": 90260982,
+      "sha256": "2a3f2aa5a4c6011f9f73e5b119546763fff099f2c3bb8a1787e750236f555ae5",
+      "licence": "CC-BY-SA-4.0", "licenceUrl": "https://creativecommons.org/licenses/by-sa/4.0/",
+      "attribution": "Wikipedia contributors, CC BY-SA 4.0. Packaged by Kiwix.",
+      "publisher": "Kiwix", "version": "2026-10"
+    },
+    {
+      "id": "map-protomaps-recipe",
+      "title": "Map of your region (Protomaps basemap)",
+      "description": "A vector map cut out of the Protomaps world basemap for the area you choose. Protomaps publishes the whole world (over 100 GB), so you cut your own piece with the pmtiles tool, then import the file here.",
+      "kind": "map", "region": "your choice",
+      "file": "protomaps-region.pmtiles",
+      "recipe": "pmtiles extract https://build.protomaps.com/<a current build>.pmtiles my-region.pmtiles --bbox=<west>,<south>,<east>,<north> --maxzoom=11   (builds are listed at maps.protomaps.com/builds; the pmtiles tool is at github.com/protomaps/go-pmtiles)",
+      "licence": "ODbL-1.0", "licenceUrl": "https://www.openstreetmap.org/copyright",
+      "attribution": "Map data © OpenStreetMap contributors (ODbL). Basemap by Protomaps.",
+      "publisher": "Protomaps", "version": "4"
+    }
+  ]
+}

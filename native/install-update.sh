@@ -6,7 +6,7 @@
 # bundled fonts, fontconfig drop-in, sway snippets, shell pieces, apps) plus a report at the end that says exactly what
 # each change needs: a compositor config reload, a restart of the shell pieces, or nothing.
 #
-#   sudo native/install-update.sh --shell-build DIR --apps-build DIR [--apps-build DIR]... \
+#   sudo native/install-update.sh --shell-build DIR --apps-build DIR [--apps-build DIR]... [--apps-lib DIR]... \
 #        [--sway /opt/taos/compositor/bin/sway] [--root DIR] [--check-only] [--reload] [--restart-pieces]
 #
 #   --check-only      stage and validate, install nothing (the report is not printed: nothing changed)
@@ -31,7 +31,7 @@ while [ $# -gt 0 ]; do
         --root) root=${2:?}; add --root "$2"; shift 2 ;;
         --restart-pieces) restart=1; shift ;;
         --reload) reload=1; shift ;;
-        --shell-build|--apps-build|--validate-with) add "$1" "${2:?}"; shift 2 ;;
+        --shell-build|--apps-build|--apps-lib|--validate-with) add "$1" "${2:?}"; shift 2 ;;
         --check-only) add --check-only; shift ;;
         -h|--help) sed -n '2,19p' "$0"; exit 0 ;;
         *) echo "install-update: unknown option $1" >&2; exit 2 ;;

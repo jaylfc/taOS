@@ -23,7 +23,7 @@ private prefix and are not part of this repository.
 
 ## Libraries linked, not copied
 
-Qt 6 and LayerShellQt (LGPL-3.0, dynamically linked), libwayland (MIT), and the Rust crates named in
+Qt 6 and LayerShellQt (LGPL-3.0, dynamically linked), libwayland (MIT), libzim and libxapian (GPL-2.0-or-later, dynamically linked, from the distribution; Survival Studio, see `apps/survival/NOTICE`), and the Rust crates named in
 `Cargo.lock` (each under its own licence; none is vendored here). No library source is copied
 into the tree.
 
