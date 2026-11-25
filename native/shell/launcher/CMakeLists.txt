@@ -11,7 +11,7 @@ add_library(taos_search_core STATIC
     src/engine.cpp src/engine.h
     src/runner.cpp src/runner.h src/jsonio.cpp src/jsonio.h
     src/setup.cpp src/setup.h src/ipc.cpp src/ipc.h
-    src/appmenu.cpp src/appmenu.h)
+    src/appmenu.cpp src/appmenu.h src/actionmenu.cpp src/actionmenu.h)
 target_include_directories(taos_search_core PUBLIC src)
 target_link_libraries(taos_search_core PUBLIC Qt6::Core Qt6::Network)
 set_target_properties(taos_search_core PROPERTIES POSITION_INDEPENDENT_CODE ON)
@@ -21,7 +21,7 @@ target_link_libraries(taos-search PRIVATE taos_search_core)
 install(TARGETS taos-search RUNTIME DESTINATION bin)
 
 # The controller and row model (no window in them) are a library so the tests drive the real thing.
-add_library(taos_launcher_ui STATIC src/controller.cpp src/controller.h src/rowmodel.cpp src/rowmodel.h
+add_library(taos_launcher_ui STATIC src/menunav.cpp src/menunav.h src/controller.cpp src/controller.h src/rowmodel.cpp src/rowmodel.h
     src/iconprovider.cpp src/iconprovider.h)
 target_include_directories(taos_launcher_ui PUBLIC src)
 target_link_libraries(taos_launcher_ui PUBLIC taos_search_core Qt6::Gui Qt6::Quick)
@@ -66,3 +66,6 @@ taos_launcher_test(launcher_test_ipc)
 taos_launcher_test(launcher_test_providers)
 taos_launcher_test(launcher_test_controller)
 taos_launcher_test(launcher_test_appmenu)
+taos_launcher_test(launcher_test_icons)
+taos_launcher_test(launcher_test_actionmenu)
+taos_launcher_test(launcher_test_menunav)
