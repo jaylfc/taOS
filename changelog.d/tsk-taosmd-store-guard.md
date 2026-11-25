@@ -1,0 +1,5 @@
+### Added
+
+- taOS now asks the real `taosmd migrate --probe` what shape the memory store is in before it opens anything, and follows taOSmd's documented exit codes. An older store (exit 10) is served as is: nothing is lost and nothing is converted on open. A store written by a newer taOSmd (12), one in a state taOSmd cannot vouch for (11), a check that cannot run, or an answer taOS does not know all stop start-up with plain words about what to do instead of a bare error. This replaces the earlier memory-store guard attempts.
+- Settings, Memory shows the memory store status and offers the optional, one-way vector conversion behind a confirmation, on desktop and phone. `GET /api/memory-store` reports the status and `POST /api/memory-store/convert` starts the conversion. An agent or the CLI that asks for the same thing raises a consent card in Decisions instead; approving the card runs the conversion and the outcome is written back to the card as a note.
+- `/api/health?detailed=true` reports a `memory_store` subsystem.

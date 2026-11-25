@@ -106,6 +106,13 @@ async def api_health(request: Request, detailed: bool = False):
     else:
         subsystems["qmd"] = {"status": "unavailable"}
 
+    mss = getattr(request.app.state, "memory_store_status", None)
+    subsystems["memory_store"] = (
+        {"status": "ok" if mss.can_serve else "error", "state": mss.state, "message": mss.message}
+        if mss is not None
+        else {"status": "unavailable", "state": "unchecked", "message": ""}
+    )
+
     subsystems["controller_identity"] = (
         {"status": ci.get("status", "unknown"), "reason": ci.get("reason", "")}
         if ci else {"status": "unavailable", "reason": ""}

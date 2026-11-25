@@ -7,6 +7,7 @@ notification; everything else is a normal badge + notification.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 from dataclasses import dataclass
@@ -37,7 +38,7 @@ _ANSWER_THREAD = "decisions"
 # surface, not an approval channel), and the agent mirror path must refuse them
 # so an agent cannot self-approve a gate it created.  Keeping the list in one
 # place prevents drift between the two call sites and the applier functions.
-GATE_DECISION_KINDS = ("execution_gate", "delegation_gate", "app_grant", "collab_delegation_gate", "shell_command")
+GATE_DECISION_KINDS = ("execution_gate", "delegation_gate", "app_grant", "collab_delegation_gate", "shell_command", "memory_store_convert")
 
 # Server-stamped provenance marker for gate decisions (tsk-mul5pa).  The
 # public create path strips this key so an API caller can never self-stamp a
@@ -60,6 +61,7 @@ SERVER_OWNED_KINDS = (
     "app_grant",
     "project_create",
     "collab_delegation_gate",
+    "memory_store_convert",
 )
 
 
@@ -728,10 +730,50 @@ async def answer_decision(
     routed_project_create = await _apply_project_create_grant(request, updated, stored_value)
     routed_collab = await _apply_collab_delegation_grant(request, updated, stored_value)
     routed_shell = await _apply_shell_command_grant(request, updated, stored_value)
+    routed_memory_store = await _apply_memory_store_convert_grant(request, updated, stored_value)
     if not (routed_app or routed_exec or routed_deleg or routed_pair or routed_project_create
-            or routed_collab or routed_shell):
+            or routed_collab or routed_shell or routed_memory_store):
         await _route_answer_to_agent(updated, stored_value, note=body.note)
     return updated
+
+
+async def _apply_memory_store_convert_grant(request: Request, decision: dict, value) -> bool:
+    """Side effect for a memory_store_convert Decision: approving it starts the
+    optional vector conversion in the background (the same engine the Settings
+    button runs); denying it changes nothing. The outcome is written back to the
+    card as a note, which the asking agent can read. The answer is already
+    persisted, so a failure here is logged and noted, never raised. Returns True
+    for this kind so the generic agent reply is skipped."""
+    meta = decision.get("metadata") or {}
+    if meta.get("kind") != "memory_store_convert":
+        return False
+    if meta.get(SERVER_RAISED_KEY) is not True:
+        logger.warning(
+            "gate decision %s refused: missing server provenance (kind=%r)",
+            decision.get("id"), meta.get("kind"),
+        )
+        return False
+    store = request.app.state.decision_store
+    if value != "approve":
+        await store.add_note(decision["id"], "Declined. The memory store was not changed.", "taOS")
+        return True
+    from tinyagentos.routes.memory_store import run_conversion
+    from tinyagentos.task_utils import _create_supervised_task
+
+    async def _convert_and_note() -> None:
+        try:
+            record = await run_conversion(request.app)
+            text = record.get("message") or "The conversion finished."
+        except Exception as exc:  # noqa: BLE001 - noted on the card, and logged by run_conversion
+            text = f"The conversion stopped unexpectedly ({type(exc).__name__}). Check Settings, Memory."
+        await store.add_note(decision["id"], text, "taOS")
+
+    tasks = getattr(request.app.state, "_background_tasks", None)
+    if tasks is None:
+        asyncio.create_task(_convert_and_note())
+    else:
+        _create_supervised_task(_convert_and_note(), tasks)
+    return True
 
 
 async def _apply_shell_command_grant(request: Request, decision: dict, value) -> bool:

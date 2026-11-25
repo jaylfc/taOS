@@ -3186,3 +3186,18 @@ both are worker-to-controller (HMAC), not agent-facing:
 - `POST /api/cluster/workers/{name}/deploy` — documented inline: operator
   session required (not session-exempt); per-worker deploy locks prevent
   concurrent install/restart double-installs.
+
+## The memory store check and its conversion
+
+At start-up taOS runs `taosmd migrate --probe --json` on the data dir before any
+taOSmd store is opened (exit 0 current, 10 old and served as is, 11 unknown, 12
+newer; 11, 12, a check that cannot run and any other code stop start-up with plain
+instructions). `GET /api/memory-store` reports the result and the last conversion.
+
+The optional, one-way vector conversion (`taosmd migrate --convert-vectors`) is
+never automatic. An agent or the CLI asks for it with
+`POST /api/memory-store/convert {"confirm": true}` using the host local token; that
+raises a `memory_store_convert` card in Decisions and runs nothing. When the owner
+approves the card the conversion starts in the background and its outcome is added
+to the card as a note (`GET /api/decisions/{id}`). A signed-in owner session starts
+it directly from Settings, Memory.

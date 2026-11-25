@@ -49,6 +49,7 @@ import { DemoModePanel } from "@/apps/SettingsApp/DemoModePanel";
 import { WifiPanel } from "@/apps/SettingsApp/WifiPanel";
 import { BluetoothPanel } from "@/apps/SettingsApp/BluetoothPanel";
 import { OfflineModelPanel } from "@/apps/SettingsApp/OfflineModelPanel";
+import { MemoryStorePanel } from "@/apps/SettingsApp/MemoryStorePanel";
 import { copyText } from "@/lib/clipboard";
 
 /* ------------------------------------------------------------------ */
@@ -578,6 +579,8 @@ function MemorySection() {
           )}
         </Card>
       )}
+
+      <MemoryStorePanel />
     </section>
   );
 }
