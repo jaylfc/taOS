@@ -17,7 +17,7 @@ struct FetchAcc
 {
     QJsonValue radios, ids, texts, pos, last, idl;
     QString healthError;
-    bool healthOk = true, ro = true, cr = false, cw = false, transport = false, refused = false;
+    bool healthOk = true, ro = true, cr = false, cw = false, cc = false, canConnect = false, transport = false, refused = false;
     QString transportMsg, refusedMsg;
 };
 
@@ -171,6 +171,7 @@ void SocketMeshBackend::fetchAll()
             acc->ro = h.value(u"receive_only"_s).toBool(true);   // unknown means receive-only: never assume sending is allowed
             acc->cr = h.value(u"device_config"_s).toBool(false);
             acc->cw = h.value(u"device_config_write"_s).toBool(false);
+            acc->canConnect = h.value(u"radios_connect"_s).toBool(false);
             if (!h.value(u"store_error"_s).isNull() && !h.value(u"store_error"_s).toString().isEmpty()) {
                 acc->healthOk = false;
                 acc->healthError = tr("The mesh engine cannot write its store: %1").arg(h.value(u"store_error"_s).toString());
@@ -211,6 +212,7 @@ void SocketMeshBackend::apply(const std::shared_ptr<FetchAcc> &accp)
                 m_receiveOnly = acc->ro;
         m_cfgRead = acc->cr;
         m_cfgWrite = acc->cw;
+        m_canConnect = acc->canConnect;
         // parse into members
         m_radios.clear();
         for (const QJsonValue &v : acc->radios.toArray()) {
@@ -354,6 +356,92 @@ void SocketMeshBackend::done(const QString &what, const MeshReply &r)
     Q_EMIT actionDone(what, r.ok, r.ok ? QString() : r.message);
     if (r.ok)
         fetchAll();
+}
+
+QString SocketMeshBackend::explainConnectError(const QString &m)
+{
+    const QString low = m.toLower();
+    if (low.contains(u"permission denied"_s) || low.contains(u"os error 13"_s)) {
+        const QString user = QString::fromLocal8Bit(qgetenv("USER"));
+        return QObject::tr("This account is not allowed to open serial ports. Add it to the dialout group once with: sudo usermod -aG dialout %1 "
+                           "and then sign out and back in. There is no privileged helper in taOS for this yet, so it cannot be done from here.")
+            .arg(user.isEmpty() ? QObject::tr("YOUR-USER") : user);
+    }
+    if (low.contains(u"busy"_s) || low.contains(u"os error 16"_s) || low.contains(u"in use"_s))
+        return QObject::tr("Another program is using this port (a serial monitor, ModemManager or another engine). Close it and try again.");
+    return m;
+}
+
+void SocketMeshBackend::discoverDevices()
+{
+    if (m_client->state() != MeshClient::State::Connected)
+        return;
+    m_client->request(u"radios.saved"_s, {}, this, [this](const MeshReply &s) {
+        if (s.ok) {
+            m_saved.clear();
+            for (const QJsonValue &v : s.result.toArray())
+                m_saved << v.toObject().value(u"device"_s).toString();
+        }
+        m_client->request(u"discover"_s, {}, this, [this](const MeshReply &r) {
+            if (!r.ok)
+                return;
+            QList<MeshDevice> out;
+            const QJsonObject o = r.result.toObject();
+            for (const QJsonValue &v : o.value(u"serial"_s).toArray()) {
+                const QJsonObject d = v.toObject();
+                MeshDevice m;
+                m.id = d.value(u"path"_s).toString();
+                m.kind = u"usb"_s;
+                const QString prod = d.value(u"product"_s).toString(), man = d.value(u"manufacturer"_s).toString();
+                m.label = !prod.isEmpty() ? prod : !man.isEmpty() ? man : tr("USB serial device");
+                m.detail = u"%1  %2:%3"_s.arg(m.id, QString::number(d.value(u"vid"_s).toInt(), 16).rightJustified(4, QLatin1Char('0')), QString::number(d.value(u"pid"_s).toInt(), 16).rightJustified(4, QLatin1Char('0')));
+                m.hint = d.value(u"hint"_s).toString();
+                m.saved = m_saved.contains(m.id);
+                out << m;
+            }
+            const QJsonObject ble = o.value(u"ble"_s).toObject();
+            for (const QJsonValue &v : ble.value(u"devices"_s).toArray()) {
+                const QJsonObject d = v.toObject();
+                MeshDevice m;
+                m.id = u"ble:"_s + d.value(u"address"_s).toString();
+                m.kind = u"ble"_s;
+                m.label = d.value(u"name"_s).toString().isEmpty() ? tr("Bluetooth radio") : d.value(u"name"_s).toString();
+                m.detail = d.value(u"address"_s).toString();
+                m.hint = d.value(u"network"_s).toString();
+                m.supported = false;   // the engine has no Bluetooth link yet
+                out << m;
+            }
+            m_devices = out;
+            Q_EMIT devicesChanged();
+        });
+    });
+}
+
+void SocketMeshBackend::connectDevice(const QString &id, const QString &network)
+{
+    if (!m_canConnect) {
+        Q_EMIT actionDone(u"connect:"_s + id, false, tr("This engine cannot be told to open radios. Update it."));
+        return;
+    }
+    QJsonObject p{{u"device"_s, id}};
+    if (!network.isEmpty())
+        p.insert(u"network"_s, network);
+    m_client->request(u"radios.connect"_s, p, this, [this, id](const MeshReply &r) {
+        Q_EMIT actionDone(u"connect:"_s + id, r.ok, r.ok ? QString() : explainConnectError(r.message));
+        if (r.ok) {
+            fetchAll();
+            discoverDevices();
+        }
+    });
+}
+
+void SocketMeshBackend::forgetDevice(const QString &id)
+{
+    m_client->request(u"radios.disconnect"_s, QJsonObject{{u"device"_s, id}}, this, [this, id](const MeshReply &r) {
+        Q_EMIT actionDone(u"forget:"_s + id, r.ok, r.message);
+        if (r.ok)
+            discoverDevices();
+    });
 }
 
 void SocketMeshBackend::assign(const QString &node, const QString &identity, const QString &name)

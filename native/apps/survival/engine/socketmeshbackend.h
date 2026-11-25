@@ -31,12 +31,19 @@ public:
     bool receiveOnly() const override { return m_receiveOnly; }
     bool deviceConfigReadable() const override { return m_cfgRead; }
     bool deviceConfigWritable() const override { return m_cfgWrite; }
+    bool canConnect() const override { return m_canConnect; }
+    QList<MeshDevice> devices() const override { return m_devices; }
     QList<MeshContact> contacts() const override { return m_contacts; }
     QList<MeshAssignment> assignments() const override { return m_assign; }
     QList<MeshPlace> places() const override { return m_places; }
     QList<MeshTrailPoint> trail(const QString &node) const override;
     MeshDeviceConfig deviceConfig(const QString &radioId) const override;
     void refresh() override;
+    void discoverDevices() override;
+    void connectDevice(const QString &id, const QString &network) override;
+    void forgetDevice(const QString &id) override;
+    /// The engine's error in words a person can act on (permission, busy port).
+    static QString explainConnectError(const QString &engineMessage);
     void assign(const QString &node, const QString &identity, const QString &name) override;
     void createContact(const QString &name, const QString &notes, const QString &assignNode) override;
     void setTold(const QString &contact, bool told, const QString &date) override;
@@ -56,7 +63,9 @@ private:
     MeshClient *m_client;
     QString m_state = QStringLiteral("absent");
     QString m_error;
-    bool m_receiveOnly = true, m_cfgRead = false, m_cfgWrite = false;
+    bool m_receiveOnly = true, m_cfgRead = false, m_cfgWrite = false, m_canConnect = false;
+    QList<MeshDevice> m_devices;
+    QStringList m_saved;
     QList<MeshRadio> m_radios;
     QList<MeshIdentity> m_ids;
     QList<MeshMessage> m_msgs;

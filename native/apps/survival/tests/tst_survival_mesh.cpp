@@ -205,6 +205,68 @@ private Q_SLOTS:
         QVERIFY(!again.sendingOn());
     }
 
+    // ---- connecting radios from the app (fakes only: no device is ever opened) ----------------------------------------------
+    void ports_are_listed_but_nothing_is_opened_until_the_owner_presses_connect()
+    {
+        auto r = rig();
+        QVERIFY(r);
+        QTRY_VERIFY_WITH_TIMEOUT(r->backend->available(), 5000);
+        QVERIFY(r->tak->canConnect());
+        r->tak->discover();
+        QTRY_COMPARE_WITH_TIMEOUT(r->tak->devices().size(), 2, 3000);
+        const QVariantMap usb = r->tak->devices().first().toMap();
+        QCOMPARE(usb.value(u"id"_s).toString(), u"/dev/ttyACM0"_s);
+        QCOMPARE(usb.value(u"kind"_s).toString(), u"usb"_s);
+        QVERIFY(usb.value(u"detail"_s).toString().contains(u"303a:1001"_s));
+        QVERIFY(usb.value(u"supported"_s).toBool());
+        const QVariantMap ble = r->tak->devices().last().toMap();
+        QVERIFY(!ble.value(u"supported"_s).toBool());                   // the engine has no Bluetooth link yet: not offered
+        QTest::qWait(200);
+        QCOMPARE(r->eng->count(u"radios.connect"_s), 0);                 // listing never connects
+        QVERIFY(r->eng->forbiddenSeen().isEmpty());
+        r->tak->connectDevice(u"/dev/ttyACM0"_s);
+        QCOMPARE(r->tak->connecting(), u"/dev/ttyACM0"_s);               // the handshake is shown while it runs
+        QTRY_COMPARE_WITH_TIMEOUT(r->eng->count(u"radios.connect"_s), 1, 3000);
+        QCOMPARE(r->eng->last(u"radios.connect"_s).value(u"params"_s).toObject().value(u"device"_s).toString(), u"/dev/ttyACM0"_s);
+        QTRY_VERIFY_WITH_TIMEOUT(r->tak->connecting().isEmpty(), 3000);
+        QTRY_VERIFY_WITH_TIMEOUT(r->tak->devices().first().toMap().value(u"saved"_s).toBool(), 3000);   // it reconnects after a restart
+        r->tak->forgetDevice(u"/dev/ttyACM0"_s);
+        QTRY_COMPARE_WITH_TIMEOUT(r->eng->count(u"radios.disconnect"_s), 1, 3000);
+        QTRY_VERIFY_WITH_TIMEOUT(!r->tak->devices().first().toMap().value(u"saved"_s).toBool(), 3000);
+    }
+    void a_busy_port_and_a_missing_permission_are_explained_in_words()
+    {
+        QVERIFY(SocketMeshBackend::explainConnectError(u"/dev/ttyACM0: Permission denied (os error 13)"_s).contains(u"dialout"_s));
+        QVERIFY(SocketMeshBackend::explainConnectError(u"/dev/ttyACM0: Device or resource busy (os error 16)"_s).contains(u"Another program"_s));
+        QCOMPARE(SocketMeshBackend::explainConnectError(u"not a mesh radio"_s), u"not a mesh radio"_s);
+        auto r = rig();
+        QVERIFY(r);
+        QTRY_VERIFY_WITH_TIMEOUT(r->backend->available(), 5000);
+        r->eng->connectError = u"/dev/ttyACM0: Permission denied (os error 13)"_s;
+        r->tak->discover();
+        QTRY_VERIFY_WITH_TIMEOUT(!r->tak->devices().isEmpty(), 3000);
+        r->tak->connectDevice(u"/dev/ttyACM0"_s);
+        QTRY_VERIFY_WITH_TIMEOUT(r->tak->connecting().isEmpty() && !r->tak->devices().first().toMap().value(u"error"_s).toString().isEmpty(), 3000);
+        QVERIFY(r->tak->devices().first().toMap().value(u"error"_s).toString().contains(u"dialout"_s));
+        // the error stays for the next try; a good try clears it and remembers the port
+        r->eng->connectError.clear();
+        r->tak->connectDevice(u"/dev/ttyACM0"_s);
+        QTRY_VERIFY_WITH_TIMEOUT(r->tak->devices().first().toMap().value(u"error"_s).toString().isEmpty() && r->tak->devices().first().toMap().value(u"saved"_s).toBool(), 3000);
+    }
+    void an_engine_that_cannot_open_radios_refuses_connect_in_words()
+    {
+        auto r = rig();
+        QVERIFY(r);
+        r->eng->radiosConnect = false;
+        QTRY_VERIFY_WITH_TIMEOUT(r->backend->available(), 5000);
+        QVERIFY(!r->tak->canConnect());
+        r->tak->discover();
+        QTRY_VERIFY_WITH_TIMEOUT(!r->tak->devices().isEmpty(), 3000);
+        r->tak->connectDevice(u"/dev/ttyACM0"_s);
+        QTRY_VERIFY_WITH_TIMEOUT(!r->tak->devices().first().toMap().value(u"error"_s).toString().isEmpty(), 3000);
+        QCOMPARE(r->eng->count(u"radios.connect"_s), 0);
+    }
+
     // ---- identities: assign, create a contact, told, link ----------------------------------------------------------
     void assigning_a_radio_sends_the_assignment_and_refreshes()
     {

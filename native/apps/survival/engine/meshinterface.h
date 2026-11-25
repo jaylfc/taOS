@@ -105,6 +105,18 @@ struct MeshTrailPoint
     qint64 timeMs = 0;
 };
 
+/// A radio port the engine could open: a USB serial device, or a Bluetooth radio BlueZ already knows.
+struct MeshDevice
+{
+    QString id;          // what radios.connect takes: a serial path, or ble:<address>
+    QString kind;        // usb | ble
+    QString label;       // product or name, in words
+    QString detail;      // path and ids, or address and signal
+    QString hint;        // what the engine guesses it is
+    bool saved = false;  // the engine opens it again after a restart
+    bool supported = true;   // false: the engine cannot open this kind yet
+};
+
 /// What the engine can tell about one radio's own settings. `values` is the engine's JSON as a map; its shape is in
 /// native/mesh/docs/DEVICE-SETTINGS.md. `state`: loading | unsupported | ok | error.
 struct MeshDeviceConfig
@@ -137,6 +149,9 @@ public:
     /// true when the engine reports radio settings (read) and accepts them (write).
     virtual bool deviceConfigReadable() const { return false; }
     virtual bool deviceConfigWritable() const { return false; }
+    /// true when the engine can be told to open and forget radios.
+    virtual bool canConnect() const { return false; }
+    virtual QList<MeshDevice> devices() const { return {}; }
     virtual QList<MeshContact> contacts() const { return {}; }
     virtual QList<MeshAssignment> assignments() const { return {}; }
     virtual QList<MeshPlace> places() const { return {}; }
@@ -145,6 +160,11 @@ public:
 
     // Actions answer through actionDone(what, ok, error). The default refuses in words.
     virtual void refresh() {}
+    /// Looks for ports (read only: a listing, nothing is opened). Answers through devicesChanged().
+    virtual void discoverDevices() {}
+    /// Opens a port through the engine (it runs a read-only handshake and remembers the port). actionDone("connect:<id>").
+    virtual void connectDevice(const QString &id, const QString &network = QString()) { Q_UNUSED(id); Q_UNUSED(network); refuse(QStringLiteral("connect")); }
+    virtual void forgetDevice(const QString &id) { Q_UNUSED(id); refuse(QStringLiteral("forget")); }
     virtual void assign(const QString &node, const QString &identity, const QString &name) { Q_UNUSED(node); Q_UNUSED(identity); Q_UNUSED(name); refuse(QStringLiteral("assign")); }
     virtual void createContact(const QString &name, const QString &notes, const QString &assignNode = QString()) { Q_UNUSED(name); Q_UNUSED(notes); Q_UNUSED(assignNode); refuse(QStringLiteral("contact")); }
     virtual void setTold(const QString &contact, bool told, const QString &date) { Q_UNUSED(contact); Q_UNUSED(told); Q_UNUSED(date); refuse(QStringLiteral("told")); }
@@ -159,6 +179,7 @@ Q_SIGNALS:
     void identitiesChanged();
     void messagesChanged();
     void stateChanged();
+    void devicesChanged();
     void actionDone(const QString &what, bool ok, const QString &error);
 
 protected:

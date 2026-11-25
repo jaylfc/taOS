@@ -28,7 +28,7 @@ C.ScrollView {
             Layout.fillWidth: true; Layout.topMargin: Look.space3
             glyph: "radio"
             title: root.tak.available ? qsTr("The engine has no radio open") : qsTr("No mesh engine")
-            detail: root.tak.available ? qsTr("Name a radio in the engine's settings file (TAOS_MESH_ARGS in ~/.config/taos-mesh/mesh.env), then restart the engine. The app never opens a radio on its own.") : qsTr("Radios the engine has open are listed here once it runs.")
+            detail: root.tak.available ? qsTr("Plug a radio in and press Connect below. The app never opens a radio on its own.") : qsTr("Radios the engine has open are listed here once it runs.")
         }
         Repeater {
             model: root.tak.radios
@@ -80,6 +80,55 @@ C.ScrollView {
                         PillButton { objectName: "settings-" + card.modelData.id; compact: true; text: qsTr("Settings"); glyph: "cpu"; onClicked: root.nav.open("settings", card.modelData.id) }
                     }
                     TakAssign { visible: root.assigning === card.modelData.id; Layout.fillWidth: true; node: card.modelData.id; current: card.modelData.identity }
+                }
+            }
+        }
+
+        TakLabel { visible: root.tak.available; text: qsTr("Radios the engine can open"); Layout.topMargin: Look.space4; Layout.leftMargin: Look.space3 }
+        TaosText { visible: root.tak.available && root.tak.devices.length === 0; Layout.fillWidth: true; Layout.leftMargin: Look.space3; Layout.rightMargin: Look.space3; wrapMode: Text.Wrap
+                   font.pixelSize: Look.small; color: Look.textSecondary; text: qsTr("No radio port found. Plug a radio into a USB port.") }
+        Timer { interval: 5000; repeat: true; running: root.visible && root.tak.available && root.tak.connecting === ""; triggeredOnStart: true; onTriggered: root.tak.discover() }
+        Repeater {
+            model: root.tak.available ? root.tak.devices : []
+            delegate: GlassPanel {
+                id: dv
+                required property var modelData
+                objectName: "device-row-" + modelData.id
+                Layout.fillWidth: true
+                implicitHeight: dvCol.implicitHeight + Look.space3 * 2
+                ColumnLayout {
+                    id: dvCol
+                    anchors { fill: parent; margins: Look.space3 }
+                    spacing: Look.space2
+                    RowLayout {
+                        spacing: Look.space3
+                        Glyph { name: dv.modelData.kind === "ble" ? "radio" : "usb"; size: 18; stroke: 1.8; color: Look.textSecondary }
+                        ColumnLayout {
+                            Layout.fillWidth: true; spacing: 2
+                            TaosText { text: dv.modelData.label; Layout.fillWidth: true; elide: Text.ElideRight; font.pixelSize: Look.bodyMedium; font.weight: Font.DemiBold }
+                            TaosText { text: dv.modelData.detail; Layout.fillWidth: true; elide: Text.ElideMiddle; font.pixelSize: Look.small; color: Look.textSecondary; font.family: "monospace" }
+                        }
+                    }
+                    Flow {
+                        Layout.fillWidth: true; spacing: Look.space2
+                        Chip { visible: dv.modelData.hint !== ""; text: dv.modelData.hint }
+                        Chip { visible: dv.modelData.saved; text: qsTr("Opens again after a restart"); tone: "success"; glyph: "check" }
+                        Chip { visible: !dv.modelData.supported; text: qsTr("Bluetooth is not supported by the engine yet") }
+                    }
+                    TaosText { visible: dv.modelData.busy; objectName: "handshake-" + dv.modelData.id; Layout.fillWidth: true; wrapMode: Text.Wrap; font.pixelSize: Look.small; color: Look.textSecondary
+                               text: qsTr("Opening the port and asking the radio who it is. This only reads; nothing is sent over the air.") }
+                    TaosText { visible: dv.modelData.error !== ""; objectName: "connectError-" + dv.modelData.id; Layout.fillWidth: true; wrapMode: Text.Wrap; font.pixelSize: Look.small; color: Look.danger
+                               text: dv.modelData.error }
+                    RowLayout {
+                        spacing: Look.space2
+                        PillButton { objectName: "connect-" + dv.modelData.id; compact: true; variant: "primary"; glyph: "plug"
+                                     visible: dv.modelData.supported && !dv.modelData.saved
+                                     text: dv.modelData.busy ? qsTr("Connecting...") : qsTr("Connect")
+                                     enabled: root.tak.canConnect && root.tak.connecting === ""
+                                     onClicked: root.tak.connectDevice(dv.modelData.id) }
+                        PillButton { objectName: "forget-" + dv.modelData.id; compact: true; text: qsTr("Forget"); visible: dv.modelData.saved; onClicked: root.tak.forgetDevice(dv.modelData.id) }
+                        PillButton { compact: true; text: qsTr("Try again"); visible: dv.modelData.error !== "" && dv.modelData.supported; enabled: root.tak.connecting === ""; onClicked: root.tak.connectDevice(dv.modelData.id) }
+                    }
                 }
             }
         }

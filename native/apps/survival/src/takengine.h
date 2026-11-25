@@ -26,6 +26,10 @@ class TakEngine : public QObject
     Q_PROPERTY(QString sendBlocked READ sendBlocked NOTIFY changed)   // empty when sending is possible
     Q_PROPERTY(bool configReadable READ configReadable NOTIFY changed)
     Q_PROPERTY(bool configWritable READ configWritable NOTIFY changed)
+    Q_PROPERTY(bool canConnect READ canConnect NOTIFY changed)
+    Q_PROPERTY(QVariantList devices READ devices NOTIFY changed)
+    Q_PROPERTY(QString connecting READ connecting NOTIFY changed)           // the port being opened now, or empty
+    Q_PROPERTY(QVariantMap connectErrors READ connectErrors NOTIFY changed) // port -> what went wrong, in words
     Q_PROPERTY(QVariantList radios READ radios NOTIFY changed)
     Q_PROPERTY(QVariantList people READ people NOTIFY changed)
     Q_PROPERTY(QVariantList contacts READ contacts NOTIFY changed)
@@ -52,6 +56,14 @@ public:
     QString sendBlocked() const;
     bool configReadable() const { return m_b->deviceConfigReadable(); }
     bool configWritable() const { return m_b->deviceConfigWritable(); }
+    bool canConnect() const { return m_b->canConnect(); }
+    QVariantList devices() const;
+    QString connecting() const { return m_connecting; }
+    QVariantMap connectErrors() const { return m_connectErrors; }
+    Q_INVOKABLE void discover() { m_b->discoverDevices(); }
+    /// Opens a port through the engine; the engine runs a read-only handshake and remembers the port.
+    Q_INVOKABLE void connectDevice(const QString &id);
+    Q_INVOKABLE void forgetDevice(const QString &id) { m_b->forgetDevice(id); }
     QVariantList radios() const;
     QVariantList people() const;
     QVariantList contacts() const;
@@ -99,7 +111,8 @@ private:
     QString kindOf(const QString &identity) const;
     MeshBackend *m_b;
     MeshPrefs m_prefs;
-    QString m_notice;
+    QString m_notice, m_connecting;
+    QVariantMap m_connectErrors;
     bool m_noticeError = false;
     QTimer m_noticeTimer;
 };

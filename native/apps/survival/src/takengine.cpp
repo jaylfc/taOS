@@ -44,9 +44,27 @@ void TakEngine::setBackend(MeshBackend *b)
     if (m_b)
         m_b->disconnect(this);
     m_b = b;
-    for (auto sig : {&MeshBackend::radiosChanged, &MeshBackend::identitiesChanged, &MeshBackend::messagesChanged, &MeshBackend::stateChanged})
+    for (auto sig : {&MeshBackend::radiosChanged, &MeshBackend::identitiesChanged, &MeshBackend::messagesChanged, &MeshBackend::stateChanged, &MeshBackend::devicesChanged})
         connect(m_b, sig, this, &TakEngine::changed);
     connect(m_b, &MeshBackend::actionDone, this, [this](const QString &what, bool ok, const QString &err) {
+        if (what.startsWith(u"connect:"_s)) {
+            const QString id = what.mid(8);
+            if (m_connecting == id)
+                m_connecting.clear();
+            if (ok) {
+                m_connectErrors.remove(id);
+                setNotice(tr("Connected. The radio is read only until you turn sending on."), false);
+            } else {
+                m_connectErrors.insert(id, err);   // stays until the next attempt: the fix may need a sign-out
+            }
+            Q_EMIT changed();
+            return;
+        }
+        if (what.startsWith(u"forget:"_s)) {
+            setNotice(ok ? tr("Forgotten. The engine stops opening it after its next restart.") : err, !ok);
+            Q_EMIT changed();
+            return;
+        }
         if (ok) {
             if (what == u"send"_s) setNotice(tr("Handed to the engine."), false);
             else setNotice(tr("Saved."), false);
@@ -231,6 +249,25 @@ QVariantList TakEngine::contacts() const
         out.append(QVariantMap{{u"id"_s, c.id}, {u"name"_s, c.name}, {u"notes"_s, c.notes}, {u"linkedAccount"_s, c.linkedAccount}, {u"told"_s, c.told},
                                {u"toldDate"_s, c.toldDate}, {u"nodes"_s, nodes}, {u"locationsHidden"_s, c.locationsHidden}});
     }
+    return out;
+}
+
+void TakEngine::connectDevice(const QString &id)
+{
+    if (!m_connecting.isEmpty())
+        return;   // one at a time: each is a handshake with a real radio
+    m_connecting = id;
+    m_connectErrors.remove(id);
+    Q_EMIT changed();
+    m_b->connectDevice(id, QString());
+}
+
+QVariantList TakEngine::devices() const
+{
+    QVariantList out;
+    for (const MeshDevice &d : m_b->devices())
+        out.append(QVariantMap{{u"id"_s, d.id}, {u"kind"_s, d.kind}, {u"label"_s, d.label}, {u"detail"_s, d.detail}, {u"hint"_s, d.hint},
+                               {u"saved"_s, d.saved}, {u"supported"_s, d.supported}, {u"busy"_s, d.id == m_connecting}, {u"error"_s, m_connectErrors.value(d.id).toString()}});
     return out;
 }
 

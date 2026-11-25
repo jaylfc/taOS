@@ -272,3 +272,37 @@ fn the_daemon_accepts_every_request_the_app_sends_and_honours_limit_and_order() 
     let max = all.iter().map(|r| r["host_ts_ms"].as_u64().unwrap()).max();
     assert_eq!(newest[0]["host_ts_ms"].as_u64(), max, "newest_first returns the newest");
 }
+
+#[test]
+fn the_owner_can_open_and_forget_a_radio_and_it_is_remembered_and_a_bad_port_is_a_plain_error() {
+    let u = up(true);
+    let dir = u._t.path().join("saved");
+    std::fs::create_dir_all(&dir).unwrap();
+    taos_mesh::api::set_radios_file(Some(dir.join("radios.json")));
+    // a port that cannot be opened: plain error, nothing remembered
+    let r = call(&u.sock, "radios.connect", "owner", json!({"device": "/dev/does-not-exist-taos"})).unwrap();
+    assert_eq!(r["error"]["code"], "connect_failed", "{r}");
+    assert!(r["error"]["message"].as_str().unwrap().contains("/dev/does-not-exist-taos"));
+    assert!(call(&u.sock, "radios.saved", "owner", json!({})).unwrap()["result"].as_array().unwrap().is_empty());
+    // Bluetooth is refused in words, not attempted
+    let r = call(&u.sock, "radios.connect", "owner", json!({"device": "ble:AA:BB"})).unwrap();
+    assert!(r["error"]["message"].as_str().unwrap().contains("Bluetooth"));
+    // a radio that opens (a local TCP stand-in, no probe because the network is named) is remembered once
+    let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let spec = format!("tcp:{}", l.local_addr().unwrap());
+    for _ in 0..2 {
+        let r = call(&u.sock, "radios.connect", "owner", json!({"device": spec, "network": "meshtastic"})).unwrap();
+        assert_eq!(r["ok"], true, "{r}");
+    }
+    let saved = call(&u.sock, "radios.saved", "owner", json!({})).unwrap();
+    assert_eq!(saved["result"].as_array().unwrap().len(), 1, "{saved}");
+    assert_eq!(saved["result"][0]["device"], spec.as_str());
+    let r = call(&u.sock, "radios.disconnect", "owner", json!({"device": spec})).unwrap();
+    assert_eq!(r["ok"], true);
+    assert!(call(&u.sock, "radios.saved", "owner", json!({})).unwrap()["result"].as_array().unwrap().is_empty());
+    // owner only
+    for m in ["radios.connect", "radios.disconnect", "radios.saved"] {
+        assert_eq!(call(&u.sock, m, "agent:scout", json!({"device": "x"})).unwrap()["error"]["code"], "forbidden");
+    }
+    taos_mesh::api::set_radios_file(None);
+}

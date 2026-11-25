@@ -22,8 +22,33 @@ use std::os::unix::fs::PermissionsExt;
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
+
+/// Where the radios the owner asked the engine to open are remembered, so they are opened again after a restart.
+/// Set by the daemon to `<data-dir>/radios.json`; unset (nothing is remembered) in tests that do not care.
+static RADIOS_FILE: Mutex<Option<std::path::PathBuf>> = Mutex::new(None);
+
+pub fn set_radios_file(p: Option<std::path::PathBuf>) {
+    *RADIOS_FILE.lock().unwrap() = p;
+}
+
+/// The remembered radios: `[{"device": "/dev/ttyACM0", "network": null}]`.
+pub fn saved_radios() -> Vec<Value> {
+    let Some(p) = RADIOS_FILE.lock().unwrap().clone() else { return vec![] };
+    std::fs::read_to_string(p)
+        .ok()
+        .and_then(|s| serde_json::from_str::<Value>(&s).ok())
+        .and_then(|v| v.get("devices").and_then(|d| d.as_array().cloned()))
+        .unwrap_or_default()
+}
+
+fn write_saved(list: &[Value]) -> Result<(), String> {
+    let Some(p) = RADIOS_FILE.lock().unwrap().clone() else { return Ok(()) };
+    let tmp = p.with_extension("json.tmp");
+    std::fs::write(&tmp, serde_json::to_string_pretty(&json!({"devices": list})).unwrap()).map_err(|e| format!("cannot save the radio list: {e}"))?;
+    std::fs::rename(&tmp, &p).map_err(|e| format!("cannot save the radio list: {e}"))
+}
 
 #[derive(Deserialize)]
 struct Request {
@@ -138,6 +163,7 @@ impl Daemon {
                 h["receive_only"] = json!(self.receive_only);
                 h["device_config"] = json!(false);
                 h["device_config_write"] = json!(false);
+                h["radios_connect"] = json!(true);
                 ok!(h)
             }
             "radios" => ok!(self.engine.radios()),
@@ -158,6 +184,47 @@ impl Daemon {
                     Ok(v) => ok!(v),
                     Err(m) => err(&id, "connect_failed", &m),
                 }
+            }
+            "radios.connect" => {
+                if let Some(e) = owner_only(&id) {
+                    return e;
+                }
+                let spec = try_p!(need(p, "device"));
+                if spec.starts_with("ble:") {
+                    return err(&id, "connect_failed", "Bluetooth radios cannot be opened by this engine yet");
+                }
+                match self.connect_spec(spec, s(p, "network")) {
+                    Ok(v) => {
+                        // remembered only after it opened: a port that failed is not retried at every start
+                        let mut list = saved_radios();
+                        if !list.iter().any(|d| d["device"] == spec) {
+                            list.push(json!({"device": spec, "network": s(p, "network")}));
+                            if let Err(m) = write_saved(&list) {
+                                return err(&id, "store_error", &m);
+                            }
+                        }
+                        ok!(v)
+                    }
+                    Err(m) => err(&id, "connect_failed", &m),
+                }
+            }
+            "radios.disconnect" => {
+                if let Some(e) = owner_only(&id) {
+                    return e;
+                }
+                let spec = try_p!(need(p, "device"));
+                let list: Vec<Value> = saved_radios().into_iter().filter(|d| d["device"] != spec).collect();
+                if let Err(m) = write_saved(&list) {
+                    return err(&id, "store_error", &m);
+                }
+                // forgetting stops it being opened again; the open session ends when the engine restarts
+                ok!(json!({"device": spec, "forgotten": true, "closes": "at the next engine start"}))
+            }
+            "radios.saved" => {
+                if let Some(e) = owner_only(&id) {
+                    return e;
+                }
+                ok!(saved_radios())
             }
             "app.radios" => ok!(eng!(crate::appview::radios(&self.engine))),
             "app.identities" => ok!(eng!(crate::appview::identities(&self.engine))),

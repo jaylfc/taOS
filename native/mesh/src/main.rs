@@ -192,6 +192,16 @@ fn daemon(a: &Args, socket: &std::path::Path) -> ExitCode {
         }
     };
     let d = Arc::new(Daemon { engine, receive_only: a.flags.iter().any(|f| f == "receive-only"), stop: Arc::new(AtomicBool::new(false)) });
+    taos_mesh::api::set_radios_file(Some(dir.join("radios.json")));
+    // radios the owner asked for in the app are opened again (read-only handshake, as for --device)
+    for saved in taos_mesh::api::saved_radios() {
+        if let Some(dev) = saved["device"].as_str() {
+            match d.connect_spec(dev, saved["network"].as_str()) {
+                Ok(v) => eprintln!("reconnected {v}"),
+                Err(e) => eprintln!("taos-mesh: {dev}: {e}"),
+            }
+        }
+    }
     for dev in a.all("device") {
         match d.connect_spec(dev, a.opt("network")) {
             Ok(v) => eprintln!("connected {v}"),

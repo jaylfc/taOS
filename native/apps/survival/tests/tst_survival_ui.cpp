@@ -268,6 +268,9 @@ private Q_SLOTS:
         QTest::qWait(250);
         QVERIFY(visibleByName(m_win, u"radio-!28af67cc"_s));
         QVERIFY(visibleByName(m_win, u"firmwareRow"_s));
+        QVERIFY(waitFor([&] { return visibleByName(m_win, u"device-row-/dev/ttyACM0"_s) != nullptr; }, 5000));
+        QVERIFY(visibleByName(m_win, u"connect-/dev/ttyACM0"_s)->isEnabled());   // offered, never pressed here
+        QCOMPARE(m_mesh->count(u"radios.connect"_s), 0);
         QMetaObject::invokeMethod(visibleByName(m_win, u"assignToggle-!28af67cc"_s), "clicked");
         QTest::qWait(200);
         QVERIFY(visibleByName(m_win, u"assign-!28af67cc"_s));
