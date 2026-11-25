@@ -119,6 +119,46 @@ def _gpu_type(hardware: dict) -> str | None:
     return gpu.get("type") if isinstance(gpu, dict) else None
 
 
+def _enumerated_gpu_resources(hardware: dict | None) -> list[str]:
+    """One leasable resource per enumerated GPU in ``hardware["gpus"]``.
+
+    ``detect_hardware()`` enumerates every GPU (``_detect_gpus``, PCI
+    order, so indices are stable across restarts); the singular
+    ``hardware["gpu"]`` is just the first entry. Indices count within
+    each class in that detection order: the second NVIDIA card is
+    ``gpu-cuda-1`` whatever else is installed. Indices are positional:
+    an unusable card still consumes its index, so a usable card's
+    resource name never shifts when a sibling's driver state changes.
+    Each entry must carry its own ``cuda``/``rocm`` usability flag
+    (#3242) -- a PCI-visible card with no loaded driver is not leasable.
+
+    Returns an empty list when the profile carries no usable enumerated
+    GPU; the caller then falls back to the singular derivation, so
+    profiles serialised before the ``gpus`` list existed (or assembled
+    by hand without per-entry flags) keep their previous behaviour.
+    """
+    gpus = hardware.get("gpus") if isinstance(hardware, dict) else None
+    if not isinstance(gpus, list):
+        return []
+    counters = {"gpu-cuda": 0, "gpu-rocm": 0}
+    resources: list[str] = []
+    for entry in gpus:
+        if not isinstance(entry, dict):
+            continue
+        entry_type = entry.get("type")
+        if entry_type in ("nvidia", "cuda"):
+            resource_class, usable_flag = "gpu-cuda", "cuda"
+        elif entry_type in ("amd", "rocm"):
+            resource_class, usable_flag = "gpu-rocm", "rocm"
+        else:
+            continue
+        index = counters[resource_class]
+        counters[resource_class] += 1
+        if entry.get(usable_flag):
+            resources.append(f"{resource_class}-{index}")
+    return resources
+
+
 def _collect_resources(
     backends: list[dict],
     hardware: dict | None,
@@ -159,6 +199,21 @@ def _collect_resources(
     with no loaded driver (or an AMD card without ROCm) is not CUDA-class
     evidence, so it falls back to ``cpu-inference``. Apple Silicon needs no
     flag -- unified memory is always present.
+
+    Multi-GPU hosts advertise one resource per detected GPU
+    (``gpu-cuda-0``, ``gpu-cuda-1``, ...), enumerated from the profile's
+    ``gpus`` list (#3228 follow-up; the design doc's table always
+    specified 1 per GPU). Lease claims are per-resource, so each card is
+    leasable independently.
+
+    VRAM is still reported worker-wide (first GPU only), and the
+    manager checks every VRAM-qualified claim against that one figure:
+    exact for single-GPU and homogeneous hosts, but on a heterogeneous
+    multi-GPU host a claim against a later card can be refused when
+    that card could have served it, or granted beyond that card's own
+    free VRAM. Binding the check to the leased card needs per-resource
+    VRAM in the heartbeat -- a protocol change, parked for the
+    maintainer's call rather than folded into this change.
     """
     gpu_type = _gpu_type(hardware) if hardware else None
     gpu_flags = hardware.get("gpu") if isinstance(hardware, dict) else None
@@ -179,10 +234,14 @@ def _collect_resources(
         # Intel Mac: macOS has no CUDA/ROCm class at all. The backend
         # still serves, as cpu-inference.
         pass
-    elif gpu_type in ("nvidia", "cuda") and cuda_usable:
-        resources.append("gpu-cuda-0")
-    elif gpu_type in ("amd", "rocm") and rocm_usable:
-        resources.append("gpu-rocm-0")
+    else:
+        enumerated = _enumerated_gpu_resources(hardware)
+        if enumerated:
+            resources.extend(enumerated)
+        elif gpu_type in ("nvidia", "cuda") and cuda_usable:
+            resources.append("gpu-cuda-0")
+        elif gpu_type in ("amd", "rocm") and rocm_usable:
+            resources.append("gpu-rocm-0")
     for name in os.environ.get("TAOS_WORKER_RESOURCES", "").split(","):
         name = name.strip()
         if name and name not in resources:
