@@ -27,21 +27,32 @@ class FakeSystemctl:
     """Records calls; answers is-active from mutable state and applies
     start/stop to that state, like the real unit would. Any other verb
     answers 1, so a route that (re)grows an enable/disable call fails
-    its test as a 502 instead of silently succeeding."""
+    its test as a 502 instead of silently succeeding.
 
-    def __init__(self, *, active=False, fail_on=None):
+    With flag_path given, start also models the unit's
+    ConditionPathExists gate: the flag's presence is recorded, and a
+    start with the flag absent is skipped (success, unit stays
+    inactive) exactly as systemd skips a condition-failed start."""
+
+    def __init__(self, *, active=False, fail_on=None, flag_path=None):
         self.active = active
         self.fail_on = fail_on  # action ("start"/"stop") to fail
+        self.flag_path = flag_path
         self.calls = []
+        self.flag_present_at_start = None
 
     async def __call__(self, *args):
         self.calls.append(args)
         action = args[0]
         if action == "is-active":
             return (0, "") if self.active else (3, "")
+        if action == "start" and self.flag_path is not None:
+            self.flag_present_at_start = self.flag_path.exists()
         if action == self.fail_on:
             return 1, "simulated systemctl failure"
         if action == "start":
+            if self.flag_path is not None and not self.flag_path.exists():
+                return 0, ""
             self.active = True
         elif action == "stop":
             self.active = False
@@ -141,7 +152,7 @@ async def test_put_enable_starts_unit_and_sets_flag(client, perf_env, monkeypatc
     unit_path, compat_path, flag_path = perf_env
     _install_unit(unit_path)
     _set_board(compat_path, b"rockchip,rk3588\x00")
-    fake = FakeSystemctl(active=False)
+    fake = FakeSystemctl(active=False, flag_path=flag_path)
     monkeypatch.setattr(settings_mod, "_systemctl", fake)
 
     resp = await client.put("/api/settings/rk3588-performance", json={"enabled": True})
@@ -153,6 +164,9 @@ async def test_put_enable_starts_unit_and_sets_flag(client, perf_env, monkeypatc
     assert body["active"] is True
     assert ("start", UNIT) in fake.calls
     assert flag_path.exists()
+    # The flag must exist before the start is issued: the unit gates
+    # its start on it, so a start issued first is silently skipped.
+    assert fake.flag_present_at_start is True
 
 
 @pytest.mark.asyncio
@@ -180,16 +194,43 @@ async def test_put_systemctl_failure_is_502(client, perf_env, monkeypatch):
     unit_path, compat_path, flag_path = perf_env
     _install_unit(unit_path)
     _set_board(compat_path, b"rockchip,rk3588\x00")
-    fake = FakeSystemctl(fail_on="start")
+    fake = FakeSystemctl(fail_on="start", flag_path=flag_path)
     monkeypatch.setattr(settings_mod, "_systemctl", fake)
 
     resp = await client.put("/api/settings/rk3588-performance", json={"enabled": True})
 
     assert resp.status_code == 502
     assert "simulated systemctl failure" in resp.json()["error"]
-    # Nothing moved, nothing persisted: the flag is only flipped once
-    # the unit has actually been started/stopped.
+    # The flag is created before the start (the unit's start gates on
+    # it) and rolled back when the start fails: nothing persists.
+    assert fake.flag_present_at_start is True
     assert not flag_path.exists()
+
+
+@pytest.mark.asyncio
+async def test_put_enable_after_disable_reactivates_unit(client, perf_env, monkeypatch):
+    unit_path, compat_path, flag_path = perf_env
+    _install_unit(unit_path)
+    _set_board(compat_path, b"rockchip,rk3588\x00")
+    _set_flag(flag_path)
+    fake = FakeSystemctl(active=True, flag_path=flag_path)
+    monkeypatch.setattr(settings_mod, "_systemctl", fake)
+
+    resp = await client.put("/api/settings/rk3588-performance", json={"enabled": False})
+    assert resp.status_code == 200
+    assert resp.json()["enabled"] is False
+    assert resp.json()["active"] is False
+    assert not flag_path.exists()
+
+    resp = await client.put("/api/settings/rk3588-performance", json={"enabled": True})
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["enabled"] is True
+    # Not just persisted: the unit must actually run again. A start
+    # issued before the flag is recreated is condition-skipped by
+    # systemd and the unit would stay inactive until the next boot.
+    assert body["active"] is True
+    assert fake.flag_present_at_start is True
 
 
 @pytest.mark.asyncio

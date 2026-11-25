@@ -846,6 +846,14 @@ install_rk3588_perf_if_needed() {
         fi
         local_sudo="sudo"
     fi
+    # Fresh install = the unit file is not on the box yet. The
+    # toggle's persisted flag is seeded only then: once the unit
+    # exists, an absent flag is the user's off choice, and a
+    # reinstall must not resurrect performance mode over it.
+    local perf_fresh_install=1
+    if [[ -e /etc/systemd/system/taos-rk3588-perf.service ]]; then
+        perf_fresh_install=0
+    fi
     log "installing /etc/systemd/system/taos-rk3588-perf.service"
     $local_sudo install -m 0644 "$INSTALL_DIR/$perf_unit" /etc/systemd/system/taos-rk3588-perf.service
     # The unit's ExecStart/ExecStop delegate to this helper: it owns the
@@ -873,12 +881,12 @@ install_rk3588_perf_if_needed() {
     # The unit stays enabled once installed; the Settings toggle's
     # persisted on/off state is this flag file (the unit's boot start
     # gates on it via ConditionPathExists), in a directory owned by
-    # the controller user so the toggle can flip it. Seed the flag so
-    # performance mode starts ON, as it did when the toggle owned the
-    # unit's enablement - but never clobber an existing off choice on
-    # a reinstall.
+    # the controller user so the toggle can flip it. Seed the flag on
+    # a fresh install only, so performance mode starts ON, as it did
+    # when the toggle owned the unit's enablement; on a reinstall an
+    # absent flag is an off choice and stays off.
     $local_sudo install -d -m 0755 -o taos -g taos /var/lib/taos-rk3588-perf
-    if [[ ! -e /var/lib/taos-rk3588-perf/enabled ]]; then
+    if [[ $perf_fresh_install -eq 1 && ! -e /var/lib/taos-rk3588-perf/enabled ]]; then
         $local_sudo install -m 0644 -o taos -g taos /dev/null /var/lib/taos-rk3588-perf/enabled
     fi
     $local_sudo systemctl daemon-reload

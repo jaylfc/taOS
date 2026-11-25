@@ -90,6 +90,9 @@ echo "test: perf service install also installs the unit-scoped polkit rule"
 grep -q "50-taos-rk3588-perf.rules" "$SCRIPT"
 grep -q "/etc/polkit-1/rules.d/50-taos-rk3588-perf.rules" "$SCRIPT"
 
+echo "test: perf toggle flag is seeded only on a fresh install, never over an off choice"
+grep -q "perf_fresh_install" "$SCRIPT"
+
 echo "test: perf service install runs after rkllama install"
 rknpu_line=$(grep -n "install_rknpu_if_pending" "$SCRIPT" | head -1 | cut -d: -f1)
 perf_call_line=$(grep -n "install_rk3588_perf_if_needed" "$SCRIPT" | head -1 | cut -d: -f1)

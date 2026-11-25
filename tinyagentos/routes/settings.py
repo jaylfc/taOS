@@ -1870,8 +1870,9 @@ async def put_demo_mode(request: Request):
 _RK3588_PERF_UNIT = "taos-rk3588-perf.service"
 _RK3588_PERF_UNIT_PATH = Path("/etc/systemd/system/taos-rk3588-perf.service")
 # The toggle's persisted on/off state. install-server.sh creates the
-# directory owned by the controller user and seeds the flag (mode on);
-# the unit's boot start gates on the flag via ConditionPathExists.
+# directory owned by the controller user and seeds the flag on fresh
+# installs only (mode on); the unit's boot start gates on the flag via
+# ConditionPathExists.
 _RK3588_PERF_FLAG_PATH = Path("/var/lib/taos-rk3588-perf/enabled")
 _RK3588_COMPATIBLE_PATH = Path("/proc/device-tree/compatible")
 # The same board set the perf unit's own ExecStart gate accepts.
@@ -1932,29 +1933,51 @@ async def put_rk3588_performance(request: Request):
             {"error": f"{_RK3588_PERF_UNIT} is not installed on this device"},
             status_code=409,
         )
-    action = "start" if body["enabled"] else "stop"
-    code, err = await _systemctl(action, _RK3588_PERF_UNIT)
-    if code != 0:
-        return JSONResponse(
-            {"error": f"systemctl {action} {_RK3588_PERF_UNIT} failed: {err or f'exit {code}'}"},
-            status_code=502,
-        )
-    # The unit has moved; now persist the choice for the next boot.
-    # The flag's directory is created by install-server.sh (owned by
-    # the controller user); create it here too so a hand-installed
-    # unit still toggles. If persisting fails the caller hears about
-    # it - the re-read state shows the flag as it actually is.
-    try:
-        if body["enabled"]:
+    if body["enabled"]:
+        # The flag must exist BEFORE the start: the unit gates its
+        # start on the flag (ConditionPathExists), so a start issued
+        # while the flag is absent is silently skipped by systemd and
+        # the toggle would report on with the unit inactive until the
+        # next boot. The flag's directory is created by install-server.sh
+        # (owned by the controller user); create it here too so a
+        # hand-installed unit still toggles.
+        try:
             _RK3588_PERF_FLAG_PATH.parent.mkdir(parents=True, exist_ok=True)
             _RK3588_PERF_FLAG_PATH.touch()
-        else:
+        except OSError as exc:
+            return JSONResponse(
+                {"error": f"could not persist the performance-mode choice: {exc}"},
+                status_code=502,
+            )
+        code, err = await _systemctl("start", _RK3588_PERF_UNIT)
+        if code != 0:
+            # Roll the flag back: the unit did not start, so the
+            # persisted choice must not claim performance mode is on.
+            try:
+                _RK3588_PERF_FLAG_PATH.unlink(missing_ok=True)
+            except OSError:
+                pass
+            return JSONResponse(
+                {"error": f"systemctl start {_RK3588_PERF_UNIT} failed: {err or f'exit {code}'}"},
+                status_code=502,
+            )
+    else:
+        code, err = await _systemctl("stop", _RK3588_PERF_UNIT)
+        if code != 0:
+            return JSONResponse(
+                {"error": f"systemctl stop {_RK3588_PERF_UNIT} failed: {err or f'exit {code}'}"},
+                status_code=502,
+            )
+        # The unit has stopped; now persist the choice for the next
+        # boot. If persisting fails the caller hears about it - the
+        # re-read state shows the flag as it actually is.
+        try:
             _RK3588_PERF_FLAG_PATH.unlink(missing_ok=True)
-    except OSError as exc:
-        return JSONResponse(
-            {"error": f"could not persist the performance-mode choice: {exc}"},
-            status_code=502,
-        )
+        except OSError as exc:
+            return JSONResponse(
+                {"error": f"could not persist the performance-mode choice: {exc}"},
+                status_code=502,
+            )
     return {"ok": True, **(await _rk3588_perf_state())}
 
 
