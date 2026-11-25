@@ -621,6 +621,15 @@ def auto_register_from_manifest(
     # keep_alive_minutes above, which stops the whole service.
     if lifecycle.get("ttl_seconds") is not None:
         entry["ttl_seconds"] = lifecycle["ttl_seconds"]
+    # lazy wrapper configuration (manifest lifecycle.lazy block).
+    # probe_target: health check endpoint that does not reset the idle timer.
+    # idle_ttl_seconds: per-backend idle TTL override for the lazy proxy.
+    lazy_block = lifecycle.get("lazy", {})
+    if isinstance(lazy_block, dict):
+        if lazy_block.get("probe_target") is not None:
+            entry["lazy_probe_target"] = lazy_block["probe_target"]
+        if lazy_block.get("idle_ttl_seconds") is not None:
+            entry["lazy_idle_ttl_seconds"] = lazy_block["idle_ttl_seconds"]
 
     config.backends.append(entry)
     return True
