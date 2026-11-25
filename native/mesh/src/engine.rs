@@ -481,8 +481,7 @@ impl Engine {
             "store_error": g.last_store_error,
             "pending_unwritten": g.pending.len(),
             "stored_this_run": g.stored,
-            "torn_tail_preserved": g.store.torn_preserved.as_ref().map(|p| p.display().to_string()),
-            "store": g.store.path().display().to_string(),
+            "torn_tail_preserved": g.store.torn_preserved.as_ref().and_then(|p| p.file_name()).map(|n| n.to_string_lossy().into_owned()),
         })
     }
 
@@ -749,6 +748,14 @@ impl Engine {
                 if !visible_to(&g.ids.reg, &rec, &self.owner, &self.owner) {
                     continue;
                 }
+                // positions are their own grant: a channel grant never
+                // includes where anyone is
+                if !g.grants.may_read_positions(viewer, &rec.network, now) {
+                    if rec.kind == "position" {
+                        continue;
+                    }
+                    rec.position = None;
+                }
             } else if !visible_to(&g.ids.reg, &rec, &viewer_id, &self.owner) {
                 continue;
             }
@@ -837,6 +844,15 @@ impl Engine {
         }
         let _ = &g;
         Ok(best.into_values().map(|x| x.1).collect())
+    }
+
+    /// The radio list names identities and links: only the owner, or an
+    /// agent the owner has granted some read access, may see it.
+    pub fn may_see_radios(&self, viewer: &str) -> bool {
+        if viewer == OWNER {
+            return true;
+        }
+        viewer.starts_with("agent:") && self.lock().grants.has_any_read(viewer, now_ms())
     }
 
     // ---- subscribe ---------------------------------------------------

@@ -35,9 +35,39 @@ Newline-delimited JSON over the unix socket.
 <- {"id": 1, "ok": false, "error": {"code": "no_grant", "message": "..."}}
 ```
 
-`principal` is `owner` (default), `person:<account id>` or `agent:<taOS agent id>`. It is asserted by the caller:
-the socket is private to the owner, and the taOS service bus (which authenticates agents and people) is the party
-that sets it for them. The engine enforces what each principal may do; it does not authenticate them.
+### Who may connect, and as whom
+
+1. The socket is created inside a fresh 0700 directory and moved into place with mode 0600, so it is never
+   reachable with a wider mode. It lives in `$XDG_RUNTIME_DIR` (the daemon refuses to start without it unless
+   `--socket` names a path). Its directory must belong to the owner and not be writable by everyone. The daemon
+   will not replace a file that is not a socket, or a socket that belongs to another user.
+2. Every connection's peer uid is read with `SO_PEERCRED` and must equal the daemon's owner uid; anything else is
+   refused before a request is read.
+3. `principal` is `owner` (default), `person:<account id>` or `agent:<taOS agent id>`. `owner` means a connection
+   that passed step 2. Any other principal is accepted only with a capability token (`"token"` in the request)
+   minted by the taOS controller, which authenticates the agent or person itself: agents never talk to this socket
+   directly. Until a controller key exists (`<data dir>/controller.key`, at least 32 random bytes, mode 0600,
+   made with `taos-mesh controller-key`), the daemon refuses every non-owner principal.
+
+Token format, version 1:
+
+```
+token   = hex(payload) "." hex(mac)
+payload = JSON {"v":1,"sub":"agent:scout","exp":<ms since 1970>,"methods":["messages","send"]}
+mac     = HMAC-SHA256(key, hex(payload))     (the ASCII of the hex string; key = controller.key)
+```
+
+The request's `principal` must equal `sub`, the token must not be expired, and the method must be listed (`"*"`
+allows all methods the principal could use anyway). Owner-only methods stay owner-only whatever the token says.
+`taos-mesh token --sub P [--ttl-secs N] [--methods a,b]` mints one with the same code, for tests and operators.
+
+What each principal sees (enforced inside the engine, below the token check):
+
+* Messages, `app.messages`, `app.identities`, `last_positions`: an agent sees broadcast records on channels it holds
+  a `read` grant for, direct messages only with an all-channel `read` grant, and never positions (the position
+  records, or the position riding on any message) without a `position` grant. Positions are their own grant.
+* `radios` and `app.radios`: owner, or an agent with some read or position grant. Everyone else gets an empty list.
+* `health` returns counts and the error text, never a path.
 
 Error codes: `bad_request`, `unknown_method`, `invalid`, `forbidden` (owner-only method), `no_grant` (agent not
 allowed or over budget), `no_radio`, `store_error`, `connect_failed`.
@@ -46,7 +76,7 @@ allowed or over budget), `no_radio`, `store_error`, `connect_failed`.
 
 | Method | Who | Params | Result |
 |---|---|---|---|
-| `health` | any | none | `{ok, store_error, pending_unwritten, stored_this_run, torn_tail_preserved, store}` |
+| `health` | any | none | `{ok, store_error, pending_unwritten, stored_this_run, torn_tail_preserved (a file name)}` |
 | `radios` | any | none | list of `{id, network, link, link_kind, ready, connected, identity, frames_in, frames_out, console_bytes, decode_errors, last_error, queued}` |
 | `discover` | owner | none | `{serial: [{path, vid, pid, product, manufacturer, hint}], ble: {state: "devices"|"no_adapter", ...}}` |
 | `connect` | owner | `device`, optional `network` | `{radio, network}` |
@@ -60,7 +90,7 @@ allowed or over budget), `no_radio`, `store_error`, `connect_failed`.
 | `contacts.told` | owner | `contact`, `told`, `date` | ok |
 | `link` | owner | `contact`, `account` (`person:<id>`) | ok |
 | `locations.hide` | the linked account | `contact` | ok |
-| `grants.list` / `grants.add` / `grants.revoke` | owner | see Grants | grants |
+| `grants.list` / `grants.add` / `grants.revoke` | owner | see Grants (kinds `send`, `read`, `position`) | grants |
 | `app.radios`, `app.identities`, `app.messages`, `app.send` | as above | see Survival Studio view | see below |
 
 `messages` filter (all optional): `identity` (sender or recipient), `node`, `network`, `channel`, `kind`
@@ -193,6 +223,7 @@ pair it in the system Bluetooth settings.
 * Meshtastic ack with no error from a neighbour is reported as `heard`, from the recipient as `acknowledged`; a
   relay's real implicit-ack semantics were not verified on hardware.
 * Queries scan the store file (interim); fine for thousands of records, to be replaced by taOSmd queries.
-* `principal` is caller-asserted (see Protocol).
+* No controller exists yet to mint tokens; until it does, only the owner can use the socket. The token scheme is
+  defined and tested here, not yet used by a real controller.
 * Send size limits (200 bytes Meshtastic, 160 MeshCore) are conservative guesses below the protocols' maxima.
 * Airtime accounting counts messages and bytes, not on-air time.

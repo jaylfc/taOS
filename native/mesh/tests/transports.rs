@@ -366,18 +366,14 @@ fn reconnect_state_goes_through_the_api_and_the_app_view() {
     let e = Engine::open(t.path(), "person:jay").unwrap();
     e.register_radio("/dev/ttyACM0", "meshtastic", "/dev/ttyACM0", "usb");
     e.radio_reconnecting("/dev/ttyACM0", 3, now_ms() + 4000, "connect failed: gone");
-    let d = Arc::new(taos_mesh::api::Daemon {
-        engine: e,
-        receive_only: false,
-        stop: Default::default(),
-    });
-    let r = d.handle(&json!({"id": 1, "method": "radios"}).to_string());
+    let d = Arc::new(taos_mesh::api::Daemon::new(e, false));
+    let r = d.handle_trusted(&json!({"id": 1, "method": "radios"}).to_string());
     let radio = &r["result"][0];
     assert_eq!(radio["state"], "reconnecting");
     assert_eq!(radio["attempt"], 3);
     assert!(radio["next_retry_ms"].as_u64().unwrap() > now_ms());
     assert_eq!(radio["last_error"], "connect failed: gone");
-    let r = d.handle(&json!({"id": 1, "method": "app.radios"}).to_string());
+    let r = d.handle_trusted(&json!({"id": 1, "method": "app.radios"}).to_string());
     assert_eq!(
         r["result"][0]["state"], "connecting",
         "the app knows connected, connecting, offline"
