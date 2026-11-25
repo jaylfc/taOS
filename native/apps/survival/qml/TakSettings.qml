@@ -128,8 +128,11 @@ C.ScrollView {
                                 objectName: "field-" + modelData.path
                                 TaosText { Layout.preferredWidth: 130; Layout.alignment: Qt.AlignVCenter; wrapMode: Text.Wrap; font.pixelSize: Look.body; text: fr.modelData.label }
                                 TaosText { visible: !fr.known || !root.ok; Layout.fillWidth: true; font.pixelSize: Look.small; color: Look.textTertiary; text: qsTr("Not read from the radio yet") }
+                                // a setting taOS cannot write on this radio is shown as plain text, not as a field that looks editable
+                                TaosText { visible: fr.known && root.ok && !root.canWrite(fr.modelData.path); objectName: "readOnly-" + fr.modelData.path; Layout.fillWidth: true; font.pixelSize: Look.body
+                                           text: fr.modelData.type === "toggle" ? (fr.v === true ? qsTr("On") : qsTr("Off")) : String(fr.v) }
                                 TaosField {
-                                    visible: fr.known && root.ok && fr.modelData.type === "text"
+                                    visible: fr.known && root.ok && fr.modelData.type === "text" && root.canWrite(fr.modelData.path)
                                     Layout.fillWidth: true
                                     text: fr.known ? String(fr.v) : ""
                                     enabled: root.canWrite(fr.modelData.path)
@@ -137,7 +140,7 @@ C.ScrollView {
                                     onEditingFinished: root.stage(fr.modelData.path, text)
                                 }
                                 TaosCombo {
-                                    visible: fr.known && root.ok && fr.modelData.type === "combo"
+                                    visible: fr.known && root.ok && fr.modelData.type === "combo" && root.canWrite(fr.modelData.path)
                                     Layout.fillWidth: true
                                     enabled: root.canWrite(fr.modelData.path)
                                     accessibleName: fr.modelData.label
@@ -146,7 +149,7 @@ C.ScrollView {
                                     onActivated: root.stage(fr.modelData.path, model[currentIndex])
                                 }
                                 TaosCheck {
-                                    visible: fr.known && root.ok && fr.modelData.type === "toggle"
+                                    visible: fr.known && root.ok && fr.modelData.type === "toggle" && root.canWrite(fr.modelData.path)
                                     checked: fr.known && fr.v === true
                                     enabled: root.canWrite(fr.modelData.path)
                                     text: checked ? qsTr("On") : qsTr("Off")
@@ -254,7 +257,8 @@ C.ScrollView {
                 TaosText { font.pixelSize: Look.bodyMedium; font.weight: Font.DemiBold
                            text: root.stagedCount === 0 ? qsTr("No changes") : (root.stagedCount === 1 ? qsTr("1 change ready to apply") : qsTr("%1 changes ready to apply").arg(root.stagedCount)) }
                 TaosText { objectName: "applyReason"; Layout.fillWidth: true; wrapMode: Text.Wrap; font.pixelSize: Look.small; color: Look.textSecondary
-                           text: !root.tak.configWritable ? qsTr("Will apply when a radio is connected and you confirm. The mesh engine is receive-only or too old to write settings, so nothing can be changed from here.")
+                           text: root.ok && root.vals.writable !== undefined && root.vals.writable.length === 0 ? qsTr("Will apply when a radio is connected and you confirm. taOS can read this radio's settings but cannot change them yet, so nothing can be changed from here.")
+                                 : !root.tak.configWritable ? qsTr("Will apply when a radio is connected and you confirm. The mesh engine is receive-only or too old to write settings, so nothing can be changed from here.")
                                  : !(root.radio && root.radio.state === "connected") ? qsTr("Will apply when a radio is connected and you confirm.")
                                  : qsTr("Review the changes, then confirm. The radio may restart.") }
                 Repeater {
