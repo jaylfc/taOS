@@ -64,7 +64,10 @@ describe("PendingAgentInvites (#2067)", () => {
     ];
     render(<PendingAgentInvites active refreshKey={0} />);
 
-    const section = await screen.findByLabelText("Pending invites");
+    // Query the section by its region role: the shared list inside it
+    // carries the same "Pending invites" aria-label, so a label query
+    // matches both elements and is ambiguous.
+    const section = await screen.findByRole("region", { name: "Pending invites" });
     expect(within(section).getByText("654321")).toBeInTheDocument();
     expect(within(section).getByText("Scout")).toBeInTheDocument();
     expect(within(section).getByText("111111")).toBeInTheDocument();
@@ -76,7 +79,7 @@ describe("PendingAgentInvites (#2067)", () => {
     rows = [aggregateRow()];
     render(<PendingAgentInvites active refreshKey={0} />);
 
-    const section = await screen.findByLabelText("Pending invites");
+    const section = await screen.findByRole("region", { name: "Pending invites" });
     fireEvent.click(within(section).getByRole("button", { name: /open project Alpha/i }));
     expect(openWindow).toHaveBeenCalledWith(
       "projects",
@@ -92,7 +95,7 @@ describe("PendingAgentInvites (#2067)", () => {
     ];
     render(<PendingAgentInvites active refreshKey={0} />);
 
-    const section = await screen.findByLabelText("Pending invites");
+    const section = await screen.findByRole("region", { name: "Pending invites" });
     fireEvent.click(within(section).getByRole("button", { name: /cancel invite 654321/i }));
     await waitFor(() => {
       expect(deleted).toContain("/api/projects/prj_a/invites/654321");
@@ -120,7 +123,7 @@ describe("PendingAgentInvites (#2067)", () => {
   it("shows the empty state for an admin with no pending invites", async () => {
     rows = [];
     render(<PendingAgentInvites active refreshKey={0} />);
-    const section = await screen.findByLabelText("Pending invites");
+    const section = await screen.findByRole("region", { name: "Pending invites" });
     expect(within(section).getByText("No pending invites")).toBeInTheDocument();
   });
 });

@@ -60,7 +60,10 @@ describe("ProjectMembers pending invites (#2067)", () => {
     invites = [inviteRow()];
     render(<ProjectMembers project={project} onChanged={vi.fn()} />);
 
-    const section = await screen.findByLabelText("Pending invites");
+    // Query the section by its region role: the shared list inside it
+    // carries the same "Pending invites" aria-label, so a label query
+    // matches both elements and is ambiguous.
+    const section = await screen.findByRole("region", { name: "Pending invites" });
     expect(within(section).getByText("123456")).toBeInTheDocument();
     expect(within(section).getByText("agent")).toBeInTheDocument();
     expect(within(section).getByText("project_tasks")).toBeInTheDocument();
@@ -75,7 +78,7 @@ describe("ProjectMembers pending invites (#2067)", () => {
     ];
     render(<ProjectMembers project={project} onChanged={vi.fn()} />);
 
-    const section = await screen.findByLabelText("Pending invites");
+    const section = await screen.findByRole("region", { name: "Pending invites" });
     expect(within(section).getByText("222222")).toBeInTheDocument();
     expect(within(section).getByText("collab")).toBeInTheDocument();
     expect(within(section).getByText("hub:abcdef")).toBeInTheDocument();
@@ -87,7 +90,7 @@ describe("ProjectMembers pending invites (#2067)", () => {
     invites = [];
     render(<ProjectMembers project={project} onChanged={vi.fn()} />);
 
-    const section = await screen.findByLabelText("Pending invites");
+    const section = await screen.findByRole("region", { name: "Pending invites" });
     expect(within(section).getByText("No pending invites")).toBeInTheDocument();
   });
 
@@ -95,7 +98,7 @@ describe("ProjectMembers pending invites (#2067)", () => {
     invites = [inviteRow()];
     render(<ProjectMembers project={project} onChanged={vi.fn()} />);
 
-    const section = await screen.findByLabelText("Pending invites");
+    const section = await screen.findByRole("region", { name: "Pending invites" });
     fireEvent.click(within(section).getByRole("button", { name: /cancel invite 123456/i }));
 
     await waitFor(() => {
