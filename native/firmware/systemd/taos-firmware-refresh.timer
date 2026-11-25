@@ -1,0 +1,13 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+[Unit]
+Description=Check for new stable firmware daily
+
+[Timer]
+OnBootSec=10min
+OnUnitInactiveSec=1d
+RandomizedDelaySec=2h
+Persistent=true
+Unit=taos-firmware-refresh.service
+
+[Install]
+WantedBy=timers.target

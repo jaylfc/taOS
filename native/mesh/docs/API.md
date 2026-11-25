@@ -208,6 +208,7 @@ pair it in the system Bluetooth settings.
   The upstream document says it is still in development, so unknown codes are expected.
 
 ## Not done (blunt)
+* Residual: any process running as the same uid as the daemon passes the peer check and is treated as the owner, so it can read everything, connect radios, send and grant. Agents must therefore never reach this socket: they run in containers (their own uid or namespace, with the runtime directory not mounted). The engine cannot tell an agent from the owner when both are the same uid.
 
 * BLE transport (`ble.rs`): the BlueZ D-Bus code (`BluezGatt`: pair through BlueZ, connect, resolve services,
   read/write/notify) compiles and the layers above it are tested against a fake GATT device, but it has never talked

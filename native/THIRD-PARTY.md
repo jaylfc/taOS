@@ -24,15 +24,17 @@ private prefix and are not part of this repository.
 
 ## Libraries linked, not copied
 
-Qt 6 and LayerShellQt (LGPL-3.0, dynamically linked), libwayland (MIT), `serialport` (MPL-2.0), `zbus` and `nix` (MIT), used by `mesh/` and linked unmodified, and the Rust crates named in
+Qt 6 and LayerShellQt (LGPL-3.0, dynamically linked), libwayland (MIT), libzim and libxapian (GPL-2.0-or-later, dynamically linked, from the distribution; Survival Studio, see `apps/survival/NOTICE`), `serialport` (MPL-2.0), `zbus` and `nix` (MIT), used by `mesh/` and linked unmodified, and the Rust crates named in
 `Cargo.lock` (each under its own licence; none is vendored here). No library source is copied
 into the tree.
 
 ## Artwork, fonts, sounds, wallpapers
 
-* Icons: the nine SVG files under `apps/icons/` and `apps/settings/icons/` were drawn for taOS from
+* Icons: the SVG application icons under `apps/icons/` and `apps/settings/icons/` were drawn for taOS from
   plain shapes (rectangles, paths, strokes) and are AGPL-3.0-or-later like the rest of the tree. They
   are not derived from any third-party icon set.
+* Line icons: `apps/common/qml/Taos/Apps/Glyph.qml` holds path data from the Lucide icon set (ISC), itself a fork of
+  Feather (MIT); these shapes ARE derived from third-party work. The two permission notices follow.
 * Store artwork (`apps/store/assets/`, details in `apps/store/assets/NOTICE`):
   * `icons/webapp-*.svg` (8 files): glyphs from Simple Icons 13.21.0, CC0 1.0, drawn white on a rounded square in the
     brand colour. CC0 does not waive trademark or brand-guideline rights; the marks only identify the sites they open.
@@ -57,3 +59,33 @@ into the tree.
   a plain colour. A wallpaper set, if one is installed, is licensed separately by its own notice.
 * Weather data and the WMO code table: see `shell/THIRD-PARTY.md`. `shell/weather/wmo-codes.tsv` is a
   taOS-written mapping from WMO code numbers to icon ids and short English phrases.
+
+### Lucide and Feather permission notices (Glyph.qml)
+
+    Lucide (ISC) and Feather (MIT) notices for the line icons in Taos.Apps Glyph.qml
+    
+      Glyph.qml holds path data taken from, or traced on, the Lucide icon set (https://lucide.dev), which is itself a fork
+      of Feather. Some of the shapes are therefore derived from third-party work, not drawn for taOS from scratch.
+    
+      ISC License (Lucide)
+      Copyright (c) for portions of Lucide are held by Cole Bemis 2013-2022 as part of Feather (MIT).
+      All other copyright (c) for Lucide are held by Lucide Contributors 2022.
+      Permission to use, copy, modify, and/or distribute this software for any purpose with or without fee is hereby
+      granted, provided that the above copyright notice and this permission notice appear in all copies.
+      THE SOFTWARE IS PROVIDED "AS IS" AND THE AUTHOR DISCLAIMS ALL WARRANTIES WITH REGARD TO THIS SOFTWARE INCLUDING ALL
+      IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS. IN NO EVENT SHALL THE AUTHOR BE LIABLE FOR ANY SPECIAL, DIRECT,
+      INDIRECT, OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN
+      AN ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF OR IN CONNECTION WITH THE USE OR
+      PERFORMANCE OF THIS SOFTWARE.
+    
+      MIT License (Feather)
+      Copyright (c) 2013-2023 Cole Bemis
+      Permission is hereby granted, free of charge, to any person obtaining a copy of this software and associated
+      documentation files (the "Software"), to deal in the Software without restriction, including without limitation the
+      rights to use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of the Software, and to
+      permit persons to whom the Software is furnished to do so, subject to the following conditions: The above copyright
+      notice and this permission notice shall be included in all copies or substantial portions of the Software.
+      THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE
+      WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR
+      COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR
+      OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.

@@ -186,7 +186,8 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends build-essential cmake ninja-build pkg-config ccache curl \
             libwayland-dev wayland-protocols libxkbcommon-dev libgl1-mesa-dev libegl1-mesa-dev libvulkan-dev \
-            libdbus-1-dev libfontconfig1-dev libfreetype-dev libpulse-dev libgl1 libegl1 libxkbcommon0 libfontconfig1
+            libdbus-1-dev libfontconfig1-dev libfreetype-dev libpulse-dev libgl1 libegl1 libxkbcommon0 libfontconfig1 \
+            libzim-dev zlib1g-dev
       - name: Rust stable
         run: rustup toolchain install stable --profile minimal && rustup default stable
       - name: Configure and build (qt foundation, apps, activity, settings)
