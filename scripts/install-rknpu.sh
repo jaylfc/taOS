@@ -24,14 +24,21 @@
 # Environment overrides:
 #     TAOS_RKNPU_SETUP        set to 1/true to skip interactive confirmation
 #     TAOS_RKNPU_RUNTIME_ONLY set to 1/true (or pass --runtime-only) to pin
-#                             librknnrt ONLY — no rkllama clone, no model
-#                             pulls, no rkllama unit. This is the mode
+#                             librknnrt and pull the three shared memory
+#                             preload models ONLY — no rkllama clone, no
+#                             rkllama unit. This is the mode
 #                             install-server.sh uses on new Pi-NPU installs
 #                             since #328 (PR-B): rk-llama.cpp is the default
 #                             backend and needs the pinned runtime, while
 #                             rkllama itself stays lazy (the Store resolver
 #                             chains its full install when an .rkllm model
-#                             is picked).
+#                             is picked). The preload pull stays in this
+#                             mode (#4503 Q1): the three models are
+#                             .rkllm artefacts only rkllama can serve,
+#                             their catalog manifests carry no rkllm
+#                             variant, and nothing else pulls them — a
+#                             fresh install must not end up with no
+#                             memory models.
 #     TAOS_RKLLAMA_DIR        install dir (default: ~<user>/rkllama)
 #     TAOS_RKLLAMA_REPO       git remote (default: https://github.com/jaylfc/rkllama.git)
 #     TAOS_RKLLAMA_REF        git ref  (default: 2faa12f17b2887296c3957508c3e135a3794a40d)
@@ -209,7 +216,7 @@ confirm_or_exit() {
     echo "This script will:"
     echo "  * back up $LIBRKNNRT_DEST and replace it with the 2.3.0 pinned build"
     if (( runtime_only )); then
-        echo "  * (--runtime-only) stop there — no rkllama, no model downloads"
+        echo "  * (--runtime-only) download the three shared memory preload models, then stop — no rkllama clone, no rkllama unit"
     else
         echo "  * clone rkllama into ~/rkllama (pinned ref ${RKLLAMA_REF:0:12})"
         echo "  * download ~2.8 GB of rk3588 RKLLM model files"
@@ -780,14 +787,20 @@ main() {
     detect_rknpu_driver
 
     if (( runtime_only )); then
-        # #328 (PR-B): pin the runtime and stop. rk-llama.cpp (the new
-        # default backend) needs /usr/lib/librknnrt.so in place, but
-        # rkllama itself is lazy now — its full install (clone, preload
-        # models, unit) happens on demand via the Store when the user
-        # picks an .rkllm model.
+        # #328 (PR-B): pin the runtime, pull the shared memory preloads,
+        # and stop. rk-llama.cpp (the new default backend) needs
+        # /usr/lib/librknnrt.so in place, but rkllama itself is lazy
+        # now — its clone and unit happen on demand via the Store when
+        # the user picks an .rkllm model. The preload pull stays in
+        # this mode (#4503 Q1): the three models are .rkllm-only,
+        # nothing else pulls or serves them, and a fresh install must
+        # not end up with no memory models. fetch_model skips
+        # checksum-verified files, so rkllama's later full install
+        # finds them already in place.
         confirm_or_exit
         pin_librknnrt
-        log "runtime-only mode: librknnrt pinned at $LIBRKNNRT_EXPECTED_VERSION — rkllama NOT installed (lazy, #328)"
+        pull_models
+        log "runtime-only mode: librknnrt pinned at $LIBRKNNRT_EXPECTED_VERSION, memory preloads pulled — rkllama NOT installed (lazy, #328)"
         exit 0
     fi
 

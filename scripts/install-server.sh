@@ -774,7 +774,9 @@ detect_and_advise_accelerators() {
 # chain is: (1) pin the librknnrt runtime via install-rknpu.sh
 # --runtime-only (rk-llama.cpp's installer refuses to run without
 # /usr/lib/librknnrt.so, and the pin is the one piece of the old stack
-# the new default still needs), then (2) install rk-llama.cpp itself.
+# the new default still needs; the same step also pulls the three
+# shared memory preload models, which nothing else pulls or serves —
+# #4503 Q1), then (2) install rk-llama.cpp itself.
 # rkllama is NOT installed here anymore — it is lazy and chains in via
 # the Store resolver when an .rkllm model is picked.
 install_rknpu_if_pending() {
@@ -790,7 +792,7 @@ install_rknpu_if_pending() {
         warn "  to set up the NPU runtime later: sudo bash $INSTALL_DIR/scripts/install-rknpu.sh --runtime-only"
         return 0
     fi
-    log "chaining into $rknpu_script --runtime-only (librknnrt pin for rk-llama.cpp)"
+    log "chaining into $rknpu_script --runtime-only (librknnrt pin + memory preloads for rk-llama.cpp)"
     if ! sudo -E bash "$rknpu_script" --yes --runtime-only; then
         warn "install-rknpu.sh --runtime-only failed — skipping rk-llama.cpp install (it needs the pinned librknnrt)"
         warn "  to retry: sudo bash $rknpu_script --yes --runtime-only && sudo bash $rkllamacpp_script"

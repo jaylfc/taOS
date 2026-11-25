@@ -69,8 +69,9 @@ run_as_user() {
 # install-rknpu.sh. Since #328 that pin is no longer a side effect of a
 # default rkllama install, so establish it here, at the one point every
 # install path (Store, setup-wizard one-tap, manual) flows through:
-# chain the sibling installer's runtime-only mode (idempotent — a no-op
-# when the runtime is already pinned at 2.3.0). If the sibling script
+# chain the sibling installer's runtime-only mode (idempotent — the
+# pin and the memory-preload pulls are checksum-verified skips when
+# already in place). If the sibling script
 # isn't available (this file copied standalone), fall back to the
 # historical existence check with its actionable error.
 _rknpu_script="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/install-rknpu.sh"

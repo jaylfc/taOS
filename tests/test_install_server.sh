@@ -371,4 +371,14 @@ grep -q 'install-rknpu.sh --yes --runtime-only && sudo bash scripts/install-rk-l
 echo "test: deferred-install retry hint passes --yes to the runtime pin"
 grep -q 'rknpu_script --yes --runtime-only' "$SCRIPT"
 
+echo "test: runtime-only install still pulls the three memory preload models (#4503 Q1)"
+# Nothing else pulls or serves the .rkllm memory preloads (embedding,
+# reranker, query expansion) on a fresh install — their catalog
+# manifests carry no rkllm variant and rk-llama.cpp cannot load .rkllm —
+# so the --runtime-only branch must run pull_models after the pin.
+awk '/if \(\( runtime_only \)\); then/,/exit 0/' scripts/install-rknpu.sh | grep -q 'pull_models'
+
+echo "test: runtime-only install does not install rkllama or its systemd unit"
+! awk '/if \(\( runtime_only \)\); then/,/exit 0/' scripts/install-rknpu.sh | grep -q 'install_rkllama\|install_systemd_unit'
+
 echo "all tests passed"
