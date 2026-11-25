@@ -109,3 +109,4 @@ input[type="checkbox"][role="switch"]:checked::after { transform: translateX(20p
   *, *::before, *::after { animation: none !important; transition: none !important; }
 }
 #pair-form { display: flex; flex-direction: column; }
+.sub.warn { color: var(--taos-warning); font-size: 13px; }

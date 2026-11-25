@@ -7,6 +7,12 @@ The input engine: a phone on the home network becomes the trackpad and keyboard 
   `zwp_virtual_keyboard_v1`, reconnects by itself when the compositor restarts.
 * Faces: the phone page (`web/`, served by the engine), the CLI below, and the control socket (agent path).
 
+## Trusted home Wi-Fi only (this version)
+
+Use the controller only on a home Wi-Fi you trust. The page is served over plain HTTP, so an attacker on the same network could alter it
+while it loads, and a modified page could steal what you type or the pairing code. The planned fix is serving the page over HTTPS
+through taOSgo or a native companion app. Until then do not pair or use it on shared, public or guest networks.
+
 ## Security model
 
 Plain HTTP on the home network is assumed hostile to eavesdroppers, so nothing secret and no typed text crosses it in the clear, and
