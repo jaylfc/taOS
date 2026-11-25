@@ -336,7 +336,9 @@ private Q_SLOTS:
     }
     void container_prefix_is_put_in_front_of_the_tool()
     {
-        QCOMPARE(ContainerExec(QString()).command(u"pmtiles"_s, {u"x"_s}), QStringList({u"pmtiles"_s, u"x"_s}));
+        const QStringList direct = ContainerExec(QString()).command(u"pmtiles"_s, {u"x"_s});
+        QVERIFY2(direct.first().startsWith(u"/"_s) && direct.first().endsWith(u"/pmtiles"_s), qPrintable(direct.first()));   // a fixed path, never PATH
+        QCOMPARE(direct.last(), u"x"_s);
         QCOMPARE(ContainerExec(u"podman exec survival-studio"_s).command(u"kolibri"_s, {u"manage"_s}),
                  QStringList({u"podman"_s, u"exec"_s, u"survival-studio"_s, u"kolibri"_s, u"manage"_s}));
     }

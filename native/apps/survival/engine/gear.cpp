@@ -114,7 +114,7 @@ bool GearStore::load()
     m_household = Household();
     for (const QJsonValue &v : h.value(QStringLiteral("people")).toArray()) {
         const QJsonObject p = v.toObject();
-        m_household.people.append({p.value(QStringLiteral("id")).toString(), p.value(QStringLiteral("name")).toString(), p.value(QStringLiteral("kind")).toString(QStringLiteral("adult"))});
+        m_household.people.append({p.value(QStringLiteral("id")).toString(), p.value(QStringLiteral("name")).toString(), p.value(QStringLiteral("kind")).toString(QStringLiteral("adult")), p.value(QStringLiteral("uid")).toInt(-1)});
     }
     m_household.pets = h.value(QStringLiteral("pets")).toInt();
     m_kits.clear();
@@ -150,7 +150,7 @@ bool GearStore::save(QString *error) const
     QDir().mkpath(m_dir);
     QJsonArray people, kits, shop;
     for (const GearPerson &p : m_household.people)
-        people.append(QJsonObject{{QStringLiteral("id"), p.id}, {QStringLiteral("name"), p.name}, {QStringLiteral("kind"), p.kind}});
+        people.append(QJsonObject{{QStringLiteral("id"), p.id}, {QStringLiteral("name"), p.name}, {QStringLiteral("kind"), p.kind}, {QStringLiteral("uid"), p.uid}});
     for (const GearKit &k : m_kits) {
         QJsonArray items;
         for (const GearItem &i : k.items) items.append(toJson(i));
@@ -175,6 +175,17 @@ bool GearStore::save(QString *error) const
     return true;
 }
 
+QString GearStore::personForUid(int uid) const
+{
+    for (const GearPerson &p : m_household.people) if (p.uid == uid && uid >= 0) return p.id;
+    return {};
+}
+bool GearStore::linkUid(int uid, const QString &person)
+{
+    for (const GearPerson &p : m_household.people) if (p.uid == uid && p.id != person) return false;
+    for (GearPerson &p : m_household.people) if (p.id == person) { p.uid = uid; return true; }
+    return false;
+}
 QString GearStore::defaultPerson() const { return m_household.people.isEmpty() ? QStringLiteral("me") : m_household.people.first().id; }
 
 QString GearStore::addKit(const QString &name, const QString &type, const QString &owner, bool shared, const QString &scenario)
@@ -425,10 +436,10 @@ QString GearStore::proposeShopping(const ScenarioSet &set, const QString &kitId,
     m_shopping.append(l);
     return l.id;
 }
-bool GearStore::approveShopping(const QString &id, const QString &actor, QString *error)
+bool GearStore::approveShopping(const QString &id, const QString &actor, bool interactive, QString *error)
 {
-    if (actor.startsWith(QStringLiteral("agent"))) {
-        if (error) *error = QStringLiteral("An agent can propose a shopping list; a person approves it.");
+    if (actor.startsWith(QStringLiteral("agent")) || !interactive) {
+        if (error) *error = QStringLiteral("An agent can propose a shopping list; a person approves it, by pressing Approve in the app (or with the one-time code that press makes).");
         return false;
     }
     for (ShoppingList &l : m_shopping)

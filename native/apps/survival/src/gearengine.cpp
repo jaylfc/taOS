@@ -3,6 +3,7 @@
 
 #include <QLocale>
 #include <QUrl>
+#include <unistd.h>
 
 #include "backend.h"
 #include "paths.h"
@@ -39,11 +40,19 @@ GearEngine::GearEngine(const QString &dataDir, QObject *parent) : QObject(parent
     }
     if (m_store.household().people.isEmpty()) {   // a household of one to start with
         Household h = m_store.household();
-        h.people.append({u"me"_s, tr("Me"), u"adult"_s});
+        h.people.append({u"me"_s, tr("Me"), u"adult"_s, -1});
         m_store.setHousehold(h);
     }
-    m_me = qEnvironmentVariable("TAOS_SURVIVAL_PERSON");
-    if (m_me.isEmpty()) m_me = m_store.defaultPerson();
+    // the viewer is this account: the person linked to its uid. The first run links the first person; a name from the
+    // environment or the command line is never used to look at someone else's things.
+    m_me = m_store.personForUid(int(getuid()));
+    if (m_me.isEmpty()) {
+        const QString first = m_store.defaultPerson();
+        if (m_store.linkUid(int(getuid()), first)) { m_me = first; persist(); }
+    }
+    QString serr;
+    if (!qEnvironmentVariableIsSet("TAOS_SURVIVAL_NO_OWNER_SOCKET"))
+        m_ownerServer.start(ownerSocketPath(), &serr);
 }
 
 QDate GearEngine::today() const
@@ -66,13 +75,12 @@ QVariantList GearEngine::people() const
         out.append(QVariantMap{{u"id"_s, p.id}, {u"name"_s, p.name}, {u"kind"_s, p.kind}});
     return out;
 }
-void GearEngine::setMe(const QString &id) { m_me = id; m_selected.clear(); m_audit.clear(); m_auditScenario.clear(); Q_EMIT changed(); Q_EMIT auditChanged(); }
 QString GearEngine::addPerson(const QString &name, const QString &kind)
 {
     Household h = m_store.household();
     const QString n = name.trimmed();
     if (n.isEmpty()) return {};
-    GearPerson p{QString::number(qHash(n + QString::number(h.people.size())), 16).left(6), n, kind == u"child"_s ? u"child"_s : u"adult"_s};
+    GearPerson p{QString::number(qHash(n + QString::number(h.people.size())), 16).left(6), n, kind == u"child"_s ? u"child"_s : u"adult"_s, -1};
     h.people.append(p);
     m_store.setHousehold(h);
     after();
@@ -84,7 +92,7 @@ void GearEngine::removePerson(const QString &id)
     if (h.people.size() <= 1) return;   // a household always has someone
     for (int i = 0; i < h.people.size(); ++i) if (h.people[i].id == id) h.people.removeAt(i);
     m_store.setHousehold(h);
-    if (m_me == id) m_me = h.people.first().id;
+    if (m_me == id) return;   // you cannot remove yourself
     after();
 }
 void GearEngine::setPets(int n)
@@ -271,9 +279,14 @@ QString GearEngine::draftShopping(const QString &scenarioId)
 QString GearEngine::approveShopping(const QString &id)
 {
     QString err;
-    if (!m_store.approveShopping(id, m_me, &err)) return err;
+    if (!m_store.approveShopping(id, m_me, true, &err)) return err;   // the window's button is the person's own press
     after();
     return {};
+}
+QString GearEngine::approvalCode(const QString &id)
+{
+    m_nonces.arm(u"approve"_s, id);   // this press, and only this press, makes a code
+    return m_nonces.mint(u"approve"_s, id);
 }
 void GearEngine::removeShopping(const QString &id) { m_store.removeShopping(id); after(); }
 

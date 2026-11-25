@@ -17,7 +17,7 @@ get_filename_component(TAOS_ZIM_LIBDIR ${TAOS_ZIM_LIBRARY} DIRECTORY)
 add_library(taos_survival_core STATIC
   engine/zimarchive.cpp engine/articlehtml.cpp engine/packmanager.cpp engine/radiodetector.cpp engine/pmtiles.cpp
   engine/mapdata.cpp engine/kit.cpp engine/statestore.cpp engine/paths.cpp engine/meshinterface.h
-  engine/gear.cpp engine/kiwixcatalog.cpp engine/containerexec.cpp engine/mapextract.cpp engine/education.cpp)
+  engine/gear.cpp engine/ownernonce.cpp engine/kiwixcatalog.cpp engine/containerexec.cpp engine/mapextract.cpp engine/education.cpp)
 target_include_directories(taos_survival_core PUBLIC engine ${TAOS_ZIM_INCLUDE_DIR})
 target_link_libraries(taos_survival_core PUBLIC Qt6::Core Qt6::Gui Qt6::Network Qt6::Concurrent ${TAOS_ZIM_LIBRARY} ZLIB::ZLIB)
 set_target_properties(taos_survival_core PROPERTIES POSITION_INDEPENDENT_CODE ON)

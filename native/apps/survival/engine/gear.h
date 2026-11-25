@@ -18,7 +18,7 @@ namespace Taos::Survival {
 const QStringList &gearCategories();   // water food shelter warmth light power firstaid medication tools comms documents hygiene clothing
 const QStringList &gearKitTypes();     // gobag car home firstaid
 
-struct GearPerson { QString id, name, kind; };   // kind: adult | child
+struct GearPerson { QString id, name, kind; int uid = -1; };   // kind: adult | child; uid: the account this person is (-1: nobody yet)
 struct Household
 {
     QList<GearPerson> people;
@@ -113,6 +113,9 @@ public:
     Household household() const { return m_household; }
     void setHousehold(const Household &h) { m_household = h; }
     QString defaultPerson() const;
+    /// Who the caller is: the person linked to this account's uid. Empty when no one is. A name given by a caller is never used.
+    QString personForUid(int uid) const;
+    bool linkUid(int uid, const QString &person);   // false when the person is unknown or the uid already belongs to someone else
 
     QString addKit(const QString &name, const QString &type, const QString &owner, bool shared, const QString &scenario = QString());
     bool removeKit(const QString &id);
@@ -139,8 +142,9 @@ public:
 
     /// A shopping list of what the audit lacks. `actor` is who proposes it ("agent:<name>" or a person id).
     QString proposeShopping(const ScenarioSet &set, const QString &kitId, const QString &scenarioId, const QString &actor, const QString &person, const QDate &today);
-    /// Only a person approves: an actor that starts with "agent" is refused.
-    bool approveShopping(const QString &id, const QString &actor, QString *error = nullptr);
+    /// Only the person's own press approves. `interactive` is true only when it came from that press (the app's button, or a
+    /// one-time code the app made for it); an actor that starts with "agent" is refused whatever it says.
+    bool approveShopping(const QString &id, const QString &actor, bool interactive, QString *error = nullptr);
     QList<ShoppingList> shopping() const { return m_shopping; }
     bool removeShopping(const QString &id);
 

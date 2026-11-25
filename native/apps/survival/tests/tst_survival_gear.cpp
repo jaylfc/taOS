@@ -12,6 +12,7 @@
 #include <QtTest>
 
 #include "gear.h"
+#include "ownernonce.h"
 
 using namespace Taos::Survival;
 using namespace Qt::StringLiterals;
@@ -241,10 +242,11 @@ private Q_SLOTS:
         for (const ShoppingItem &i : l.items) if (i.name == u"Drinking water"_s) { water = true; QVERIFY(qAbs(i.qty - 14.2) < 0.11); }
         QVERIFY(water);
         QString err;
-        QVERIFY(!st.approveShopping(id, u"agent:helper"_s, &err));
+        QVERIFY(!st.approveShopping(id, u"agent:helper"_s, true, &err));   // an agent, even claiming a press
         QVERIFY(err.contains(u"person"_s));
+        QVERIFY(!st.approveShopping(id, u"ann"_s, false, &err));            // no press, no approval, whoever asks
         QCOMPARE(st.shopping().first().status, u"draft"_s);
-        QVERIFY(st.approveShopping(id, u"ann"_s, &err));
+        QVERIFY(st.approveShopping(id, u"ann"_s, true, &err));
         QCOMPARE(st.shopping().first().status, u"approved"_s);
         QCOMPARE(st.shopping().first().approvedBy, u"ann"_s);
         // nothing lacking means no list
@@ -319,10 +321,122 @@ private Q_SLOTS:
         QCOMPARE(rc, 0);
         QVERIFY(run({u"shop"_s, u"list"_s}, QString(), &rc).contains(u"draft"_s));
         run({u"shop"_s, u"approve"_s, shop}, u"agent:helper"_s, &rc);
-        QVERIFY(rc != 0);
-        run({u"shop"_s, u"approve"_s, shop}, QString(), &rc);
+        QVERIFY(rc != 0);   // refused: no one-time code
+    }
+    void a_one_time_code_exists_only_after_the_person_presses_and_works_once()
+    {
+        OwnerNonceStore st;
+        QCOMPARE(st.mint(u"approve"_s, u"list1"_s), QString());   // nothing armed: no code can be made
+        st.arm(u"approve"_s, u"list1"_s);
+        QCOMPARE(st.mint(u"approve"_s, u"list2"_s), QString());   // armed for another list
+        const QString code = st.mint(u"approve"_s, u"list1"_s);
+        QVERIFY(!code.isEmpty());
+        QCOMPARE(st.mint(u"approve"_s, u"list1"_s), QString());   // the press is used up
+        QVERIFY(!st.consume(code, u"approve"_s, u"list2"_s));     // wrong list: refused, and the code is burnt
+        QVERIFY(!st.consume(code, u"approve"_s, u"list1"_s));
+        st.arm(u"approve"_s, u"list1"_s);
+        const QString c2 = st.mint(u"approve"_s, u"list1"_s);
+        QVERIFY(st.consume(c2, u"approve"_s, u"list1"_s));
+        QVERIFY(!st.consume(c2, u"approve"_s, u"list1"_s));       // once
+        QVERIFY(!st.consume(QString(), u"approve"_s, u"list1"_s));
+        st.arm(u"approve"_s, u"x"_s, -1);                         // an arm that has already run out
+        QCOMPARE(st.mint(u"approve"_s, u"x"_s), QString());
+    }
+    void the_cli_approves_with_a_code_the_apps_press_made()
+    {
+        const QString data = m_dir.path() + u"/cli3"_s, rt = m_dir.path() + u"/rt3"_s;
+        QDir().mkpath(rt);
+        QFile::setPermissions(rt, QFileDevice::ReadOwner | QFileDevice::WriteOwner | QFileDevice::ExeOwner);
+        OwnerNonceStore store;
+        OwnerNonceServer server(&store);
+        QString serr;
+        QVERIFY2(server.start(rt + u"/taos-survival/owner.sock"_s, &serr), qPrintable(serr));
+        QCOMPARE(QFileInfo(rt + u"/taos-survival/owner.sock"_s).permissions() & (QFileDevice::ReadGroup | QFileDevice::WriteGroup | QFileDevice::ReadOther | QFileDevice::WriteOther), QFileDevice::Permissions());
+        auto run = [&](const QStringList &args, int *rc) {   // asynchronous: the server above answers while the CLI runs
+            QProcess p;
+            QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
+            env.insert(u"TAOS_SURVIVAL_DIR"_s, data); env.insert(u"TAOS_SURVIVAL_TODAY"_s, u"2026-11-25"_s); env.insert(u"QT_QPA_PLATFORM"_s, u"offscreen"_s);
+            env.insert(u"XDG_RUNTIME_DIR"_s, rt); env.remove(u"TAOS_SURVIVAL_ACTOR"_s);
+            p.setProcessEnvironment(env);
+            p.start(QStringLiteral(SURVIVAL_CLI), QStringList{u"gear"_s} + args);
+            QElapsedTimer t; t.start();
+            while (p.state() != QProcess::NotRunning && t.elapsed() < 30000) QTest::qWait(20);
+            if (rc) *rc = p.exitCode();
+            return QString::fromUtf8(p.readAllStandardOutput()).trimmed();
+        };
+        int rc = 0;
+        const QString kit = run({u"from"_s, u"72h"_s, u"Bag"_s}, &rc);
+        const QString shop = run({u"shop"_s, u"propose"_s, kit, u"72h"_s}, &rc);
         QCOMPARE(rc, 0);
-        QVERIFY(run({u"shop"_s, u"list"_s}, QString(), &rc).contains(u"approved"_s));
+        run({u"shop"_s, u"approve"_s, shop, u"--owner-nonce"_s, u"guess"_s}, &rc);
+        QVERIFY(rc != 0);
+        store.arm(u"approve"_s, shop);   // the person presses the button for this list
+        const QString code = store.mint(u"approve"_s, shop);
+        run({u"shop"_s, u"approve"_s, shop, u"--owner-nonce"_s, code}, &rc);
+        QCOMPARE(rc, 0);
+        QVERIFY(run({u"shop"_s, u"list"_s}, &rc).contains(u"approved"_s));
+        run({u"shop"_s, u"approve"_s, shop, u"--owner-nonce"_s, code}, &rc);   // the same code again
+        QVERIFY(rc != 0);
+    }
+    void people_are_linked_to_accounts_and_a_name_is_never_enough()
+    {
+        GearStore st(m_dir.path() + u"/uid"_s);
+        Household h = family();
+        st.setHousehold(h);
+        QVERIFY(st.linkUid(1000, u"ann"_s));
+        QCOMPARE(st.personForUid(1000), u"ann"_s);
+        QVERIFY(!st.linkUid(1000, u"bo"_s));      // an account is one person
+        QCOMPARE(st.personForUid(1001), QString());   // an unlinked account is nobody
+        QCOMPARE(st.personForUid(-1), QString());
+        QVERIFY(!st.linkUid(1002, u"nobody"_s));
+        QString err;
+        QVERIFY(st.save(&err));
+        GearStore again(m_dir.path() + u"/uid"_s);
+        QVERIFY(again.load());
+        QCOMPARE(again.personForUid(1000), u"ann"_s);
+    }
+    // Review fixes: approval needs the person's own press; the viewer is the caller's account, never a name they pass.
+    void the_cli_cannot_approve_its_own_draft_and_cannot_pose_as_someone_else()
+    {
+        const QString data = m_dir.path() + u"/cli2"_s;
+        auto run = [&](const QStringList &args, const QProcessEnvironment &extra, int *rc, QString *errOut = nullptr) {
+            QProcess p;
+            QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
+            env.insert(u"TAOS_SURVIVAL_DIR"_s, data); env.insert(u"TAOS_SURVIVAL_TODAY"_s, u"2026-11-25"_s); env.insert(u"QT_QPA_PLATFORM"_s, u"offscreen"_s);
+            env.insert(u"XDG_RUNTIME_DIR"_s, m_dir.path() + u"/rt-none"_s);   // no app is running here
+            env.remove(u"TAOS_SURVIVAL_ACTOR"_s); env.remove(u"TAOS_SURVIVAL_PERSON"_s);
+            env.insert(extra);
+            p.setProcessEnvironment(env);
+            p.start(QStringLiteral(SURVIVAL_CLI), QStringList{u"gear"_s} + args);
+            p.waitForFinished(30000);
+            if (rc) *rc = p.exitCode();
+            if (errOut) *errOut = QString::fromUtf8(p.readAllStandardError());
+            return QString::fromUtf8(p.readAllStandardOutput()).trimmed();
+        };
+        int rc = 0;
+        const QString kit = run({u"from"_s, u"72h"_s, u"Bag"_s}, {}, &rc);
+        QCOMPARE(rc, 0);
+        run({u"item-add"_s, kit, u"Insulin"_s, u"medication"_s, u"2"_s, u"supplies"_s}, {}, &rc);
+        QCOMPARE(rc, 0);
+        // the account that made the kit sees its medication
+        QVERIFY(run({u"kits"_s}, {}, &rc).contains(u"Insulin"_s));
+        // a name passed by the caller never changes who is looking
+        QString e;
+        run({u"kits"_s, u"--as"_s, u"bo"_s}, {}, &rc, &e);
+        QVERIFY2(rc != 0, "--as must be refused");
+        QProcessEnvironment pose; pose.insert(u"TAOS_SURVIVAL_PERSON"_s, u"bo"_s);
+        const QString asEnv = run({u"kits"_s}, pose, &rc);
+        QVERIFY(asEnv.contains(u"Insulin"_s));   // the variable is ignored: still this account's own view, not Bo's
+        QVERIFY(!run({u"household"_s, u"--as"_s, u"bo"_s}, {}, &rc).contains(u"x"_s) || rc != 0);
+        // an agent that does not announce itself cannot approve its own draft: approval needs the person's one-time code
+        const QString shop = run({u"shop"_s, u"propose"_s, kit, u"72h"_s}, {}, &rc);
+        QCOMPARE(rc, 0);
+        run({u"shop"_s, u"approve"_s, shop}, {}, &rc, &e);
+        QVERIFY2(rc != 0, "approval without the person's code must be refused");
+        QVERIFY(e.contains(u"code"_s, Qt::CaseInsensitive) || e.contains(u"press"_s, Qt::CaseInsensitive));
+        run({u"shop"_s, u"approve"_s, shop, u"--owner-nonce"_s, u"made-up"_s}, {}, &rc, &e);
+        QVERIFY(rc != 0);
+        QVERIFY(run({u"shop"_s, u"list"_s}, {}, &rc).contains(u"draft"_s));
     }
     void a_damaged_file_is_reported_and_never_overwritten()
     {

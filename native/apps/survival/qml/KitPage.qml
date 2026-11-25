@@ -93,17 +93,16 @@ Item {
                         anchors { fill: parent; margins: Look.space4 }
                         spacing: Look.space2
                         TaosText { Layout.fillWidth: true; wrapMode: Text.Wrap; font.pixelSize: Look.small; color: Look.textTertiary
-                                   text: qsTr("Quantities in every list scale with the people and pets here. Switch person to see kits as they see them: medication stays private to its owner.") }
+                                   text: qsTr("Quantities in every list scale with the people and pets here. You see your own kits and what others share; medication stays private to its owner.") }
                         Repeater {
                             model: page.gear.people
                             delegate: RowLayout {
                                 id: prow
                                 required property var modelData
                                 Layout.fillWidth: true; spacing: Look.space2
-                                PillButton { Layout.fillWidth: true; compact: true; text: prow.modelData.name + (prow.modelData.kind === "child" ? "  " + qsTr("(child)") : "")
-                                             variant: page.gear.me === prow.modelData.id ? "primary" : "tint"; accessibleName: qsTr("See the kits as %1").arg(prow.modelData.name)
-                                             onClicked: page.gear.setMe(prow.modelData.id) }
-                                TaosButton { glyph: "trash"; compact: true; variant: "ghost"; visible: page.gear.people.length > 1; accessibleName: qsTr("Remove %1 from the household").arg(prow.modelData.name)
+                                TaosText { Layout.fillWidth: true; elide: Text.ElideRight; font.pixelSize: Look.body; font.weight: page.gear.me === prow.modelData.id ? Font.DemiBold : Font.Normal
+                                           text: prow.modelData.name + (prow.modelData.kind === "child" ? "  " + qsTr("(child)") : "") + (page.gear.me === prow.modelData.id ? "  " + qsTr("(you)") : "") }
+                                TaosButton { glyph: "trash"; compact: true; variant: "ghost"; visible: page.gear.people.length > 1 && prow.modelData.id !== page.gear.me; accessibleName: qsTr("Remove %1 from the household").arg(prow.modelData.name)
                                              onClicked: page.gear.removePerson(prow.modelData.id) }
                             }
                         }

@@ -14,11 +14,13 @@
 #include <QStorageInfo>
 #include <QTextStream>
 #include <iostream>
+#include <unistd.h>
 
 #include "articlehtml.h"
 #include "containerexec.h"
 #include "education.h"
 #include "gear.h"
+#include "ownernonce.h"
 #include "kiwixcatalog.h"
 #include "mapextract.h"
 #include "kit.h"
@@ -60,12 +62,12 @@ int usage()
            "  maps extract <area id> <zoom> [--dry-run]   cut a map out of the newest Protomaps build (runs pmtiles via TAOS_SURVIVAL_EXEC)\n"
            "  edu list                     Kolibri education channels\n"
            "  edu install <channel id>     import a channel into Kolibri (via TAOS_SURVIVAL_EXEC)\n"
-           "  gear kits|household|readiness|reminders [--as <person>]   the gear manager (a person's view)\n"
+           "  gear kits|household|readiness|reminders   the gear manager, as the account that runs this command\n"
            "  gear lists                   the scenario lists and where each comes from\n"
            "  gear kit-add <gobag|car|home|firstaid> <name> [--shared]   |   gear from <list id> [name]\n"
            "  gear item-add <kit id> <name> <category> <qty> [unit] [yyyy-mm-dd]\n"
            "  gear audit <kit id> <list id>      what is missing for this household\n"
-           "  gear shop propose <kit id> <list id> | list | approve <id>   an agent proposes a draft, a person approves\n"
+           "  gear shop propose <kit id> <list id> | list | approve <id> --owner-nonce <code>   an agent drafts; approving needs the code the app makes when the person presses Approve\n"
            "  markers                      the saved markers\n"
            "  markers add <name> <lon> <lat> [note]\n"
            "  markers remove <id>\n"
@@ -345,10 +347,19 @@ int main(int argc, char **argv)
         if (!gs.load()) { err << "The gear file is damaged; it was not changed.\n"; return 1; }
         QString e3;
         const ScenarioSet set = loadScenarios(bundledCatalog(QStringLiteral("scenarios.json")), &e3);
-        QString person;
-        for (int i = 0; i + 1 < a.size(); ++i) if (a[i] == QStringLiteral("--as")) person = a[i + 1];
-        if (person.isEmpty()) person = qEnvironmentVariable("TAOS_SURVIVAL_PERSON");
-        if (person.isEmpty()) person = gs.defaultPerson();
+        // Who is asking is this account, found by its uid: never a name the caller supplies (no --as, no environment).
+        if (a.contains(QStringLiteral("--as"))) { err << "--as is not accepted: the viewer is the account that runs this command.\n"; return 2; }
+        Household hh = gs.household();
+        if (hh.people.isEmpty()) {   // first run: this account is the first person
+            hh.people.append({QStringLiteral("me"), QStringLiteral("Me"), QStringLiteral("adult"), int(getuid())});
+            gs.setHousehold(hh);
+            if (!gs.save(&e3)) { err << e3 << "\n"; return 1; }
+        }
+        const QString person = gs.personForUid(int(getuid()));
+        if (person.isEmpty() && sub != QLatin1String("lists") && sub != QLatin1String("household")) {
+            err << "This account is not linked to a person in the household. Open Survival Studio once as this account.\n";
+            return 1;
+        }
         const QDate today = QDate::fromString(qEnvironmentVariable("TAOS_SURVIVAL_TODAY"), Qt::ISODate).isValid()
             ? QDate::fromString(qEnvironmentVariable("TAOS_SURVIVAL_TODAY"), Qt::ISODate) : QDate::currentDate();
         const QString actor = qEnvironmentVariable("TAOS_SURVIVAL_ACTOR");
@@ -422,7 +433,12 @@ int main(int argc, char **argv)
                 return saveOk() ? 0 : 1;
             }
             if (what == QLatin1String("approve")) {
-                if (!gs.approveShopping(a.value(3), actor.startsWith(QStringLiteral("agent")) ? actor : person, &e3)) { err << e3 << "\n"; return 1; }
+                // approval is the person's own press: the app makes a one-time code when the person presses Approve
+                QString nonce;
+                for (int i = 0; i + 1 < a.size(); ++i) if (a[i] == QStringLiteral("--owner-nonce")) nonce = a[i + 1];
+                if (nonce.isEmpty()) { err << "Approving needs the person's one-time code. Press Approve in Survival Studio to get one, then pass --owner-nonce <code>.\n"; return 1; }
+                if (!ownerNonceConsume(nonce, QStringLiteral("approve"), a.value(3), &e3)) { err << e3 << "\n"; return 1; }
+                if (!gs.approveShopping(a.value(3), person, !actor.startsWith(QStringLiteral("agent")), &e3)) { err << e3 << "\n"; return 1; }
                 return saveOk() ? 0 : 1;
             }
             QJsonArray arr;

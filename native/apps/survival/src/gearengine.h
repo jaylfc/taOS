@@ -6,6 +6,7 @@
 #include <QVariant>
 
 #include "gear.h"
+#include "ownernonce.h"
 
 namespace Taos::Survival {
 
@@ -47,7 +48,6 @@ public:
     /// Selects the first kit whose name starts with `prefix` (for links and screenshots).
     Q_INVOKABLE void selectByName(const QString &prefix);
 
-    Q_INVOKABLE void setMe(const QString &personId);
     Q_INVOKABLE QString addPerson(const QString &name, const QString &kind);
     Q_INVOKABLE void removePerson(const QString &id);
     Q_INVOKABLE void setPets(int n);
@@ -63,7 +63,10 @@ public:
     Q_INVOKABLE QString attachPhoto(const QString &itemId, const QString &path);
     Q_INVOKABLE void runAudit(const QString &scenarioId);
     Q_INVOKABLE QString draftShopping(const QString &scenarioId);
+    /// The person pressed Approve in the window: this is the interactive action.
     Q_INVOKABLE QString approveShopping(const QString &id);
+    /// The person pressed "One-time code": a code that lets the CLI approve this one list, once, within 5 minutes.
+    Q_INVOKABLE QString approvalCode(const QString &id);
     Q_INVOKABLE void removeShopping(const QString &id);
     Q_INVOKABLE QVariantMap scenario(const QString &id) const;
     Q_INVOKABLE QString photoUrl(const QString &relative) const;
@@ -77,6 +80,8 @@ private:
     QString m_tab = QStringLiteral("items");
     QString m_dir, m_me, m_selected, m_error, m_auditScenario;
     GearStore m_store;
+    OwnerNonceStore m_nonces;
+    OwnerNonceServer m_ownerServer{&m_nonces};
     ScenarioSet m_set;
     QVariantMap m_audit;
 };

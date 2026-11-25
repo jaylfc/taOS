@@ -184,6 +184,9 @@ ColumnLayout {
                         RowLayout {
                             spacing: Look.space2
                             PillButton { visible: shop.modelData.status === "draft"; text: qsTr("Approve"); variant: "primary"; onClicked: root.note = root.gear.approveShopping(shop.modelData.id) }
+                            PillButton { visible: shop.modelData.status === "draft"; text: qsTr("One-time code"); compact: true
+                                         accessibleName: qsTr("Make a one-time code that lets the command line approve this list once")
+                                         onClicked: root.note = qsTr("Code for the command line, good once for 5 minutes: %1").arg(root.gear.approvalCode(shop.modelData.id)) }
                             PillButton { text: qsTr("Remove"); glyph: "trash"; onClicked: root.gear.removeShopping(shop.modelData.id) }
                         }
                     }
