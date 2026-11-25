@@ -613,6 +613,14 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
+        # Ask the real `taosmd migrate --probe` what shape the memory store is in
+        # BEFORE any taOSmd store is opened. A store written by a newer taOSmd, or
+        # one in a state taOSmd cannot vouch for, stops start-up with plain
+        # instructions; an older store is served as is (nothing converts on open).
+        from tinyagentos import memory_store_guard
+
+        app.state.memory_store_status = await memory_store_guard.check_at_startup(data_dir)
+        app.state.memory_store_last_convert = None
         # Arm the startup guard: block non-exempt requests until init completes.
         app.state._startup_complete = False
         await agent_registry_store.init()
