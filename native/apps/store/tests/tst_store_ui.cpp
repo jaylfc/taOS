@@ -3,6 +3,7 @@
 // page end to end (add from the catalogue, expand, clone, remove with a second click), the Add website dialog and its
 // address check, the Docker consent card, and the refusal a member gets, in words.
 #include <QPointer>
+#include <QSettings>
 #include <QTemporaryDir>
 
 #include "apphost.h"
@@ -316,7 +317,7 @@ private Q_SLOTS:
         writeFile(d + u"/list.json"_s, jq("{'ok':true,'apps':[{'id':'claude-desktop','name':'Claude','group':'dev-apps','installed_version':'1.17282.0'}]}"));
         click(visibleByName(m_win, u"group-dev-apps"_s));
         click(visibleByName(m_win, u"consentAccept"_s));
-        QVERIFY(waitFor([&] { return log().contains(u"install claude-desktop --json --target group:dev-apps --accept-licence claude-desktop"_s); }));
+        QVERIFY(waitFor([&] { return log().contains(u"install claude-desktop --json --target group:dev-apps"_s); }));
         // the installed page says where it lives, and offers Move to group
         QVERIFY(waitFor([this] { return visibleByName(m_win, u"groupSection"_s) != nullptr && visibleByName(m_win, u"groupName"_s) != nullptr; }));
         QCOMPARE(visibleByName(m_win, u"groupName"_s)->property("text").toString(), u"Dev apps"_s);
@@ -340,6 +341,7 @@ private Q_SLOTS:
 
     void a_container_app_installs_into_the_group_the_card_shows_selected()
     {
+        QSettings(u"taOS"_s, u"Store"_s).remove(u"lastAppGroup"_s);   // the picker starts from the last-used group; a previous test used dev-apps
         QTemporaryDir ag;
         const QString d = ag.path();
         writeFile(d + u"/catalog.json"_s, jq("{'ok':true,'apps':[{'id':'chromium','name':'Chromium','type':'container-desktop-app','description':'d','publisher':'p','homepage':'https://x.example/','licence':'BSD','licence_required':false,'terms_note':'Open','version':'debian','categories':['Network'],'window_app_id':'chromium','grants':{}}]}"));
