@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["taos-client", "taos-client-ffi", "input", "cast"]
+members = ["taos-client", "taos-client-ffi", "input", "cast", "mesh"]
 
 [workspace.package]
 edition = "2021"

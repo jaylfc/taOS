@@ -1,0 +1,244 @@
+{
+ "frames": [
+  {
+   "name": "self_info",
+   "provenance": "reference-built (layout: MyMesh.cpp, parsed by meshcore_py)",
+   "hex": "05010e160102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f2090101103503bedff0000000095440d0090d003000b05416c706861",
+   "oracle": [
+    {
+     "type": "SELF_INFO",
+     "payload": {
+      "adv_type": 1,
+      "tx_power": 14,
+      "max_tx_power": 22,
+      "public_key": "0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20",
+      "adv_lat": 51.45,
+      "adv_lon": -1.23,
+      "multi_acks": 0,
+      "adv_loc_policy": 0,
+      "telemetry_mode_env": 0,
+      "telemetry_mode_loc": 0,
+      "telemetry_mode_base": 0,
+      "manual_add_contacts": false,
+      "radio_freq": 869.525,
+      "radio_bw": 250.0,
+      "radio_sf": 11,
+      "radio_cr": 5,
+      "name": "Alpha"
+     }
+    }
+   ]
+  },
+  {
+   "name": "contact_with_position",
+   "provenance": "reference-built",
+   "hex": "036465666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f808182830100ff00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000427261766f0000000000000000000000000000000000000000000000000000000081246962151103cc3bedff32812469",
+   "oracle": [
+    {
+     "type": "NEXT_CONTACT",
+     "payload": {
+      "public_key": "6465666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f80818283",
+      "type": 1,
+      "flags": 0,
+      "out_path_hash_mode": -1,
+      "out_path_len": -1,
+      "out_path": "",
+      "adv_name": "Bravo",
+      "last_advert": 1764000000,
+      "adv_lat": 51.451234,
+      "adv_lon": -1.229876,
+      "lastmod": 1764000050
+     }
+    }
+   ]
+  },
+  {
+   "name": "new_advert_push",
+   "provenance": "reference-built",
+   "hex": "8a6465666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f808182830100ff00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000427261766f0000000000000000000000000000000000000000000000000000000081246962151103cc3bedff32812469",
+   "oracle": [
+    {
+     "type": "NEW_CONTACT",
+     "payload": {
+      "public_key": "6465666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f80818283",
+      "type": 1,
+      "flags": 0,
+      "out_path_hash_mode": -1,
+      "out_path_len": -1,
+      "out_path": "",
+      "adv_name": "Bravo",
+      "last_advert": 1764000000,
+      "adv_lat": 51.451234,
+      "adv_lon": -1.229876,
+      "lastmod": 1764000050
+     }
+    }
+   ]
+  },
+  {
+   "name": "contact_without_position",
+   "provenance": "reference-built",
+   "hex": "03969798999a9b9c9d9e9fa0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b50100ff000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000004e6f46697800000000000000000000000000000000000000000000000000000000812469000000000000000032812469",
+   "oracle": [
+    {
+     "type": "NEXT_CONTACT",
+     "payload": {
+      "public_key": "969798999a9b9c9d9e9fa0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5",
+      "type": 1,
+      "flags": 0,
+      "out_path_hash_mode": -1,
+      "out_path_len": -1,
+      "out_path": "",
+      "adv_name": "NoFix",
+      "last_advert": 1764000000,
+      "adv_lat": 0.0,
+      "adv_lon": 0.0,
+      "lastmod": 1764000050
+     }
+    }
+   ]
+  },
+  {
+   "name": "contact_msg_v3_direct",
+   "provenance": "reference-built",
+   "hex": "10ea0000646566676869ff007b81246973656520796f752061742063616d70",
+   "oracle": [
+    {
+     "type": "CONTACT_MSG_RECV",
+     "payload": {
+      "type": "PRIV",
+      "SNR": -5.5,
+      "pubkey_prefix": "646566676869",
+      "path_hash_mode": -1,
+      "path_len": 255,
+      "txt_type": 0,
+      "sender_timestamp": 1764000123,
+      "text": "see you at camp"
+     }
+    }
+   ]
+  },
+  {
+   "name": "contact_msg_v3_two_hops",
+   "provenance": "reference-built",
+   "hex": "100a000064656667686902007c81246972656c61796564",
+   "oracle": [
+    {
+     "type": "CONTACT_MSG_RECV",
+     "payload": {
+      "type": "PRIV",
+      "SNR": 2.5,
+      "pubkey_prefix": "646566676869",
+      "path_hash_mode": 0,
+      "path_len": 2,
+      "txt_type": 0,
+      "sender_timestamp": 1764000124,
+      "text": "relayed"
+     }
+    }
+   ]
+  },
+  {
+   "name": "contact_msg_v2",
+   "provenance": "reference-built",
+   "hex": "07646566676869ff007d8124696f6c64207374796c65",
+   "oracle": [
+    {
+     "type": "CONTACT_MSG_RECV",
+     "payload": {
+      "type": "PRIV",
+      "pubkey_prefix": "646566676869",
+      "path_hash_mode": -1,
+      "path_len": 255,
+      "txt_type": 0,
+      "sender_timestamp": 1764000125,
+      "text": "old style"
+     }
+    }
+   ]
+  },
+  {
+   "name": "channel_msg_v3",
+   "provenance": "reference-built",
+   "hex": "1112000001ff0082812469427261766f3a20776174657220666f756e64",
+   "oracle": [
+    {
+     "type": "CHANNEL_MSG_RECV",
+     "payload": {
+      "type": "CHAN",
+      "SNR": 4.5,
+      "channel_idx": 1,
+      "path_hash_mode": -1,
+      "path_len": 255,
+      "txt_type": 0,
+      "sender_timestamp": 1764000130,
+      "text": "Bravo: water found"
+     }
+    }
+   ]
+  },
+  {
+   "name": "channel_msg_v2",
+   "provenance": "reference-built",
+   "hex": "0802030083812469427261766f3a206f6b",
+   "oracle": [
+    {
+     "type": "CHANNEL_MSG_RECV",
+     "payload": {
+      "type": "CHAN",
+      "channel_idx": 2,
+      "path_hash_mode": 0,
+      "path_len": 3,
+      "txt_type": 0,
+      "sender_timestamp": 1764000131,
+      "text": "Bravo: ok"
+     }
+    }
+   ]
+  },
+  {
+   "name": "send_confirmed_push",
+   "provenance": "reference-built",
+   "hex": "820badf00ddc050000",
+   "oracle": [
+    {
+     "type": "ACK",
+     "payload": {
+      "code": "0badf00d",
+      "trip_time": 1500
+     }
+    }
+   ]
+  },
+  {
+   "name": "messages_waiting_push",
+   "provenance": "reference-built",
+   "hex": "83",
+   "oracle": [
+    {
+     "type": "MESSAGES_WAITING",
+     "payload": {}
+    }
+   ]
+  },
+  {
+   "name": "no_more_messages",
+   "provenance": "reference-built",
+   "hex": "0a",
+   "oracle": [
+    {
+     "type": "NO_MORE_MSGS",
+     "payload": {
+      "messages_available": false
+     }
+    }
+   ]
+  }
+ ],
+ "documented_commands": {
+  "app_start_doc": "01000000000000006d63636c69",
+  "device_query_doc": "1603",
+  "get_message_doc": "0a",
+  "send_channel_doc": "030001d202964948656c6c6f"
+ }
+}
