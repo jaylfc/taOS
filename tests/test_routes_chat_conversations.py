@@ -164,6 +164,11 @@ async def test_member_cannot_list_or_create_sessions(member_client):
 
 @pytest.mark.asyncio
 async def test_agent_token_cannot_manage_sessions(client, app):
+    """A registry-agent bearer never reaches these routes at all:
+    AuthMiddleware only authenticates registry JWTs on its agent-path
+    allowlist, so on a chat path the token is simply unauthenticated
+    (401). Refusal is the property; the route-level 403 for agent
+    credentials that DO authenticate is pinned by the next test."""
     from httpx import ASGITransport, AsyncClient
 
     from tinyagentos.agent_registry_store import mint_registry_token
@@ -184,6 +189,24 @@ async def test_agent_token_cannot_manage_sessions(client, app):
     token = mint_registry_token(
         cid, priv, user_id="u", framework="claude-code", project_id=None)
 
+    async with AsyncClient(
+        transport=ASGITransport(app=app), base_url="http://test",
+        headers={"Authorization": f"Bearer {token}"},
+    ) as ac:
+        resp = await ac.get(f"/api/chat/agents/{AGENT}/conversations")
+        assert resp.status_code == 401
+        resp = await ac.post(f"/api/chat/agents/{AGENT}/conversations")
+        assert resp.status_code == 401
+
+
+@pytest.mark.asyncio
+async def test_agent_bound_local_token_gets_403(client, app):
+    """A per-agent local token authenticates (via=local_token with the
+    agent name bound), so it reaches the route — which refuses it 403:
+    sessions belong to people, not agents."""
+    from httpx import ASGITransport, AsyncClient
+
+    token = app.state.auth.mint_agent_local_token(AGENT)
     async with AsyncClient(
         transport=ASGITransport(app=app), base_url="http://test",
         headers={"Authorization": f"Bearer {token}"},
