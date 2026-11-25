@@ -242,6 +242,8 @@ bool PackManager::download(const QString &id, QString *error)
     const PackInfo p = m_catalogue.value(id);
     if (m_jobs.contains(id))
         return fail(QStringLiteral("This pack is already downloading."));
+    if (pack(id).installed)
+        return fail(QStringLiteral("This pack is already installed."));
     // file: addresses exist for the tests only; a catalogue from outside can never make the app read a local file
     const bool fileOk = p.url.scheme() == QStringLiteral("file") && qEnvironmentVariableIsSet("TAOS_SURVIVAL_ALLOW_FILE_URLS");
     if (p.url.isEmpty() || !(p.url.scheme() == QStringLiteral("https") || p.url.scheme() == QStringLiteral("http") || fileOk))

@@ -277,6 +277,9 @@ private Q_SLOTS:
         QVERIFY(QFile::exists(pm.packsDir() + u"/good.zim"_s));
         QVERIFY(!QFile::exists(pm.packsDir() + u"/good.zim.part"_s));
         QCOMPARE(pm.verifyInstalled(u"good"_s), VerifyResult::Ok);
+        // an installed pack is not downloaded again over itself
+        QVERIFY(!pm.download(u"good"_s, &err));
+        QVERIFY(err.contains(u"already installed"_s));
     }
     void packs_a_bad_checksum_is_refused_and_nothing_is_kept()
     {

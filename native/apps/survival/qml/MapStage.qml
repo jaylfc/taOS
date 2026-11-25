@@ -54,6 +54,7 @@ FocusScope {
         mapPalette: stage.mapPalette
         fontFamily: Look.family
         labelSize: Look.small
+        reduceMotion: Look.reduceMotion
         selectedMarker: stage.selectedMarker
         Accessible.role: Accessible.Graphic
         Accessible.name: qsTr("Map of %1").arg(stage.engine.name)

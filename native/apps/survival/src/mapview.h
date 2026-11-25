@@ -25,6 +25,7 @@ class MapView : public QQuickPaintedItem
     Q_PROPERTY(int labelSize READ labelSize WRITE setLabelSize NOTIFY paletteChanged)
     Q_PROPERTY(QString selectedMarker READ selectedMarker WRITE setSelectedMarker NOTIFY selectionChanged)
     Q_PROPERTY(bool showMarkers READ showMarkers WRITE setShowMarkers NOTIFY paletteChanged)
+    Q_PROPERTY(bool reduceMotion READ reduceMotion WRITE setReduceMotion NOTIFY paletteChanged)
     Q_PROPERTY(double metersPerPixel READ metersPerPixel NOTIFY viewChanged)
 public:
     explicit MapView(QQuickItem *parent = nullptr);
@@ -46,6 +47,8 @@ public:
     QString selectedMarker() const { return m_selected; }
     void setSelectedMarker(const QString &id) { if (id != m_selected) { m_selected = id; update(); Q_EMIT selectionChanged(); } }
     bool showMarkers() const { return m_showMarkers; }
+    bool reduceMotion() const { return m_reduceMotion; }
+    void setReduceMotion(bool b) { m_reduceMotion = b; Q_EMIT paletteChanged(); }
     void setShowMarkers(bool b) { m_showMarkers = b; update(); Q_EMIT paletteChanged(); }
     double metersPerPixel() const;
 
@@ -81,6 +84,7 @@ private:
     QString m_selected;
     bool m_userMoved = false;
     bool m_showMarkers = true;
+    bool m_reduceMotion = false;
     QVariantAnimation m_fly;
     double m_flyFromLon = 0, m_flyFromLat = 0, m_flyFromZoom = 0, m_flyToLon = 0, m_flyToLat = 0, m_flyToZoom = 0;
 };

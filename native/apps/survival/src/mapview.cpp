@@ -170,7 +170,7 @@ void MapView::flyTo(double lon, double lat, double zoom)
     m_flyFromLon = m_lon; m_flyFromLat = m_lat; m_flyFromZoom = m_zoom;
     m_flyToLon = lon; m_flyToLat = std::clamp(lat, -85.0, 85.0); m_flyToZoom = std::clamp(zoom, minZoom(), maxZoom());
     m_fly.stop();
-    if (qEnvironmentVariableIsSet("TAOS_REDUCE_MOTION")) {
+    if (m_reduceMotion) {   // the person asked for reduced motion: jump, do not glide
         m_lon = m_flyToLon; m_lat = m_flyToLat; m_zoom = m_flyToZoom;
         update();
         Q_EMIT viewChanged();
