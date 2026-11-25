@@ -250,3 +250,64 @@ async def test_the_socket_and_its_directory_are_reachable_by_another_account(env
         assert ((sockdir / "s.sock").stat().st_mode & 0o006) == 0o006
     finally:
         await svc.stop()
+
+
+def _owner_file(d, who):
+    f = d / "owner-linux-user"
+    f.write_text(f"{who}\n")
+    f.chmod(0o644)
+    return f
+
+
+@pytest.mark.asyncio
+async def test_the_install_owners_linux_account_is_linked_with_no_link_command(env):
+    d, auth = env
+    _two_people(auth)
+    owner = _owner_file(d, ME)
+    svc = DesktopSessionService(auth, d / "none", d / "s.sock", trusted_uid=ME, owner_file=owner)
+    await svc.start()
+    try:
+        assert (await _ask(d / "s.sock", {"op": "session"}))["username"] == "alice"  # the primary person, not bob
+        owner.chmod(0o666)  # a file others can write is ignored
+        assert (await _ask(d / "s.sock", {"op": "session"})) == {"error": "unlinked"}
+    finally:
+        await svc.stop()
+
+
+@pytest.mark.asyncio
+async def test_the_owner_file_never_links_another_account(env):
+    d, auth = env
+    owner = _owner_file(d, 4242)
+    svc = DesktopSessionService(auth, d / "none", d / "s.sock", trusted_uid=ME, owner_file=owner, peer_uid_fn=lambda s: 2001)
+    await svc.start()
+    try:
+        assert (await _ask(d / "s.sock", {"op": "session"})) == {"error": "unlinked"}
+    finally:
+        await svc.stop()
+
+
+@pytest.mark.asyncio
+async def test_an_offline_only_install_gets_its_session_with_no_network_and_no_online_account(env, monkeypatch):
+    """The desktop credential is purely local: Linux uid -> local taOS person on this controller.
+    No taOSgo / online account exists in this setup and every non-unix socket is refused."""
+    import socket as _socket
+
+    real_connect = _socket.socket.connect
+
+    def only_unix(self, addr):
+        if self.family != _socket.AF_UNIX:
+            raise OSError("network is off in this test")
+        return real_connect(self, addr)
+
+    monkeypatch.setattr(_socket.socket, "connect", only_unix)
+    monkeypatch.setattr(_socket, "getaddrinfo", lambda *a, **k: (_ for _ in ()).throw(OSError("network is off in this test")))
+    d, auth = env
+    svc = DesktopSessionService(auth, d / "none", d / "s.sock", trusted_uid=ME, owner_file=_owner_file(d, ME))
+    await svc.start()
+    try:
+        first = await _ask(d / "s.sock", {"op": "session"})
+        assert first["username"] == "alice" and auth.validate_session(first["session"], user_agent=DESKTOP_USER_AGENT)
+        again = await _ask(d / "s.sock", {"op": "session"})  # renewal, still offline
+        assert again["session"] != first["session"] and auth.validate_session(again["session"], user_agent=DESKTOP_USER_AGENT)
+    finally:
+        await svc.stop()

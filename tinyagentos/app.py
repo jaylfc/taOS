@@ -1789,6 +1789,7 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
                 auth_manager,
                 os.environ.get("TAOS_ACCOUNT_LINKS", desktop_sso.DEFAULT_LINKS),
                 os.environ.get("TAOS_DESKTOP_SSO_SOCKET", desktop_sso.DEFAULT_SOCKET),
+                owner_file=os.environ.get("TAOS_OWNER_LINUX_FILE", desktop_sso.DEFAULT_OWNER_FILE),
             )
             if _sso.socket_path.parent.is_dir():  # no socket directory (not a systemd install): nothing to serve
                 await _sso.start()
