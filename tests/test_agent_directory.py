@@ -385,6 +385,29 @@ class TestBioSanitisingCategories:
         finally:
             await store.close()
 
+    async def test_nfkc_applies_after_control_removal(self, tmp_path):
+        # A C0 control wedged between a base letter and a combining mark
+        # blocks composition exactly like a format character does: the
+        # control must be gone before the final NFKC pass, or the pair
+        # is stored decomposed.
+        assert await self._stored_bio(tmp_path, "A\n\u030a") == "\u00c5"
+
+    async def test_cap_counts_form_after_control_removal(self, tmp_path):
+        store = AgentRegistryStore(tmp_path / "reg.db")
+        await store.init()
+        try:
+            rec = await store.register(framework="hermes", display_name="Cap4 Agent")
+            # 101 x (A + newline + combining ring): 202 code points if the
+            # control comes out only after the final NFKC pass, 101 once
+            # the removal happens first and the pass composes each pair.
+            updated = await store.set_bio(
+                rec["canonical_id"], ("A\n\u030a") * 101
+            )
+            assert updated is not None
+            assert updated["bio"] == "\u00c5" * 101
+        finally:
+            await store.close()
+
     async def test_cap_applies_after_nfkc(self, tmp_path):
         store = AgentRegistryStore(tmp_path / "reg.db")
         await store.init()
@@ -424,8 +447,8 @@ async def _visibility_world(app, member_uid):
     """Two session people + a third owner, three agents, three projects.
 
     - admin owns agent_admin (projects: shared, admin-only)
-    - member owns agent_member (projects: shared); member is a human
-      member of the shared project only
+    - member owns agent_member and the shared project; the admin's
+      agent is sponsored into the shared project
     - person-x (no session) owns agent_outsider (projects: outsider-only)
     """
     registry = app.state.agent_registry
@@ -435,7 +458,7 @@ async def _visibility_world(app, member_uid):
     admin_uid = app.state.auth.find_user("admin")["id"]
 
     shared = await pstore.create_project(
-        "Shared Proj", "shared-proj", admin_uid, user_id=admin_uid
+        "Shared Proj", "shared-proj", member_uid, user_id=member_uid
     )
     admin_only = await pstore.create_project(
         "Admin Only Proj", "admin-only-proj", admin_uid, user_id=admin_uid
@@ -443,8 +466,6 @@ async def _visibility_world(app, member_uid):
     outsider_only = await pstore.create_project(
         "Outsider Proj", "outsider-proj", "person-x", user_id="person-x"
     )
-    await pstore.add_member(shared["id"], member_uid, "human")
-
     cid_admin, _ = await _register_agent(
         app, display_name="Keeper Agent", handle="@keeperagent", user_id=admin_uid
     )
@@ -548,6 +569,51 @@ class TestDirectoryVisibility:
         entries = {e["canonical_id"]: e for e in resp.json()["agents"]}
         assert world["cid_outsider"] not in entries
         assert "outsider secret bio" not in resp.text
+
+    async def test_human_membership_via_route_is_contact_keyed(
+        self, directory_client
+    ):
+        """Human membership written through the REAL route is keyed by
+        CONTACT id (``hub:<fingerprint>``) -- the form routes/projects.py
+        and the peer collab-accept path write -- never by a session user
+        id, and the two identifier spaces do not map onto each other.
+        So a contact-keyed row grants a session person nothing, and a
+        human row planted under the person's own user id (the route
+        takes the contact_id verbatim) grants nothing either: a
+        person's directory project set is the projects they OWN."""
+        app = directory_client._app
+        member = await _member_client(app)
+        world = await _visibility_world(app, member._member_uid)
+        pstore = app.state.project_store
+
+        # Through the real membership route, in the collab form.
+        resp = await directory_client.post(
+            f"/api/projects/{world['admin_only']}/members",
+            json={"mode": "human", "contact_id": "hub:0123abcdpeerfp"},
+        )
+        assert resp.status_code == 200, resp.text
+        row = await pstore.get_member(
+            world["admin_only"], "hub:0123abcdpeerfp"
+        )
+        assert row is not None and row["member_kind"] == "human"
+
+        async with member:
+            resp = await member.get("/api/agents/directory")
+            entries = {e["canonical_id"]: e for e in resp.json()["agents"]}
+            # Not the member's membership: the admin's agent still shows
+            # only the project the member actually owns.
+            assert entries[world["cid_admin"]]["projects"] == [world["shared"]]
+
+            # Planted under the member's own user id via the same route:
+            # still not a membership -- session ids are not contact ids.
+            resp = await directory_client.post(
+                f"/api/projects/{world['admin_only']}/members",
+                json={"mode": "human", "contact_id": member._member_uid},
+            )
+            assert resp.status_code == 200, resp.text
+            resp = await member.get("/api/agents/directory")
+            entries = {e["canonical_id"]: e for e in resp.json()["agents"]}
+            assert entries[world["cid_admin"]]["projects"] == [world["shared"]]
 
     async def test_native_agent_caller_gets_the_agent_view(self, directory_client):
         """The middleware stamps a native agent's OWNER as user_id; the

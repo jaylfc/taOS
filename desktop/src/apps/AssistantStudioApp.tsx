@@ -164,7 +164,14 @@ export function AssistantStudioApp({ windowId: _windowId }: { windowId: string }
     (async () => {
       try {
         const res = await fetch("/api/agents");
-        const data = res.ok ? await res.json() : [];
+        if (!res.ok) {
+          // A failed lookup must not reach the PA sync below: with an
+          // empty agent list the stored pick resolves to "" and the
+          // sync would wipe a valid per-person server preference while
+          // localStorage still holds the selection.
+          return;
+        }
+        const data = await res.json();
         const list: Agent[] = Array.isArray(data) ? data : data.agents || [];
         if (!alive) return;
         setAgents(list);
