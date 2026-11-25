@@ -247,7 +247,8 @@ fn radio_link(texts: &[&str], then_drop: bool) -> FakeLink {
     let l = FakeLink::new("/dev/ttyACM0");
     let mut first = frame(&mt_fixture("my_info_heltec_v2_1"));
     first.extend(frame(&mt_fixture("node_info_heltec_v2_1")));
-    l.reply_on_write(&first);
+    // the radio introduces itself before anything else
+    l.push(&first);
     for t in texts {
         let name = if *t == "a" {
             "text_broadcast"
