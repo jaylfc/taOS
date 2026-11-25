@@ -34,7 +34,8 @@ add_library(taosoverview_core STATIC
     src/packing.cpp src/packing.h
     src/swayipc.cpp src/swayipc.h
     src/control.cpp src/control.h
-    src/appinfo.cpp src/appinfo.h)
+    src/appinfo.cpp src/appinfo.h
+    src/spaces.cpp src/spaces.h)
 target_include_directories(taosoverview_core PUBLIC src)
 target_link_libraries(taosoverview_core PUBLIC taos_common taos_window_core Qt6::Core Qt6::Gui Qt6::Network)
 target_compile_definitions(taosoverview_core PUBLIC TAOS_OVERVIEW_VERSION="${PROJECT_VERSION}")
@@ -75,3 +76,4 @@ taos_overview_test(test_swaytree)
 taos_overview_test(test_windowlist)
 taos_overview_test(test_packing)
 taos_overview_test(test_ipc)
+taos_overview_test(test_spaces)
