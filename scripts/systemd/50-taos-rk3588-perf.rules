@@ -1,0 +1,18 @@
+// taOS - Settings performance-mode toggle for taos-rk3588-perf.service (#361).
+//
+// The controller runs as the unprivileged `taos` user, and the Settings
+// PUT /api/settings/rk3588-performance handler flips performance mode with
+// `systemctl enable|disable --now taos-rk3588-perf.service`. Under systemd's
+// default polkit policy that requires an interactive admin auth the
+// controller cannot give, so install-server.sh installs this rule next to
+// the unit: exactly this one unit, exactly the two systemd1 actions the
+// toggle needs (manage-units for the --now start/stop, manage-unit-files
+// for the enable/disable), exactly the controller user. Nothing else.
+polkit.addRule(function(action, subject) {
+    if ((action.id == "org.freedesktop.systemd1.manage-units" ||
+         action.id == "org.freedesktop.systemd1.manage-unit-files") &&
+        action.lookup("unit") == "taos-rk3588-perf.service" &&
+        subject.user == "taos") {
+        return polkit.Result.YES;
+    }
+});

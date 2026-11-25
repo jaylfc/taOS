@@ -848,6 +848,17 @@ install_rk3588_perf_if_needed() {
     fi
     log "installing /etc/systemd/system/taos-rk3588-perf.service"
     $local_sudo install -m 0644 "$INSTALL_DIR/$perf_unit" /etc/systemd/system/taos-rk3588-perf.service
+    # The Settings toggle flips this unit as the unprivileged controller
+    # user (`taos`); under default polkit that is an interactive admin
+    # auth, so ship the unit-scoped rule that lets exactly that user
+    # manage exactly this unit (see the rule file for the scope).
+    local perf_polkit="scripts/systemd/50-taos-rk3588-perf.rules"
+    if [[ -f "$INSTALL_DIR/$perf_polkit" ]]; then
+        log "installing /etc/polkit-1/rules.d/50-taos-rk3588-perf.rules"
+        $local_sudo install -D -m 0644 "$INSTALL_DIR/$perf_polkit" /etc/polkit-1/rules.d/50-taos-rk3588-perf.rules
+    else
+        warn "50-taos-rk3588-perf.rules not found in repo - Settings will show perf state but cannot toggle it"
+    fi
     $local_sudo systemctl daemon-reload
     $local_sudo systemctl enable taos-rk3588-perf.service
     log "taos-rk3588-perf.service installed — NPU governors will be set on boot"
