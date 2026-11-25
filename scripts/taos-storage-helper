@@ -42,17 +42,17 @@ ALLOWED_COMMANDS = {
     "mount-fs",
     "unmount-fs",
     "write-crypttab",
-    "write-fstab",
     "write-mount-unit",
     "remove-mount-unit",
     "get-mount-info",
 }
 
 
-def run_cmd(cmd: list[str], check: bool = True, capture: bool = True) -> subprocess.CompletedProcess:
+def run_cmd(cmd: list[str], check: bool = True, capture: bool = True, input_data: bytes | str | None = None) -> subprocess.CompletedProcess:
     """Run a command and return result."""
     logger.info("Running: %s", " ".join(cmd))
-    result = subprocess.run(cmd, capture_output=capture, text=True)
+    use_text = input_data is None or isinstance(input_data, str)
+    result = subprocess.run(cmd, capture_output=capture, text=use_text, input=input_data)
     if result.stdout:
         logger.debug("stdout: %s", result.stdout.strip())
     if result.stderr:
@@ -84,7 +84,6 @@ def cmd_luks_format(part_path: str, name: str, key_file: str) -> int:
     """Format partition as LUKS2 with random key file."""
     # Generate random key
     key = secrets.token_bytes(64)
-    key_b64 = secrets.token_urlsafe(64)  # Actually just use raw bytes
 
     # Write key file (root-only, 0400)
     key_dir = Path(key_file).parent
@@ -96,7 +95,7 @@ def cmd_luks_format(part_path: str, name: str, key_file: str) -> int:
     run_cmd([
         "cryptsetup", "luksFormat", "--type", "luks2",
         "--key-file", "-", part_path
-    ], capture=False, check=True, input=key)
+    ], capture=False, check=True, input_data=key)
 
     # Add key to LUKS (it's already the primary key)
     logger.info("LUKS2 formatted: %s", part_path)
@@ -193,13 +192,11 @@ def cmd_write_mount_unit(name: str, device: str, mountpoint: str, encrypted: boo
     unit_name = f"srv-taos-storage-{name.replace('-', '\\x2d')}.mount"
     unit_path = Path(f"/etc/systemd/system/{unit_name}")
 
-    # Escape mountpoint for systemd
-    mp_escaped = mountpoint.replace("/", "\\x2f")
-
-    content = f"""[Unit]
+    # Build unit content conditionally
+    if encrypted:
+        content = f"""[Unit]
 Description=taOS storage area {name}
 After=systemd-udev-settle.service
-{'After=' + f'srv-taos-storage-{name.replace("-", "\\x2d")}.mount' if False else ''}
 Requires=systemd-cryptsetup@{name}.service
 After=systemd-cryptsetup@{name}.service
 
@@ -212,14 +209,20 @@ Options=defaults,nofail,x-systemd.requires=systemd-cryptsetup@{name}.service
 [Install]
 WantedBy=multi-user.target
 """
-    if not encrypted:
-        content = content.replace(
-            "Requires=systemd-cryptsetup@{name}.service\nAfter=systemd-cryptsetup@{name}.service\n",
-            ""
-        ).replace(
-            ",x-systemd.requires=systemd-cryptsetup@{name}.service",
-            ""
-        )
+    else:
+        content = f"""[Unit]
+Description=taOS storage area {name}
+After=systemd-udev-settle.service
+
+[Mount]
+What={use_device}
+Where={mountpoint}
+Type=ext4
+Options=defaults,nofail
+
+[Install]
+WantedBy=multi-user.target
+"""
 
     unit_path.write_text(content)
     run_cmd(["systemctl", "daemon-reload"], check=False)

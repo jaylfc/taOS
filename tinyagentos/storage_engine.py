@@ -505,7 +505,6 @@ ALLOWED_STORAGE_COMMANDS = {
     "mount-fs",
     "unmount-fs",
     "write-crypttab",
-    "write-fstab",
     "write-mount-unit",
     "remove-mount-unit",
     "get-mount-info",
