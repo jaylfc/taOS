@@ -59,6 +59,11 @@ inline bool writeZim(const QString &file)
             "<img src=\"../I/drop.png\" width=\"1\" height=\"1\"><img src=\"http://evil.example/x.png\"></body></html>"));
         c.addItem(std::make_shared<ZimItem>("fire", "Fire lighting", "text/html",
             "<html><body><h1>Fire lighting</h1><p>A bow drill needs dry wood and patience.</p></body></html>"));
+        {
+            std::string big = "<html><body><h1>Huge</h1>";
+            for (int i = 0; i < 300000; ++i) big += "<p>word</p>";
+            c.addItem(std::make_shared<ZimItem>("huge", "Huge article", "text/html", big + "</body></html>"));
+        }
         c.addItem(std::make_shared<ZimItem>("I/drop.png", "drop", "image/png", std::string(tinyPng().constData(), size_t(tinyPng().size())), false));
         c.addMetadata("Title", "Test library");
         c.addMetadata("Description", "A pack for the tests");

@@ -18,6 +18,7 @@
 #include "statestore.h"
 #include "socketmeshbackend.h"
 #include "takengine.h"
+#include "articlehtml.h"
 #include "zimarchive.h"
 
 #ifdef TAOS_SURVIVAL_POSITIONING
@@ -122,6 +123,7 @@ Q_SIGNALS:
     void articleChanged();
 private:
     void show(const QString &path, bool record);
+    void apply(const QString &path, bool record, const QString &requested, const ZimEntry &e, const SanitizedArticle &s);
     PacksEngine *m_packs;
     std::shared_ptr<ZimArchive> m_zim;
     QString m_packId, m_query, m_error;
@@ -129,6 +131,8 @@ private:
     QVariantList m_results;
     QStringList m_history;
     int m_hpos = -1;
+    quint64 m_request = 0;   // only the newest article request may show its result
+    QFutureWatcher<void> m_pending;
 };
 
 class MapEngine : public QObject

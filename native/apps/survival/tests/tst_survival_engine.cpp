@@ -235,6 +235,65 @@ private Q_SLOTS:
         QVERIFY(r.html.contains(u"shown"_s));
         QCOMPARE(sanitizeArticle("<h1>Only heading</h1>", u"pk"_s, u"A/x"_s).title, u"Only heading"_s);
     }
+    static int maxDepth(const QString &html)
+    {
+        int d = 0, best = 0;
+        QRegularExpressionMatchIterator it = QRegularExpression(QStringLiteral("<(/?)([a-z0-9]+)[^>]*>")).globalMatch(html);
+        static const QStringList voids{u"br"_s, u"hr"_s, u"img"_s};
+        while (it.hasNext()) {
+            const auto m = it.next();
+            if (voids.contains(m.captured(2))) continue;
+            d += m.captured(1).isEmpty() ? 1 : -1;
+            best = qMax(best, d);
+        }
+        return best;
+    }
+    static int maxTableDepth(const QString &html)
+    {
+        int d = 0, best = 0;
+        QRegularExpressionMatchIterator it = QRegularExpression(QStringLiteral("<(/?)table\\b")).globalMatch(html);
+        while (it.hasNext()) { d += it.next().captured(1).isEmpty() ? 1 : -1; best = qMax(best, d); }
+        return best;
+    }
+    void sanitiser_caps_element_and_table_nesting()
+    {
+        QByteArray deep, tables, divs;
+        for (int i = 0; i < 3000; ++i) deep += "<table><tr><td>";
+        deep += "x";
+        for (int i = 0; i < 100; ++i) tables += "<table><tr><td>";
+        tables += "inner";
+        for (int i = 0; i < 5000; ++i) divs += "<div>";
+        divs += "text";
+        for (const QByteArray &in : {deep, tables, divs}) {
+            QElapsedTimer t; t.start();
+            const auto r = sanitizeArticle(in, u"pk"_s, u"A/x"_s);
+            QVERIFY2(t.elapsed() < 3000, "sanitising nested markup took too long");
+            QVERIFY2(maxDepth(r.html) <= 34, qPrintable(QString::number(maxDepth(r.html))));
+            QVERIFY2(maxTableDepth(r.html) <= 3, qPrintable(QString::number(maxTableDepth(r.html))));
+            QVERIFY(r.html.contains(u"x"_s) || r.html.contains(u"inner"_s) || r.html.contains(u"text"_s));   // the words stay
+        }
+        // a table row or cell with no table around it is dropped, its text stays
+        const auto loose = sanitizeArticle("<tr><td>cell</td></tr>", u"pk"_s, u"A/x"_s);
+        QVERIFY(!loose.html.contains(u"<td"_s) && loose.html.contains(u"cell"_s));
+    }
+    void sanitiser_entities_are_linear_time()
+    {
+        QElapsedTimer t; t.start();
+        const QString big = QString(u"&#"_s).repeated(200000);
+        const QString out = decodeHtmlEntities(big);
+        QCOMPARE(out, big);   // nothing decodes, nothing is lost
+        QVERIFY2(t.elapsed() < 1000, qPrintable(QString::number(t.elapsed())));
+        QCOMPARE(decodeHtmlEntities(u"a &amp; b &#65; &#x42; &bogus; &"_s), u"a & b A B &bogus; &"_s);
+        t.restart();
+        sanitizeArticle(QByteArray("<p>") + QByteArray("&#").repeated(200000) + "</p>", u"pk"_s, u"A/x"_s);
+        QVERIFY(t.elapsed() < 1500);
+    }
+    void sanitiser_output_is_capped_and_says_so()
+    {
+        const auto r = sanitizeArticle(QByteArray("<p>word</p>").repeated(400000), u"pk"_s, u"A/x"_s);
+        QVERIFY(r.truncated);
+        QVERIFY(r.html.size() <= kMaxArticleHtml + 64);
+    }
     void sanitiser_real_article_from_a_zim()
     {
         const QString f = path(u"lib2.zim"_s);
@@ -357,6 +416,24 @@ private Q_SLOTS:
         writeFile(path(u"srv/readme.txt"_s), "x");
         QVERIFY(!pm.importFile(path(u"srv/readme.txt"_s), QString(), &err));
     }
+    void packs_download_stops_at_the_catalogue_size()
+    {
+        const QString src = path(u"srv/big.zim"_s);
+        writeFile(src, QByteArray(400 * 1024, 'x'));
+        QTemporaryDir d;
+        PackManager pm(d.path());
+        // the catalogue says 1 KB; the server sends 400 KB: the transfer is cut, and nothing is kept
+        QVERIFY(pm.loadCatalogue(QJsonDocument(QJsonObject{{u"packs"_s, QJsonArray{QJsonObject{{u"id"_s, u"big"_s}, {u"title"_s, u"big"_s},
+            {u"kind"_s, u"zim"_s}, {u"file"_s, u"big.zim"_s}, {u"url"_s, QUrl::fromLocalFile(src).toString()}, {u"bytes"_s, 1024},
+            {u"sha256"_s, PackManager::sha256Of(src)}, {u"licence"_s, u"CC0-1.0"_s}}}}}).toJson()));
+        QSignalSpy done(&pm, &PackManager::finished);
+        QVERIFY(pm.download(u"big"_s));
+        QVERIFY(done.wait(8000));
+        QVERIFY(!done.first().at(1).toBool());
+        QVERIFY(done.first().at(2).toString().contains(u"larger"_s));
+        QVERIFY(!QFile::exists(pm.packsDir() + u"/big.zim"_s));
+        QVERIFY(!QFile::exists(pm.packsDir() + u"/big.zim.part"_s));
+    }
     void packs_refuse_to_start_without_checksum_licence_or_address()
     {
         QTemporaryDir d;
@@ -373,6 +450,14 @@ private Q_SLOTS:
         QVERIFY(pm.loadCatalogue(catalogue(u"noaddr"_s, u"x.zim"_s, QString(), QByteArray(64, 'd'))));
         QVERIFY(!pm.download(u"noaddr"_s, &err));
         QVERIFY(!pm.download(u"unknown"_s, &err));
+        // plain http is never used for a pack
+        QVERIFY(pm.loadCatalogue(catalogue(u"plain"_s, u"p.zim"_s, u"http://example.org/p.zim"_s, QByteArray(64, 'a'))));
+        QVERIFY(!pm.download(u"plain"_s, &err));
+        QVERIFY(err.contains(u"https"_s));
+        // a pack with no size cannot be capped, so it is not downloaded
+        QVERIFY(pm.loadCatalogue(QJsonDocument(QJsonObject{{u"packs"_s, QJsonArray{QJsonObject{{u"id"_s, u"nosize"_s}, {u"kind"_s, u"zim"_s},
+            {u"file"_s, u"s.zim"_s}, {u"url"_s, u"https://example.org/s.zim"_s}, {u"sha256"_s, QString(64, QLatin1Char('a'))}}}}}).toJson()));
+        QVERIFY(!pm.download(u"nosize"_s, &err));
         // a file: address works only for the tests
         qunsetenv("TAOS_SURVIVAL_ALLOW_FILE_URLS");
         QVERIFY(pm.loadCatalogue(catalogue(u"f"_s, u"f.zim"_s, u"file:///etc/passwd"_s, QByteArray(64, 'e'))));

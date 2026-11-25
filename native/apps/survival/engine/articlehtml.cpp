@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 #include "articlehtml.h"
 
+#include <QElapsedTimer>
 #include <QHash>
 #include <QRegularExpression>
 #include <QSet>
@@ -80,6 +81,7 @@ struct Frame
     QString name;
     QString writeAs;   // the tag that was written, empty when none
     bool skip = false;
+    bool isTable = false;
 };
 
 bool isSpace(QChar c) { return c == u' ' || c == u'\t' || c == u'\n' || c == u'\r' || c == u'\f'; }
@@ -157,8 +159,11 @@ QString decodeHtmlEntities(const QString &s)
     out.reserve(s.size());
     for (qsizetype i = 0; i < s.size(); ++i) {
         if (s[i] != u'&') { out.append(s[i]); continue; }
-        const qsizetype semi = s.indexOf(u';', i + 1);
-        if (semi < 0 || semi - i > 12) { out.append(s[i]); continue; }
+        // the ';' must be within 12 characters: a longer search would make "&#&#&#..." quadratic
+        qsizetype semi = -1;
+        for (qsizetype k = i + 1; k < s.size() && k <= i + 12; ++k)
+            if (s[k] == u';') { semi = k; break; }
+        if (semi < 0) { out.append(s[i]); continue; }
         const QString name = s.mid(i + 1, semi - i - 1);
         QString rep;
         bool ok = false;
@@ -185,7 +190,8 @@ QString resolvePackPath(const QString &articlePath, const QString &referenceIn)
     if (ref.isEmpty() || ref.startsWith(u'#') || ref.startsWith(u'?') || ref.startsWith(QStringLiteral("//")) || hasScheme(ref)
         || ref.contains(u'\\'))
         return {};
-    const qsizetype cut = ref.indexOf(QRegularExpression(QStringLiteral("[?#]")));
+    static const QRegularExpression queryOrFragment(QStringLiteral("[?#]"));
+    const qsizetype cut = ref.indexOf(queryOrFragment);
     if (cut >= 0)
         ref.truncate(cut);
     if (ref.isEmpty())
@@ -228,6 +234,10 @@ SanitizedArticle sanitizeArticle(const QByteArray &htmlBytes, const QString &pac
     QString out;
     std::vector<Frame> stack;
     int skipDepth = 0;
+    int writtenDepth = 0, writtenTables = 0;   // open elements that were written, and tables among them
+    QElapsedTimer budget;
+    budget.start();
+    int tick = 0;
     bool inPre = false;
     QString firstHeading;
     bool capturingHeading = false;
@@ -241,6 +251,8 @@ SanitizedArticle sanitizeArticle(const QByteArray &htmlBytes, const QString &pac
             if (f.skip)
                 --skipDepth;
             if (!f.writeAs.isEmpty() && skipDepth == 0) {
+                --writtenDepth;
+                if (f.isTable) --writtenTables;
                 out += QStringLiteral("</") + f.writeAs + QLatin1Char('>');
                 if (f.writeAs == QStringLiteral("pre"))
                     inPre = false;
@@ -253,7 +265,7 @@ SanitizedArticle sanitizeArticle(const QByteArray &htmlBytes, const QString &pac
     const qsizetype n = in.size();
     qsizetype i = 0;
     while (i < n) {
-        if (out.size() > kMaxArticleHtml) {
+        if (out.size() > kMaxArticleHtml || ((++tick & 1023) == 0 && budget.elapsed() > kSanitizeBudgetMs)) {
             res.truncated = true;
             break;
         }
@@ -366,19 +378,29 @@ SanitizedArticle sanitizeArticle(const QByteArray &htmlBytes, const QString &pac
 
         if (drop) {
             if (!isVoid && !selfClose) {
-                stack.push_back({name, QString(), true});
+                stack.push_back({name, QString(), true, false});
                 ++skipDepth;
             }
             continue;
         }
         if (skipDepth > 0) {
             if (!isVoid && !selfClose)
-                stack.push_back({name, QString(), false});
+                stack.push_back({name, QString(), false, false});
             continue;
         }
 
         QString write = tagMap().value(name);
         QString tag;
+        // nesting caps: past them the tag goes and its content stays
+        if (!write.isEmpty() && write != QStringLiteral("br") && write != QStringLiteral("hr") && write != QStringLiteral("img")
+            && writtenDepth >= kMaxElementDepth)
+            write.clear();
+        const bool isTableTag = write == QStringLiteral("table");
+        if (isTableTag && writtenTables >= kMaxTableDepth)
+            write.clear();
+        if ((write == QStringLiteral("tr") || write == QStringLiteral("td") || write == QStringLiteral("th") || write == QStringLiteral("thead")
+             || write == QStringLiteral("tbody") || write == QStringLiteral("tfoot")) && writtenTables == 0)
+            write.clear();   // a row or cell with no table around it
         if (write == QStringLiteral("a")) {
             const QString target = resolvePackPath(articlePath, attr("href"));
             const QString raw = normalised(decodeHtmlEntities(attr("href")));
@@ -426,12 +448,14 @@ SanitizedArticle sanitizeArticle(const QByteArray &htmlBytes, const QString &pac
         }
         if (!write.isEmpty()) {
             out += tag;
+            ++writtenDepth;
+            if (isTableTag) ++writtenTables;
             if (write == QStringLiteral("pre"))
                 inPre = true;
             if (write.size() == 2 && write[0] == u'h' && write[1].isDigit() && firstHeading.isEmpty())
                 capturingHeading = true;
         }
-        stack.push_back({name, write, false});
+        stack.push_back({name, write, false, isTableTag && !write.isEmpty()});
     }
     closeFrameTo(0);
     (void)inPre;

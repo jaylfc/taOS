@@ -253,20 +253,55 @@ void LibraryEngine::show(const QString &path, bool record)
 {
     if (!m_zim)
         return;
-    const ZimEntry e = m_zim->entry(path);
+    // Reading the entry and rebuilding its HTML happen off the window's thread: a heavy article never freezes the app.
+    // Only the newest request may show its result.
+    const quint64 req = ++m_request;
+    QVariantMap loading;
+    loading[u"kind"_s] = u"loading"_s;
+    loading[u"title"_s] = path;
+    m_article = loading;
+    Q_EMIT articleChanged();
+    const std::shared_ptr<ZimArchive> zim = m_zim;
+    const QString packId = m_packId;
+    auto *w = new QFutureWatcher<QPair<ZimEntry, SanitizedArticle>>(this);
+    connect(w, &QFutureWatcher<QPair<ZimEntry, SanitizedArticle>>::finished, this, [this, w, req, path, record] {
+        const auto r = w->result();
+        w->deleteLater();
+        if (req != m_request)
+            return;
+        apply(path, record, path, r.first, r.second);
+    });
+    w->setFuture(QtConcurrent::run([zim, packId, path] {
+        ZimEntry e = zim->entry(path);
+        SanitizedArticle s;
+        if (e.found && e.mimeType.startsWith(u"text/html"_s)) {
+            if (e.data.size() > 8 * 1024 * 1024) {
+                s.truncated = true;   // far beyond what can be shown: do not even parse it
+            } else {
+                s = sanitizeArticle(e.data, packId, e.path);
+            }
+        }
+        return QPair<ZimEntry, SanitizedArticle>(e, s);
+    }));
+}
+
+void LibraryEngine::apply(const QString &, bool record, const QString &requested, const ZimEntry &e, const SanitizedArticle &s)
+{
     QVariantMap a;
-    a[u"requested"_s] = path;
+    a[u"requested"_s] = requested;
     if (!e.found) {
         a[u"kind"_s] = u"missing"_s;
-        a[u"title"_s] = path;
+        a[u"title"_s] = requested;
     } else if (e.mimeType.startsWith(u"text/html"_s)) {
-        const SanitizedArticle s = sanitizeArticle(e.data, m_packId, e.path);
-        a[u"kind"_s] = u"article"_s;
         a[u"title"_s] = !s.title.isEmpty() ? s.title : e.title;
-        a[u"html"_s] = s.html;
         a[u"path"_s] = e.path;
-        a[u"blocked"_s] = s.blockedRemote;
-        a[u"truncated"_s] = s.truncated;
+        if (s.truncated) {
+            a[u"kind"_s] = u"toolarge"_s;   // never a half article: say so
+        } else {
+            a[u"kind"_s] = u"article"_s;
+            a[u"html"_s] = s.html;
+            a[u"blocked"_s] = s.blockedRemote;
+        }
     } else if (e.mimeType.startsWith(u"image/"_s)) {
         a[u"kind"_s] = u"image"_s;
         a[u"title"_s] = e.title.isEmpty() ? e.path : e.title;
