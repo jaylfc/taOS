@@ -23,6 +23,8 @@ class UserMemoryStore(BaseStore):
         title TEXT DEFAULT '',
         content TEXT NOT NULL,
         metadata TEXT DEFAULT '{}',
+        turn_owner TEXT DEFAULT NULL,
+        channel_type TEXT DEFAULT 'channel',
         created_at REAL NOT NULL
     );
     CREATE INDEX IF NOT EXISTS idx_um_user ON user_memory_chunks(user_id, collection);
@@ -48,14 +50,16 @@ class UserMemoryStore(BaseStore):
         title: str = "",
         collection: str = "snippets",
         metadata: dict | None = None,
+        turn_owner: str | None = None,
+        channel_type: str = "channel",
     ) -> str:
         assert self._db is not None
         h = hashlib.sha256(
             f"{user_id}|{collection}|{content}".encode()
         ).hexdigest()[:16]
         await self._db.execute(
-            "INSERT OR REPLACE INTO user_memory_chunks (hash, user_id, collection, title, content, metadata, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
-            (h, user_id, collection, title, content, json.dumps(metadata or {}), time.time()),
+            "INSERT OR REPLACE INTO user_memory_chunks (hash, user_id, collection, title, content, metadata, turn_owner, channel_type, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (h, user_id, collection, title, content, json.dumps(metadata or {}), turn_owner, channel_type, time.time()),
         )
         await self._db.execute(
             "INSERT OR REPLACE INTO user_memory_fts (hash, title, content) VALUES (?, ?, ?)",
@@ -70,6 +74,8 @@ class UserMemoryStore(BaseStore):
         query: str,
         collection: str | None = None,
         limit: int = 20,
+        turn_owner: str | None = None,
+        channel_type: str | None = None,
     ) -> list[dict]:
         assert self._db is not None
         # Wrap as a quoted phrase: double internal quotes first, then wrap the
@@ -87,6 +93,12 @@ class UserMemoryStore(BaseStore):
         if collection:
             sql += " AND c.collection = ?"
             params.append(collection)
+        if turn_owner is not None:
+            sql += " AND c.turn_owner = ?"
+            params.append(turn_owner)
+        if channel_type is not None:
+            sql += " AND c.channel_type = ?"
+            params.append(channel_type)
         sql += " ORDER BY c.created_at DESC LIMIT ?"
         params.append(limit)
 
@@ -103,6 +115,12 @@ class UserMemoryStore(BaseStore):
             if collection:
                 like_sql += " AND collection = ?"
                 like_params.append(collection)
+            if turn_owner is not None:
+                like_sql += " AND turn_owner = ?"
+                like_params.append(turn_owner)
+            if channel_type is not None:
+                like_sql += " AND channel_type = ?"
+                like_params.append(channel_type)
             like_sql += " ORDER BY created_at DESC LIMIT ?"
             like_params.append(limit)
             cursor = await self._db.execute(like_sql, like_params)
@@ -126,6 +144,8 @@ class UserMemoryStore(BaseStore):
         collection: str | None = None,
         limit: int = 50,
         offset: int = 0,
+        turn_owner: str | None = None,
+        channel_type: str | None = None,
     ) -> list[dict]:
         assert self._db is not None
         sql = "SELECT hash, collection, title, content, metadata, created_at FROM user_memory_chunks WHERE user_id = ?"
@@ -133,6 +153,12 @@ class UserMemoryStore(BaseStore):
         if collection:
             sql += " AND collection = ?"
             params.append(collection)
+        if turn_owner is not None:
+            sql += " AND turn_owner = ?"
+            params.append(turn_owner)
+        if channel_type is not None:
+            sql += " AND channel_type = ?"
+            params.append(channel_type)
         sql += " ORDER BY created_at DESC LIMIT ? OFFSET ?"
         params.extend([limit, offset])
         cursor = await self._db.execute(sql, params)

@@ -83,6 +83,7 @@ async def _capture_user_memory(
     metadata: dict,
     setting_key: str,
     user_id: str = "user",
+    turn_owner: str | None = None,
 ) -> None:
     """Fire-and-forget user memory capture. Never raises."""
     if not user_memory or not content:
@@ -97,6 +98,8 @@ async def _capture_user_memory(
             title=title,
             collection=collection,
             metadata=metadata,
+            turn_owner=turn_owner,
+            channel_type=metadata.get("channel_type", "channel"),
         )
     except Exception as e:  # pragma: no cover - capture is best-effort
         logger.debug(f"user memory capture failed: {e}")
@@ -199,6 +202,8 @@ async def chat_ws(websocket: WebSocket):
                 # Capture user message into user memory (async, non-blocking)
                 user_memory = getattr(websocket.app.state, "user_memory", None)
                 if user_memory:
+                    # Determine channel type for memory scoping
+                    channel_type = _ws_channel.get("type") if _ws_channel else "dm"
                     asyncio.create_task(_capture_user_memory(
                         user_memory,
                         content=data.get("content", ""),
@@ -208,9 +213,10 @@ async def chat_ws(websocket: WebSocket):
                             "channel_id": data["channel_id"],
                             "message_id": message.get("id"),
                             "timestamp": message.get("created_at"),
+                            "channel_type": channel_type,
                         },
                         setting_key="capture_conversations",
-                        user_id=user_id,
+                        turn_owner=user_id,
                     ))
 
             elif msg_type == "typing":
@@ -456,6 +462,9 @@ async def post_message(request: Request, user: CurrentUser = Depends(current_use
     if body.get("author_type", "agent") == "user":
         user_memory = getattr(request.app.state, "user_memory", None)
         if user_memory:
+            # Determine channel type for memory scoping
+            ch = await request.app.state.chat_channels.get_channel(channel_id)
+            channel_type = ch.get("type") if ch else "dm"
             asyncio.create_task(_capture_user_memory(
                 user_memory,
                 content=content,
@@ -465,8 +474,10 @@ async def post_message(request: Request, user: CurrentUser = Depends(current_use
                     "channel_id": channel_id,
                     "message_id": message.get("id"),
                     "timestamp": message.get("created_at"),
+                    "channel_type": channel_type,
                 },
                 setting_key="capture_conversations",
+                turn_owner=str(user.user_id),
             ))
 
     # Auto-archive every message for the zero-loss layer
