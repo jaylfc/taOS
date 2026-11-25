@@ -239,10 +239,9 @@ def main(argv: list[str] | None = None, *, links_path: str | None = None, truste
             return 2
         op = Path(os.environ.get("TAOS_OWNER_LINUX_FILE", DEFAULT_OWNER_FILE))
         op.parent.mkdir(parents=True, exist_ok=True, mode=0o755)
-        tmp = op.with_name(op.name + ".new")
-        tmp.write_text(argv[1] + "\n")
-        tmp.chmod(0o644)
-        os.replace(tmp, op)
+        from tinyagentos.atomic_io import atomic_write_text
+
+        atomic_write_text(op, argv[1] + "\n", mode=0o644)
         return 0
     if not argv or argv[0] not in ("link", "unlink", "list"):
         print("usage: python -m tinyagentos.desktop_sso link <linux-user|uid> <taos-user> | unlink <linux-user|uid> | list", file=sys.stderr)
