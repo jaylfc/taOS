@@ -11,7 +11,7 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.responses import HTMLResponse, RedirectResponse
 
 from tinyagentos import console_secret
-from tinyagentos.agent_token_auth import check_agent_identity, _get_keypair, _get_store
+from tinyagentos.agent_token_auth import _enforce_rotation_cutoff, check_agent_identity, _get_keypair, _get_store
 from tinyagentos.auth import AuthStoreCorruptError
 from tinyagentos.device_store import DEVICE_TOKEN_PREFIX
 from tinyagentos.rate_limit import MovingWindowLimiter
@@ -878,6 +878,9 @@ class AuthMiddleware(BaseHTTPMiddleware):
                                 registry = _get_store(request)
                                 record = await registry.get(canonical_id)
                                 if record and record.get("origin") == NATIVE_AGENT_ORIGIN and record.get("status") == "active":
+                                    # A token superseded by rotation must not authenticate:
+                                    # the raise lands in the except below (no user).
+                                    _enforce_rotation_cutoff(record, payload)
                                     request.state.user_id = record.get("user_id")
                                     request.state.is_admin = False
                                     request.state.via = "registry_jwt_native_agent"
