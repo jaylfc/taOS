@@ -2,7 +2,9 @@
 // Logic of the window engine against fixture trees (real sway get_tree output) and a fake transport.
 #include <QFile>
 #include <QTemporaryDir>
+#include <QJsonArray>
 #include <QJsonDocument>
+#include <QJsonObject>
 #include <QtTest>
 
 #include "core/desktopmodes.h"
@@ -30,6 +32,43 @@ struct FakeTransport : Transport {
         return true;
     }
 };
+}  // namespace
+
+
+namespace {
+// A tree with one output (1920x1080), workspaces "1" (focused, usable area 0,23 1920x1057: a bar on top) and "2", and the
+// windows given. A window is {id, workspace, floating, container rect, marks, fullscreen}.
+struct TW {
+    int id; QString ws; bool floating; QRect rect; QStringList marks = {}; bool fullscreen = false; bool scratch = false;
+};
+static QByteArray treeJson(const QVector<TW> &wins, const QString &focusedWs = QStringLiteral("1")) {
+    auto rj = [](const QRect &r) { return QJsonObject{{"x", r.x()}, {"y", r.y()}, {"width", r.width()}, {"height", r.height()}}; };
+    auto node = [&](const TW &w) {
+        QJsonObject o{{"id", w.id}, {"type", w.floating || w.scratch ? "floating_con" : "con"}, {"app_id", QStringLiteral("app.%1").arg(w.id)},
+                      {"name", QStringLiteral("W%1").arg(w.id)}, {"pid", 100 + w.id}, {"focused", false},
+                      {"floating", w.floating || w.scratch ? "user_on" : "auto_off"}, {"fullscreen_mode", w.fullscreen ? 1 : 0},
+                      {"border", "pixel"}, {"rect", rj(w.rect)}, {"deco_rect", rj(QRect())},
+                      {"nodes", QJsonArray()}, {"floating_nodes", QJsonArray()}, {"shell", "xdg_shell"}};
+        QJsonArray m;
+        for (const QString &x : w.marks) m << x;
+        o["marks"] = m;
+        return o;
+    };
+    auto ws = [&](const QString &name, const QRect &area) {
+        QJsonArray tiled, floating;
+        for (const TW &w : wins)
+            if (!w.scratch && w.ws == name) (w.floating ? floating : tiled) << node(w);
+        return QJsonObject{{"id", name.toInt() + 1000}, {"type", "workspace"}, {"name", name}, {"rect", rj(area)},
+                           {"focused", name == focusedWs}, {"visible", name == focusedWs}, {"nodes", tiled}, {"floating_nodes", floating}};
+    };
+    QJsonArray scratchWins;
+    for (const TW &w : wins) if (w.scratch) scratchWins << node(w);
+    QJsonObject scratchWs{{"type", "workspace"}, {"name", "__i3_scratch"}, {"rect", rj(QRect())}, {"nodes", QJsonArray()}, {"floating_nodes", scratchWins}};
+    QJsonObject scratchOut{{"type", "output"}, {"name", "__i3"}, {"rect", rj(QRect())}, {"nodes", QJsonArray{scratchWs}}};
+    QJsonObject out{{"type", "output"}, {"name", "O1"}, {"rect", rj(QRect(0, 0, 1920, 1080))},
+                    {"nodes", QJsonArray{ws(QStringLiteral("1"), QRect(0, 23, 1920, 1057)), ws(QStringLiteral("2"), QRect(0, 23, 1920, 1057))}}};
+    return QJsonDocument(QJsonObject{{"type", "root"}, {"nodes", QJsonArray{scratchOut, out}}}).toJson();
+}
 }  // namespace
 
 class TestWindowCore : public QObject {
@@ -100,7 +139,8 @@ private slots:
         const QJsonObject o = b->toJson();
         QStringList keys = o.keys();
         keys.sort();
-        QCOMPARE(keys, QStringList({"app_id", "floating", "focused", "fullscreen", "id", "minimised", "output", "pid", "title", "workspace"}));
+        QCOMPARE(keys, QStringList({"app_id", "floating", "focused", "full_size", "fullscreen", "id", "minimised", "output", "pid", "title", "workspace"}));
+
         QCOMPARE(o.value(QStringLiteral("minimised")).toBool(), true);
         QCOMPARE(o.value(QStringLiteral("id")).toInt(), 6);
     }
@@ -209,6 +249,242 @@ private slots:
         Window fs = *t.find(5);
         fs.fullscreen = true;
         QCOMPARE(Plans::full(fs, t).commands, QStringList{QStringLiteral("[con_id=5] fullscreen disable")});
+    }
+
+
+    // ---- window controls (dock menu, taskbar menu, agents) ---------------------------------------------------------
+    void jsonReportsFullSizeAndSpaces() {
+        Tree t;
+        QVERIFY(parseTree(treeJson({{5, "1", true, QRect(0, 23, 1920, 1057), {"taos_full", "taos_fgeo_10_10_400_300"}}, {6, "2", false, QRect(0, 23, 960, 1057)}}), &t));
+        QVERIFY(t.find(5)->toJson().value("full_size").toBool());
+        QVERIFY(!t.find(6)->toJson().value("full_size").toBool());
+        QCOMPARE(t.workspaces.size(), 2);
+        QCOMPARE(t.workspace("1")->count, 1);
+        QCOMPARE(t.workspace("2")->toJson().value("windows").toInt(), 1);
+        QVERIFY(t.workspace("1")->toJson().value("focused").toBool());
+    }
+
+    void stateEventsWhenMaximisedFullscreenOrMoved() {
+        Tree a, b;
+        QVERIFY(parseTree(treeJson({{5, "1", true, QRect(100, 100, 400, 300)}}), &a));
+        auto kinds = [](const QList<WindowEvent> &l) { QStringList k; for (const auto &e : l) k << e.kind + QString::number(e.window.id); return k; };
+        QVERIFY(parseTree(treeJson({{5, "1", true, QRect(0, 23, 1920, 1057), {"taos_full"}}}), &b));
+        QCOMPARE(kinds(diffWindows(a, b)), QStringList{"state5"});
+        QVERIFY(parseTree(treeJson({{5, "1", true, QRect(0, 0, 1920, 1080), {}, true}}), &b));
+        QCOMPARE(kinds(diffWindows(a, b)), QStringList{"state5"});
+        QVERIFY(parseTree(treeJson({{5, "2", true, QRect(100, 100, 400, 300)}}), &b));
+        QCOMPARE(kinds(diffWindows(a, b)), QStringList{"state5"});
+    }
+
+    void maximiseIsIdempotentAndNeverToggles() {
+        Tree t;
+        QVERIFY(parseTree(treeJson({{5, "1", true, QRect(100, 100, 400, 300)}, {6, "1", false, QRect(0, 23, 960, 1057)}}), &t));
+        const Plan fl = Plans::maximise(*t.find(5), t);
+        QVERIFY(fl.ok());
+        QVERIFY(fl.commands.contains(QStringLiteral("[con_id=5] mark --add \"taos_fgeo_100_100_400_300\"")));
+        QVERIFY(fl.commands.contains(QStringLiteral("[con_id=5] resize set 1920 1057")));
+        QVERIFY(fl.commands.contains(QStringLiteral("[con_id=5] move absolute position 0 23")));
+        for (const QString &c : fl.commands) QVERIFY2(!c.contains(QLatin1String("fullscreen")), qPrintable(c));
+        // Already maximised: asked again it keeps the saved geometry and only re-fits the area; never goes back.
+        Tree m;
+        QVERIFY(parseTree(treeJson({{5, "1", true, QRect(0, 23, 1920, 1057), {"taos_full", "taos_fgeo_100_100_400_300"}}}), &m));
+        const Plan again = Plans::maximise(*m.find(5), m);
+        QVERIFY(again.ok());
+        QVERIFY(again.commands.contains(QStringLiteral("[con_id=5] resize set 1920 1057")));
+        for (const QString &c : again.commands) QVERIFY2(!c.contains(QLatin1String("unmark")) && !c.contains(QLatin1String("floating disable")), qPrintable(c));
+        // Full screen first leaves full screen (sway restores the geometry it had), then maximises.
+        Tree f;
+        QVERIFY(parseTree(treeJson({{5, "1", true, QRect(0, 0, 1920, 1080), {}, true}}), &f));
+        const Plan fromFs = Plans::maximise(*f.find(5), f);
+        // (what to go back to is only known once sway has left full screen: the controller plans again)
+        QCOMPARE(fromFs.commands, QStringList{QStringLiteral("[con_id=5] fullscreen disable")});
+        Tree fm;
+        QVERIFY(parseTree(treeJson({{5, "1", true, QRect(0, 0, 1920, 1080), {"taos_full", "taos_fgeo_100_100_400_300"}, true}}), &fm));
+        const Plan fsMax = Plans::maximise(*fm.find(5), fm);
+        QCOMPARE(fsMax.commands.value(0), QStringLiteral("[con_id=5] fullscreen disable"));
+        QVERIFY(fsMax.commands.contains(QStringLiteral("[con_id=5] resize set 1920 1057")));
+        QVERIFY(!fsMax.commands.contains(QStringLiteral("[con_id=5] unmark \"taos_full\"")));
+        // Minimised: refused with a sentence.
+        Tree n;
+        QVERIFY(parseTree(treeJson({{5, "1", true, QRect(0, 23, 400, 300), {"taos_min_5", "taos_ws_1"}, false, true}}), &n));
+        QVERIFY(!Plans::maximise(*n.find(5), n).ok());
+    }
+
+    void restorePeelsFullscreenThenFullSizeThenNothing() {
+        Tree t;
+        // fullscreen on top of full size: back to the geometry before the maximise, fullscreen off first
+        QVERIFY(parseTree(treeJson({{5, "1", true, QRect(0, 0, 1920, 1080), {"taos_full", "taos_fgeo_100_100_400_300"}, true}}), &t));
+        const Plan both = Plans::unmaximise(*t.find(5), t);
+        QCOMPARE(both.commands.value(0), QStringLiteral("[con_id=5] fullscreen disable"));
+        QVERIFY(both.commands.contains(QStringLiteral("[con_id=5] resize set 400 300")));
+        QVERIFY(both.commands.contains(QStringLiteral("[con_id=5] move absolute position 100 100")));
+        QVERIFY(both.commands.contains(QStringLiteral("[con_id=5] unmark \"taos_full\"")));
+        // only fullscreen: just leave it
+        QVERIFY(parseTree(treeJson({{5, "1", true, QRect(0, 0, 1920, 1080), {}, true}}), &t));
+        QCOMPARE(Plans::unmaximise(*t.find(5), t).commands, QStringList{QStringLiteral("[con_id=5] fullscreen disable")});
+        // maximised from tiled: tiled again
+        QVERIFY(parseTree(treeJson({{5, "1", true, QRect(0, 23, 1920, 1057), {"taos_full", "taos_ftiled"}}}), &t));
+        QVERIFY(Plans::unmaximise(*t.find(5), t).commands.contains(QStringLiteral("[con_id=5] floating disable")));
+        // nothing to undo
+        QVERIFY(parseTree(treeJson({{5, "1", true, QRect(100, 100, 400, 300)}}), &t));
+        QVERIFY(Plans::unmaximise(*t.find(5), t).commands.isEmpty());
+    }
+
+    void restoreOfAMinimisedWindowStillRestoresIt() {
+        FakeTransport tx;
+        tx.tree = treeJson({{5, "1", true, QRect(100, 100, 400, 300), {"taos_min_5", "taos_ws_1", "taos_mfl", "taos_at_7"}, false, true}});
+        WindowController c(&tx);
+        QString err;
+        QVERIFY2(c.restore(QStringLiteral("5"), &err), qPrintable(err));
+        QVERIFY(tx.commands.contains(QStringLiteral("[con_id=5] scratchpad show")));
+        // and a window that is on screen and has nothing to undo: success, no command at all
+        tx.commands.clear();
+        tx.tree = treeJson({{5, "1", true, QRect(100, 100, 400, 300)}});
+        QVERIFY2(c.restore(QStringLiteral("5"), &err), qPrintable(err));
+        QVERIFY(tx.commands.isEmpty());
+    }
+
+    void fullscreenModes() {
+        Tree t;
+        QVERIFY(parseTree(treeJson({{5, "1", true, QRect(100, 100, 400, 300)}, {6, "1", true, QRect(0, 0, 1920, 1080), {}, true}}), &t));
+        QCOMPARE(Plans::fullscreen(*t.find(5), Plans::Fullscreen::On).commands, QStringList{QStringLiteral("[con_id=5] fullscreen enable")});
+        QVERIFY(Plans::fullscreen(*t.find(6), Plans::Fullscreen::On).commands.isEmpty());      // already
+        QCOMPARE(Plans::fullscreen(*t.find(6), Plans::Fullscreen::Off).commands, QStringList{QStringLiteral("[con_id=6] fullscreen disable")});
+        QVERIFY(Plans::fullscreen(*t.find(5), Plans::Fullscreen::Off).commands.isEmpty());     // already
+        QCOMPARE(Plans::fullscreen(*t.find(5)).commands, QStringList{QStringLiteral("[con_id=5] fullscreen toggle")});
+        // never a resize: the container is not touched, sway sends the client set_fullscreen itself
+        for (const QString &c : Plans::fullscreen(*t.find(5), Plans::Fullscreen::On).commands) QVERIFY(!c.contains(QLatin1String("resize")));
+    }
+
+    void bringHerePlans() {
+        Tree t;
+        // 5: floating, far off screen on workspace 2, bigger than the screen; 6: on screen floating; 7: tiled on 2; 8: minimised floating
+        QVERIFY(parseTree(treeJson({{5, "2", true, QRect(5000, 4000, 3000, 2000)}, {6, "2", true, QRect(10, 10, 500, 400)},
+                                    {7, "2", false, QRect(0, 23, 960, 1057)},
+                                    {8, "2", true, QRect(100, 100, 600, 400), {"taos_min_8", "taos_ws_2", "taos_mfl", "taos_at_1", "taos_geo_100_100_600_400"}, false, true}}), &t));
+        const Plan big = Plans::bringHere(*t.find(5), t);
+        QVERIFY2(big.ok(), qPrintable(big.error));
+        QCOMPARE(big.commands.value(0), QStringLiteral("[con_id=5] move container to workspace \"1\""));
+        QVERIFY(big.commands.contains(QStringLiteral("[con_id=5] resize set 1152 739")));          // 60 % x 70 % of 1920x1057
+        QVERIFY(big.commands.contains(QStringLiteral("[con_id=5] move absolute position 384 182")));  // centred in 0,23 1920x1057
+        QVERIFY(big.commands.last().contains(QLatin1String("focus")));
+        const Plan fits = Plans::bringHere(*t.find(6), t);
+        QVERIFY(fits.commands.contains(QStringLiteral("[con_id=6] resize set 500 400")));          // its own size is kept
+        QVERIFY(fits.commands.contains(QStringLiteral("[con_id=6] move absolute position 710 351")));
+        const Plan tiled = Plans::bringHere(*t.find(7), t);
+        QVERIFY(tiled.commands.contains(QStringLiteral("[con_id=7] move container to workspace \"1\"")));
+        for (const QString &c : tiled.commands) QVERIFY2(!c.contains(QLatin1String("resize")) && !c.contains(QLatin1String("floating")), qPrintable(c));
+        const Plan min = Plans::bringHere(*t.find(8), t);
+        QVERIFY2(min.ok(), qPrintable(min.error));
+        QVERIFY(min.commands.contains(QStringLiteral("[con_id=8] scratchpad show")));
+        QVERIFY(min.commands.contains(QStringLiteral("[con_id=8] unmark \"taos_min_8\"")));
+        QVERIFY(min.commands.contains(QStringLiteral("[con_id=8] move absolute position 660 351")));
+        for (const QString &c : min.commands) QVERIFY2(!c.contains(QLatin1String("workspace \"2\"")), qPrintable(c));   // does not go to where it came from
+        // already here and on screen: still centred (it may be half off the edge), no workspace move
+        Tree here;
+        QVERIFY(parseTree(treeJson({{5, "1", true, QRect(-300, -200, 500, 400)}}), &here));
+        const Plan edge = Plans::bringHere(*here.find(5), here);
+        for (const QString &c : edge.commands) QVERIFY2(!c.contains(QLatin1String("move container")), qPrintable(c));
+        QVERIFY(edge.commands.contains(QStringLiteral("[con_id=5] move absolute position 710 351")));
+        // fullscreen: only the workspace changes
+        Tree fs;
+        QVERIFY(parseTree(treeJson({{5, "2", true, QRect(0, 0, 1920, 1080), {}, true}}), &fs));
+        const Plan f = Plans::bringHere(*fs.find(5), fs);
+        QVERIFY(f.commands.contains(QStringLiteral("[con_id=5] move container to workspace \"1\"")));
+        for (const QString &c : f.commands) QVERIFY2(!c.contains(QLatin1String("resize")) && !c.contains(QLatin1String("fullscreen")), qPrintable(c));
+        // a maximised window fills the usable area again
+        Tree mx;
+        QVERIFY(parseTree(treeJson({{5, "2", true, QRect(0, 23, 1920, 1057), {"taos_full", "taos_fgeo_1_2_400_300"}}}), &mx));
+        QVERIFY(Plans::bringHere(*mx.find(5), mx).commands.contains(QStringLiteral("[con_id=5] resize set 1920 1057")));
+    }
+
+    void resetSizePlans() {
+        Tree t;
+        QVERIFY(parseTree(treeJson({{5, "2", true, QRect(5000, 4000, 3000, 2000), {"taos_full", "taos_fgeo_1_2_400_300"}},
+                                    {6, "1", false, QRect(0, 23, 960, 1057)}, {7, "1", true, QRect(0, 0, 1920, 1080), {}, true}}), &t));
+        const Plan p = Plans::resetSize(*t.find(5), t);
+        QVERIFY2(p.ok(), qPrintable(p.error));
+        QVERIFY(p.commands.contains(QStringLiteral("[con_id=5] resize set 1152 739")));
+        QVERIFY(p.commands.contains(QStringLiteral("[con_id=5] move absolute position 384 182")));   // on ITS workspace, not the focused one
+        QVERIFY(p.commands.contains(QStringLiteral("[con_id=5] unmark \"taos_full\"")));
+        // workspace 2 is not shown: the position pulls the window to the shown workspace, so it is sent back to its own
+        QCOMPARE(p.commands.last(), QStringLiteral("[con_id=5] move container to workspace \"2\""));
+        QCOMPARE(p.commands.count(QStringLiteral("[con_id=5] move container to workspace \"2\"")), 1);
+        QCOMPARE(p.settleHidden, QStringLiteral("2"));
+        const Plan tiled = Plans::resetSize(*t.find(6), t);
+        QVERIFY(!tiled.ok());
+        QVERIFY(tiled.error.contains(QLatin1String("tiled")));
+        const Plan fs = Plans::resetSize(*t.find(7), t);
+        QCOMPARE(fs.commands.value(0), QStringLiteral("[con_id=7] fullscreen disable"));
+        QVERIFY(fs.commands.contains(QStringLiteral("[con_id=7] resize set 1152 739")));
+    }
+
+    void moveToSpacePlans() {
+        Tree t;
+        QVERIFY(parseTree(treeJson({{5, "1", true, QRect(100, 100, 400, 300)}, {6, "1", false, QRect(0, 23, 960, 1057)},
+                                    {7, "1", true, QRect(100, 100, 600, 400), {"taos_min_7", "taos_ws_1", "taos_mfl", "taos_at_1"}, false, true}}), &t));
+        const Plan p = Plans::moveToSpace(*t.find(5), t, QStringLiteral("2"));
+        QVERIFY2(p.ok(), qPrintable(p.error));
+        // workspace 2 is not shown: position first (that lands the window on the shown workspace), then on to space 2
+        QVERIFY(p.commands.contains(QStringLiteral("[con_id=5] resize set 400 300")));       // sensible size kept, centred in the new space
+        QVERIFY(p.commands.contains(QStringLiteral("[con_id=5] move absolute position 760 401")));
+        QCOMPARE(p.commands.last(), QStringLiteral("[con_id=5] move container to workspace \"2\""));
+        QCOMPARE(p.settleHidden, QStringLiteral("2"));      // a settle that pulls the window to the shown workspace sends it back
+        // a shown target: move first, then place, and settle
+        Tree shown;
+        QVERIFY(parseTree(treeJson({{5, "1", true, QRect(100, 100, 400, 300)}}, QStringLiteral("2")), &shown));
+        const Plan sh = Plans::moveToSpace(*shown.find(5), shown, QStringLiteral("2"));
+        QCOMPARE(sh.commands.value(0), QStringLiteral("[con_id=5] move container to workspace \"2\""));
+        QVERIFY(sh.settle.isValid() && sh.settleHidden.isEmpty());
+        QCOMPARE(Plans::moveToSpace(*t.find(6), t, QStringLiteral("2")).commands, QStringList{QStringLiteral("[con_id=6] move container to workspace \"2\"")});   // tiled: just moved
+        QVERIFY(Plans::moveToSpace(*t.find(5), t, QStringLiteral("1")).commands.isEmpty());     // already there
+        // a name with quotes cannot break the command
+        QVERIFY(Plans::moveToSpace(*t.find(6), t, QStringLiteral("a\"b;c")).commands.value(0).contains(QStringLiteral("workspace \"a\\\"b;c\"")));
+        // minimised: only the mark moves; the window stays in the scratchpad
+        const Plan m = Plans::moveToSpace(*t.find(7), t, QStringLiteral("2"));
+        QVERIFY2(m.ok(), qPrintable(m.error));
+        QVERIFY(m.commands.contains(QStringLiteral("[con_id=7] unmark \"taos_ws_1\"")));
+        QVERIFY(m.commands.contains(QStringLiteral("[con_id=7] mark --add \"taos_ws_2\"")));
+        for (const QString &c : m.commands) QVERIFY2(!c.contains(QLatin1String("move container")) && !c.contains(QLatin1String("scratchpad")), qPrintable(c));
+        // an empty name is the focused workspace
+        Tree two;
+        QVERIFY(parseTree(treeJson({{5, "2", true, QRect(100, 100, 400, 300)}}), &two));
+        QVERIFY(Plans::moveToSpace(*two.find(5), two, QString()).commands.value(0).contains(QLatin1String("workspace \"1\"")));   // shown: moved first
+    }
+
+    void newSpaceNameFollowsTheOverview() {
+        Tree t;
+        QVERIFY(parseTree(treeJson({{5, "1", true, QRect(100, 100, 400, 300)}}), &t));
+        QCOMPARE(Plans::newSpaceName(t), QStringLiteral("3"));     // 1 and 2 exist: the next number after the highest
+        FakeTransport tx;
+        tx.tree = treeJson({{5, "1", true, QRect(100, 100, 400, 300)}});
+        WindowController c(&tx);
+        QString created, err;
+        QVERIFY2(c.newSpace(QStringLiteral("5"), &created, &err), qPrintable(err));
+        QCOMPARE(created, QStringLiteral("3"));
+        QVERIFY(tx.commands.contains(QStringLiteral("[con_id=5] move container to workspace \"3\"")));
+        QVERIFY(tx.commands.indexOf(QStringLiteral("workspace \"3\"")) > tx.commands.indexOf(QStringLiteral("[con_id=5] move container to workspace \"3\"")));   // then shown
+        tx.commands.clear();
+        QVERIFY2(c.newSpace(QString(), &created, &err), qPrintable(err));
+        QCOMPARE(tx.commands, QStringList{QStringLiteral("workspace \"3\"")});
+    }
+
+    void controllerVerbsRunTheirPlans() {
+        FakeTransport tx;
+        tx.tree = treeJson({{5, "2", true, QRect(5000, 4000, 3000, 2000)}});
+        WindowController c(&tx);
+        QString err;
+        QVERIFY2(c.bringHere(QStringLiteral("5"), &err), qPrintable(err));
+        QVERIFY(tx.commands.contains(QStringLiteral("[con_id=5] move container to workspace \"1\"")));
+        tx.commands.clear();
+        QVERIFY2(c.maximise(QStringLiteral("5"), &err), qPrintable(err));
+        QVERIFY(tx.commands.contains(QStringLiteral("[con_id=5] resize set 1920 1057")));
+        tx.commands.clear();
+        QVERIFY2(c.fullscreen(QStringLiteral("5"), &err, Plans::Fullscreen::On), qPrintable(err));
+        QCOMPARE(tx.commands, QStringList{QStringLiteral("[con_id=5] fullscreen enable")});
+        QVERIFY2(c.moveToSpace(QStringLiteral("5"), QStringLiteral("1"), &err), qPrintable(err));
+        QVERIFY2(!c.resetSize(QStringLiteral("99"), &err), "unknown id");
+        QVERIFY(err.contains(QLatin1String("no window with id 99")));
     }
 
     void aForeignWebAppWindowIsControlledById() {

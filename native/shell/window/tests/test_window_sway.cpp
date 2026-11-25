@@ -13,6 +13,7 @@
 #include <QtTest>
 #include <csignal>
 
+#include "core/desktopmodes.h"
 #include "core/swayconn.h"
 #include "core/windowmodel.h"
 #include "core/windowops.h"
@@ -27,6 +28,7 @@ class TestWindowSway : public QObject {
     QString m_sock, m_swayBin;
     QList<QProcess *> m_clients;
     bool m_ready = false;
+    bool m_hasBar = false;
 
     // ---- helpers -----------------------------------------------------------------------------------
     QString runCli(const QStringList &args, int *code = nullptr, int timeoutMs = 10000) {
@@ -77,6 +79,44 @@ class TestWindowSway : public QObject {
         if (c.open(m_sock)) c.request(Ipc::RunCommand, cmd.toUtf8(), &r);
         return r;
     }
+    // The raw sway node of a window (rect, window_rect, fullscreen_mode, floating, ...) and the output's rectangle.
+    static QJsonObject findNode(const QJsonObject &n, int id) {
+        if (n.value(QLatin1String("id")).toInt() == id && n.contains(QLatin1String("shell"))) return n;
+        for (const char *k : {"nodes", "floating_nodes"})
+            for (const QJsonValue &c : n.value(QLatin1String(k)).toArray()) {
+                const QJsonObject r = findNode(c.toObject(), id);
+                if (!r.isEmpty()) return r;
+            }
+        return {};
+    }
+    QJsonObject swayTree() {
+        SwayConnection c; QByteArray j;
+        if (c.open(m_sock) && c.request(Ipc::GetTree, {}, &j)) return QJsonDocument::fromJson(j).object();
+        return {};
+    }
+    QJsonObject node(int id) { return findNode(swayTree(), id); }
+    static QRect rectOfJson(const QJsonValue &v) {
+        const QJsonObject o = v.toObject();
+        return QRect(o.value(QLatin1String("x")).toInt(), o.value(QLatin1String("y")).toInt(), o.value(QLatin1String("width")).toInt(), o.value(QLatin1String("height")).toInt());
+    }
+    QRect outputRect() {
+        SwayConnection c; QByteArray j;
+        if (c.open(m_sock) && c.request(Ipc::GetOutputs, {}, &j))
+            for (const QJsonValue &v : QJsonDocument::fromJson(j).array())
+                if (v.toObject().value(QLatin1String("name")).toString() == QLatin1String("HEADLESS-1")) return rectOfJson(v.toObject().value(QLatin1String("rect")));
+        return {};
+    }
+    // A client window of ours by app id, floating at a known place; returns its sway container id.
+    int floatingWindow(const QString &appId, const QRect &at, const QString &workspace = QString()) {
+        startClient(appId, appId);
+        if (!waitFor([&] { return !winByApp(appId).isEmpty(); })) return 0;
+        const int id = winByApp(appId).value(QLatin1String("id")).toInt();
+        swaymsg(QStringLiteral("[con_id=%1] floating enable, resize set %2 %3, move absolute position %4 %5").arg(id).arg(at.width()).arg(at.height()).arg(at.x()).arg(at.y()));
+        waitFor([&] { return rawTree().find(id) && rawTree().find(id)->rect == at; }, 3000);
+        // (a floating window moved by position lands on the shown workspace: send it to its space after placing it)
+        if (!workspace.isEmpty()) swaymsg(QStringLiteral("[con_id=%1] move container to workspace \"%2\"").arg(id).arg(workspace));
+        return id;
+    }
     QProcess *startClient(const QString &appId, const QString &title) {
         auto *p = new QProcess(this);
         QProcessEnvironment e = m_env;
@@ -116,6 +156,12 @@ private slots:
         QFile f(cfg);
         QVERIFY(f.open(QIODevice::WriteOnly));
         f.write("default_border pixel 1\ndefault_floating_border pixel 1\n");
+        // A window with a sway title bar, like the ones taos-frame frames; and a bar on top, so the usable area is
+        // smaller than the output (a swaybar is a layer-shell client reserving space, as the taOS bar does).
+        f.write("font pango:monospace 11\nfor_window [app_id=\"^taos\\.test\\.bar\"] border normal 1\n");
+        const QString swaybar = QFileInfo(sway).absolutePath() + QStringLiteral("/swaybar");
+        m_hasBar = QFile::exists(swaybar);
+        if (m_hasBar) f.write(QByteArray("bar {\n  swaybar_command ") + swaybar.toUtf8() + "\n  position top\n  mode dock\n}\n");
         f.write(QByteArray("include ") + QStringLiteral(TAOS_WINDOW_SNIPPET).toUtf8() + "\n");
         f.close();
         QProcess check;
@@ -163,7 +209,7 @@ private slots:
         QCOMPARE(one.value(QLatin1String("output")).toString(), QStringLiteral("HEADLESS-1"));
         QStringList keys = one.keys();
         keys.sort();
-        QCOMPARE(keys, QStringList({"app_id", "floating", "focused", "fullscreen", "id", "minimised", "output", "pid", "title", "workspace"}));
+        QCOMPARE(keys, QStringList({"app_id", "floating", "focused", "full_size", "fullscreen", "id", "minimised", "output", "pid", "title", "workspace"}));
         QVERIFY(two.value(QLatin1String("focused")).toBool() != one.value(QLatin1String("focused")).toBool());
         // plain-text list works too
         int code = -1;
@@ -171,7 +217,7 @@ private slots:
         QCOMPARE(code, 0);
         // Make the second window floating at a known place.
         const int idTwo = two.value(QLatin1String("id")).toInt();
-        swaymsg(QStringLiteral("[con_id=%1] floating enable, resize set 400 300, move position 200 150").arg(idTwo));
+        swaymsg(QStringLiteral("[con_id=%1] floating enable, resize set 400 300, move absolute position 200 150").arg(idTwo));
         QVERIFY(waitFor([&] { return win(idTwo).value(QLatin1String("floating")).toBool(); }));
         const Tree t = rawTree();
         QCOMPARE(t.find(idTwo)->rect, QRect(200, 150, 400, 300));
@@ -468,6 +514,149 @@ private slots:
         daemon.waitForFinished(3000);
         cli({QStringLiteral("close"), QString::number(id)});
         QVERIFY(waitFor([&] { return listJson().isEmpty(); }));
+    }
+    // ---- window controls: the geometry of every verb, read back from sway's own tree ------------------------------
+    void fullscreenIsRealFullscreen() {
+        // The bug this guards: "Full screen" resized the container to the output and left fullscreen_mode 0, so the
+        // client was never told (no xdg_toplevel set_fullscreen) and drew past the edge. Real fullscreen is sway's.
+        QVERIFY(m_ready);
+        for (const QString &app : {QStringLiteral("taos.test.fsplain"), QStringLiteral("taos.test.bar.fs")}) {
+            const int id = floatingWindow(app, QRect(240, 160, 640, 420));
+            QVERIFY(id > 0);
+            const QRect out = outputRect();
+            const QRect before = rawTree().find(id)->rect;
+            QVERIFY(cli({QStringLiteral("fullscreen"), QString::number(id), QStringLiteral("on")}));
+            QVERIFY2(waitFor([&] { return node(id).value(QLatin1String("fullscreen_mode")).toInt() == 1; }), qPrintable(app));
+            waitFor([&] { return rectOfJson(node(id).value(QLatin1String("rect"))) == out; });
+            QCOMPARE(rectOfJson(node(id).value(QLatin1String("rect"))), out);
+            QVERIFY(cli({QStringLiteral("fullscreen"), QString::number(id), QStringLiteral("on")}));       // idempotent
+            QCOMPARE(node(id).value(QLatin1String("fullscreen_mode")).toInt(), 1);
+            QVERIFY(win(id).value(QLatin1String("fullscreen")).toBool());
+            // restore leaves full screen and returns the old rectangle
+            QVERIFY(cli({QStringLiteral("restore"), QString::number(id)}));
+            QVERIFY(waitFor([&] { return node(id).value(QLatin1String("fullscreen_mode")).toInt() == 0; }));
+            QVERIFY2(waitFor([&] { return rawTree().find(id)->rect == before; }), qPrintable(app + QStringLiteral(" geometry not restored")));
+            QVERIFY(cli({QStringLiteral("close"), QString::number(id)}));
+            QVERIFY(waitFor([&] { return winByApp(app).isEmpty(); }));
+        }
+    }
+
+    void maximiseFillsTheUsableAreaAndRestoreGivesItBack() {
+        for (const QString &app : {QStringLiteral("taos.test.maxplain"), QStringLiteral("taos.test.bar.max")}) {
+            const int id = floatingWindow(app, QRect(240, 160, 640, 420));
+            QVERIFY(id > 0);
+            const QRect out = outputRect();
+            const QRect usable = rawTree().workspace(QStringLiteral("1"))->rect;
+            if (m_hasBar) QVERIFY2(usable != out && out.contains(usable), "the bar should reserve space");
+            const QRect before = rawTree().find(id)->rect;
+            QVERIFY(cli({QStringLiteral("maximise"), QString::number(id)}));
+            QVERIFY2(waitFor([&] { return rawTree().find(id)->rect == usable; }), qPrintable(app + QStringLiteral(" not the usable area")));
+            QCOMPARE(node(id).value(QLatin1String("fullscreen_mode")).toInt(), 0);       // not fullscreen: the bar stays
+            QVERIFY(win(id).value(QLatin1String("full_size")).toBool());
+            // the client's own surface fits inside the container: nothing runs past the bottom
+            const QRect c = rawTree().find(id)->rect;
+            const QRect content = rectOfJson(node(id).value(QLatin1String("rect")));
+            QVERIFY2(usable.contains(c) && usable.contains(content), qPrintable(app));
+            QVERIFY(cli({QStringLiteral("maximise"), QString::number(id)}));              // again: still maximised, never toggled back
+            QVERIFY(waitFor([&] { return rawTree().find(id)->rect == usable; }));
+            QVERIFY(win(id).value(QLatin1String("full_size")).toBool());
+            QVERIFY(cli({QStringLiteral("restore"), QString::number(id)}));
+            QVERIFY2(waitFor([&] { return rawTree().find(id)->rect == before; }), qPrintable(app + QStringLiteral(" geometry not restored")));
+            QVERIFY(!win(id).value(QLatin1String("full_size")).toBool());
+            // fullscreen on top of maximised, then restore: all the way back
+            QVERIFY(cli({QStringLiteral("maximise"), QString::number(id)}));
+            QVERIFY(waitFor([&] { return rawTree().find(id)->rect == usable; }));
+            QVERIFY(cli({QStringLiteral("fullscreen"), QString::number(id), QStringLiteral("on")}));
+            QVERIFY(waitFor([&] { return rectOfJson(node(id).value(QLatin1String("rect"))) == out; }));
+            QVERIFY(cli({QStringLiteral("restore"), QString::number(id)}));
+            QVERIFY2(waitFor([&] { return rawTree().find(id)->rect == before && !rawTree().find(id)->fullscreen; }), qPrintable(app));
+            // maximise straight from fullscreen
+            QVERIFY(cli({QStringLiteral("fullscreen"), QString::number(id), QStringLiteral("on")}));
+            QVERIFY(waitFor([&] { return node(id).value(QLatin1String("fullscreen_mode")).toInt() == 1; }));
+            QVERIFY(cli({QStringLiteral("maximise"), QString::number(id)}));
+            QVERIFY(waitFor([&] { return rawTree().find(id)->rect == usable && node(id).value(QLatin1String("fullscreen_mode")).toInt() == 0; }));
+            QVERIFY(cli({QStringLiteral("restore"), QString::number(id)}));
+            waitFor([&] { return rawTree().find(id)->rect == before; });
+            QCOMPARE(rawTree().find(id)->rect, before);
+            QVERIFY(cli({QStringLiteral("close"), QString::number(id)}));
+            QVERIFY(waitFor([&] { return winByApp(app).isEmpty(); }));
+        }
+    }
+
+    void bringHerePutsAnOffScreenWindowInsideTheOutput() {
+        const QRect out = outputRect();
+        // Far off screen, bigger than the screen, on another workspace; the person is looking at workspace 1.
+        swaymsg(QStringLiteral("workspace 1"));
+        const int id = floatingWindow(QStringLiteral("taos.test.bar.lost"), QRect(1700, 950, 640, 420), QStringLiteral("2"));
+        QVERIFY(id > 0);
+        swaymsg(QStringLiteral("[con_id=%1] resize set 5000 4000").arg(id));
+        QCOMPARE(win(id).value(QLatin1String("workspace")).toString(), QStringLiteral("2"));
+        QVERIFY(!out.contains(rawTree().find(id)->rect));
+        swaymsg(QStringLiteral("workspace 1"));      // (moving the focused window away leaves the focus with it)
+        QVERIFY(waitFor([&] { return rawTree().focusedWorkspace == QLatin1String("1"); }));
+        QVERIFY(cli({QStringLiteral("bring-here"), QString::number(id)}));
+        QVERIFY2(waitFor([&] { const Window *w = rawTree().find(id); return w && w->workspace == QLatin1String("1") && out.contains(w->rect); }), "not inside the output");
+        const QRect usable = rawTree().workspace(QStringLiteral("1"))->rect;
+        const QRect r = rawTree().find(id)->rect;
+        QVERIFY2(usable.contains(r), qPrintable(QStringLiteral("not in the usable area: ") + QString::number(r.x())));
+        QVERIFY(qAbs(r.center().x() - usable.center().x()) <= 2 && qAbs(r.center().y() - usable.center().y()) <= 2);   // centred
+        QVERIFY(r.width() >= 480 && r.height() >= 320);                                                                  // a sensible size
+        QVERIFY(win(id).value(QLatin1String("focused")).toBool());
+        // minimised on another workspace comes here too
+        swaymsg(QStringLiteral("[con_id=%1] move container to workspace \"2\"").arg(id));
+        QVERIFY(cli({QStringLiteral("minimise"), QString::number(id)}));
+        QVERIFY(waitFor([&] { return win(id).value(QLatin1String("minimised")).toBool(); }));
+        swaymsg(QStringLiteral("workspace 1"));
+        QVERIFY(waitFor([&] { return rawTree().focusedWorkspace == QLatin1String("1"); }));
+        QVERIFY(cli({QStringLiteral("bring-here"), QString::number(id)}));
+        QVERIFY(waitFor([&] { const Window *w = rawTree().find(id); return w && !w->inScratchpad && w->workspace == QLatin1String("1") && out.contains(w->rect); }));
+        for (const QString &m : rawTree().find(id)->marks) QVERIFY2(!isOurMark(m), qPrintable(m));
+        cli({QStringLiteral("close"), QString::number(id)});
+        QVERIFY(waitFor([&] { return winByApp(QStringLiteral("taos.test.bar.lost")).isEmpty(); }));
+    }
+
+    void resetSizeAndSpaces() {
+        swaymsg(QStringLiteral("workspace 1"));
+        const int id = floatingWindow(QStringLiteral("taos.test.sp"), QRect(10, 40, 300, 200));
+        QVERIFY(id > 0);
+        const QRect usable = rawTree().workspace(QStringLiteral("1"))->rect;
+        QVERIFY(cli({QStringLiteral("reset-size"), QString::number(id)}));
+        const QSize want = defaultWindowSize(usable);
+        QVERIFY2(waitFor([&] { return rawTree().find(id)->rect == centredIn(usable, want); }), "default size, centred");
+        // spaces: json lists them, with the count of windows
+        int code = -1;
+        const QJsonArray sp = QJsonDocument::fromJson(runCli({QStringLiteral("spaces"), QStringLiteral("--json")}, &code).toUtf8()).array();
+        QCOMPARE(code, 0);
+        QVERIFY(!sp.isEmpty());
+        QStringList keys = sp.first().toObject().keys();
+        keys.sort();
+        QCOMPARE(keys, QStringList({"focused", "name", "output", "visible", "windows"}));
+        // move-to-space an existing and a new space; new-space prints the name it made
+        QVERIFY(cli({QStringLiteral("move-to-space"), QString::number(id), QStringLiteral("2")}));
+        QVERIFY(waitFor([&] { return win(id).value(QLatin1String("workspace")).toString() == QLatin1String("2"); }));
+        QVERIFY(rawTree().workspace(QStringLiteral("2"))->rect.contains(rawTree().find(id)->rect));
+        QCOMPARE(rawTree().workspace(QStringLiteral("1"))->name, QStringLiteral("1"));
+        const QString made = runCli({QStringLiteral("new-space"), QString::number(id)}, &code).trimmed();
+        QCOMPARE(code, 0);
+        QVERIFY2(made.toInt() >= 3, qPrintable(made));
+        QVERIFY(waitFor([&] { return win(id).value(QLatin1String("workspace")).toString() == made; }));
+        QVERIFY(waitFor([&] { return rawTree().focusedWorkspace == made; }));       // and the space is shown
+        // a minimised window is moved by its mark and still comes back to the new space
+        QVERIFY(cli({QStringLiteral("minimise"), QString::number(id)}));
+        QVERIFY(waitFor([&] { return win(id).value(QLatin1String("minimised")).toBool(); }));
+        QVERIFY(cli({QStringLiteral("move-to-space"), QString::number(id), QStringLiteral("1")}));
+        QCOMPARE(win(id).value(QLatin1String("workspace")).toString(), QStringLiteral("1"));
+        QVERIFY(win(id).value(QLatin1String("minimised")).toBool());
+        QVERIFY(cli({QStringLiteral("restore"), QString::number(id)}));
+        QVERIFY(waitFor([&] { return !win(id).value(QLatin1String("minimised")).toBool(); }));
+        QCOMPARE(win(id).value(QLatin1String("workspace")).toString(), QStringLiteral("1"));
+        // errors are sentences
+        QVERIFY(runCli({QStringLiteral("move-to-space"), QStringLiteral("99999"), QStringLiteral("1")}, &code).contains(QLatin1String("no window with id")));
+        QCOMPARE(code, 1);
+        QVERIFY(runCli({QStringLiteral("fullscreen"), QString::number(id), QStringLiteral("sideways")}, &code).contains(QLatin1String("usage")));
+        QCOMPARE(code, 2);
+        cli({QStringLiteral("close"), QString::number(id)});
+        QVERIFY(waitFor([&] { return winByApp(QStringLiteral("taos.test.sp")).isEmpty(); }));
     }
 };
 

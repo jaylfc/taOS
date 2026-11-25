@@ -64,13 +64,24 @@ QJsonObject Window::toJson() const {
     o.insert(QStringLiteral("floating"), floating);
     o.insert(QStringLiteral("fullscreen"), fullscreen);
     o.insert(QStringLiteral("output"), output);
+    o.insert(QStringLiteral("full_size"), fullSize);
+    return o;
+}
+
+QJsonObject Workspace::toJson() const {
+    QJsonObject o;
+    o.insert(QStringLiteral("name"), name);
+    o.insert(QStringLiteral("output"), output);
+    o.insert(QStringLiteral("focused"), focused);
+    o.insert(QStringLiteral("visible"), visible);
+    o.insert(QStringLiteral("windows"), count);
     return o;
 }
 
 bool Window::operator==(const Window &o) const {
     return id == o.id && appId == o.appId && title == o.title && pid == o.pid && workspace == o.workspace
            && focused == o.focused && minimised == o.minimised && floating == o.floating
-           && fullscreen == o.fullscreen && output == o.output;
+           && fullscreen == o.fullscreen && output == o.output && fullSize == o.fullSize;
 }
 
 QJsonObject WindowEvent::toJson() const {
@@ -230,6 +241,11 @@ bool parseTree(const QByteArray &json, Tree *out, QString *error) {
         const Window *f = out->find(out->focusedId);
         if (f) out->focusedWorkspace = f->workspace;
     }
+    for (const Window &win : std::as_const(out->windows)) {
+        if (win.inScratchpad) continue;
+        for (Workspace &ws : out->workspaces)
+            if (ws.name == win.workspace && ws.output == win.output) { ++ws.count; break; }
+    }
     // A parked window's output: the output of its workspace, when that workspace still exists.
     for (Window &win : out->windows) {
         if (win.inScratchpad && !win.workspace.isEmpty()) {
@@ -252,6 +268,11 @@ QList<WindowEvent> diffWindows(const Tree &before, const Tree &after) {
         else if (b->minimised && !a.minimised) ev.push_back({QStringLiteral("restore"), a, *b});
         if (b->title != a.title) ev.push_back({QStringLiteral("title"), a});
         if (!b->focused && a.focused) ev.push_back({QStringLiteral("focus"), a});
+        // Where it is or how big it is meant to be changed (maximise, full screen, floating, another space): the dock's labels follow.
+        if (!b->minimised && !a.minimised
+            && (b->fullscreen != a.fullscreen || b->fullSize != a.fullSize || b->floating != a.floating
+                || b->workspace != a.workspace || b->output != a.output))
+            ev.push_back({QStringLiteral("state"), a});
     }
     return ev;
 }

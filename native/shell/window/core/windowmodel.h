@@ -50,7 +50,7 @@ struct Window {
     QRect savedGeometry;        // from taos_geo_ (minimised) or empty
     QRect fullSavedGeometry;    // from taos_fgeo_
     QStringList marks;          // all marks, ours and others
-    QJsonObject toJson() const; // the contract: id app_id title pid workspace focused minimised floating fullscreen output
+    QJsonObject toJson() const; // the contract: id app_id title pid workspace focused minimised floating fullscreen output full_size
     bool operator==(const Window &o) const;
 };
 
@@ -60,6 +60,8 @@ struct Workspace {
     QRect rect;                 // the usable area: output minus layer-shell reserved space (bar, dock)
     bool focused = false;
     bool visible = false;
+    int count = 0;              // windows on it (minimised ones are not on a workspace)
+    QJsonObject toJson() const; // {name, output, focused, visible, windows}
 };
 
 struct Tree {
@@ -77,7 +79,7 @@ bool parseTree(const QByteArray &json, Tree *out, QString *error = nullptr);
 bool isOurMark(const QString &mark);   // starts with "taos_"
 
 struct WindowEvent {
-    QString kind;      // new close focus title minimise restore mode
+    QString kind;      // new close focus title minimise restore state mode
     Window window;
     Window before;     // minimise, restore: the window as it was in the previous snapshot (not in the JSON)
     QString workspace; // mode events: which workspace
