@@ -1,0 +1,11 @@
+{
+ "blkid": {
+  "out": "DEVNAME=swap.img\nENDIANNESS=LITTLE\nFSBLOCKSIZE=4096\nFSSIZE=67104768\nFSLASTBLOCK=16384\nUUID=4a31a2a8-1b94-4e7a-bfb8-ad83fe986f26\nVERSION=1\nTYPE=swap\nUSAGE=other\n",
+  "rc": 0
+ },
+ "synthetic_image": false,
+ "wipefs": {
+  "out": "{\n   \"signatures\": [\n      {\n         \"device\": \"swap.img\",\n         \"offset\": \"0xff6\",\n         \"type\": \"swap\",\n         \"uuid\": \"4a31a2a8-1b94-4e7a-bfb8-ad83fe986f26\",\n         \"label\": null\n      }\n   ]\n}\n",
+  "rc": 0
+ }
+}

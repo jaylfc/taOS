@@ -1,0 +1,11 @@
+{
+ "blkid": {
+  "out": "",
+  "rc": 2
+ },
+ "synthetic_image": true,
+ "wipefs": {
+  "out": "{\n   \"signatures\": [\n      {\n         \"device\": \"lvm.img\",\n         \"offset\": \"0x218\",\n         \"type\": \"LVM2_member\",\n         \"uuid\": null,\n         \"label\": null\n      }\n   ]\n}\n",
+  "rc": 0
+ }
+}

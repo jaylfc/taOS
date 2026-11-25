@@ -1,0 +1,11 @@
+{
+ "blkid": {
+  "out": "DEVNAME=gpt_no_parts.img\nPTUUID=109fee6c-3e4f-4410-a934-54ccb75b973d\nPTTYPE=gpt\n",
+  "rc": 0
+ },
+ "synthetic_image": false,
+ "wipefs": {
+  "out": "{\n   \"signatures\": [\n      {\n         \"device\": \"gpt_no_parts.img\",\n         \"offset\": \"0x200\",\n         \"type\": \"gpt\",\n         \"uuid\": null,\n         \"label\": null\n      },{\n         \"device\": \"gpt_no_parts.img\",\n         \"offset\": \"0x7fffe00\",\n         \"type\": \"gpt\",\n         \"uuid\": null,\n         \"label\": null\n      },{\n         \"device\": \"gpt_no_parts.img\",\n         \"offset\": \"0x1fe\",\n         \"type\": \"PMBR\",\n         \"uuid\": null,\n         \"label\": null\n      }\n   ]\n}\n",
+  "rc": 0
+ }
+}

@@ -1,0 +1,24 @@
+{
+ "disk": {
+  "blkid": {
+   "out": "DEVNAME=gpt_emptypart.img\nPTUUID=19cc64e5-47ec-4ce5-982e-762259a22c75\nPTTYPE=gpt\n",
+   "rc": 0
+  },
+  "synthetic_image": false,
+  "wipefs": {
+   "out": "{\n   \"signatures\": [\n      {\n         \"device\": \"gpt_emptypart.img\",\n         \"offset\": \"0x200\",\n         \"type\": \"gpt\",\n         \"uuid\": null,\n         \"label\": null\n      },{\n         \"device\": \"gpt_emptypart.img\",\n         \"offset\": \"0x7fffe00\",\n         \"type\": \"gpt\",\n         \"uuid\": null,\n         \"label\": null\n      },{\n         \"device\": \"gpt_emptypart.img\",\n         \"offset\": \"0x1fe\",\n         \"type\": \"PMBR\",\n         \"uuid\": null,\n         \"label\": null\n      }\n   ]\n}\n",
+   "rc": 0
+  }
+ },
+ "part1": {
+  "blkid": {
+   "out": "",
+   "rc": 2
+  },
+  "synthetic_image": false,
+  "wipefs": {
+   "out": "{\n   \"signatures\": [\n\n   ]\n}\n",
+   "rc": 0
+  }
+ }
+}

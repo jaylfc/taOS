@@ -3157,3 +3157,7 @@ both are worker-to-controller (HMAC), not agent-facing:
 - `POST /api/cluster/workers/{name}/deploy` — documented inline: operator
   session required (not session-exempt); per-worker deploy locks prevent
   concurrent install/restart double-installs.
+
+## Storage areas (`/api/storage/*`, `taosctl storage`)
+
+Adding a disk formats it, so an agent never does it directly. `POST /api/storage/areas`, `PUT /api/storage/primary` and the approve and reject routes return 403 to a request that carries an agent identity. An agent files a proposal instead (`POST /api/storage/proposals`, `taosctl storage propose add|set-primary ...`), which changes nothing; a person approves it (`taosctl storage approve <id> --confirm "<model> <serial>"`) and an add still needs that typed confirmation. Reading disks and areas (`GET /api/storage/disks|areas|status`) is admin or owner only. A person's own primary home and its capacity: `GET /api/storage/primary`. Full behaviour: `docs/storage-engine.md`.

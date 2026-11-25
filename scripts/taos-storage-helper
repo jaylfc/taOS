@@ -1,0 +1,569 @@
+#!/usr/bin/python3 -I
+"""taos-storage-helper: the root half of the taOS storage engine.
+
+Installed root-owned by scripts/install-storage-helper.sh, and run only through
+sudo by the taOS service account (see packaging/taos-storage.sudoers). It is the
+ONLY code that formats a disk. It is deliberately small and has a fixed set of
+subcommands:
+
+    list                                   classify every disk (JSON)
+    status                                 which tools are present (JSON)
+    add --device P --name N --kind K --confirm S
+    prepare-home --area N --person ID      create a person's directory on an area
+    install-veracrypt --accept-licence     fetch the pinned VeraCrypt release
+
+THE RULES, each enforced here and not delegated to the caller:
+
+* ``add`` takes a /dev/disk/by-id path, resolves it, checks it is a block device,
+  and RE-RUNS the safety classifier itself immediately before writing. It
+  refuses unless the disk is ``available``, whatever the caller believed.
+* It re-checks the confirm string (model + serial, exact) against the values it
+  read from the device itself.
+* Every command is an argument list run with check=True; there is no shell.
+* On any failure it stops, changes nothing further, and reports the last
+  completed step and what state the disk is in. It never tries to undo a
+  partial format by wiping.
+* It refuses to run unless this file and the classifier are root-owned and not
+  writable by anyone else, so the sudoers entry cannot be turned into a
+  general root pass-through by editing code the service account can write.
+"""
+from __future__ import annotations
+
+import argparse
+import dataclasses
+import hashlib
+import importlib.util
+import json
+import os
+import re
+import secrets
+import stat
+import subprocess
+import sys
+import tempfile
+import time
+import urllib.request
+
+CLASSIFIER_DIR = "/usr/local/lib/taos-storage"
+TOOL_DIRS = ("/usr/sbin", "/sbin", "/usr/bin", "/bin")
+NAME_RE = re.compile(r"^[a-z][a-z0-9-]{0,30}[a-z0-9]$")
+PERSON_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
+BY_ID_RE = re.compile(r"^[A-Za-z0-9._:+=@-]+$")
+KINDS = ("private", "shared")
+
+STATES = {
+    None: "nothing was written; the disk is exactly as it was",
+    "partitioned": "the disk has a new empty GPT partition and nothing else was done",
+    "key": "the disk is partitioned and a key file exists, but the volume is not yet encrypted",
+    "encrypted": "the partition is encrypted but has no filesystem yet; it is safe to remove or redo",
+    "formatted": "the volume is encrypted and formatted but not yet set up to mount at boot",
+    "configured": "the volume is encrypted, formatted and configured; only the first mount did not happen",
+    "mounted": "complete",
+}
+
+
+class Refused(Exception):
+    """The request was refused before anything was written."""
+
+
+class StepFailed(Exception):
+    def __init__(self, step, detail):
+        super().__init__(f"{step}: {detail}")
+        self.step = step
+        self.detail = detail
+
+
+@dataclasses.dataclass
+class Env:
+    """Every path and side effect, so tests run against a scratch tree. Built
+    in-process only; nothing here is read from argv or the environment."""
+
+    key_dir: str = "/etc/taos/keys"
+    mount_root: str = "/srv/taos/storage"
+    crypttab: str = "/etc/crypttab"
+    fstab: str = "/etc/fstab"
+    areas_dir: str = "/etc/taos/storage/areas"
+    log_path: str = "/var/log/taos-storage.log"
+    by_id_dir: str = "/dev/disk/by-id"
+    manifest: str = CLASSIFIER_DIR + "/veracrypt.json"
+    run: object = None          # (argv, input=None) -> (rc, out, err)
+    policy: object = None       # classifier Policy; None = production
+    head_reader: object = None  # (path, offset, length) -> bool all-zero
+    fetch: object = None        # (url) -> bytes
+    caller_uid: int | None = None
+    caller_gid: int | None = None
+    systemd: bool = True
+    is_block: object = None     # (path) -> bool
+    read_text: object = None    # (path) -> str; default reads the file
+    open_exclusive: object = None  # (path) -> None, raises OSError if the disk is in use
+    have_tool: object = None    # (name) -> bool; default looks in TOOL_DIRS
+    now: object = time.time
+
+
+_sc = None
+
+
+def sc():
+    """The classifier, loaded from the root-owned install directory."""
+    global _sc
+    if _sc is None:
+        path = os.path.join(CLASSIFIER_DIR, "storage_classifier.py")
+        spec = importlib.util.spec_from_file_location("storage_classifier", path)
+        mod = importlib.util.module_from_spec(spec)
+        sys.modules["storage_classifier"] = mod
+        spec.loader.exec_module(mod)
+        _sc = mod
+    return _sc
+
+
+# ------------------------------------------------------------------ plumbing
+
+
+def find_tool(name, env=None):
+    for d in TOOL_DIRS:
+        p = os.path.join(d, name)
+        if os.access(p, os.X_OK):
+            return p
+    return None
+
+
+def default_run(argv, input=None):
+    p = subprocess.run(argv, input=input, capture_output=True, text=True, check=False, timeout=3600)
+    return p.returncode, p.stdout, p.stderr
+
+
+def _runner(env):
+    run = env.run or default_run
+
+    def runner(argv):
+        exe = find_tool(argv[0]) if env.run is None else argv[0]
+        if exe is None:
+            raise FileNotFoundError(f"{argv[0]} is not installed")
+        return run([exe, *argv[1:]])
+
+    return runner
+
+
+def log(env, event, **fields):
+    line = json.dumps({"ts": env.now(), "event": event, **fields}, sort_keys=True)
+    with open(env.log_path, "a") as f:
+        f.write(line + "\n")
+        f.flush()
+        os.fsync(f.fileno())
+
+
+def command(env, step, argv, input=None):
+    """Run one external command. Failure stops the whole operation."""
+    exe = argv[0] if env.run is not None else find_tool(argv[0])
+    if exe is None:
+        raise StepFailed(step, f"{argv[0]} is not installed")
+    log(env, "run", step=step, argv=[exe, *argv[1:]])
+    rc, out, err = (env.run or default_run)([exe, *argv[1:]], input=input)
+    log(env, "done", step=step, rc=rc)
+    if rc != 0:
+        raise StepFailed(step, f"{argv[0]} exited {rc}: {err.strip()[:300]}")
+    return out
+
+
+def _open_exclusive(path):
+    os.close(os.open(path, os.O_RDWR | os.O_EXCL))
+
+
+def default_head_reader(path, offset, length):
+    fd = os.open(path, os.O_RDONLY)
+    try:
+        if offset < 0:
+            size = os.lseek(fd, 0, os.SEEK_END)
+            os.lseek(fd, max(0, size - length), os.SEEK_SET)
+        else:
+            os.lseek(fd, offset, os.SEEK_SET)
+        data = os.read(fd, length)
+    finally:
+        os.close(fd)
+    if not data:
+        raise OSError(f"read nothing from {path}")
+    return data.count(0) == len(data)
+
+
+def read_by_id(env):
+    out = {}
+    for name in sorted(os.listdir(env.by_id_dir)):
+        out.setdefault(os.path.realpath(os.path.join(env.by_id_dir, name)), []).append(name)
+    return out
+
+
+def known_areas(env):
+    serials, wwns, names = set(), set(), set()
+    if os.path.isdir(env.areas_dir):
+        for fn in os.listdir(env.areas_dir):
+            if not fn.endswith(".json"):
+                continue
+            with open(os.path.join(env.areas_dir, fn)) as f:  # an unreadable record must stop us
+                rec = json.load(f)
+            names.add(rec.get("name"))
+            if rec.get("serial"):
+                serials.add(rec["serial"])
+            if rec.get("wwn"):
+                wwns.add(rec["wwn"])
+    return serials, wwns, names
+
+
+def classify_now(env):
+    mod = sc()
+    def reader(p):
+        with open(p) as f:
+            return f.read()
+    reader = env.read_text or reader
+    snap = mod.collect(_runner(env), reader, env.head_reader or default_head_reader, lambda: read_by_id(env))
+    serials, wwns, _ = known_areas(env)
+    return mod.classify(snap, env.policy, known_serials=serials, known_wwns=wwns)
+
+
+def check_own_files(paths, expected_uid=0):
+    """Refuse to run if our own code could have been edited by someone else."""
+    for p in paths:
+        for q in (p, os.path.dirname(os.path.realpath(p))):
+            st = os.stat(q)
+            if st.st_uid != expected_uid or st.st_mode & (stat.S_IWGRP | stat.S_IWOTH):
+                raise Refused(f"{q} is not owned by root or is writable by others; reinstall the helper")
+
+
+# ------------------------------------------------------------------ validation
+
+
+def validate_name(name):
+    if not isinstance(name, str) or not NAME_RE.match(name):
+        raise Refused("area name must be 2-32 characters: lowercase letters, digits and dashes, starting with a letter")
+    if name.startswith("-") or "--" in name:
+        raise Refused("area name must not contain '--'")
+    return name
+
+
+def resolve_device(env, path):
+    if not isinstance(path, str) or os.path.dirname(path) != env.by_id_dir:
+        raise Refused(f"the disk must be given as a path directly inside {env.by_id_dir}")
+    base = os.path.basename(path)
+    if not BY_ID_RE.match(base) or "-part" in base:
+        raise Refused("the disk must be a whole-disk by-id name, not a partition")
+    real = os.path.realpath(path)
+    is_block = env.is_block or (lambda p: stat.S_ISBLK(os.stat(p).st_mode))
+    try:
+        ok = is_block(real)
+    except OSError as exc:
+        raise Refused(f"cannot inspect {real}: {exc}")
+    if not ok:
+        raise Refused(f"{real} is not a block device")
+    return real
+
+
+# --------------------------------------------------------------------- subcommands
+
+
+def cmd_list(env):
+    res = classify_now(env)
+    return {"ok": res.error is None, "error": res.error, "disks": res.disks}
+
+
+def cmd_status(env):
+    tools = ("sfdisk", "cryptsetup", "mkfs.btrfs", "mkfs.ntfs", "mount", "blkid", "wipefs", "lsblk", "findmnt", "veracrypt")
+    present = {t: bool(find_tool(t)) for t in tools}
+    return {"ok": True, "tools": present, "veracrypt": present["veracrypt"],
+            "shared_ready": all(present[t] for t in ("veracrypt", "mkfs.ntfs", "cryptsetup"))}
+
+
+def _write_atomic(path, text, mode=0o644):
+    tmp = f"{path}.taos-{secrets.token_hex(4)}"
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, mode)
+    try:
+        with os.fdopen(fd, "w") as f:
+            f.write(text)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, path)
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+
+
+def append_line(path, line, key):
+    """Append one fstab/crypttab line atomically; refuse a duplicate key."""
+    try:
+        with open(path) as f:
+            text = f.read()
+    except FileNotFoundError:
+        text = ""
+    for existing in text.splitlines():
+        if existing.split() and existing.split()[0] == key:
+            raise StepFailed("config", f"{path} already has an entry for {key}")
+    if text and not text.endswith("\n"):
+        text += "\n"
+    _write_atomic(path, text + line + "\n")
+
+
+def create_key(env, name):
+    os.makedirs(env.key_dir, mode=0o700, exist_ok=True)
+    st = os.stat(env.key_dir)
+    if st.st_mode & 0o077:
+        raise StepFailed("key", f"{env.key_dir} is accessible to others")
+    path = os.path.join(env.key_dir, f"{name}.key")
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o400)
+    with os.fdopen(fd, "wb") as f:
+        f.write(secrets.token_bytes(64))
+        f.flush()
+        os.fsync(f.fileno())
+    return path
+
+
+def _failure(steps, step, detail):
+    last = steps[-1] if steps else None
+    state = STATES.get(last, "see steps")
+    if step in ("partition", "encrypt", "format"):
+        state = f"the step '{step}' failed part-way and may have written to the disk; last completed: {last or 'none'}. {state}"
+    return {"ok": False, "refused": False, "failed_step": step, "error": detail, "steps": steps,
+            "state": state, "note": "nothing was undone; the state above is what exists now"}
+
+
+def cmd_add(env, device, name, kind, confirm):
+    steps = []
+    try:
+        return _add(env, device, name, kind, confirm, steps)
+    except Refused as exc:
+        return {"ok": False, "refused": True, "error": str(exc), "steps": steps, "state": STATES[None]}
+    except StepFailed as exc:
+        return _failure(steps, exc.step, exc.detail)
+    except Exception as exc:  # anything unforeseen is a failure with a known state, never a traceback
+        if not steps:
+            return {"ok": False, "refused": True, "error": f"unexpected error before any write: {exc!r}", "steps": steps, "state": STATES[None]}
+        return _failure(steps, "unexpected", repr(exc))
+
+
+def _add(env, device, name, kind, confirm, steps):
+    validate_name(name)
+    if kind not in KINDS:
+        raise Refused("kind must be 'private' or 'shared'")
+    if not isinstance(confirm, str) or not confirm:
+        raise Refused("a confirm string is required")
+    try:
+        log(env, "start", op="add", name=name, kind=kind)
+    except OSError as exc:
+        raise Refused(f"cannot write the audit log, so nothing was done: {exc}")
+    real = resolve_device(env, device)
+
+    res = classify_now(env)
+    if res.error:
+        raise Refused(f"the safety check could not run: {res.error}")
+    rec = next((d for d in res.disks if d["path"] == real), None)
+    if rec is None:
+        raise Refused(f"{real} was not found among the machine's disks")
+    if rec["class"] != "available":
+        raise Refused("this disk is protected and will not be formatted: " + "; ".join(rec["reasons"]))
+    if confirm != rec["confirm"]:
+        raise Refused("the confirmation does not match this disk's model and serial exactly")
+
+    serials, wwns, names = known_areas(env)
+    if name in names:
+        raise Refused(f"a storage area called {name} already exists")
+    mapper = f"taos-{name}"
+    key_path = os.path.join(env.key_dir, f"{name}.key")
+    mount = os.path.join(env.mount_root, name)
+    if os.path.exists(key_path) or os.path.exists(mount):
+        raise Refused(f"{name} already has a key file or mount point; refusing to reuse it")
+
+    needed = ["sfdisk", "cryptsetup", "blkid", "mount", "udevadm"]
+    needed += ["mkfs.btrfs"] if kind == "private" else ["veracrypt", "mkfs.ntfs", "mount.ntfs-3g"]
+    have = env.have_tool or (lambda t: find_tool(t) is not None)
+    missing = [t for t in needed if not have(t)]
+    if missing:
+        hint = ""
+        if "veracrypt" in missing:
+            hint = " VeraCrypt is not installed; run install-veracrypt (it needs the licence accepted) first."
+        raise Refused("required tools are not installed: " + ", ".join(missing) + "." + hint)
+
+    # Last look: nobody else may hold the disk open. O_EXCL fails on a mounted or claimed device.
+    try:
+        (env.open_exclusive or _open_exclusive)(real)
+    except OSError as exc:
+        raise Refused(f"the disk is in use and cannot be opened exclusively: {exc}")
+
+    # ---- partition
+    script = f"label: gpt\nunit: sectors\n\nstart=2048, type=L, name=taos-{name}\n"
+    command(env, "partition", ["sfdisk", "--quiet", real], input=script)
+    steps.append("partitioned")
+    command(env, "settle", ["udevadm", "settle"])
+    lsb = json.loads(command(env, "find-partition", ["lsblk", "-J", "-b", "-O", real]))
+    kids = (lsb.get("blockdevices") or [{}])[0].get("children") or []
+    if len(kids) != 1:
+        raise StepFailed("find-partition", f"expected exactly one new partition, found {len(kids)}")
+    part, partuuid = kids[0]["path"], kids[0].get("partuuid")
+    if not partuuid:
+        raise StepFailed("find-partition", "the new partition has no PARTUUID")
+
+    # ---- key + encrypt
+    create_key(env, name)
+    steps.append("key")
+    if kind == "private":
+        command(env, "encrypt", ["cryptsetup", "luksFormat", "--type", "luks2", "--batch-mode", "--key-file", key_path, part])
+        luks_uuid = command(env, "luks-uuid", ["cryptsetup", "luksUUID", part]).strip()
+        command(env, "unlock", ["cryptsetup", "open", "--key-file", key_path, part, mapper])
+        steps.append("encrypted")
+        dev = f"/dev/mapper/{mapper}"
+        command(env, "format", ["mkfs.btrfs", "-q", "-L", f"taos-{name}", dev])
+        fstype, opts = "btrfs", "defaults,nofail,x-systemd.device-timeout=10"
+        cryptline = f"{mapper} UUID={luks_uuid} {key_path} luks,nofail"
+    else:
+        command(env, "encrypt", ["veracrypt", "--text", "--non-interactive", "--create", part, "--volume-type=normal",
+                                 "--encryption=AES", "--hash=SHA-512", "--filesystem=NTFS", "--pim=0",
+                                 f"--keyfiles={key_path}", "--password=", "--random-source=/dev/urandom"])
+        steps.append("encrypted")
+        command(env, "unlock", ["cryptsetup", "open", "--type", "tcrypt", "--veracrypt", "--key-file", key_path, part, mapper])
+        dev = f"/dev/mapper/{mapper}"
+        uid, gid = env.caller_uid, env.caller_gid
+        if uid is None or gid is None:
+            raise StepFailed("format", "the service account is unknown")
+        fstype, opts = "ntfs-3g", f"defaults,nofail,x-systemd.device-timeout=10,uid={uid},gid={gid},umask=0077"
+        cryptline = f"{mapper} PARTUUID={partuuid} none tcrypt-veracrypt,tcrypt-keyfile={key_path},nofail"
+    steps.append("formatted")
+    fs_uuid = command(env, "fs-uuid", ["blkid", "-s", "UUID", "-o", "value", dev]).strip()
+    if not fs_uuid:
+        raise StepFailed("fs-uuid", "the new filesystem has no UUID")
+
+    # ---- boot configuration
+    os.makedirs(mount, mode=0o755, exist_ok=True)
+    append_line(env.crypttab, cryptline, mapper)
+    append_line(env.fstab, f"UUID={fs_uuid} {mount} {fstype} {opts} 0 0", f"UUID={fs_uuid}")
+    steps.append("configured")
+    if env.systemd:
+        command(env, "reload", ["systemctl", "daemon-reload"])
+    command(env, "mount", ["mount", "-t", fstype, "-o", opts, dev, mount])
+    if not os.path.ismount(mount) and env.run is None:
+        raise StepFailed("mount", f"{mount} is not a mount point after mounting")
+    steps.append("mounted")
+
+    record = {
+        "name": name, "kind": kind, "mount": mount, "mapper": mapper, "fstype": fstype,
+        "serial": rec["serial"], "model": rec["model"], "wwn": (rec.get("wwn") or None),
+        "size": rec["size"], "partuuid": partuuid, "fs_uuid": fs_uuid, "key_file": key_path,
+        "encryption": "luks2" if kind == "private" else "veracrypt", "created": env.now(),
+    }
+    os.makedirs(env.areas_dir, mode=0o755, exist_ok=True)
+    _write_atomic(os.path.join(env.areas_dir, f"{name}.json"), json.dumps(record, indent=1) + "\n")
+    log(env, "complete", name=name)
+    return {"ok": True, "steps": steps, "state": STATES["mounted"], "area": record}
+
+
+def cmd_prepare_home(env, area, person):
+    try:
+        validate_name(area)
+        if not PERSON_RE.match(person or ""):
+            raise Refused("bad person id")
+        uid, gid = env.caller_uid, env.caller_gid
+        if not uid or not gid:
+            raise Refused("the calling service account is unknown (run through sudo)")
+        _, _, names = known_areas(env)
+        if area not in names:
+            raise Refused(f"no storage area called {area}")
+        mount = os.path.join(env.mount_root, area)
+        if not os.path.ismount(mount):
+            raise Refused(f"{area} is not mounted")
+        people = os.path.join(mount, "people")
+        if os.path.lexists(people) and (os.path.islink(people) or not os.path.isdir(people)):
+            raise Refused("the people directory is not a plain directory")
+        os.makedirs(people, mode=0o755, exist_ok=True)
+        home = os.path.join(people, person)
+        if os.path.lexists(home) and os.path.islink(home):
+            raise Refused("the person's directory is a symlink")
+        os.makedirs(home, mode=0o700, exist_ok=True)
+        os.chown(home, uid, gid)
+        os.chmod(home, 0o700)
+        log(env, "prepare-home", area=area, person=person, uid=uid)
+        return {"ok": True, "path": home}
+    except Refused as exc:
+        return {"ok": False, "refused": True, "error": str(exc)}
+
+
+def cmd_install_veracrypt(env, accept):
+    if not accept:
+        return {"ok": False, "refused": True,
+                "error": "VeraCrypt has its own licence; it must be accepted explicitly (--accept-licence)"}
+    try:
+        with open(env.manifest) as f:
+            m = json.load(f)
+        url, want = m["url"], m["sha256"]
+        if not url.startswith("https://") or not re.fullmatch(r"[0-9a-f]{64}", want):
+            raise ValueError("manifest must have an https url and a sha256")
+    except (OSError, ValueError, KeyError) as exc:
+        return {"ok": False, "refused": True,
+                "error": f"VeraCrypt is not available on this machine: no pinned release is shipped ({exc}). "
+                         "Use the private (btrfs + LUKS) option, or install VeraCrypt yourself."}
+    data = (env.fetch or (lambda u: urllib.request.urlopen(u, timeout=60).read()))(url)
+    if hashlib.sha256(data).hexdigest() != want:
+        return {"ok": False, "refused": True, "error": "the downloaded VeraCrypt package does not match the pinned checksum; nothing was installed"}
+    fd, path = tempfile.mkstemp(suffix=".deb")  # 0600, unique, root's own
+    with os.fdopen(fd, "wb") as f:
+        f.write(data)
+    try:
+        command(env, "install-veracrypt", ["apt-get", "install", "-y", path])
+    except StepFailed as exc:
+        return {"ok": False, "refused": False, "error": exc.detail}
+    finally:
+        os.unlink(path)
+    return {"ok": True}
+
+
+# ------------------------------------------------------------------------- main
+
+
+def production_env():
+    uid = os.environ.get("SUDO_UID")
+    gid = os.environ.get("SUDO_GID")
+    return Env(caller_uid=int(uid) if uid and uid.isdigit() else None,
+               caller_gid=int(gid) if gid and gid.isdigit() else None)
+
+
+def main(argv=None, env=None):
+    p = argparse.ArgumentParser(prog="taos-storage-helper")
+    sub = p.add_subparsers(dest="cmd", required=True)
+    sub.add_parser("list")
+    sub.add_parser("status")
+    a = sub.add_parser("add")
+    a.add_argument("--device", required=True)
+    a.add_argument("--name", required=True)
+    a.add_argument("--kind", required=True, choices=KINDS)
+    a.add_argument("--confirm", required=True)
+    h = sub.add_parser("prepare-home")
+    h.add_argument("--area", required=True)
+    h.add_argument("--person", required=True)
+    v = sub.add_parser("install-veracrypt")
+    v.add_argument("--accept-licence", action="store_true")
+    args = p.parse_args(argv)
+
+    if env is None:
+        if os.geteuid() != 0:
+            print(json.dumps({"ok": False, "refused": True, "error": "must run as root (through sudo)"}))
+            return 1
+        try:
+            check_own_files([os.path.realpath(__file__), os.path.join(CLASSIFIER_DIR, "storage_classifier.py")])
+        except Refused as exc:
+            print(json.dumps({"ok": False, "refused": True, "error": str(exc)}))
+            return 1
+        env = production_env()
+
+    if args.cmd == "list":
+        out = cmd_list(env)
+    elif args.cmd == "status":
+        out = cmd_status(env)
+    elif args.cmd == "add":
+        out = cmd_add(env, args.device, args.name, args.kind, args.confirm)
+    elif args.cmd == "prepare-home":
+        out = cmd_prepare_home(env, args.area, args.person)
+    else:
+        out = cmd_install_veracrypt(env, args.accept_licence)
+    print(json.dumps(out))
+    return 0 if out.get("ok") else 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())

@@ -1,0 +1,24 @@
+{
+ "disk": {
+  "blkid": {
+   "out": "DEVNAME=gpt_ext4.img\nPTUUID=aa21a453-a4ea-4938-8b5f-a257a7b744a8\nPTTYPE=gpt\n",
+   "rc": 0
+  },
+  "synthetic_image": false,
+  "wipefs": {
+   "out": "{\n   \"signatures\": [\n      {\n         \"device\": \"gpt_ext4.img\",\n         \"offset\": \"0x200\",\n         \"type\": \"gpt\",\n         \"uuid\": null,\n         \"label\": null\n      },{\n         \"device\": \"gpt_ext4.img\",\n         \"offset\": \"0x7fffe00\",\n         \"type\": \"gpt\",\n         \"uuid\": null,\n         \"label\": null\n      },{\n         \"device\": \"gpt_ext4.img\",\n         \"offset\": \"0x1fe\",\n         \"type\": \"PMBR\",\n         \"uuid\": null,\n         \"label\": null\n      }\n   ]\n}\n",
+   "rc": 0
+  }
+ },
+ "part1": {
+  "blkid": {
+   "out": "DEVNAME=gpt_ext4-part1.img\nLABEL=d\nUUID=273e8a2f-798f-4511-bc57-283fbec54f4a\nVERSION=1.0\nFSBLOCKSIZE=1024\nBLOCK_SIZE=1024\nFSLASTBLOCK=50000\nFSSIZE=51200000\nTYPE=ext4\nUSAGE=filesystem\n",
+   "rc": 0
+  },
+  "synthetic_image": false,
+  "wipefs": {
+   "out": "{\n   \"signatures\": [\n      {\n         \"device\": \"gpt_ext4-part1.img\",\n         \"offset\": \"0x438\",\n         \"type\": \"ext4\",\n         \"uuid\": \"273e8a2f-798f-4511-bc57-283fbec54f4a\",\n         \"label\": \"d\"\n      }\n   ]\n}\n",
+   "rc": 0
+  }
+ }
+}
