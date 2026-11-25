@@ -652,6 +652,25 @@ class TestExportFollowups:
         assert "alice" not in json.dumps(out)
         assert redactions
 
+    def test_windows_key_on_different_drive_than_data_dir(self):
+        # ntpath.relpath raises across drives (C: vs D:); the rewrite
+        # must treat a different drive as outside the data dir and fall
+        # back to the basename instead of failing the whole export.
+        data = {"D:\\Users\\alice\\work\\ws": {"model": "m1"}}
+        out = sanitize_for_export(
+            data, "config", [], known_values=[], data_dir="C:\\taos"
+        )
+        assert out == {"ws": {"model": "m1"}}
+        assert "alice" not in json.dumps(out)
+
+    def test_windows_value_on_different_drive_than_data_dir(self):
+        data = {"agents": [{"name": "a", "workspace": "D:\\Users\\alice\\work\\ws"}]}
+        out = sanitize_for_export(
+            data, "agents", [], known_values=[], data_dir="C:\\taos"
+        )
+        assert out["agents"][0]["workspace"] == "ws"
+        assert "alice" not in json.dumps(out)
+
 @pytest.mark.asyncio
 class TestBuildExportBundleFollowups:
     async def test_agent_env_innocent_name_redacted_in_bundle(self, tmp_path):
@@ -670,5 +689,7 @@ class TestBuildExportBundleFollowups:
         assert env["TZ"] == "Europe/Oslo"
         paths = {e["path"] for e in bundle["manifest"]["excluded"]}
         assert "agents.active[0].env.INNOCENT_NAME" in paths
+
+
 
 

@@ -267,7 +267,12 @@ def _rewrite_path_parts(
         # return the whole path untouched. A relative form is only
         # computed against a Windows-shaped data dir.
         if data_dir and _DRIVE_RE.match(data_dir):
-            rel = ntpath.relpath(value, data_dir)
+            try:
+                rel = ntpath.relpath(value, data_dir)
+            except ValueError:
+                # Different drives (C: vs D:): no relative form exists;
+                # fall through to the basename treatment.
+                rel = ".."
             if rel != ".." and not rel.startswith(".." + ntpath.sep):
                 return rel, "absolute path rewritten relative to the data dir"
         return (
