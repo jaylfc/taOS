@@ -423,6 +423,37 @@ async def restore_backup(request: Request, file: UploadFile):
     return {"status": "restored", "message": "Backup restored successfully"}
 
 
+@router.get("/api/settings/export")
+async def export_settings_bundle(request: Request):
+    """Download the structured backup/export bundle (#620, slice 1).
+
+    Unlike ``POST /api/backup`` -- a raw tarball of data-dir files,
+    config.yaml included verbatim -- this bundle is built to be kept and
+    shared: secret values never appear in it. Secret-bearing fields carry
+    the redaction marker instead, the secrets store contributes only
+    name/category references, and the bundle's manifest lists every
+    redaction and omission. Admin-gated by this router's dependency, like
+    every handler in this module. Import/restore of a bundle is the
+    follow-on slice, not this endpoint.
+    """
+    from tinyagentos.backup_export import build_export_bundle
+
+    state = request.app.state
+    bundle = await build_export_bundle(
+        config=state.config,
+        notifications=getattr(state, "notifications", None),
+        projects=getattr(state, "project_store", None),
+        desktop_settings=getattr(state, "desktop_settings", None),
+        secrets=getattr(state, "secrets", None),
+        agent_registry=getattr(state, "agent_registry", None),
+    )
+    filename = f"taos-export-{int(time.time())}.json"
+    return JSONResponse(
+        content=bundle,
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
 class BackupSchedule(BaseModel):
     frequency: str  # "off", "daily", "weekly"
 

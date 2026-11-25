@@ -941,6 +941,44 @@ class NotificationStore(BaseStore):
             for event_type in sorted(self.EVENT_TYPES)
         ]
 
+    async def export_prefs(self) -> dict:
+        """Every user's delivery prefs + DND, grouped by user (backup
+        export, #620).
+
+        Reads the prefs tables directly -- the per-user getters would need
+        a user list this store does not own. Only stored rows are exported
+        (no defaults are materialised), and no notification content is
+        included: event types, delivery style, centre visibility, DND.
+        """
+        export: dict[str, dict] = {}
+        async with self._db.execute(
+            "SELECT user_id, event_type, muted, style, show_centre "
+            "FROM notification_prefs ORDER BY user_id, event_type"
+        ) as cur:
+            pref_rows = await cur.fetchall()
+        for user_id, event_type, muted, style, show_centre in pref_rows:
+            entry = export.setdefault(user_id, {"events": []})
+            entry["events"].append({
+                "event_type": event_type,
+                "muted": bool(muted),
+                "style": style,
+                "show_centre": bool(show_centre),
+            })
+        async with self._db.execute(
+            "SELECT user_id, enabled, start, end, timezone "
+            "FROM notification_dnd ORDER BY user_id"
+        ) as cur:
+            dnd_rows = await cur.fetchall()
+        for user_id, enabled, start, end, timezone in dnd_rows:
+            entry = export.setdefault(user_id, {"events": []})
+            entry["dnd"] = {
+                "enabled": bool(enabled),
+                "start": start,
+                "end": end,
+                "timezone": timezone,
+            }
+        return export
+
     async def set_event_pref(
         self,
         user_id: str,
