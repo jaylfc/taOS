@@ -12,6 +12,7 @@
 #include <memory>
 
 #include "mapdata.h"
+#include "meshinterface.h"
 #include "packmanager.h"
 #include "radiodetector.h"
 #include "statestore.h"
@@ -250,6 +251,9 @@ class SurvivalBackend : public QObject
     Q_PROPERTY(QObject *map READ map CONSTANT)
     Q_PROPERTY(QObject *radios READ radios CONSTANT)
     Q_PROPERTY(QObject *kits READ kits CONSTANT)
+    Q_PROPERTY(QObject *mesh READ mesh NOTIFY meshChanged)
+    Q_PROPERTY(bool meshAvailable READ meshAvailable NOTIFY meshChanged)
+    Q_PROPERTY(QString meshReason READ meshReason NOTIFY meshChanged)
 public:
     explicit SurvivalBackend(const QString &dataDir, QObject *parent = nullptr);
     QObject *packs() { return &m_packs; }
@@ -257,14 +261,28 @@ public:
     QObject *map() { return &m_map; }
     QObject *radios() { return &m_radios; }
     QObject *kits() { return &m_kits; }
+    QObject *mesh() { return m_mesh; }
+    bool meshAvailable() const { return m_mesh && m_mesh->available(); }
+    QString meshReason() const { return m_mesh ? m_mesh->unavailableReason() : QString(); }
+    /// Replaces the stand-in with the real mesh engine's backend (not owned unless it has this object as parent).
+    void setMesh(MeshBackend *b);
+    /// Messages of a thread (all when empty), as QML values; empty while the engine is missing.
+    Q_INVOKABLE QVariantList meshMessages(const QString &threadId = QString()) const;
+    Q_INVOKABLE QVariantList meshIdentities() const;
+    /// Returns an error in words, or an empty string when the message was queued.
+    Q_INVOKABLE QString meshSend(const QString &threadId, const QString &text);
     PacksEngine *packsEngine() { return &m_packs; }
     MapEngine *mapEngine() { return &m_map; }
+Q_SIGNALS:
+    void meshChanged();
 private:
     PacksEngine m_packs;
     LibraryEngine m_library;
     MapEngine m_map;
     RadioEngine m_radios;
     KitEngine m_kits;
+    FakeMeshBackend m_fakeMesh;
+    MeshBackend *m_mesh = &m_fakeMesh;
 };
 
 /// Registers the Taos.Survival QML module: the Survival singleton (which also adds the zimimg image provider to the

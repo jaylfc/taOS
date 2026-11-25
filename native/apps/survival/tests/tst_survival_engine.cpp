@@ -16,6 +16,7 @@
 #include "articlehtml.h"
 #include "fixtures.h"
 #include "kit.h"
+#include "meshinterface.h"
 #include "mapdata.h"
 #include "packmanager.h"
 #include "pmtiles.h"
@@ -632,6 +633,19 @@ private Q_SLOTS:
             QVERIFY(!i.attribution.isEmpty());
             QVERIFY2(!i.url.isEmpty() ? i.url.scheme() == u"https"_s && i.sha256.size() == 64 : !i.recipe.isEmpty(), qPrintable(i.id));
         }
+    }
+
+    // ---- the mesh seam
+    void mesh_fake_backend_is_honest()
+    {
+        FakeMeshBackend b;
+        QVERIFY(!b.available());
+        QVERIFY(!b.unavailableReason().isEmpty());
+        QVERIFY(b.radios().isEmpty() && b.identities().isEmpty() && b.messages(QString()).isEmpty());
+        const MeshSendResult r = b.send(u"!1"_s, u"hello"_s);
+        QVERIFY(!r.accepted);
+        QVERIFY(r.messageId.isEmpty());
+        QVERIFY(!r.error.isEmpty());
     }
 
     // ---- saved state --------------------------------------------------------------------------------------------

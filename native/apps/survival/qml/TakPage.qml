@@ -193,14 +193,14 @@ StagePage {
                         width: parent.width - Look.space6
                         glyph: "message"
                         title: qsTr("No messages")
-                        detail: qsTr("Messaging needs the mesh engine, which is the next piece of work. When it is connected, direct and team messages appear here with their delivery state.")
+                        detail: Survival.meshAvailable ? qsTr("No messages yet.") : qsTr("Messaging needs the mesh engine, which is the next piece of work. When it is connected, direct and team messages appear here with their delivery state.")
                     }
                 }
                 Rectangle { Layout.fillWidth: true; height: 1; color: Look.hairline }
                 RowLayout {
                     Layout.fillWidth: true; Layout.margins: Look.space3; spacing: Look.space2
-                    TaosField { Layout.fillWidth: true; enabled: false; placeholderText: qsTr("Sending needs the mesh engine"); accessibleName: qsTr("Message, not available yet") }
-                    TaosButton { glyph: "send"; variant: "primary"; enabled: false; accessibleName: qsTr("Send, not available yet") }
+                    TaosField { id: msgField; Layout.fillWidth: true; enabled: Survival.meshAvailable; placeholderText: Survival.meshAvailable ? qsTr("Message") : qsTr("Sending needs the mesh engine"); accessibleName: qsTr("Message"); onAccepted: sendBtn.clicked() }
+                    TaosButton { id: sendBtn; glyph: "send"; variant: "primary"; enabled: Survival.meshAvailable && msgField.text.trim() !== ""; accessibleName: qsTr("Send"); onClicked: { if (Survival.meshSend("", msgField.text) === "") msgField.text = "" } }
                 }
             }
         }

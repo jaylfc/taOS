@@ -627,6 +627,39 @@ SurvivalBackend::SurvivalBackend(const QString &dataDir, QObject *parent)
     m_kits.refresh();
 }
 
+void SurvivalBackend::setMesh(MeshBackend *b)
+{
+    if (m_mesh)
+        m_mesh->disconnect(this);
+    m_mesh = b ? b : &m_fakeMesh;
+    for (auto sig : {&MeshBackend::radiosChanged, &MeshBackend::identitiesChanged, &MeshBackend::messagesChanged})
+        connect(m_mesh, sig, this, &SurvivalBackend::meshChanged);
+    Q_EMIT meshChanged();
+}
+QVariantList SurvivalBackend::meshMessages(const QString &threadId) const
+{
+    QVariantList out;
+    for (const MeshMessage &m : m_mesh->messages(threadId))
+        out.append(QVariantMap{{u"id"_s, m.id}, {u"threadId"_s, m.threadId}, {u"from"_s, m.fromId}, {u"to"_s, m.toId}, {u"text"_s, m.text},
+                               {u"timeMs"_s, m.timeMs}, {u"outgoing"_s, m.outgoing}, {u"delivery"_s, m.delivery}, {u"trust"_s, m.trust}});
+    return out;
+}
+QVariantList SurvivalBackend::meshIdentities() const
+{
+    QVariantList out;
+    for (const MeshIdentity &i : m_mesh->identities())
+        out.append(QVariantMap{{u"id"_s, i.id}, {u"callsign"_s, i.callsign}, {u"owner"_s, i.owner}, {u"self"_s, i.isSelf},
+                               {u"hasPosition"_s, i.hasPosition}, {u"lon"_s, i.lon}, {u"lat"_s, i.lat}, {u"lastHeardMs"_s, i.lastHeardMs}});
+    return out;
+}
+QString SurvivalBackend::meshSend(const QString &threadId, const QString &text)
+{
+    if (text.trimmed().isEmpty())
+        return tr("Type a message first.");
+    const MeshSendResult r = m_mesh->send(threadId, text);
+    return r.accepted ? QString() : (r.error.isEmpty() ? tr("The message was not accepted.") : r.error);
+}
+
 void registerSurvivalQml(SurvivalBackend *backend)
 {
     qmlRegisterType<MapView>("Taos.Survival", 1, 0, "MapView");
