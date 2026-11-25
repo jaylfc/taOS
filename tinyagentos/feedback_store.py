@@ -1,9 +1,15 @@
 from __future__ import annotations
 
+import json
+import logging
 import uuid
 from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any, Callable, Optional
 
 from tinyagentos.base_store import BaseStore
+
+logger = logging.getLogger(__name__)
 
 # Maximum allowed screenshot size (base64 data-URL string length, not raw bytes).
 # A 2 MB raw image becomes ~2.73 MB as base64; 4 MB covers that with headroom.
@@ -14,6 +20,22 @@ MAX_BODY_LEN = 20_000
 
 # Maximum feedback submissions per user in a 24-hour window.
 MAX_FEEDBACK_PER_USER_PER_DAY = 20
+
+# The install's checkout root (where tinyagentos/ lives one level down) --
+# the same PROJECT_DIR app.py computes, derived here so the store does not
+# import the app module.
+_PROJECT_DIR = Path(__file__).resolve().parent.parent
+
+
+def _parse_context(raw: Any) -> dict:
+    """Decode a stored context blob; anything unusable reads back as {}."""
+    if not raw:
+        return {}
+    try:
+        parsed = json.loads(raw)
+    except (TypeError, ValueError):
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
 
 
 class FeedbackStore(BaseStore):
@@ -26,11 +48,59 @@ class FeedbackStore(BaseStore):
         body TEXT NOT NULL DEFAULT '',
         screenshot TEXT NOT NULL DEFAULT '',
         app TEXT NOT NULL DEFAULT '',
+        context TEXT NOT NULL DEFAULT '',
         created_at TEXT NOT NULL
     );
     CREATE INDEX IF NOT EXISTS feedback_user_created
         ON feedback (user_id, created_at DESC);
     """
+
+    def __init__(
+        self,
+        db_path: Path,
+        *,
+        context_provider: Optional[Callable[[], dict]] = None,
+    ):
+        super().__init__(db_path)
+        # #777 Layer 1: every submission auto-attaches the local install
+        # context (version/commit, install identity, update history). The
+        # provider is injectable for tests; the default snapshots the
+        # install this store serves -- its data dir is the db's parent.
+        self._context_provider = context_provider
+
+    async def _post_init(self) -> None:
+        # Databases created before #777 have no context column. Guarded
+        # ALTER (PRAGMA check first): SCHEMA's CREATE TABLE covers fresh
+        # databases, this covers existing ones, and the pair is what the
+        # schema-column guard requires for a column added after release.
+        assert self._db is not None
+        cursor = await self._db.execute("PRAGMA table_info(feedback)")
+        cols = {row[1] for row in await cursor.fetchall()}
+        if "context" not in cols:
+            await self._db.execute(
+                "ALTER TABLE feedback ADD COLUMN context TEXT NOT NULL DEFAULT ''"
+            )
+            await self._db.commit()
+
+    def _collect_context(self) -> dict:
+        """Snapshot the install context for one submission; never raises.
+
+        A feedback submission must not fail because an identity or history
+        source is unavailable, so any provider failure degrades to {}.
+        """
+        try:
+            if self._context_provider is not None:
+                provided = self._context_provider()
+            else:
+                from tinyagentos.feedback_context import collect_feedback_context
+
+                provided = collect_feedback_context(
+                    self.db_path.parent, _PROJECT_DIR
+                )
+        except Exception:
+            logger.debug("feedback: context collection failed", exc_info=True)
+            return {}
+        return provided if isinstance(provided, dict) else {}
 
     async def create(
         self,
@@ -45,12 +115,16 @@ class FeedbackStore(BaseStore):
         assert self._db is not None
         item_id = str(uuid.uuid4())
         created_at = datetime.now(timezone.utc).isoformat()
+        context = self._collect_context()
         await self._db.execute(
             """
-            INSERT INTO feedback (id, user_id, type, title, body, screenshot, app, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO feedback (id, user_id, type, title, body, screenshot, app, context, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
-            (item_id, user_id, type, title, body, screenshot, app, created_at),
+            (
+                item_id, user_id, type, title, body, screenshot, app,
+                json.dumps(context), created_at,
+            ),
         )
         await self._db.commit()
         return {
@@ -61,6 +135,7 @@ class FeedbackStore(BaseStore):
             "body": body,
             "screenshot": screenshot,
             "app": app,
+            "context": context,
             "created_at": created_at,
         }
 
@@ -94,16 +169,18 @@ class FeedbackStore(BaseStore):
         assert self._db is not None
         item_id = str(uuid.uuid4())
         created_at = datetime.now(timezone.utc).isoformat()
+        context = self._collect_context()
         cursor = await self._db.execute(
             """
-            INSERT INTO feedback (id, user_id, type, title, body, screenshot, app, created_at)
-            SELECT ?, ?, ?, ?, ?, ?, ?, ?
+            INSERT INTO feedback (id, user_id, type, title, body, screenshot, app, context, created_at)
+            SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?
             WHERE (
                 SELECT COUNT(*) FROM feedback WHERE user_id = ? AND created_at >= ?
             ) < ?
             """,
             (
-                item_id, user_id, type, title, body, screenshot, app, created_at,
+                item_id, user_id, type, title, body, screenshot, app,
+                json.dumps(context), created_at,
                 user_id, since, cap,
             ),
         )
@@ -119,6 +196,7 @@ class FeedbackStore(BaseStore):
             "body": body,
             "screenshot": screenshot,
             "app": app,
+            "context": context,
             "created_at": created_at,
         }
 
@@ -127,7 +205,7 @@ class FeedbackStore(BaseStore):
         assert self._db is not None
         cursor = await self._db.execute(
             """
-            SELECT id, user_id, type, title, body, app, created_at,
+            SELECT id, user_id, type, title, body, app, context, created_at,
                    (screenshot != '') AS has_screenshot
             FROM feedback
             WHERE user_id = ?
@@ -144,8 +222,9 @@ class FeedbackStore(BaseStore):
                 "title": r[3],
                 "body": r[4],
                 "app": r[5],
-                "created_at": r[6],
-                "has_screenshot": bool(r[7]),
+                "context": _parse_context(r[6]),
+                "created_at": r[7],
+                "has_screenshot": bool(r[8]),
             }
             for r in rows
         ]
@@ -155,7 +234,7 @@ class FeedbackStore(BaseStore):
         assert self._db is not None
         cursor = await self._db.execute(
             """
-            SELECT id, user_id, type, title, body, screenshot, app, created_at
+            SELECT id, user_id, type, title, body, screenshot, app, context, created_at
             FROM feedback
             WHERE id = ? AND user_id = ?
             """,
@@ -172,6 +251,7 @@ class FeedbackStore(BaseStore):
             "body": row[4],
             "screenshot": row[5],
             "app": row[6],
-            "created_at": row[7],
+            "context": _parse_context(row[7]),
+            "created_at": row[8],
             "has_screenshot": bool(row[5]),
         }

@@ -98,6 +98,7 @@ async def submit_feedback(
         "title": item["title"],
         "body": item["body"],
         "app": item["app"],
+        "context": item.get("context", {}),
         "created_at": item["created_at"],
         "has_screenshot": bool(item["screenshot"]),
     }
