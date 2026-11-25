@@ -104,6 +104,15 @@ class AppManifest(BaseModel):
     # license_class is "permissive" | "non-commercial" ("" = unknown/code-only).
     weights_license: str = ""
     license_class: str = ""
+    # Licence of the model itself when it differs from both of the above, plus
+    # the details shown to the person at acceptance. The install gate looks at
+    # every licence field (see tinyagentos/license_policy.py), not only
+    # license_class. license_excluded_territories lists ISO 3166-1 alpha-2
+    # codes where the licence does not apply.
+    model_license: str = ""
+    license_version: str = ""
+    license_url: str = ""
+    license_excluded_territories: list[str] = Field(default_factory=list)
     requires: dict[str, Any] = Field(default_factory=dict)
     install: dict[str, Any] = Field(default_factory=dict)
     hardware_tiers: dict[str, Any] = Field(default_factory=dict)

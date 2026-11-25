@@ -10,6 +10,7 @@ from fastapi import APIRouter, Depends, Query, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
+from tinyagentos import license_gate
 from tinyagentos.auth_context import require_admin
 from tinyagentos.installers.model_paths import models_root
 from tinyagentos.model_sources import (
@@ -26,6 +27,9 @@ logger = logging.getLogger(__name__)
 class DownloadRequest(BaseModel):
     app_id: str
     variant_id: str
+    # Licence gate answers; see tinyagentos/license_gate.py.
+    accepted: bool = False
+    country: str | None = None
 
 
 class DeleteRequest(BaseModel):
@@ -377,6 +381,12 @@ async def download_model(request: Request, body: DownloadRequest):
     variant = next((v for v in manifest.variants if v["id"] == body.variant_id), None)
     if not variant:
         return JSONResponse({"error": f"Variant '{body.variant_id}' not found"}, status_code=404)
+
+    refused = await license_gate.enforce(
+        request, manifest, {"accepted": body.accepted, "country": body.country},
+    )
+    if refused is not None:
+        return refused
 
     url = variant.get("download_url", "")
     if not url:

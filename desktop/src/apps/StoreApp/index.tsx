@@ -18,6 +18,7 @@ import { emitAppEvent, APP_INSTALLED } from "@/lib/app-event-bus";
 import { TaosAppsSection } from "./TaosAppsSection";
 import { ImportAppButton } from "./ImportAppButton";
 import { LicenseAcceptDialog } from "./LicenseAcceptDialog";
+import { CountryPromptDialog } from "./CountryPromptDialog";
 import { useIsMobile } from "@/hooks/use-is-mobile";
 import { MobileStore } from "./MobileStore";
 import { AppIcon, StoreCover } from "./AppIcon";
@@ -423,20 +424,28 @@ function AppCard(props: {
   interface LicenseGate { weightsLicense: string; name: string; text: string }
   const [licenseGate, setLicenseGate] = useState<LicenseGate | null>(null);
   const [licenseSubmitting, setLicenseSubmitting] = useState(false);
+  // Set when the backend says a territory-limited licence needs the person's
+  // country (412 needs_country). The dialog re-posts the install with it.
+  const [countryGate, setCountryGate] = useState<{ detail: string } | null>(null);
 
   /** POST install-v2. Returns "ok" | "gated" | "error" — "gated" means the
    * backend returned 412 needs_license_acceptance (non-commercial weights,
    * #169) and licenseGate state is now set so the accept dialog renders. */
-  const postInstall = async (accepted: boolean): Promise<"ok" | "gated" | "error"> => {
+  const postInstall = async (accepted: boolean, country?: string): Promise<"ok" | "gated" | "error"> => {
     const body: Record<string, unknown> = { app_id: app.id, target_remote: selectedTarget };
     if (selectedVariant !== "auto") body.variant_id = selectedVariant;
     if (accepted) body.accepted = true;
+    if (country) body.country = country;
     const res = await fetch("/api/store/install-v2", { method: "POST", headers: { "Content-Type": "application/json", Accept: "application/json" }, body: JSON.stringify(body) });
     if (res.status === 412) {
       try {
         const gate = await res.json();
+        if (gate?.needs_country) {
+          setCountryGate({ detail: String(gate.detail ?? "Choose your country to continue.") });
+          return "gated";
+        }
         if (gate?.needs_license_acceptance) {
-          setLicenseGate({ weightsLicense: String(gate.weights_license ?? ""), name: String(gate.name ?? app.name), text: String(gate.text ?? "") });
+          setLicenseGate({ weightsLicense: String(gate.license_name ?? gate.weights_license ?? ""), name: String(gate.name ?? app.name), text: String(gate.text ?? "") });
           return "gated";
         }
       } catch { /* fall through to generic error below */ }
@@ -484,6 +493,19 @@ function AppCard(props: {
   };
 
   const handleLicenseDecline = () => { setLicenseGate(null); setBusy(false); };
+
+  const handleCountrySave = async (code: string) => {
+    setLicenseSubmitting(true);
+    setBusy(true);
+    try {
+      setCountryGate(null);
+      await postInstall(false, code);
+    } catch (e) { setError(e instanceof Error ? e.message : "Network error"); setCountryGate(null); }
+    setLicenseSubmitting(false);
+    setBusy(false);
+  };
+
+  const handleCountryDecline = () => { setCountryGate(null); setBusy(false); };
 
   const handleOpen = () => {
     window.dispatchEvent(new CustomEvent("taos:open-app", { detail: { app: "agents" } }));
@@ -633,6 +655,16 @@ function AppCard(props: {
           </button>
         )}
       </div>
+      {countryGate && (
+        <CountryPromptDialog
+          appName={app.name}
+          detail={countryGate.detail}
+          submitting={licenseSubmitting}
+          error={error}
+          onSave={handleCountrySave}
+          onDecline={handleCountryDecline}
+        />
+      )}
       {licenseGate && (
         <LicenseAcceptDialog
           appName={licenseGate.name}

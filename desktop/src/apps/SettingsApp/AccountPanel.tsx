@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback, useRef, type FormEvent } from "react"
 import { LogOut, AlertCircle, Plane, UserCircle, AtSign, Loader2, KeyRound } from "lucide-react";
 import { Button, Card, Input, Label, Tabs, TabsList, TabsTrigger } from "@/components/ui";
 import { withCsrf } from "@/lib/csrf";
+import { CountrySelect } from "@/components/CountrySelect";
 import {
   fetchAccount,
   login,
@@ -76,6 +77,95 @@ function LocalAccountCard() {
         <p className="text-sm font-medium truncate">{name}</p>
         {meta && <p className="text-xs text-shell-text-tertiary mt-0.5 truncate">{meta}</p>}
         <p className="text-xs text-shell-text-tertiary mt-0.5">Signed in on this device</p>
+      </div>
+    </Card>
+  );
+}
+
+/* ------------------------------------------------------------------ */
+/*  Country                                                           */
+/* ------------------------------------------------------------------ */
+
+/** The person's country. Some model licences do not apply in every country,
+ *  and the Store only lets one of those install once it knows yours. Set by
+ *  the person here, or when the Store asks at install time; never guessed
+ *  from the network address. */
+function CountryCard() {
+  const [username, setUsername] = useState<string | null>(null);
+  const [country, setCountry] = useState("");
+  const [saved, setSaved] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [status, setStatus] = useState("");
+  const mounted = useRef(true);
+  useEffect(() => () => { mounted.current = false; }, []);
+
+  useEffect(() => {
+    (async () => {
+      try {
+        const res = await fetch("/auth/status", { credentials: "include" });
+        if (!res.ok) return;
+        const data = await res.json();
+        if (mounted.current && data?.authenticated && data?.user) {
+          setUsername(String(data.user.username ?? ""));
+          const c = String(data.user.country ?? "");
+          setCountry(c);
+          setSaved(c);
+        }
+      } catch {
+        // Host unreachable; the cloud card surfaces connectivity.
+      }
+    })();
+  }, []);
+
+  if (!username) return null;
+
+  const save = async () => {
+    if (busy) return;
+    setBusy(true);
+    setError(null);
+    setStatus("");
+    try {
+      const res = await fetch(`/auth/users/${encodeURIComponent(username)}/profile`, withCsrf({
+        method: "POST",
+        credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ country }),
+      }));
+      const body = await res.json().catch(() => null);
+      if (!mounted.current) return;
+      if (!res.ok || !body?.ok) {
+        setError(body?.error || "Could not save your country.");
+        return;
+      }
+      setSaved(country);
+      setStatus(country ? "Country saved." : "Country cleared.");
+    } catch {
+      if (mounted.current) setError("Could not reach taOS. Check the connection and try again.");
+    } finally {
+      if (mounted.current) setBusy(false);
+    }
+  };
+
+  return (
+    <Card className="p-4 mb-3">
+      <Label htmlFor="account-country" className="text-sm font-medium">Country</Label>
+      <p className="text-xs text-shell-text-tertiary mt-1 mb-3">
+        Some model licences only apply in certain countries. The Store checks this
+        before installing one. It is never guessed from your network address.
+      </p>
+      <CountrySelect id="account-country" value={country} onChange={setCountry} disabled={busy} />
+      {error && (
+        <p className="text-xs text-amber-400 flex items-center gap-1.5 mt-3" role="alert">
+          <AlertCircle size={12} /> {error}
+        </p>
+      )}
+      <p aria-live="polite" className="sr-only">{status}</p>
+      {status && <p className="text-xs text-emerald-400 mt-3">{status}</p>}
+      <div className="mt-3">
+        <Button type="button" onClick={save} disabled={busy || country === saved}>
+          {busy ? "Saving..." : "Save country"}
+        </Button>
       </div>
     </Card>
   );
@@ -505,6 +595,7 @@ export function AccountSection() {
       <h3 className="text-sm font-semibold text-shell-text-secondary uppercase tracking-wider mb-3">This device</h3>
       <LocalAccountCard />
       <SignInMethodCard />
+      <CountryCard />
 
       {/* taOS account */}
       <h3 className="text-sm font-semibold text-shell-text-secondary uppercase tracking-wider mb-3">taOS account</h3>

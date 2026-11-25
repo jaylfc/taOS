@@ -342,3 +342,58 @@ describe("PIN sign-in card", () => {
     expect(screen.getByText("Off")).toBeInTheDocument();
   });
 });
+
+/** The Country card is where a person sets the country that territory-limited
+ *  model licences are checked against. Same component on desktop and phone. */
+describe("Country card", () => {
+  afterEach(() => { vi.restoreAllMocks(); });
+
+  it("shows the saved country and saves a new one to the profile route", async () => {
+    const saves: Array<{ url: string; body: Record<string, unknown> }> = [];
+    vi.spyOn(globalThis, "fetch").mockImplementation((input, init) => {
+      const url = String(input);
+      if (url.includes("/profile")) {
+        saves.push({ url, body: JSON.parse(String(init?.body ?? "{}")) });
+        return Promise.resolve(new Response(JSON.stringify({ ok: true, user: {} }), { status: 200, headers: { "Content-Type": "application/json" } }));
+      }
+      if (url.includes("/auth/status")) {
+        return Promise.resolve(new Response(
+          JSON.stringify({ authenticated: true, user: { username: "tester", country: "GB" } }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        ));
+      }
+      return Promise.resolve(new Response(null, { status: 401 }));
+    });
+    render(<AccountSection />);
+    const select = (await screen.findByLabelText("Country")) as HTMLSelectElement;
+    await waitFor(() => expect(select.value).toBe("GB"));
+    expect(screen.getByRole("button", { name: /save country/i })).toBeDisabled();
+    fireEvent.change(select, { target: { value: "US" } });
+    fireEvent.click(screen.getByRole("button", { name: /save country/i }));
+    await waitFor(() => expect(saves).toHaveLength(1));
+    expect(saves[0].url).toContain("/auth/users/tester/profile");
+    expect(saves[0].body).toEqual({ country: "US" });
+    expect((await screen.findAllByText("Country saved.")).length).toBeGreaterThan(0);
+  });
+
+  it("shows the server's reason when saving fails", async () => {
+    vi.spyOn(globalThis, "fetch").mockImplementation((input) => {
+      const url = String(input);
+      if (url.includes("/profile")) {
+        return Promise.resolve(new Response(JSON.stringify({ error: "country must be a two-letter ISO 3166-1 code" }), { status: 400, headers: { "Content-Type": "application/json" } }));
+      }
+      if (url.includes("/auth/status")) {
+        return Promise.resolve(new Response(
+          JSON.stringify({ authenticated: true, user: { username: "tester", country: "" } }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        ));
+      }
+      return Promise.resolve(new Response(null, { status: 401 }));
+    });
+    render(<AccountSection />);
+    const select = (await screen.findByLabelText("Country")) as HTMLSelectElement;
+    fireEvent.change(select, { target: { value: "FR" } });
+    fireEvent.click(screen.getByRole("button", { name: /save country/i }));
+    expect(await screen.findByRole("alert")).toHaveTextContent(/two-letter/i);
+  });
+});

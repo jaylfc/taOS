@@ -19,6 +19,7 @@ from urllib.parse import urlparse
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import JSONResponse
 
+from tinyagentos import license_gate
 from tinyagentos.agent_image import (
     FRAMEWORKS_WITH_DEDICATED_BASE,
     base_image_alias,
@@ -424,6 +425,13 @@ async def _legacy_install(request: Request, body: dict, app_id: str | None, targ
     manifest = _registry_get(registry, app_id) if registry else None
     install_config: dict = {}
     backend = "docker"
+
+    # Shared by v2 services, the setup wizard's backend installs and any other
+    # caller: the licence gate sits here, not only in a route.
+    if manifest is not None:
+        refused = await license_gate.enforce(request, manifest, body)
+        if refused is not None:
+            return refused
 
     if manifest is not None:
         install_block = getattr(manifest, "install", None) or {}
@@ -1011,43 +1019,21 @@ async def install_app(request: Request):
                 status_code=403,
             )
 
-    # Non-commercial weights gate (#169): a manifest's code license (MIT etc.)
+    # Restrictive-licence gate (#169): a manifest's code license (MIT etc.)
     # can be permissive while the model weights it downloads are not (e.g.
-    # musicgen pulls Meta's CC-BY-NC 4.0 weights). Block the install until the
-    # user has explicitly accepted the weights license -- either previously
-    # (recorded in license_acceptances) or on this very request (accepted:
-    # true, sent by the frontend after the user clicks Agree in the license
-    # dialog). Applies uniformly, including to admins: license acceptance is
-    # a legal fact about the user, not a permission an admin role bypasses.
-    if getattr(manifest, "license_class", "") == "non-commercial":
-        license_store = getattr(request.app.state, "license_acceptances", None)
-        license_id = getattr(manifest, "weights_license", "") or manifest.id
-        user = _get_current_user(request)
-        user_id = (user or {}).get("id") or "anonymous"
-        already_accepted = (
-            await license_store.has_accepted(user_id, manifest.id, license_id)
-            if license_store is not None else False
-        )
-        accepted_now = bool(body.get("accepted", False))
-        if not already_accepted and not accepted_now:
-            progress.finish(install_id, success=False, error="needs_license_acceptance")
-            return JSONResponse(
-                {
-                    "needs_license_acceptance": True,
-                    "license_id": license_id,
-                    "weights_license": manifest.weights_license,
-                    "name": manifest.name,
-                    "text": (
-                        f"{manifest.name} downloads model weights licensed under "
-                        f"{manifest.weights_license}, for non-commercial use only. "
-                        "Continuing means you agree to that license for the "
-                        "weights this service uses."
-                    ),
-                },
-                status_code=412,
-            )
-        if accepted_now and not already_accepted and license_store is not None:
-            await license_store.record_acceptance(user_id, manifest.id, license_id)
+    # musicgen pulls Meta's CC-BY-NC 4.0 weights). The gate looks at EVERY
+    # licence field (license_class, weights_license, model_license, license),
+    # not only a listed class: see tinyagentos/license_policy.py. The install
+    # is blocked until a person has accepted the licence, either earlier
+    # (recorded in license_acceptances) or on this request (accepted: true,
+    # sent by the UI after the person clicks Agree). Applies to admins too: a
+    # licence acceptance is a legal fact about the person, not a permission.
+    #
+    # Only a person's own session may accept. Agent tokens, service tokens and
+    # every registry JWT are refused (allow-list, see via_may_accept).
+    refused = await license_gate.enforce(request, manifest, body, progress, install_id)
+    if refused is not None:
+        return refused
 
     # Non-model manifests use the legacy method-driven path.
     if getattr(manifest, "type", "model") != "model":
@@ -1091,6 +1077,10 @@ async def install_app(request: Request):
                 {"error": f"backend service manifest {result.backend_id!r} not in catalog", "install_id": install_id},
                 status_code=500,
             )
+        # A backend the chain pulls in has its own licence; same gate, same body.
+        refused = await license_gate.enforce(request, backend_manifest, body, progress, install_id)
+        if refused is not None:
+            return refused
         install_block = getattr(backend_manifest, "install", None) or {}
         backend_method = (
             install_block.get("method") if isinstance(install_block, dict) else None

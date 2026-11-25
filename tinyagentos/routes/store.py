@@ -10,7 +10,7 @@ from fastapi.responses import JSONResponse
 from packaging.version import InvalidVersion, Version
 from pydantic import BaseModel
 
-from tinyagentos import upstream_versions
+from tinyagentos import license_gate, upstream_versions
 from tinyagentos.auth_context import require_admin
 from tinyagentos.catalog.resolver import (
     ResolveOk,
@@ -160,6 +160,10 @@ def _update_fields(
 class InstallRequest(BaseModel):
     app_id: str
     variant_id: str | None = None  # for models
+    # A person's answers to the licence gate. Only a person's own session can
+    # send accepted=true; an agent or CLI token gets the 412 text instead.
+    accepted: bool = False
+    country: str | None = None
 
 
 class UninstallRequest(BaseModel):
@@ -399,6 +403,12 @@ async def install_app(request: Request, body: InstallRequest):
         return JSONResponse({"error": f"App '{body.app_id}' not found"}, status_code=404)
     if registry.is_installed(body.app_id):
         return JSONResponse({"error": f"App '{body.app_id}' already installed"}, status_code=409)
+
+    refused = await license_gate.enforce(
+        request, manifest, {"accepted": body.accepted, "country": body.country},
+    )
+    if refused is not None:
+        return refused
 
     method = manifest.install.get("method", "")
     try:

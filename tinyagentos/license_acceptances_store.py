@@ -30,6 +30,18 @@ CREATE TABLE IF NOT EXISTS license_acceptances (
 );
 """
 
+# Columns added after the first release. Existing databases get them through a
+# guarded ALTER in _post_init (the baseline-at-latest migration runner would
+# skip a retrofit migration). The UNIQUE key is left alone: a new licence
+# version is stored under a different license_id ("<name> <version>"), so the
+# older acceptance is kept as history and the new version needs its own row.
+_ADDED_COLUMNS = (
+    ("license_name", "TEXT NOT NULL DEFAULT ''"),
+    ("license_version", "TEXT NOT NULL DEFAULT ''"),
+    ("license_url", "TEXT NOT NULL DEFAULT ''"),
+    ("username", "TEXT NOT NULL DEFAULT ''"),
+)
+
 
 def _row_to_dict(row: aiosqlite.Row) -> dict:
     return {k: row[k] for k in row.keys()}
@@ -45,8 +57,31 @@ class LicenseAcceptancesStore(BaseStore):
         if self._db is not None:
             self._db.row_factory = aiosqlite.Row
 
-    async def record_acceptance(self, user_id: str, app_id: str, license_id: str) -> dict:
+    async def _post_init(self) -> None:
+        if self._db is None:  # pragma: no cover - defensive
+            return
+        cursor = await self._db.execute("PRAGMA table_info(license_acceptances)")
+        have = {row[1] for row in await cursor.fetchall()}
+        for name, decl in _ADDED_COLUMNS:
+            if name not in have:
+                await self._db.execute(f"ALTER TABLE license_acceptances ADD COLUMN {name} {decl}")
+        await self._db.commit()
+
+    async def record_acceptance(
+        self,
+        user_id: str,
+        app_id: str,
+        license_id: str,
+        *,
+        license_name: str = "",
+        license_version: str = "",
+        license_url: str = "",
+        username: str = "",
+    ) -> dict:
         """Record that user_id accepted license_id for app_id.
+
+        Also keeps the licence name, version, link and the person's username,
+        next to the accepted_at timestamp, so the record stands on its own.
 
         Idempotent via INSERT OR REPLACE: re-accepting the same license just
         refreshes accepted_at rather than erroring or duplicating a row.
@@ -57,10 +92,12 @@ class LicenseAcceptancesStore(BaseStore):
         await self._db.execute(
             """
             INSERT OR REPLACE INTO license_acceptances
-                (user_id, app_id, license_id, accepted_at)
-            VALUES (?, ?, ?, ?)
+                (user_id, app_id, license_id, accepted_at,
+                 license_name, license_version, license_url, username)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             """,
-            (user_id, app_id, license_id, now),
+            (user_id, app_id, license_id, now,
+             license_name, license_version, license_url, username),
         )
         await self._db.commit()
         row = await (

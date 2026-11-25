@@ -156,6 +156,9 @@ class SetupBody(BaseModel):
     device_id: str
     tier: Literal["lite", "standard", "heavy"]
     skip_models: bool = False
+    # Licence gate answers; see tinyagentos/license_gate.py.
+    accepted: bool = False
+    country: str | None = None
 
 
 @router.post("/api/taosmd/setup")
@@ -167,6 +170,21 @@ async def post_setup(request: Request, body: SetupBody):
     tier_cfg = MEMORY_TIERS.get(body.tier)
     if tier_cfg is None:
         return JSONResponse({"error": f"Unknown tier '{body.tier}'"}, status_code=400)
+
+    # Every model the tier would download goes through the licence gate before
+    # anything starts; the background task has no person to ask.
+    gate_registry = getattr(request.app.state, "registry", None)
+    if not body.skip_models and gate_registry is not None:
+        from tinyagentos import license_gate
+        for model_id in tier_cfg.get("models", []):
+            model_manifest = gate_registry.get(model_id) if hasattr(gate_registry, "get") else None
+            if model_manifest is None:
+                continue
+            refused = await license_gate.enforce(
+                request, model_manifest, {"accepted": body.accepted, "country": body.country},
+            )
+            if refused is not None:
+                return refused
 
     task_id = str(uuid.uuid4())
     tasks = _tasks(request)

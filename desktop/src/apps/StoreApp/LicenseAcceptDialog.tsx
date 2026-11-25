@@ -58,13 +58,13 @@ export function LicenseAcceptDialog({
       >
         <div className="px-5 py-4 border-b border-white/5">
           <h2 className="text-sm font-semibold text-shell-text">
-            {appName} uses non-commercial model weights
+            {appName} has licence terms to accept
           </h2>
         </div>
         <div className="px-5 py-4 space-y-2.5">
           <p className="text-[13px] text-shell-text-secondary leading-relaxed">{text}</p>
           <p className="text-[11px] text-shell-text-tertiary">
-            Weights license: <span className="text-shell-text font-medium">{weightsLicense || "non-commercial (label unavailable)"}</span>
+            Licence: <span className="text-shell-text font-medium">{weightsLicense || "see the text above"}</span>
           </p>
         </div>
         {error && (
@@ -77,7 +77,7 @@ export function LicenseAcceptDialog({
             type="button"
             onClick={onDecline}
             disabled={submitting}
-            className="px-4 py-1.5 rounded-full text-[13px] font-semibold text-shell-text-secondary hover:text-shell-text hover:bg-white/[0.04] transition-colors disabled:opacity-60"
+            className="px-4 py-1.5 min-h-[44px] rounded-full text-[13px] font-semibold text-shell-text-secondary hover:text-shell-text hover:bg-white/[0.04] transition-colors disabled:opacity-60"
           >
             Cancel
           </button>
@@ -85,7 +85,7 @@ export function LicenseAcceptDialog({
             type="button"
             onClick={handleAccept}
             disabled={submitting}
-            className="px-4 py-1.5 rounded-full text-[13px] font-bold text-white transition-colors disabled:opacity-60"
+            className="px-4 py-1.5 min-h-[44px] rounded-full text-[13px] font-bold text-white transition-colors disabled:opacity-60"
             style={{ background: "var(--color-accent)" }}
           >
             {submitting ? "Installing…" : "Agree & Install"}
