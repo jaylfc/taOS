@@ -353,6 +353,23 @@ class TestOwnerlessAgentMigration:
 
 
 @pytest.mark.asyncio
+class TestEmptyOwnerAdoption:
+    async def test_row_with_empty_owner_goes_to_install_owner_and_owned_rows_stay(self, app, world):
+        from tinyagentos.migrations.agent_owner import assign_ownerless_agents
+
+        reg = app.state.agent_registry
+        cfg = app.state.config
+        empty = await reg.register(framework="none", display_name="Empty", user_id="")
+        kept = await reg.register(framework="none", display_name="Kept", user_id="someone-else")
+        cfg.agents.append({"name": "empty-bot", "registry_canonical_id": empty["canonical_id"]})
+        cfg.agents.append({"name": "kept-bot", "registry_canonical_id": kept["canonical_id"]})
+        assigned = await assign_ownerless_agents(cfg, reg, app.state.auth)
+        assert "empty-bot" in assigned and "kept-bot" not in assigned
+        assert (await reg.get(empty["canonical_id"]))["user_id"] == world["admin"]["id"]
+        assert (await reg.get(kept["canonical_id"]))["user_id"] == "someone-else"
+
+
+@pytest.mark.asyncio
 class TestChatReadsAndSkillAssignment:
     async def test_member_session_cannot_read_a_channel_it_is_not_in(self, app, world):
         ch = app.state.chat_channels
