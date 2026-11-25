@@ -64,7 +64,8 @@ class TestTaOSmdClientInProcess:
         mock_assembler.assemble.assert_awaited_once()
         call_args = mock_assembler.assemble.call_args
         assert call_args[1]["max_total_tokens"] == 4000
-        assert call_args[1]["reasoning_reserve"] == 1024
+        # reasoning_reserve is NOT passed to assembler (accounted for in budget)
+        assert "reasoning_reserve" not in call_args[1]
 
     @pytest.mark.asyncio
     async def test_in_process_handles_missing_dropped_field(self):
@@ -96,8 +97,9 @@ class TestTaOSmdClientInProcess:
         assert result.dropped == 0
 
     @pytest.mark.asyncio
-    async def test_in_process_passes_reasoning_reserve_to_assembler(self):
-        """Test that reasoning_reserve is passed to ContextAssembler, not subtracted client-side."""
+    async def test_in_process_does_not_pass_reasoning_reserve_to_assembler(self):
+        """Test that reasoning_reserve is NOT passed to ContextAssembler;
+        it is accounted for in the budget calculation via default_budget_tokens."""
         from tinyagentos.taosmd_client import TaOSmdClient
 
         client = TaOSmdClient(use_in_process=True, http_client=None)
@@ -119,13 +121,14 @@ class TestTaOSmdClientInProcess:
             agent="test-agent",
             budget_tokens=8000,
             now=datetime.now(timezone.utc),
-            reasoning_reserve=2048,  # Custom reserve
+            reasoning_reserve=2048,  # Custom reserve (ignored by assembler)
         )
 
         call_args = mock_assembler.assemble.call_args
-        # Budget should be full 8000, reasoning_reserve passed separately
+        # Budget should be full 8000 (already accounts for reasoning_reserve)
         assert call_args[1]["max_total_tokens"] == 8000
-        assert call_args[1]["reasoning_reserve"] == 2048
+        # reasoning_reserve should NOT be passed to assembler
+        assert "reasoning_reserve" not in call_args[1]
 
 
 class TestTaOSmdClientHTTP:
@@ -155,15 +158,14 @@ class TestTaOSmdClientHTTP:
             agent="test-agent",
             budget_tokens=4000,
             now=datetime.now(timezone.utc),
-            reasoning_reserve=1024,
         )
 
         assert result.dropped == 3
-        # Verify HTTP payload includes reasoning_reserve
+        # Verify HTTP payload does NOT include reasoning_reserve (server rejects it)
         mock_http.post.assert_awaited_once()
         call_args = mock_http.post.call_args
         payload = call_args[1]["json"]
-        assert payload["reasoning_reserve"] == 1024
+        assert "reasoning_reserve" not in payload
         assert payload["budget_tokens"] == 4000
 
 
@@ -430,6 +432,10 @@ class TestUserMemoryAgentSearchAnswerContext:
                 assert body["agent"] == "test-agent"
 
                 mock_taosmd.answer_context.assert_awaited_once()
+                call_args = mock_taosmd.answer_context.call_args
+                # agent_search should query the USER's memory namespace (user-memory)
+                assert call_args[1]["agent"] == "user-memory"
+                assert call_args[1]["query"] == "test query"
 
 
 class TestRoutesMemorySearchAnswerContext:
@@ -551,8 +557,8 @@ class TestDroppedCountsInTrace:
                                 # event_type is first positional argument
                                 assert args[0] == "memory_truncated" if args else False
                                 assert kwargs.get("payload", {}).get("dropped") == 5
-                                # history_token_budget(8192) = max(512, 8192 - 10000 - 1024) = 512
-                                assert kwargs.get("payload", {}).get("budget_tokens") == 512
+                                # default_budget_tokens(8192, used_tokens=1, reasoning_reserve=0) = 8191
+                                assert kwargs.get("payload", {}).get("budget_tokens") == 8191
 
 
 class TestIdentityIsolation:

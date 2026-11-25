@@ -2,13 +2,14 @@ from __future__ import annotations
 
 import logging
 from datetime import datetime, timezone
+from typing import Any
 
 import httpx
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import JSONResponse
 
 from tinyagentos.auth_context import require_admin
-from tinyagentos.taosmd_client import AnswerContextResult, TaOSmdClient, calculate_agent_budget, get_taosmd_client
+from tinyagentos.taosmd_client import AnswerContextResult, calculate_agent_budget, get_taosmd_client
 
 logger = logging.getLogger(__name__)
 
@@ -24,16 +25,26 @@ def _store(request: Request):
     return request.app.state.user_memory
 
 
-def _taosmd_base(request: Request) -> str:
+def _get_app_state(obj) -> Any:
+    """Extract app.state from a Request or return the object if it's already app.state."""
+    if hasattr(obj, "app") and hasattr(obj.app, "state"):
+        return obj.app.state
+    return obj
+
+
+def _taosmd_base(request: Request | Any) -> str:
     """Base URL for the taosmd HTTP API.
 
     Precedence: app.state.taosmd_url (explicit runtime override, used by
     tests) → config.memory_url (persisted setting) → default localhost.
+
+    Accepts either a FastAPI Request or app.state directly.
     """
-    explicit = getattr(request.app.state, "taosmd_url", None)
+    state = _get_app_state(request)
+    explicit = getattr(state, "taosmd_url", None)
     if explicit:
         return explicit
-    config = getattr(request.app.state, "config", None)
+    config = getattr(state, "config", None)
     if config and getattr(config, "memory_url", None):
         return config.memory_url
     return "http://localhost:7900"
@@ -111,8 +122,9 @@ async def search(request: Request, q: str, collection: str | None = None, limit:
 async def agent_search(request: Request, q: str, agent_name: str, limit: int = 10):
     """Read-only search endpoint for agents with user memory permission.
 
-    Uses taOSmd answer_context to build assembled memory context for the
-    agent's query, respecting token budget and returning dropped counts.
+    Uses taOSmd answer_context to build assembled memory context from the
+    USER's memory (not the agent's) for the agent's query, respecting token
+    budget and returning dropped counts.
     """
     config = request.app.state.config
     agents = getattr(config, "agents", None)
@@ -133,13 +145,14 @@ async def agent_search(request: Request, q: str, agent_name: str, limit: int = 1
     registry = getattr(request.app.state, "registry", None)
     budget_tokens = calculate_agent_budget(agent, registry) if registry else 4000
 
-    # Call answer_context
+    # Call answer_context querying the USER's memory namespace (_TAOSMD_AGENT)
+    # The agent_name parameter identifies the requesting agent for budget/permissions,
+    # but the memory searched is the person's (user-memory).
     result: AnswerContextResult = await taosmd_client.answer_context(
         query=q,
-        agent=agent_name,
+        agent=_TAOSMD_AGENT,
         budget_tokens=budget_tokens,
         now=datetime.now(timezone.utc),
-        reasoning_reserve=1024,
     )
 
     return JSONResponse({

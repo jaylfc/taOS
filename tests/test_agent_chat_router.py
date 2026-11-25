@@ -158,10 +158,10 @@ class TestAgentChatRouter:
         assert mock_taosmd.answer_context.call_count == 2
         calls = mock_taosmd.answer_context.call_args_list
         budgets = {call[1]["agent"]: call[1]["budget_tokens"] for call in calls}
-        # small-model: 8192 - 10000 - 1024 = -1832 -> floor 512
-        assert budgets["small"] == 512
-        # big-model: 32768 - 10000 - 1024 = 21744
-        assert budgets["big"] == 21744
+        # small-model: 8192 window - used_tokens(manual~280) - reasoning_reserve(0) = 7912
+        assert budgets["small"] == 7912
+        # big-model: 32768 window - used_tokens(manual~280) - reasoning_reserve(0) = 32488
+        assert budgets["big"] == 32488
 
     @pytest.mark.asyncio
     async def test_context_budget_defaults_when_windows_unknown(self):
@@ -255,9 +255,9 @@ class TestAgentChatRouter:
         budgets = {call[1]["agent"]: call[1]["budget_tokens"] for call in calls}
         # cloud (unknown window) -> 4000
         assert budgets["cloud"] == 4000
-        # big (32768 window) -> 21744, but each agent gets its own budget
-        # The test verifies that the unknown-window agent gets capped at 4000
-        assert budgets["big"] == 21744
+        # big (32768 window) -> budget = window - used_tokens(manual) - reasoning_reserve
+        # manual ~280 tokens, non-reasoning model -> 32768 - 280 = 32488
+        assert budgets["big"] == 32488
 
     @pytest.mark.asyncio
     async def test_skips_non_user_messages(self):

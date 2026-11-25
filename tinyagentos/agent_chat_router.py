@@ -7,8 +7,8 @@ from datetime import datetime, timezone
 from typing import Any
 
 from tinyagentos.agent_loop import AgentLoop, LoopAction
+from tinyagentos.taosmd_client import AnswerContextResult, calculate_agent_budget, get_taosmd_client
 from tinyagentos.task_utils import _create_supervised_task
-from tinyagentos.taosmd_client import AnswerContextResult, TaOSmdClient, calculate_agent_budget, get_taosmd_client
 
 logger = logging.getLogger(__name__)
 
@@ -234,6 +234,8 @@ class AgentChatRouter:
         agent_contexts: dict[str, AnswerContextResult] = {}
         if hasattr(self._state, "chat_messages"):
             try:
+                from tinyagentos.agent_manual import build_manual
+                from tinyagentos.chat.context_window import estimate_tokens
                 from tinyagentos.chat.guest_agents import resolve_guest
                 registry = getattr(self._state, "registry", None)
 
@@ -248,7 +250,10 @@ class AgentChatRouter:
                             continue
                     if not is_guest:
                         # Calculate budget from agent's model context window (share, not whole window)
-                        budget_tokens = calculate_agent_budget(agent, registry) if registry else 4000
+                        # Estimate used_tokens from manual (system prompt) for this agent/channel
+                        manual_text = build_manual(channel, agent_name, list((settings.get("leads") or [])))
+                        used_tokens = estimate_tokens(manual_text)
+                        budget_tokens = calculate_agent_budget(agent, registry, used_tokens) if registry else 4000
                     else:
                         budget_tokens = 4000
 
@@ -260,7 +265,6 @@ class AgentChatRouter:
                         agent=agent_name,
                         budget_tokens=budget_tokens,
                         now=datetime.now(timezone.utc),
-                        reasoning_reserve=1024,
                     )
                     agent_contexts[agent_name] = result
 
@@ -281,7 +285,6 @@ class AgentChatRouter:
                 agent_contexts = {}
 
         leads = list((settings.get("leads") or []))  # post-PR #291
-        from tinyagentos.agent_manual import build_manual
 
         for agent_name in recipients:
             forced = force_by_slug.get(agent_name, False)

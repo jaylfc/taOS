@@ -56,9 +56,10 @@ async def maybe_trigger_semantic(
         context = []
         if msg_store is not None:
             try:
-                from tinyagentos.taosmd_client import get_taosmd_client, calculate_agent_budget
-                from tinyagentos.agent_db import find_agent
                 from datetime import datetime, timezone
+
+                from tinyagentos.agent_db import find_agent
+                from tinyagentos.taosmd_client import calculate_agent_budget, get_taosmd_client
 
                 # Budget from the regenerating agent's model context window.
                 config = getattr(state, "config", None)
@@ -74,7 +75,6 @@ async def maybe_trigger_semantic(
                         agent=author_id,
                         budget_tokens=budget_tokens,
                         now=datetime.now(timezone.utc),
-                        reasoning_reserve=1024,
                     )
                     # Convert answer_context result to bridge context format
                     if result.context:

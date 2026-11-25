@@ -19,7 +19,7 @@ from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
 
 from tinyagentos.routes.decisions import SERVER_RAISED_KEY
-from tinyagentos.taosmd_client import AnswerContextResult, TaOSmdClient, calculate_agent_budget, get_taosmd_client
+from tinyagentos.taosmd_client import AnswerContextResult, calculate_agent_budget, get_taosmd_client
 
 logger = logging.getLogger(__name__)
 
@@ -71,7 +71,7 @@ async def _skill_memory_search(args: dict, request: Request) -> dict:
     agent's query, respecting token budget and returning dropped counts.
     """
     query = args.get("query", "")
-    limit = args.get("limit", 10)
+    args.get("limit", 10)
     agent_name = getattr(request.state, "agent_name", None)
     if not agent_name:
         return {"status": "error", "error": "agent identity not found in credentials"}
@@ -90,13 +90,12 @@ async def _skill_memory_search(args: dict, request: Request) -> dict:
     registry = getattr(request.app.state, "registry", None)
     budget_tokens = calculate_agent_budget(agent, registry) if agent and registry else 4000
 
-    # Call answer_context
+    # Call answer_context (reasoning_reserve is handled in budget calculation)
     result: AnswerContextResult = await taosmd_client.answer_context(
         query=query,
         agent=agent_name,
         budget_tokens=budget_tokens,
         now=datetime.now(timezone.utc),
-        reasoning_reserve=1024,
     )
 
     return {

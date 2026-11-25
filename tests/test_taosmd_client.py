@@ -68,7 +68,8 @@ class TestTaOSmdClient:
         assert payload["query"] == "What is the weather?"
         assert payload["agent"] == "test-agent"
         assert payload["budget_tokens"] == 1000
-        assert payload["reasoning_reserve"] == 1024
+        # reasoning_reserve is NOT sent over HTTP (server rejects it)
+        assert "reasoning_reserve" not in payload
 
     @pytest.mark.asyncio
     async def test_answer_context_http_failure_fallback(self, taosmd_client, mock_http_client):
@@ -157,8 +158,8 @@ class TestCalculateAgentBudget:
         mock_find_manifest.return_value = mock_manifest
 
         budget = calculate_agent_budget({"model": "large-model"}, MagicMock())
-        # 128000 - 10000 - 1024 = 116976
-        assert budget == 116976
+        # default_budget_tokens(128000, used_tokens=10000, reasoning_reserve=0) = 118000
+        assert budget == 118000
 
     @patch("tinyagentos.cluster.model_resolver._find_model_manifest")
     def test_unknown_model_returns_default(self, mock_find_manifest):

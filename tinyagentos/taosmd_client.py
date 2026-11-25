@@ -10,6 +10,7 @@ import logging
 import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any
 
 logger = logging.getLogger(__name__)
@@ -32,6 +33,51 @@ class AnswerContextResult:
     """Time taken to assemble context in milliseconds."""
 
 
+def default_budget_tokens(window: int, used_tokens: int, reasoning_reserve: int = 0) -> int:
+    """Calculate the token budget for memory context.
+
+    Args:
+        window: The model's total context window size.
+        used_tokens: Tokens already used by system prompt, tools, and conversation history.
+        reasoning_reserve: Tokens to reserve for model reasoning output (from model recipe).
+
+    Returns:
+        Token budget for memory context, floored at 512.
+    """
+    if window <= 0:
+        return 4000  # Default when window unknown
+    budget = window - used_tokens - reasoning_reserve
+    return max(512, budget)
+
+
+def estimate_reasoning_reserve(model_id: str, manifest: Any | None = None) -> int:
+    """Estimate reasoning reserve for a model.
+
+    Reasoning models (qwen3, o1, deepseek-r1, etc.) need extra tokens for
+    chain-of-thought. Non-reasoning models get 0.
+
+    Args:
+        model_id: The model identifier.
+        manifest: Optional model manifest for additional hints.
+
+    Returns:
+        Reasoning reserve in tokens.
+    """
+    model_lower = model_id.lower()
+    # Known reasoning model families
+    reasoning_families = [
+        "qwen3", "o1", "deepseek-r1", "deepseekr1", "r1-",
+        "nemotron", "reasoning", "think", "cot"
+    ]
+    for fam in reasoning_families:
+        if fam in model_lower:
+            # Check manifest for explicit reasoning reserve
+            if manifest and hasattr(manifest, "reasoning_reserve"):
+                return int(getattr(manifest, "reasoning_reserve", 0) or 0)
+            return 4096  # Default reserve for reasoning models
+    return 0
+
+
 class TaOSmdClient:
     """Client for taOSmd memory operations.
 
@@ -44,12 +90,14 @@ class TaOSmdClient:
         http_client=None,
         base_url: str = "http://localhost:7900",
         use_in_process: bool = True,
+        data_dir: Path | str | None = None,
     ):
         self._http = http_client
         self._base_url = base_url.rstrip("/")
         self._use_in_process = use_in_process
         self._context_assembler = None
         self._in_process_available = False
+        self._data_dir = Path(data_dir) if data_dir else None
 
     def _ensure_in_process(self) -> bool:
         """Try to initialize in-process taOSmd ContextAssembler."""
@@ -58,10 +106,8 @@ class TaOSmdClient:
         if not self._use_in_process:
             return False
         try:
-            from taosmd import ContextAssembler, context_assembler as default_assembler
-            from taosmd import Archive as ArchiveStore
-            from taosmd import KnowledgeGraph as TemporalKnowledgeGraph
-            from taosmd import SessionCatalog
+            from taosmd import ContextAssembler
+            from taosmd import context_assembler as default_assembler
 
             # Use the default singleton if available, else create our own
             self._context_assembler = default_assembler or ContextAssembler()
@@ -84,6 +130,7 @@ class TaOSmdClient:
         budget_tokens: int,
         now: datetime | None = None,
         reasoning_reserve: int = 1024,
+        data_dir: Path | str | None = None,
     ) -> AnswerContextResult:
         """Build memory context for an agent prompt using taOSmd's answer_context.
 
@@ -93,11 +140,13 @@ class TaOSmdClient:
             budget_tokens: Token budget for the context (share of model's context window).
             now: Current timestamp for recency scoring (defaults to UTC now).
             reasoning_reserve: Tokens to reserve for model reasoning output.
+            data_dir: Root data directory for agent memory stores.
 
         Returns:
             AnswerContextResult with assembled context and metadata.
         """
         now = now or datetime.now(timezone.utc)
+        data_dir = data_dir or self._data_dir
 
         # Try in-process first
         in_process_ok = False
@@ -110,7 +159,7 @@ class TaOSmdClient:
         if in_process_ok:
             try:
                 return await self._answer_context_in_process(
-                    query, agent, budget_tokens, now, reasoning_reserve
+                    query, agent, budget_tokens, now, reasoning_reserve, data_dir
                 )
             except Exception as e:
                 logger.warning("In-process answer_context failed, falling back to HTTP: %s", e)
@@ -119,7 +168,7 @@ class TaOSmdClient:
         if self._http:
             try:
                 return await self._answer_context_http(
-                    query, agent, budget_tokens, now, reasoning_reserve
+                    query, agent, budget_tokens, now
                 )
             except Exception as e:
                 logger.error("HTTP answer_context failed: %s", e)
@@ -142,24 +191,58 @@ class TaOSmdClient:
         budget_tokens: int,
         now: datetime,
         reasoning_reserve: int,
+        data_dir: Path | str | None = None,
     ) -> AnswerContextResult:
-        """Call taOSmd ContextAssembler.assemble in-process."""
+        """Call taOSmd answer_context in-process using agent-isolated stores."""
         start = time.time()
 
+        # Use shared assembler if available (for backward compat / tests)
+        # Otherwise create agent-isolated stores
+        if self._context_assembler and not data_dir:
+            assembler = self._context_assembler
+        else:
+            # Create agent-isolated stores
+            from taosmd import Archive as ArchiveStore
+            from taosmd import KnowledgeGraph as TemporalKnowledgeGraph
+            from taosmd import SessionCatalog
+            from taosmd.context_assembler import ContextAssembler
+
+            agent_dir = Path(data_dir) / "agent-memory" / agent if data_dir else None
+
+            # Initialize stores for this agent
+            kg = None
+            archive = None
+            catalog = None
+            if agent_dir:
+                try:
+                    kg = TemporalKnowledgeGraph(db_path=agent_dir / "knowledge-graph.db")
+                    archive = ArchiveStore(db_path=agent_dir / "archive.db")
+                    catalog = SessionCatalog(db_path=agent_dir / "session-catalog.db")
+                except Exception as e:
+                    logger.warning("Failed to initialize agent stores for %s: %s", agent, e)
+
+            # Create ContextAssembler with agent stores
+            assembler = ContextAssembler(
+                kg=kg,
+                archive=archive,
+                catalog=catalog,
+                qmd_base_url=self._base_url.replace("7900", "7832"),  # qmd port
+                http_client=self._http,
+            )
+
         # Call the ContextAssembler with the full budget.
-        # The ContextAssembler handles reasoning_reserve internally (same as HTTP path).
-        result = await self._context_assembler.assemble(
+        # The ContextAssembler does not have a reasoning_reserve parameter;
+        # reasoning_reserve is accounted for in the budget calculation via default_budget_tokens.
+        result = await assembler.assemble(
             query=query,
             agent_name=agent,
             max_total_tokens=budget_tokens,
             depth="standard",
-            reasoning_reserve=reasoning_reserve,
         )
 
         latency_ms = (time.time() - start) * 1000
 
         # Get dropped count from ContextAssembler result if available.
-        # The ContextAssembler returns the actual number of items dropped due to budget.
         dropped = result.get("dropped", 0)
 
         return AnswerContextResult(
@@ -177,9 +260,12 @@ class TaOSmdClient:
         agent: str,
         budget_tokens: int,
         now: datetime,
-        reasoning_reserve: int,
     ) -> AnswerContextResult:
-        """Call taOSmd HTTP API for answer_context."""
+        """Call taOSmd HTTP API for answer_context.
+
+        Note: reasoning_reserve is NOT sent over HTTP (server rejects it with 400).
+        It should only be passed to default_budget_tokens for budget calculation.
+        """
         start = time.time()
 
         payload = {
@@ -187,7 +273,7 @@ class TaOSmdClient:
             "agent": agent,
             "budget_tokens": budget_tokens,
             "now": now.isoformat(),
-            "reasoning_reserve": reasoning_reserve,
+            # reasoning_reserve is intentionally omitted - server returns 400
         }
 
         resp = await self._http.post(
@@ -240,53 +326,62 @@ class TaOSmdClient:
         return []
 
 
+def _get_app_state(obj) -> Any:
+    """Extract app.state from a Request or return the object if it's already app.state."""
+    if hasattr(obj, "app") and hasattr(obj.app, "state"):
+        return obj.app.state
+    return obj
+
+
 def get_taosmd_client(request) -> TaOSmdClient:
     """Get a TaOSmdClient configured for the current request context.
 
     Uses the request's http_client and taOSmd URL configuration.
+    Accepts either a FastAPI Request or app.state directly.
     """
     from tinyagentos.routes.user_memory import _taosmd_base
 
-    http_client = getattr(request.app.state, "http_client", None)
+    state = _get_app_state(request)
+    http_client = getattr(state, "http_client", None)
     base_url = _taosmd_base(request)
 
-    return TaOSmdClient(http_client=http_client, base_url=base_url)
+    # Get data_dir from state if available
+    data_dir = getattr(state, "data_dir", None)
+
+    return TaOSmdClient(http_client=http_client, base_url=base_url, data_dir=data_dir)
 
 
-def calculate_agent_budget(agent_config: dict, registry) -> int:
+def calculate_agent_budget(agent_config: dict, registry, used_tokens: int = 0) -> int:
     """Calculate the token budget for an agent's memory context.
 
     Derives budget from the agent's configured model context window,
-    using a share (not the whole window) per the taOSmd spec.
+    using default_budget_tokens with measured used_tokens and reasoning_reserve.
 
     Args:
         agent_config: The agent's configuration dict.
         registry: Model registry for manifest lookup.
+        used_tokens: Measured tokens of system prompt + tools + conversation history.
 
     Returns:
         Token budget for memory context.
     """
-    from tinyagentos.chat.context_window import (
-        DEFAULT_HISTORY_MAX_TOKENS,
-        SYSTEM_PROMPT_RESERVE,
-        RESPONSE_RESERVE,
-        MIN_HISTORY_MAX_TOKENS,
-        history_token_budget,
-    )
     from tinyagentos.cluster.model_resolver import _find_model_manifest
 
     model_id = agent_config.get("model") or ""
     if not model_id:
-        return DEFAULT_HISTORY_MAX_TOKENS
+        return 4000  # DEFAULT_HISTORY_MAX_TOKENS
 
     try:
         manifest = _find_model_manifest(registry, model_id)
         ctx = int(getattr(manifest, "context_window", 0) or 0) if manifest else 0
         if ctx > 0:
-            # Use a share of the window for memory (not the whole window)
-            # history_token_budget already reserves for system prompt + response
-            return history_token_budget(ctx)
-    except Exception:
-        pass
+            reasoning_reserve = estimate_reasoning_reserve(model_id, manifest)
+            # If used_tokens not provided, estimate from system prompt reserve
+            if used_tokens <= 0:
+                from tinyagentos.chat.context_window import SYSTEM_PROMPT_RESERVE
+                used_tokens = SYSTEM_PROMPT_RESERVE
+            return default_budget_tokens(ctx, used_tokens, reasoning_reserve)
+    except Exception as e:
+        logger.warning("Failed to calculate agent budget for %s: %s", model_id, e)
 
-    return DEFAULT_HISTORY_MAX_TOKENS
+    return 4000  # DEFAULT_HISTORY_MAX_TOKENS
