@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, afterEach } from "vitest";
 import { StrictMode } from "react";
-import { render, screen, fireEvent, waitFor } from "@testing-library/react";
+import { render, screen, fireEvent, waitFor, act } from "@testing-library/react";
 import { PerformancePanel, PERFORMANCE_CAPTION } from "./PerformancePanel";
 
 function json(obj: unknown, status = 200) {
@@ -46,7 +46,7 @@ describe("PerformancePanel", () => {
     vi.spyOn(globalThis, "fetch").mockImplementation((_u, init) =>
       Promise.resolve(
         init?.method === "PUT"
-          ? json({ error: "systemctl disable taos-rk3588-perf.service failed: boom" }, 502)
+          ? json({ error: "systemctl stop taos-rk3588-perf.service failed: boom" }, 502)
           : json({ supported: true, installed: true, enabled: true, active: true }),
       ),
     );
@@ -81,15 +81,57 @@ describe("PerformancePanel", () => {
     expect(sw).toHaveAttribute("aria-checked", "true");
   });
 
-  it("re-reads the real state after a failed save instead of keeping the stale one", async () => {
-    // `systemctl enable --now` enables the unit for boot BEFORE starting
-    // it, so a start failure 502s after the enablement already flipped.
-    // The switch must settle on the re-read state, not the pre-save one.
+  it("ignores a superseded load response under StrictMode", async () => {
+    // StrictMode runs the load effect twice; both requests end up in
+    // flight. The first belongs to the already-unmounted first mount,
+    // but the shared mounted flag is true again by the time it
+    // resolves, so only a per-effect cancellation flag can keep its
+    // stale value from overwriting newer state - here, a toggle the
+    // user made after the second load landed.
+    let resolveFirst: (r: Response) => void = () => {};
     let gets = 0;
     vi.spyOn(globalThis, "fetch").mockImplementation((_u, init) => {
       if (init?.method === "PUT") {
         return Promise.resolve(
-          json({ error: "systemctl enable taos-rk3588-perf.service failed: start boom" }, 502),
+          json({ ok: true, supported: true, installed: true, enabled: false, active: false }),
+        );
+      }
+      gets += 1;
+      if (gets === 1) {
+        return new Promise<Response>((res) => { resolveFirst = res; });
+      }
+      return Promise.resolve(
+        json({ supported: true, installed: true, enabled: true, active: true }),
+      );
+    });
+    render(
+      <StrictMode>
+        <PerformancePanel />
+      </StrictMode>,
+    );
+    const sw = await screen.findByLabelText("Performance mode", { selector: "button" });
+    expect(sw).toHaveAttribute("aria-checked", "true");
+    fireEvent.click(sw);
+    await waitFor(() =>
+      expect(screen.getByLabelText("Performance mode", { selector: "button" })).toHaveAttribute("aria-checked", "false"),
+    );
+    // The superseded first load finally resolves, carrying the
+    // pre-toggle value. It must be ignored.
+    await act(async () => {
+      resolveFirst(json({ supported: true, installed: true, enabled: true, active: true }));
+    });
+    expect(screen.getByLabelText("Performance mode", { selector: "button" })).toHaveAttribute("aria-checked", "false");
+  });
+
+  it("re-reads the real state after a failed save instead of keeping the stale one", async () => {
+    // The toggle starts/stops the unit before it persists the flag,
+    // so a failure can leave the shown state behind the real one. The
+    // switch must settle on the re-read state, not the pre-save one.
+    let gets = 0;
+    vi.spyOn(globalThis, "fetch").mockImplementation((_u, init) => {
+      if (init?.method === "PUT") {
+        return Promise.resolve(
+          json({ error: "systemctl start taos-rk3588-perf.service failed: start boom" }, 502),
         );
       }
       gets += 1;
@@ -110,7 +152,7 @@ describe("PerformancePanel", () => {
     vi.spyOn(globalThis, "fetch").mockImplementation((_u, init) => {
       if (init?.method === "PUT") {
         return Promise.resolve(
-          json({ error: "systemctl enable taos-rk3588-perf.service failed: boom" }, 502),
+          json({ error: "systemctl start taos-rk3588-perf.service failed: boom" }, 502),
         );
       }
       gets += 1;

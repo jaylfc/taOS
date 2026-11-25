@@ -24,11 +24,18 @@ export function PerformancePanel() {
   }, []);
 
   useEffect(() => {
+    // Per-effect cancellation: the shared mounted flag cannot retire a
+    // superseded load, because StrictMode's second mount restores it to
+    // true - a first load resolving late would pass the mounted check
+    // and overwrite newer state (e.g. a toggle) with its stale value.
+    // This effect's own flag is set by its cleanup and stays set.
+    let cancelled = false;
     (async () => {
       try {
         const res = await fetch("/api/settings/rk3588-performance", { credentials: "include" });
+        if (cancelled) return;
         const body = await res.json().catch(() => null);
-        if (!mounted.current) return;
+        if (cancelled || !mounted.current) return;
         if (!res.ok || typeof body?.enabled !== "boolean") {
           setError("Could not load performance mode.");
           return;
@@ -36,17 +43,18 @@ export function PerformancePanel() {
         setEnabled(body.enabled);
         setInstalled(body.installed !== false);
       } catch {
-        if (mounted.current) setError("Could not reach taOS.");
+        if (!cancelled && mounted.current) setError("Could not reach taOS.");
       }
     })();
+    return () => { cancelled = true; };
   }, []);
 
-  // Re-read the unit state after a failed save. `enable --now` changes
-  // boot enablement before it starts the unit, so a failed save can leave
-  // the real state different from what the switch shows; if the re-read
-  // also fails, drop to unknown (null) instead of presenting the stale
-  // value as current. Never touches the error state — the save's own
-  // error message stands.
+  // Re-read the unit state after a failed save. The toggle starts or
+  // stops the unit before it persists the flag, so a failed save can
+  // leave the real state different from what the switch shows; if the
+  // re-read also fails, drop to unknown (null) instead of presenting
+  // the stale value as current. Never touches the error state - the
+  // save's own error message stands.
   const reconcile = async () => {
     try {
       const res = await fetch("/api/settings/rk3588-performance", { credentials: "include" });
