@@ -180,5 +180,13 @@ const DesktopEntry *DesktopIndex::matchWindow(const QString &appId) const {
     }
     for (const DesktopEntry &e : m_entries)
         if (e.execBase().toLower() == lower) return &e;
+    // Last resorts, for windows whose app id is only the product name ("Claude" for com.anthropic.Claude):
+    // the entry's own name, then the last segment of its StartupWMClass or X-taOS-AppId.
+    for (const DesktopEntry &e : m_entries)
+        if (e.name.toLower() == lower) return &e;
+    for (const DesktopEntry &e : m_entries) {
+        if (e.startupWMClass.contains(QLatin1Char('.')) && e.startupWMClass.section(QLatin1Char('.'), -1).toLower() == lower) return &e;
+        if (e.taosAppId.contains(QLatin1Char('.')) && e.taosAppId.section(QLatin1Char('.'), -1).toLower() == lower) return &e;
+    }
     return nullptr;
 }

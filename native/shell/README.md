@@ -243,6 +243,37 @@ Hover lifts a thumbnail and shows its title; click focuses; Escape, or a second 
 typing filters by title, app or workspace across ALL workspaces; arrows and Tab move the selection and
 Return focuses it.
 
+**Desktops (spaces).** sway drops an empty workspace the moment it is left, so the strip is not read from sway.
+The person's ordered list of desktops is kept in `~/.config/taos/overview-spaces.json` (per output, written
+atomically; a damaged file is moved aside, never overwritten). A desktop only has a sway workspace while it holds a
+window or is being looked at; entering an empty one creates it again; nothing is placed in sway to hold one open. The
+sway workspace name of a desktop (its key) never changes, so desktop modes and the home of minimised windows keep
+working across renames and reorders. What the person sees is the label: their own name, else "Desktop <position>".
+A workspace sway has that is not in the list and holds windows is adopted at the end; a bare one sway starts on is
+not (the person is taken back to their saved desktop). The same engine serves the strip's buttons and the command
+socket, so an agent does what a person does: `taos-overview space list | add [name] | rename <n> [name] |
+move <n> <to> | remove <n> | go <n> | move-window <window id> <n>` (positions are 1-based; removing moves the windows
+to the next desktop, or the previous one, and the last desktop cannot be removed). In the overview: click a desktop to go
+there, double-click its name (or F2) to rename, drag it to reorder, drag a window onto one to move it, the x on a
+desktop removes it, the plus tile adds one. Digits 1 to 9 jump to a desktop while the search is empty (once there is
+text, digits are text), Ctrl+arrows switch desktop and keep the overview open, Ctrl+N adds one. On a narrow or tall
+screen the strip becomes a row of chips and a window closes with a swipe up. Icons and names are resolved with the
+dock's matcher (`dock/src/desktopentry.cpp`: id, StartupWMClass, `X-taOS-AppId`, Exec, then the entry's name).
+`tests/e2e-spaces.sh` drives all of it under a private headless sway (including a restart of sway and the daemon).
+
+**Shortcuts list (`taos-overview help`, Super+Ctrl+Shift+H).** A themed panel of every keyboard shortcut and mouse
+gesture, grouped (Windows, Desktops, Launcher and menu, Screenshots, System), searchable as you type, Up and Down
+scroll, Esc or any click closes it. It is generated, not written: the daemon asks sway which config it loaded
+(`get_version`), reads that file and every `include`, and turns each binding into words with the registry
+`overview/resources/shortcuts.json` (a pattern on the command, a group, a sentence). A binding the registry does not
+know is shown as written under "Other shortcuts" (your own keys keep working and show up). For the bindings the shell
+ships, `tests/test_shortcuts.cpp` parses every sway snippet and fails when one has no description, so the list cannot
+drift. An app can declare its own shortcuts in `<data dir>/taos/shortcuts/<app_id>.json`
+(`{"title": "...", "shortcuts": [{"keys": ["Ctrl","S"], "text": "Save"}]}`); the focused app's come first. On a
+narrow or tall screen it lists touch gestures instead of keys. The app menu's help entry runs `taos-overview help`.
+`tests/e2e-help.sh` renders it under a private headless sway. The idea (a keybinding help built from the live bindings)
+is inspired by Omarchy's, which is MIT licensed; nothing of it is copied.
+
 **Window model.** Sway IPC over `$SWAYSOCK` directly: one `get_tree` at start, then the `window` and
 `workspace` events patch the model (a title change patches one string; only structural events refetch,
 after a 20 ms debounce). Most recently used order is kept from the focus events (one seat: sway has one

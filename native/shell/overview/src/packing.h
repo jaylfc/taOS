@@ -14,6 +14,7 @@ struct Item {
 struct Options {
     qreal gap = 24;          // minimum space between thumbnails, and between rows
     qreal maxScale = 1.0;    // thumbnails are never larger than the real window times this
+    QSizeF maxItem;          // no thumbnail is larger than this (0 = no limit): one window must not fill the whole screen
     qreal minDim = 0;        // smaller windows are enlarged so their shorter side reaches this (before fitting)
 };
 // Returns one rect per input item (same order), all inside `area`, aspect ratios exact,

@@ -10,6 +10,8 @@
 
 #include "appinfo.h"
 #include "capture.h"
+#include "shortcuts.h"
+#include "spaces.h"
 #include "swayipc.h"
 #include "thumbnails.h"
 #include "windowlist.h"
@@ -31,6 +33,8 @@ class Controller : public QObject {
     Q_PROPERTY(QString outputName READ outputName NOTIFY outputNameChanged)
     Q_PROPERTY(bool sticky READ sticky NOTIFY modeChanged)
     Q_PROPERTY(bool framed READ framed NOTIFY framedChanged)
+    Q_PROPERTY(QVariantList helpGroups READ helpGroups NOTIFY helpChanged)   // shortcuts overlay: filtered groups
+    Q_PROPERTY(int helpUndescribed READ helpUndescribed NOTIFY helpChanged)
     Q_PROPERTY(QString currentWorkspace READ currentWorkspace NOTIFY workspacesChanged)
 public:
     explicit Controller(AppInfo *apps, QObject *parent = nullptr);
@@ -56,6 +60,9 @@ public:
         for (const WinInfo &w : m_model.all()) l << (w.rect.height() > 0 ? double(w.rect.width()) / w.rect.height() : 1.6);
         return l;
     }
+    QVariantList helpGroups() const { return m_helpView; }
+    int helpUndescribed() const { return m_helpUndescribed; }
+    Q_INVOKABLE void setHelpTouch(bool touch);   // QML: a phone layout wants gestures instead of keys
     QString outputName() const { return m_output; }
     bool sticky() const { return m_sticky; }
     QString currentWorkspace() const { return m_curWs; }
@@ -76,6 +83,16 @@ public:
     void activateWindow(int conId);
     Q_INVOKABLE void closeWindow(int conId);
     Q_INVOKABLE void goToWorkspace(const QString &name, int num);
+    // Spaces (the strip). Same engine as `taos-overview space ...`.
+    Q_INVOKABLE void goToSpace(const QString &key);           // switch and close the overview
+    Q_INVOKABLE void stepSpace(int delta);                    // switch to the previous or next space, overview stays
+    Q_INVOKABLE void jumpToSpace(int position);               // 1-based, as the person sees it
+    Q_INVOKABLE QString addSpace();                           // returns the new key; the overview stays
+    Q_INVOKABLE QString renameSpace(const QString &key, const QString &name);
+    Q_INVOKABLE QString moveSpace(const QString &key, int toPosition);   // 0-based
+    Q_INVOKABLE QString removeSpace(const QString &key);
+    Q_INVOKABLE QString moveWindowToSpace(int conId, const QString &key);
+    Q_INVOKABLE QString spaceNotice() const { return m_notice; }
     Q_INVOKABLE void commit();                 // focus the selection, hide
     Q_INVOKABLE void cancel();                 // hide, focus unchanged
     Q_INVOKABLE void closeFinished();          // QML: the fade-out is done
@@ -98,6 +115,8 @@ signals:
     void layoutChanged();
     void workspacesChanged();
     void countChanged();
+    void helpChanged();
+    void noticeChanged();
     void framedChanged();
     void outputNameChanged();
     void showWindow(const QString &output);     // host: create/show the surface on this output
@@ -121,8 +140,24 @@ private:
     int overviewNeighbour(const QString &dir) const;
     void selectionAnnounce();
     QString statusJson();
+    void afterSpaceChange();
+    void loadHelp();
+    void applyHelpFilter();
 
+    struct CmdSink : Spaces::Sink {
+        SwayIpc *ipc;
+        void command(const QString &c) override { ipc->command(c); }
+    };
     SwayIpc m_cmd, m_ev;
+    CmdSink m_sink;
+    Spaces::Store m_spaceStore;
+    Spaces::Engine m_spaces;
+    QString m_notice;
+    QString m_configPath;
+    QVector<Shortcuts::Group> m_helpAll;
+    QVariantList m_helpView;
+    int m_helpUndescribed = 0;
+    bool m_helpTouch = false;
     MruTracker m_mru;
     Snapshot m_snap;
     WindowModel m_model;

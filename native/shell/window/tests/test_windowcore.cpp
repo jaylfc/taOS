@@ -385,10 +385,100 @@ private slots:
         Window fl = w;
         fl.floating = true;
         const QRect big = placeNewWindow(t, fl, DesktopModes(), QSize(1500, 950));
-        QCOMPARE(big.size(), QSize(1248, 688));
+        QCOMPARE(big.size(), QSize(1152, 648));   // 90 % of the free area
         QVERIFY(QRect(0, 0, 1280, 720).contains(big));
         QCOMPARE(placeNewWindow(t, fl, DesktopModes(), QSize(600, 400)).size(), QSize(600, 400));
         QCOMPARE(placeNewWindow(t, fl, DesktopModes(), QSize()).size(), QSize(768, 504));   // no request: the default
+    }
+
+    // The owner's case: an app asks for 1500 x 950 on a 3840 x 1200 output with a bar on top and a dock below.
+    void placementKeepsWindowsOnScreen() {
+        Tree t;
+        Workspace ws;
+        ws.name = QStringLiteral("1"); ws.output = QStringLiteral("DP-1");
+        ws.rect = QRect(0, 48, 3840, 1066);   // usable: y 48..1114
+        t.workspaces.push_back(ws);
+        Window w;
+        w.id = 1; w.appId = QStringLiteral("my.taos.survival"); w.workspace = QStringLiteral("1"); w.output = QStringLiteral("DP-1");
+        w.floating = true; w.pid = 100;
+        t.windows.push_back(w);
+        const QRect usable = ws.rect;
+        QRect r = placeNewWindow(t, w, DesktopModes(), QSize(1500, 950));
+        QVERIFY2(usable.contains(r), qPrintable(QStringLiteral("%1,%2 %3x%4").arg(r.x()).arg(r.y()).arg(r.width()).arg(r.height())));
+        QVERIFY(r.height() <= usable.height() * 9 / 10);
+        QCOMPARE(r.size(), QSize(1500, 950));   // fits within 90 %: kept
+        QVERIFY(qAbs(r.center().x() - 1920) <= 1);   // centred
+        // an app asking for more than the screen: cut to 90 % of the usable area, still inside
+        r = placeNewWindow(t, w, DesktopModes(), QSize(5000, 3000));
+        QCOMPARE(r.size(), QSize(3456, 959));
+        QVERIFY(usable.contains(r));
+        // a window that is already floating on a tiling workspace is placed too (a dialog sway floated)
+        DesktopModes tiling;
+        tiling.workspaces.insert(QStringLiteral("1"), QStringLiteral("tiling"));
+        QVERIFY(placeNewWindow(t, w, tiling, QSize(1500, 950)).isValid());
+        // no request: the default stays modest on a wide output
+        QCOMPARE(placeNewWindow(t, w, DesktopModes(), QSize()).width(), 1600);
+    }
+    void placementCascadesFromTheLastWindowOfTheApp() {
+        Tree t;
+        Workspace ws;
+        ws.name = QStringLiteral("1"); ws.output = QStringLiteral("DP-1"); ws.rect = QRect(0, 0, 1920, 1080);
+        t.workspaces.push_back(ws);
+        Window a; a.id = 1; a.appId = QStringLiteral("ed"); a.workspace = QStringLiteral("1"); a.output = QStringLiteral("DP-1");
+        a.floating = true; a.pid = 5; a.rect = QRect(300, 200, 900, 600);
+        Window b = a; b.id = 2; b.pid = 6; b.rect = QRect(600, 100, 900, 600);
+        b.appId = QStringLiteral("ed");
+        t.windows << a << b;
+        Window n = a; n.id = 3; n.pid = 7;
+        t.windows << n;
+        const QRect r = placeNewWindow(t, n, DesktopModes(), QSize(900, 600));
+        QCOMPARE(r.topLeft(), QPoint(632, 132));   // the last one of the app, plus 32 px each way
+        // at the edge it wraps to centre instead of leaving the screen
+        t.windows[1].rect = QRect(1000, 480, 900, 600);
+        QVERIFY(QRect(0, 0, 1920, 1080).contains(placeNewWindow(t, n, DesktopModes(), QSize(900, 600))));
+    }
+    void placementCentresADialogOnItsParent() {
+        Tree t;
+        Workspace ws;
+        ws.name = QStringLiteral("1"); ws.output = QStringLiteral("DP-1"); ws.rect = QRect(0, 0, 1920, 1080);
+        t.workspaces.push_back(ws);
+        Window p; p.id = 1; p.appId = QStringLiteral("ed"); p.workspace = QStringLiteral("1"); p.output = QStringLiteral("DP-1");
+        p.floating = true; p.pid = 5; p.rect = QRect(100, 100, 1000, 700); p.focused = true;
+        Window d = p; d.id = 2; d.focused = false; d.rect = QRect(0, 0, 400, 200);
+        t.windows << p << d;
+        const QRect r = placeNewWindow(t, d, DesktopModes(), QSize(400, 200));
+        QCOMPARE(r.center(), p.rect.center());
+    }
+    void placementRemembersAppGeometryPerOutput() {
+        Tree t;
+        Workspace ws;
+        ws.name = QStringLiteral("1"); ws.output = QStringLiteral("DP-1"); ws.rect = QRect(0, 48, 3840, 1066);
+        t.workspaces.push_back(ws);
+        Window w;
+        w.id = 1; w.appId = QStringLiteral("ed"); w.workspace = QStringLiteral("1"); w.output = QStringLiteral("DP-1");
+        w.floating = true; w.pid = 5; w.rect = QRect(200, 120, 1000, 700);
+        t.windows << w;
+        QTemporaryDir dir;
+        const QString file = dir.filePath(QStringLiteral("g.json"));
+        PlacementMemory m;
+        QVERIFY(m.remember(w));
+        QString err;
+        QVERIFY2(m.write(file, &err), qPrintable(err));
+        PlacementMemory back;
+        QVERIFY(back.read(file));
+        QCOMPARE(placeNewWindow(t, w, DesktopModes(), QSize(1500, 950), &back), QRect(200, 120, 1000, 700));
+        // another output has nothing remembered; a remembered rectangle that no longer fits is ignored
+        Window other = w; other.output = QStringLiteral("DP-2");
+        PlacementMemory big; Window huge = w; huge.rect = QRect(0, 48, 3800, 1060);
+        QVERIFY(big.remember(huge));
+        QVERIFY(placeNewWindow(t, w, DesktopModes(), QSize(1500, 950), &big) != huge.rect);
+        // fullscreen, minimised or maximised ("full size") windows are not remembered
+        Window fs = w; fs.fullscreen = true;
+        PlacementMemory none;
+        QVERIFY(!none.remember(fs));
+        fs = w; fs.fullSize = true;
+        QVERIFY(!none.remember(fs));
+        QVERIFY(none.byOutput.isEmpty());
     }
 
     void modeEventJson() {

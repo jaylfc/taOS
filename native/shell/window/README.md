@@ -165,3 +165,20 @@ a headless sway with its own `XDG_RUNTIME_DIR`, opens two real Wayland windows (
 real `taos-window`. It needs a sway binary: `TAOS_TEST_SWAY=/path/to/sway` (default: `sway` on PATH) and
 `TAOS_TEST_SWAY_LIBS=dir:dir` when it is not installed; without sway it skips with a message. The Qt Wayland
 platform plugin must be loadable (`QT_PLUGIN_PATH`).
+
+
+## Where new windows open
+
+`taos-window mode-daemon` places every new floating window (a taOS app sway floated at map time, a dialog, a tool
+window, an Electron or GTK app that asked for a size, a tiled window being floated on a desktop workspace): never more
+than 90 % of the usable area (bar and dock excluded) in either direction, always fully inside it, then in order:
+the app's remembered rectangle for this output while it still fits (`~/.config/taos/window-geometry.json`, written when
+a window closes), a dialog (a smaller window of a process that already has one open on this workspace) centred on that
+window, 32 px down and right of the last window of the same app, else centred. With no size asked for the default is
+60 % x 70 % of the usable area, at most 1600 x 900. `tests/e2e-placement.sh` checks it under a headless sway with a bar.
+The remembered rectangle is the window's place at the last window or focus event before it closed, so a move made
+just before closing, with no event after it, is not kept.
+
+Keys: `Super` + left drag moves, `Super` + right drag resizes from anywhere in a floating window (`floating_modifier`),
+`Super+Alt+arrows` resize by 40 px. Not built yet: larger invisible grips on edges and corners, and snapping to screen
+halves and quarters with a preview (both need a pointer-tracking surface in `taos-frame`).

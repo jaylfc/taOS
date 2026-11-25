@@ -5,6 +5,7 @@
 #include <QDateTime>
 #include <QJsonDocument>
 #include <QThread>
+#include <cstdio>
 
 #include "desktopmodes.h"
 #include "swayconn.h"
@@ -81,6 +82,16 @@ bool runModeDaemon(const QString &socketPath, const std::function<bool()> &stop,
                 if (!tx.runCommand(cmd, nullptr)) break;
             return;
         }
+        if (e.kind == QLatin1String("close")) {
+            // Remember where the app's window was, so the next one opens there again (if it still fits).
+            PlacementMemory mem;
+            mem.read(PlacementMemory::path(), nullptr);
+            if (mem.remember(e.window)) {
+                QString err;
+                if (!mem.write(PlacementMemory::path(), &err)) fprintf(stderr, "taos-window: %s\n", qPrintable(err));
+            }
+            return;
+        }
         if (e.kind != QLatin1String("new")) return;
         WindowController c(&tx);
         Tree t;
@@ -89,14 +100,17 @@ bool runModeDaemon(const QString &socketPath, const std::function<bool()> &stop,
         DesktopModes modes;
         Modes::read(Modes::path(), &modes);
         if (!w) return;
-        if (w->floating && w->appId.startsWith(QLatin1String("my.taos."))) {
-            if (modes.modeFor(w->workspace) == QLatin1String("tiling")) {   // the rule floats them everywhere; this workspace tiles
-                tx.runCommand(Plans::sel(w->id) + QStringLiteral("floating disable"), nullptr);
+        if (w->floating) {
+            if (w->appId.startsWith(QLatin1String("my.taos.")) && modes.modeFor(w->workspace) == QLatin1String("tiling")) {
+                tx.runCommand(Plans::sel(w->id) + QStringLiteral("floating disable"), nullptr);   // the rule floats them everywhere; this workspace tiles
                 return;
             }
-            // A taOS app that sway floated at map time (the for_window rule in 46-taos-window.conf) keeps the size it
-            // asked for; only a window that does not fit the free area (bar and dock excluded) is cut to it.
-            const QRect placed = placeNewWindow(t, *w, modes, w->rect.size());
+            // A window that opened floating (a taOS app sway floated at map time, or any app's own dialog or tool window)
+            // keeps the size it asked for, within 90 % of the free area (bar and dock excluded), fully on screen,
+            // where this app's last window was, else centred and cascaded.
+            PlacementMemory mem;
+            mem.read(PlacementMemory::path(), nullptr);
+            const QRect placed = placeNewWindow(t, *w, modes, w->rect.size(), &mem);
             if (placed.isValid() && placed != w->rect) {
                 tx.runCommand(Plans::sel(w->id) + QStringLiteral("resize set %1 %2").arg(placed.width()).arg(placed.height()), nullptr);
                 tx.runCommand(Plans::sel(w->id) + QStringLiteral("move absolute position %1 %2").arg(placed.x()).arg(placed.y()), nullptr);
