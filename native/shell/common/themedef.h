@@ -83,7 +83,7 @@ struct LayoutSpec {
     QString cellShape = QStringLiteral("hex");     // hex | square: the cells of dock "cells"
     int taskbarHeight = 40;                   // 28..64 px
     QString dockEdge = QStringLiteral("bottom");   // top | bottom (the taskbar; the floating dock keeps dock.json)
-    QString launcher = QStringLiteral("centered"); // centered | anchored (a compact menu at the taskbar's start button) | ring (a wide one line field above the dock)
+    QString launcher = QStringLiteral("centered"); // centered | anchored (a compact two pane menu at the taskbar start button) | ring (a ring of pinned apps over a wide field) | text (a calm list of names in large type, no icons)
     QString startLabel = QStringLiteral("taOS");   // text of the taskbar's start button, up to 16 letters, digits and spaces
     bool operator==(const LayoutSpec &o) const {
         return barStyle == o.barStyle && cellShape == o.cellShape && topBar == o.topBar && barHeight == o.barHeight && barEdge == o.barEdge && clock == o.clock && dock == o.dock

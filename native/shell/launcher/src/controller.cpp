@@ -24,6 +24,17 @@ Controller::Controller(SearchEngine *engine, std::shared_ptr<Frecency> frec, QOb
     connect(&m_noticeTimer, &QTimer::timeout, this, [this] { setNotice({}); });
 }
 
+void Controller::setMenu(std::shared_ptr<AppMenu> apps, std::shared_ptr<ActionMenu> actions) {
+    m_menuCtl = std::make_unique<MenuController>(std::move(apps), std::move(actions));
+    m_menuCtl->setPerform([this](const Result &r, int i) { return perform(r, i); });
+    m_menuCtl->setNotify([this](const QString &s) { setNotice(s); });
+}
+
+void Controller::menuMove(int dx, int dy) { if (m_menuCtl) m_menuCtl->move(dx, dy); }
+void Controller::menuEnter() { if (m_menuCtl) m_menuCtl->enter(); }
+void Controller::menuContext() { if (m_menuCtl) m_menuCtl->openContext(); }
+bool Controller::menuBack() { return m_menuCtl && m_menuCtl->back(); }
+
 QStringList Controller::actionLabels() const {
     QStringList l;
     if (const Row *r = m_model.at(m_cur)) for (const Action &a : r->r.actions) l << a.label;
@@ -68,6 +79,7 @@ void Controller::show() {
     m_engine->prepare();
     m_model.setRows({});
     m_cur = -1;
+    if (m_menuCtl) m_menuCtl->reset();
     m_gen = m_engine->search(QString());
     emit clearInput();
     emit queryChanged();
@@ -102,6 +114,8 @@ void Controller::windowActivated() {}
 QString Controller::handleCommand(const QStringList &w) {
     const QString c = w.value(0);
     if (c == QLatin1String("ping")) return QStringLiteral("ok pong");
+    if (m_menuCtl) { const QString r = m_menuCtl->handleCommand(w); if (!r.isEmpty()) return r; }
+    if (c == QLatin1String("show-actions")) { show(); if (m_menuCtl) emit setInputText(QStringLiteral(">")); return QStringLiteral("ok shown"); }
     if (c == QLatin1String("toggle")) { toggle(); return QStringLiteral("ok %1").arg(m_open ? "shown" : "hidden"); }
     if (c == QLatin1String("show")) { show(); return QStringLiteral("ok shown"); }
     if (c == QLatin1String("hide")) { hide(); return QStringLiteral("ok hidden"); }
@@ -117,14 +131,32 @@ void Controller::setQuery(const QString &text) {
     m_query = text;
     m_confirmId.clear();
     m_userMoved = false;
-    m_searching = true;
     if (m_actionsOpen) { m_actionsOpen = false; emit actionsChanged(); }
+    if (m_menuCtl) {
+        // ">" is the system action menu (Omarchy style: a short, filterable, drillable list); nothing is searched meanwhile
+        const bool act = text.startsWith(QLatin1Char('>'));
+        m_menuCtl->enterActions(act);
+        if (act) m_menuCtl->setActionFilter(text.mid(1).trimmed());
+        if (act || text.isEmpty()) {
+            m_searching = false;
+            m_engine->cancel();
+            m_model.setRows({});
+            m_cur = -1;
+            ++m_gen;
+            emit queryChanged();
+            emit rowsChanged();
+            emit currentChanged();
+            return;
+        }
+    }
+    m_searching = true;
     emit queryChanged();
     m_gen = m_engine->search(text);
 }
 
 void Controller::onUpdated(int gen, const QList<Row> &rows, bool final) {
     if (gen != m_gen || !m_open) return;
+    if (m_menuCtl && m_query.isEmpty()) return;   // the menu is what shows with nothing typed, not suggestion rows
     QString keep;
     if (m_userMoved) if (const Row *r = m_model.at(m_cur)) keep = r->r.id;
     m_model.setRows(rows);
@@ -190,6 +222,7 @@ void Controller::runActionAt(int i) {
 }
 
 void Controller::activate() {
+    if (menuVisible()) { m_menuCtl->enter(); return; }
     const Row *r = m_model.at(m_cur);
     if (!r) return;
     perform(r->r, m_actionsOpen ? m_actionIdx : 0);
@@ -220,6 +253,7 @@ void Controller::quickPick(int n) {
 bool Controller::perform(const Result &r, int ai) {
     if (ai < 0 || ai >= r.actions.size()) return false;
     const Action &a = r.actions[ai];
+    if (a.verb.startsWith(QLatin1String("menu-"))) return m_menuCtl && m_menuCtl->handleVerb(a);
     if (a.confirm && m_confirmId != r.id) {
         m_confirmId = r.id;
         emit currentChanged();
@@ -275,6 +309,7 @@ bool Controller::perform(const Result &r, int ai) {
 void Controller::finishLaunch() { hide(); }
 
 void Controller::escape() {
+    if (m_menuCtl && m_menuCtl->back()) return;
     if (m_actionsOpen) { closeActions(); return; }
     if (!m_confirmId.isEmpty()) { m_confirmId.clear(); emit currentChanged(); return; }
     if (!m_query.isEmpty()) { emit clearInput(); setQuery(QString()); return; }

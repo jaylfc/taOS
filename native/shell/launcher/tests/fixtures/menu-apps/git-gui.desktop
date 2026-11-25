@@ -1,0 +1,6 @@
+[Desktop Entry]
+Type=Application
+Name=Git GUI
+Icon=git
+Exec=git gui
+Categories=Development;RevisionControl;

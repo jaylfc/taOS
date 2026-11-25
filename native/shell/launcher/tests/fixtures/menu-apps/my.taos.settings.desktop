@@ -1,0 +1,7 @@
+[Desktop Entry]
+Type=Application
+Name=Settings
+Icon=my.taos.settings
+Exec=taos-settings %U
+Categories=Settings;System;
+X-taOS-AppId=my.taos.settings

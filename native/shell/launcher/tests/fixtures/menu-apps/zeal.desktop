@@ -1,0 +1,7 @@
+[Desktop Entry]
+Type=Application
+Name=Zeal
+GenericName=Docs
+Icon=zeal
+Exec=zeal
+Categories=Development;Documentation;

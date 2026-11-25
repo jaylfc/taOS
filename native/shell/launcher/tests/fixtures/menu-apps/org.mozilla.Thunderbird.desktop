@@ -1,0 +1,7 @@
+[Desktop Entry]
+Type=Application
+Name=Thunderbird
+GenericName=Email
+Icon=thunderbird
+Exec=thunderbird %u
+Categories=Network;Email;

@@ -1,0 +1,7 @@
+[Desktop Entry]
+Type=Application
+Name=Agents
+Icon=my.taos.agents
+Exec=taos-agents %U
+Categories=Utility;
+X-taOS-AppId=my.taos.agents

@@ -1,0 +1,7 @@
+[Desktop Entry]
+Type=Application
+Name=LibreOffice Writer
+GenericName=Word Processor
+Icon=libreoffice-writer
+Exec=soffice --writer %U
+Categories=Office;WordProcessor;

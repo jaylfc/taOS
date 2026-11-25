@@ -86,6 +86,7 @@ public:
     // Taskbar (layout.dock "taskbar"): the start button opens the launcher; a window button focuses its window, or
     // minimises it when it is the active one, or restores it when minimised.
     Q_INVOKABLE void taskbarStart();
+    static constexpr int AppsRow = -2;   // the index the QML gives the leading apps cell
     Q_INVOKABLE void taskbarActivate(int windowId);
     // The share-out of the width among the buttons: {buttonWidth, first, visible, hidden} (TaskbarLayout::compute).
     Q_INVOKABLE QVariantMap taskbarLayout(int available, int minW, int maxW, int gap, int moreW) const;

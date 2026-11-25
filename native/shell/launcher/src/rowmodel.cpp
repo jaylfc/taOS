@@ -6,6 +6,8 @@
 #include <QIcon>
 #include <QUrl>
 
+#include "iconprovider.h"
+
 using namespace taos::search;
 
 namespace taos::launcher {
@@ -23,14 +25,7 @@ QString RowModel::kindLabel(const QString &k) {
 }
 
 QString RowModel::iconUrl(const QString &icon) {
-    if (icon.isEmpty()) return {};
-    static QHash<QString, bool> cache;
-    auto it = cache.find(icon);
-    if (it == cache.end()) {
-        const bool ok = icon.startsWith(QLatin1Char('/')) ? QFileInfo::exists(icon) : (QIcon::hasThemeIcon(icon) || QIcon::hasThemeIcon(icon.toLower()));
-        it = cache.insert(icon, ok);
-    }
-    if (!*it) return {};
+    if (icon.isEmpty() || !hasIcon(icon)) return {};
     return QStringLiteral("image://icon/") + QString::fromLatin1(QUrl::toPercentEncoding(icon));
 }
 

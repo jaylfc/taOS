@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=OBS Studio
+GenericName=Streaming
+Icon=obs
+Exec=taos-appgroups run obs %U
+Categories=AudioVideo;Recorder;
+X-taOS-AppId=obs
+X-taOS-ContainerApp=obs
+X-taOS-AppGroup=Streaming

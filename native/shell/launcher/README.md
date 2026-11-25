@@ -77,8 +77,68 @@ launcher does not use). Missing client operations: list agents (GET /api/agents)
 channel with an agent, post a message to a channel (POST /api/chat/messages), and a way to open a chat window
 (none exists; the notification action payload would need to name the agent and channel).
 
+## The app menu
+
+Open the launcher with nothing typed and it shows the app menu (the search is still one keystroke away: type and the
+menu gives way to results). One model and one engine serve every look; the styles below only draw it.
+
+- **All apps**: every desktop entry the session knows (host apps, the built in taOS apps `my.taos.*`, app group apps
+  `taos-appgroups-*` with their group shown quietly, web apps `taos-webapp-*`), with the icon the dock uses
+  (`iconprovider.cpp`: absolute path, icon theme, lower case retry, a bare hicolor tree, `/usr/share/pixmaps`), grouped by
+  category (Internet, Development, Office, Graphics, Media, Games, System, taOS, Other; freedesktop categories are mapped in
+  `appmenu.cpp`) or A-Z. New, removed and edited apps show up within a moment (`QFileSystemWatcher` over the applications
+  folders, the files and any new sub folder, debounced).
+- **Pinned**: `~/.config/taos/startmenu.json` `{"pinned": ["firefox.desktop", ...]}`. Until the person pins something the dock's
+  list (`dock.json` `pinned`) is the starting point, so the two begin the same; after that the menu has its own list and never
+  rewrites the dock's. "Keep in Dock" in the context menu is `taos-dock pin`. Pins of apps that are not installed are kept (a
+  reinstall brings them back) and skipped when drawing.
+- **Recent**: the most used apps by the existing frecency, never a pinned one.
+- **Footer**: the person (name from the account, `~/.face` or the AccountsService icon when there is one), Settings, Files,
+  Actions and Power. Power lists Sleep, Sign out, Restart, Shut down (and Lock); the ones that end the session ask for a second
+  Enter. The commands are the ones search offers (`CommandsProvider`), there is one definition.
+- **Context menu** (right click, long press, Menu key, Tab): Open, Pin or Unpin, Keep in Dock, App info, Move to group (app group
+  apps: `taos-appgroups move <app> --to group:<name>`, which exists only where that engine has `move`), Uninstall (app group apps:
+  `taos-appgroups remove`, web apps: `taos-webapp remove`; host packages belong to the package manager and have no row). Uninstall asks twice.
+- **Keyboard**: type to search at once; arrows walk the menu (the text field keeps the focus, the cursor is `menunav.cpp`);
+  Enter opens; Tab or the Menu key shows the context menu; Escape closes the topmost layer (confirmation, sheet, power list, a level of
+  the action menu) and then the launcher.
+- **System action menu** (type `>` or press Super+Alt+Space or the Actions button): a short hierarchy, Capture, Toggle, Style,
+  Setup, Install, Help (Keyboard shortcuts: `taos-overview help`), System, each a list you filter by typing; Enter opens a group or runs an action; Backspace on an empty filter or Escape goes
+  up. Every row is backed by an existing engine and is offered only when its program exists (grim and slurp, nmcli, bluetoothctl,
+  taos-theme, taos-settings, taos-store, the session commands). Not offered because no engine exists yet: Do Not Disturb, night light,
+  screen recording, wallpaper, accounts, app groups setup, updates. The idea of a keyboard first hierarchical menu with a filter at
+  every level comes from the Omarchy menu (github.com/basecamp/omarchy, MIT, DHH); no code or text is taken from it.
+
+### Styles
+
+`layout.launcher` in the theme names the renderer; the engine and the keyboard are the same for all. `--style` (or
+`TAOS_LAUNCHER_STYLE`) forces one whatever the theme says; a narrow surface (under 640 px) is always the phone drawer.
+
+| style | what it draws |
+|---|---|
+| `centered` | a full panel: pinned grid and recent on the left, every app on the right |
+| `anchored` | the classic two pane start menu at the taskbar's start button: every app (what you use first, then by category) left, pinned grid right |
+| `ring` | the pinned apps on a ring with the name in the middle and an "All apps" view; the ring theme's accent and data face |
+| `text` | the calm home: the time and a few favourite names in large type, no icons; type to find anything; swipe up for every app, down for the action menu, double tap to lock. Behaviour inspired by Olauncher (github.com/tanujnotes/Olauncher, GPL-3.0): nothing of its code, text or design is used. `taos-launcher daemon --style text` makes it a phone home screen |
+| phone | automatic below 640 px: the whole screen, pinned grid, every app by letter, compact footer |
+
+### For agents (the same menu without a window)
+
+    taos-search menu [pinned|recent|categories|letters] [--json]     taos-search pin|unpin ID     taos-search move-pin ID N
+    taos-search actions [GROUP...] [--json]                          taos-search run ACTION [confirm]
+    taos-launcher menu | pin ID | unpin ID | move-pin ID N | actions [GROUP...] | run ACTION [confirm] | show-actions   (to the running daemon)
+
+Power style actions need the word `confirm`; an agent says it on purpose.
+
+### Starting apps
+
+Every program the launcher or the dock starts goes through `common/applaunch.cpp`: a clean app environment (no
+`QT_WAYLAND_SHELL_INTEGRATION`, no `TAOS_SHELL_*` except the env file the app wrappers source, nothing the component published as its own)
+and its own systemd user scope (`taos-app-<name>-<time>`) when the session has a user manager, so an app is neither a layer surface by
+inheritance nor a child of the dock.
+
 ## Tests and renders
 
 `ctest -R launcher_test`: fuzzy ranking, desktop entry parsing, calculator (incl. malformed input), provider
 time-boxing and streaming, IPC single instance and toggle, command availability, files walker bounds, mentions,
-controller behaviour. `taos-launcher-shots <dir> [theme] [dark|light]` renders the panel offscreen.
+controller behaviour. `taos-launcher-shots <dir> [theme] [dark|light] [style] [WxH]` renders the menu and the search offscreen (fixtures: `tests/fixtures/menu-apps`, icons in `menu-theme`).

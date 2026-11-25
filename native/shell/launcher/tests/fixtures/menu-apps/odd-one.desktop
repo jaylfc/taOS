@@ -1,0 +1,6 @@
+[Desktop Entry]
+Type=Application
+Name=Odd Tool
+Icon=odd-missing-icon
+Exec=odd
+Categories=Qt;X-Foo;

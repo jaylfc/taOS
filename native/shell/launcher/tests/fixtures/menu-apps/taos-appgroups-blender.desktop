@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=Blender
+GenericName=3D Creation
+Icon=blender
+Exec=taos-appgroups run blender %U
+Categories=Graphics;3DGraphics;
+X-taOS-AppId=blender
+X-taOS-ContainerApp=blender
+X-taOS-AppGroup=My apps

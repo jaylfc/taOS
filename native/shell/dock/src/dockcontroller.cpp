@@ -9,6 +9,7 @@
 #include <QVariantMap>
 #include <cstdio>
 
+#include "applaunch.h"
 #include "cliengine.h"
 #include "swayengine.h"
 
@@ -40,7 +41,11 @@ DockController::DockController(const Options &o, QObject *parent)
         m_o.engine = QStandardPaths::findExecutable(m_o.cliProgram).isEmpty() ? QStringLiteral("sway") : QStringLiteral("cli");
     if (m_o.engine == QLatin1String("cli")) m_engine = new CliEngine(m_o.cliProgram, this);
     else m_engine = new SwayEngine(m_o.swaySocket, this);   // FALLBACK engine, see windowengine.h
-    m_spawn = [](const QString &prog, const QStringList &args) { QProcess::startDetached(prog, args); };
+    m_spawn = [](const QString &prog, const QStringList &args) {
+        // the shell's one launch helper: a clean app environment and an own scope (an app must never inherit the layer-shell integration)
+        QString err;
+        if (!taos::launchApp(prog, args, &err)) fprintf(stderr, "taos-dock: %s\n", qPrintable(err));
+    };
     m_hideTimer.setSingleShot(true);
     m_hideTimer.setInterval(450);
     connect(&m_hideTimer, &QTimer::timeout, this, &DockController::updateReveal);
@@ -130,7 +135,7 @@ void DockController::relayout() {
     in.attached = m_settings.attached();
     in.autohide = effectiveAutohide();
     in.magnify = m_settings.magnify();
-    in.items = 0;
+    in.items = 1;   // the apps cell
     for (const DockItem &i : m_model.items()) if (i.kind != DockItem::Separator) ++in.items;
     in.separators = m_model.separatorCount();
     in.output = m_output;
@@ -222,7 +227,10 @@ void DockController::perform(const DockAction &a) {
     }
 }
 
-void DockController::activate(int row) { perform(m_model.primaryAction(row)); }
+void DockController::activate(int row) {
+    if (row == AppsRow) { taskbarStart(); return; }   // the apps cell opens the launcher's menu
+    perform(m_model.primaryAction(row));
+}
 void DockController::middleClick(int row) { perform(m_model.middleAction(row)); }
 
 // window-min:<id> (restore when minimised), window-full:<id> (the engine toggles), window-close:<id>.

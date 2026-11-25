@@ -77,10 +77,21 @@ both with different values is an error. The person's own choice (`taos-theme set
 | `taskbarHeight` | 28 to 64 px (40) | taskbar and tray |
 | `dockEdge` | `top`, `bottom` (bottom) | taskbar and tray |
 | `startLabel` | 1 to 16 letters, digits, spaces (taOS) | text of the taskbar's start button |
-| `launcher` | `centered`, `anchored`, `ring` (centered) | `taos-launcher`: the centred spotlight panel, a compact menu at the taskbar's start button (needs dock `taskbar`), or a wide command field low on the screen |
+| `launcher` | `centered`, `anchored`, `ring`, `text` (centered) | `taos-launcher`: which renderer draws the app menu (one shared menu and engine, see `launcher/README.md`): a full panel; the two pane start menu at the taskbar's start button (needs dock `taskbar`); a ring of pinned apps over a wide field; or `text`, a calm list of favourite names in large type with no icons |
 
 The taskbar keeps its window buttons in the order the windows appeared; focus never reorders them. When they do not
 fit, the active window stays visible and a "+N" button lists the rest.
+
+### Launcher styles
+
+A launcher style is a renderer of the shared app menu (pinned, recent, every app, search, the system actions): the theme only
+names which one it wants, so a theme never touches the engine and cannot break it. The four values above are the styles that
+ship; `layout.launcher` accepts exactly those, and anything else is refused with the list ("layout.launcher must be one of:
+centered, anchored, ring, text"). Each style draws only from the theme's own tokens and skin (colours, `fontFamily`, `fontDisplay`,
+`fontData`, `fontSize`, `density`, `radiusScale`, `borderWidth`, `dockSurface` bevels, `texture`). A narrow screen always gets the phone drawer, and a person or a device
+can force a style with `taos-launcher daemon --style <name>` (the text style makes a good phone home screen). A style is a QML file in
+the launcher (`launcher/qml/Menu<Name>.qml`) registered by the launcher itself; third party styles will arrive with the plugin system,
+not through a theme folder, because a theme is data only.
 
 ## `options`: choices a person makes inside the theme
 

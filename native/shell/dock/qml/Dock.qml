@@ -11,7 +11,7 @@ Item {
     readonly property bool dark: Theme.variant !== "light"
     readonly property bool hidden: Dock.autohide && !Dock.revealed
     readonly property bool cells: Theme.dockMode === "cells"
-    readonly property int cellsWidth: (Dock.model.count - Dock.model.separators) * 52 + Dock.model.separators * 10
+    readonly property int cellsWidth: (Dock.model.count - Dock.model.separators + 1) * 52 + Dock.model.separators * 10   // +1: the apps cell
 
     Accessible.role: Accessible.ToolBar
     Accessible.name: "Dock"
@@ -32,7 +32,7 @@ Item {
     property int focusIndex: -1
     focus: Dock.keyboardActive
     function usable(i) { var it = items.itemAt(i); return it && !it.isSep }
-    function move(d) {
+    function moveItems(d) {
         var n = items.count
         if (n === 0) return
         var i = focusIndex
@@ -40,6 +40,14 @@ Item {
             i = (i + d + n) % n
             if (usable(i)) { focusIndex = i; return }
         }
+    }
+    // focusIndex -2 is the apps cell at the start: Home, or Left past the first item, lands on it; Right leaves it
+    function move(d) {
+        if (focusIndex === -2) { focusIndex = d > 0 ? -1 : 0; moveItems(d > 0 ? 1 : -1); return }
+        var prev = focusIndex
+        moveItems(d)
+        if (d < 0 && prev >= 0 && focusIndex > prev) focusIndex = -2
+        else if (d > 0 && prev >= 0 && focusIndex < prev) focusIndex = -2
     }
     Connections {
         target: Dock
@@ -55,9 +63,9 @@ Item {
     Keys.onTabPressed: move(1)
     Keys.onBacktabPressed: move(-1)
     Keys.onPressed: (e) => {
-        if (e.key === Qt.Key_Home) { focusIndex = -1; move(1); e.accepted = true }
-        else if (e.key === Qt.Key_End) { focusIndex = 0; move(-1); e.accepted = true }
-        else if (e.key === Qt.Key_Return || e.key === Qt.Key_Enter || e.key === Qt.Key_Space) { if (focusIndex >= 0) Dock.activate(focusIndex); e.accepted = true }
+        if (e.key === Qt.Key_Home) { focusIndex = -2; e.accepted = true }
+        else if (e.key === Qt.Key_End) { focusIndex = 0; moveItems(-1); e.accepted = true }
+        else if (e.key === Qt.Key_Return || e.key === Qt.Key_Enter || e.key === Qt.Key_Space) { if (focusIndex >= 0 || focusIndex === -2) Dock.activate(focusIndex); e.accepted = true }
         else if (e.key === Qt.Key_Menu) { var it = items.itemAt(focusIndex); if (it) it.openMenuHere(false); e.accepted = true }
         else if (e.key === Qt.Key_Escape) { Dock.releaseKeyboard(); e.accepted = true }
     }
@@ -112,6 +120,20 @@ Item {
             y: Dock.vertical ? Dock.padding : 0
             width: Dock.vertical ? parent.width : (root.cells ? root.cellsWidth + 2 : parent.width - 2 * Dock.padding)
             height: Dock.vertical ? parent.height - 2 * Dock.padding : parent.height
+            // the apps cell: always the first slot, in the dock and in cells; it is not in the model, so pinning and drag never see it
+            DockItem {
+                id: appsCell
+                host: root
+                flowItem: flow
+                index: -2
+                kind: "apps"
+                name: qsTr("Apps")
+                icon: ""
+                running: false; focused: false; launching: false; pinned: false
+                accessibleText: qsTr("Apps: open the app menu")
+                tooltip: qsTr("Apps")
+                minimisedCount: 0
+            }
             Repeater {
                 id: items
                 model: Dock.model

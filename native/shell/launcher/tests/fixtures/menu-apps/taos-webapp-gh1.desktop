@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=GitHub
+Icon=/ICONDIR/github.svg
+Exec=taos-webapp launch gh1
+Categories=Network;
+X-taOS-AppId=chrome-github-gh1
+X-taOS-WebApp=gh1

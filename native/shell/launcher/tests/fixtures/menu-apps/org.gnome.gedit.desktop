@@ -1,0 +1,7 @@
+[Desktop Entry]
+Type=Application
+Name=Text Editor
+GenericName=Text Editor
+Icon=accessories-text-editor
+Exec=gedit %U
+Categories=Utility;TextEditor;

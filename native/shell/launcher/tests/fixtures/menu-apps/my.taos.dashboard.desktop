@@ -1,0 +1,7 @@
+[Desktop Entry]
+Type=Application
+Name=Activity
+Icon=my.taos.dashboard
+Exec=taos-dashboard %U
+Categories=System;Monitor;
+X-taOS-AppId=my.taos.dashboard

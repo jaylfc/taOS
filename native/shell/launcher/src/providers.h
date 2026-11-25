@@ -24,6 +24,7 @@ public:
     int entryCount() const;
     QList<DesktopEntry> entries();   // a copy; loads on first use
     void reload();   // rescan now (tests, and after installs)
+    QStringList dirs() const { return m_dirs; }
 private:
     void ensureLoaded();
     qint64 dirsStamp() const;

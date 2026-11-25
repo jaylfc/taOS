@@ -27,6 +27,7 @@ Item {
     readonly property int cellH: 52
     readonly property bool isSep: kind === "separator"
     readonly property bool isMin: kind === "minimised"
+    readonly property bool isApps: kind === "apps"        // the leading cell that opens the app menu (not a dock item; index -2)
     width: Dock.vertical ? flowItem.width : (isSep ? (cells ? 10 : Dock.separatorWidth) : (cells ? cellW + 6 : Dock.cell))
     height: Dock.vertical ? (isSep ? Dock.separatorWidth : Dock.cell) : flowItem.height
 
@@ -40,7 +41,7 @@ Item {
     Keys.onReturnPressed: Dock.activate(index)
     Keys.onEnterPressed: Dock.activate(index)
     Keys.onSpacePressed: Dock.activate(index)
-    Keys.onMenuPressed: slot.openMenuHere(false)
+    Keys.onMenuPressed: if (!slot.isApps) slot.openMenuHere(false)
 
     function centre() { return slot.mapToItem(host, slot.width / 2, slot.height / 2) }
     function openMenuHere(list) {
@@ -128,7 +129,7 @@ Item {
             Image {
                 id: img
                 anchors.fill: parent
-                source: slot.icon !== "" ? "image://dockicon/" + slot.icon : ""
+                source: slot.icon !== "" && !slot.isApps ? "image://dockicon/" + slot.icon : ""
                 sourceSize.width: Dock.iconSize * 2
                 sourceSize.height: Dock.iconSize * 2
                 fillMode: Image.PreserveAspectFit
@@ -145,8 +146,23 @@ Item {
                     contrast: 0.3
                 }
             }
+            // the apps cell: nine dots, the way into every app (the launcher's menu)
+            Grid {
+                visible: slot.isApps
+                anchors.centerIn: parent
+                columns: 3
+                spacing: Math.max(2, Math.round(parent.width * 0.09))
+                Repeater {
+                    model: 9
+                    Rectangle {
+                        width: Math.max(4, Math.round(iconBox.width * 0.2)); height: width
+                        radius: Math.round(width * 0.3 * Theme.radiusScale)
+                        color: slot.cells ? (press.containsMouse ? Theme.text : Theme.accent) : (index === 4 ? Theme.accent : Theme.text)
+                    }
+                }
+            }
             Rectangle {   // bundled fallback glyph
-                visible: !img.ok
+                visible: !img.ok && !slot.isApps
                 anchors.fill: parent
                 anchors.margins: 3
                 radius: Dock.iconSize / 4
@@ -220,12 +236,12 @@ Item {
             if (target !== slot.index) Dock.movePinned(slot.index, target)
         }
         onClicked: (m) => {
-            if (m.button === Qt.RightButton) slot.openMenuHere(false)
-            else if (m.button === Qt.MiddleButton) Dock.middleClick(slot.index)
+            if (m.button === Qt.RightButton) { if (!slot.isApps) slot.openMenuHere(false) }
+            else if (m.button === Qt.MiddleButton) { if (!slot.isApps) Dock.middleClick(slot.index) }
             else if (!slot.longPressed) Dock.activate(slot.index)
             slot.longPressed = false
         }
-        onPressAndHold: (m) => { if (m.button === Qt.LeftButton && !slot.dragging) { slot.longPressed = true; slot.openMenuHere(true) } }
+        onPressAndHold: (m) => { if (m.button === Qt.LeftButton && !slot.dragging && !slot.isApps) { slot.longPressed = true; slot.openMenuHere(true) } }
         onContainsMouseChanged: {
             if (containsMouse) { tipTimer.restart() }
             else { tipTimer.stop(); Dock.hideTip() }

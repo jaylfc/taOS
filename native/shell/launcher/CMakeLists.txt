@@ -10,9 +10,10 @@ add_library(taos_search_core STATIC
     src/config.cpp src/config.h src/agents.h src/fileindex.cpp src/fileindex.h
     src/engine.cpp src/engine.h
     src/runner.cpp src/runner.h src/jsonio.cpp src/jsonio.h
-    src/setup.cpp src/setup.h src/ipc.cpp src/ipc.h)
+    src/setup.cpp src/setup.h src/ipc.cpp src/ipc.h
+    src/appmenu.cpp src/appmenu.h src/actionmenu.cpp src/actionmenu.h)
 target_include_directories(taos_search_core PUBLIC src)
-target_link_libraries(taos_search_core PUBLIC Qt6::Core Qt6::Network)
+target_link_libraries(taos_search_core PUBLIC Qt6::Core Qt6::Network taos_applaunch)
 set_target_properties(taos_search_core PROPERTIES POSITION_INDEPENDENT_CODE ON)
 
 add_executable(taos-search cli/search_main.cpp)
@@ -20,7 +21,7 @@ target_link_libraries(taos-search PRIVATE taos_search_core)
 install(TARGETS taos-search RUNTIME DESTINATION bin)
 
 # The controller and row model (no window in them) are a library so the tests drive the real thing.
-add_library(taos_launcher_ui STATIC src/controller.cpp src/controller.h src/rowmodel.cpp src/rowmodel.h
+add_library(taos_launcher_ui STATIC src/menunav.cpp src/menunav.h src/menucontroller.cpp src/menucontroller.h src/controller.cpp src/controller.h src/rowmodel.cpp src/rowmodel.h
     src/iconprovider.cpp src/iconprovider.h)
 target_include_directories(taos_launcher_ui PUBLIC src)
 target_link_libraries(taos_launcher_ui PUBLIC taos_search_core Qt6::Gui Qt6::Quick)
@@ -34,7 +35,22 @@ qt_add_resources(taos-launcher launcher_resources
         qml/Glass.qml
         qml/ResultRow.qml
         qml/ActionsView.qml
-        qml/Monogram.qml)
+        qml/Monogram.qml
+        qml/AppIcon.qml
+        qml/AppTile.qml
+        qml/AppRow.qml
+        qml/SectionLabel.qml
+        qml/PinnedGrid.qml
+        qml/AllApps.qml
+        qml/RecentRow.qml
+        qml/MenuFooter.qml
+        qml/ContextSheet.qml
+        qml/ActionsList.qml
+        qml/MenuCentered.qml
+        qml/MenuAnchored.qml
+        qml/MenuRing.qml
+        qml/MenuText.qml
+        qml/MenuPhone.qml)
 target_link_libraries(taos-launcher PRIVATE taos_launcher_ui taos_search_core taos_common Qt6::Quick Qt6::Qml Qt6::Gui LayerShellQt::Interface)
 target_compile_definitions(taos-launcher PRIVATE TAOS_LAUNCHER_VERSION="${PROJECT_VERSION}")
 install(TARGETS taos-launcher RUNTIME DESTINATION bin)
@@ -45,9 +61,24 @@ qt_add_executable(taos-launcher-shots EXCLUDE_FROM_ALL tests/render_shots.cpp)
 qt_add_resources(taos-launcher-shots shots_resources
     PREFIX /taos/launcher
     BASE ${CMAKE_CURRENT_SOURCE_DIR}
-    FILES qml/Launcher.qml qml/Glass.qml qml/ResultRow.qml qml/ActionsView.qml qml/Monogram.qml)
+    FILES qml/Launcher.qml qml/Glass.qml qml/ResultRow.qml qml/ActionsView.qml qml/Monogram.qml
+        qml/AppIcon.qml
+        qml/AppTile.qml
+        qml/AppRow.qml
+        qml/SectionLabel.qml
+        qml/PinnedGrid.qml
+        qml/AllApps.qml
+        qml/RecentRow.qml
+        qml/MenuFooter.qml
+        qml/ContextSheet.qml
+        qml/ActionsList.qml
+        qml/MenuCentered.qml
+        qml/MenuAnchored.qml
+        qml/MenuRing.qml
+        qml/MenuText.qml
+        qml/MenuPhone.qml)
 target_link_libraries(taos-launcher-shots PRIVATE taos_launcher_ui taos_search_core taos_common Qt6::Quick Qt6::Qml Qt6::Gui)
-target_compile_definitions(taos-launcher-shots PRIVATE TAOS_LAUNCHER_FIXTURES="${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures")
+target_compile_definitions(taos-launcher-shots PRIVATE TAOS_LAUNCHER_FIXTURES="${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures" TAOS_APP_ICONS_DIR="${CMAKE_CURRENT_SOURCE_DIR}/../../apps/icons")
 
 # Unit tests.
 function(taos_launcher_test name)
@@ -64,3 +95,14 @@ taos_launcher_test(launcher_test_engine)
 taos_launcher_test(launcher_test_ipc)
 taos_launcher_test(launcher_test_providers)
 taos_launcher_test(launcher_test_controller)
+taos_launcher_test(launcher_test_appmenu)
+taos_launcher_test(launcher_test_icons)
+taos_launcher_test(launcher_test_actionmenu)
+taos_launcher_test(launcher_test_menunav)
+taos_launcher_test(launcher_test_menu)
+qt_add_executable(launcher_test_cli tests/launcher_test_cli.cpp)
+target_link_libraries(launcher_test_cli PRIVATE Qt6::Test)
+target_compile_definitions(launcher_test_cli PRIVATE TAOS_LAUNCHER_FIXTURES="${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures" TAOS_SEARCH_BIN="$<TARGET_FILE:taos-search>")
+add_dependencies(launcher_test_cli taos-search)
+add_test(NAME launcher_test_cli COMMAND launcher_test_cli)
+set_tests_properties(launcher_test_cli PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen;LC_ALL=C" TIMEOUT 120)

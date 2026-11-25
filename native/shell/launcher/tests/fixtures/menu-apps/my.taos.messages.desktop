@@ -1,0 +1,7 @@
+[Desktop Entry]
+Type=Application
+Name=Messages
+Icon=my.taos.messages
+Exec=taos-messages %U
+Categories=Network;InstantMessaging;
+X-taOS-AppId=my.taos.messages

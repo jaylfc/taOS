@@ -11,6 +11,8 @@
 #include <cstdio>
 #include <unistd.h>
 
+#include "actionmenu.h"
+#include "appmenu.h"
 #include "controller.h"
 #include "glass.h"
 #include "host.h"
@@ -35,7 +37,10 @@ static const char *kUsage =
     "  toggle             show the launcher, or hide it when shown\n"
     "  show | hide        show or hide it\n"
     "  status             print the daemon's state as JSON\n"
-    "daemon options: [--variant dark|light|auto] [--theme id] [--reduce-motion]\n";
+    "  menu | pinned | recent | pin ID | unpin ID | move-pin ID N | actions [PATH] | run ACTION [confirm] | show-actions\n"
+    "                     the app menu and the system actions, as JSON (agents); `taos-search menu` does the same without a daemon\n"
+    "daemon options: [--variant dark|light|auto] [--theme id] [--style centered|anchored|ring|text|phone] [--reduce-motion]\n"
+    "  --style forces a launcher style whatever the theme says (a phone home screen: --style text).\n";
 
 static int runClient(const QStringList &words) {
     const QString path = launcher::socketPath();
@@ -65,11 +70,17 @@ int main(int argc, char **argv) {
     QCommandLineParser p;
     QCommandLineOption optVariant(QStringLiteral("variant"), QStringLiteral("dark, light or auto; overrides appearance."), QStringLiteral("dark|light|auto"));
     QCommandLineOption optTheme(QStringLiteral("theme"), QStringLiteral("Theme id; overrides appearance."), QStringLiteral("id"));
+    QCommandLineOption optStyle(QStringLiteral("style"), QStringLiteral("Force a launcher style: centered, anchored, ring, text or phone."), QStringLiteral("style"));
     QCommandLineOption optReduce(QStringLiteral("reduce-motion"), QStringLiteral("No animations."));
-    p.addOptions({ optVariant, optTheme, optReduce });
+    p.addOptions({ optVariant, optTheme, optStyle, optReduce });
     if (!p.parse(args)) { fprintf(stderr, "taos-launcher: %s\n%s", qPrintable(p.errorText()), kUsage); return 2; }
     QString variant = p.isSet(optVariant) ? p.value(optVariant) : qEnvironmentVariable("TAOS_THEME_VARIANT");
     if (!variant.isEmpty() && !AppearanceFile::validMode(variant)) { fprintf(stderr, "taos-launcher: variant must be dark, light or auto\n"); return 2; }
+    QString styleOverride = p.isSet(optStyle) ? p.value(optStyle) : qEnvironmentVariable("TAOS_LAUNCHER_STYLE");
+    if (!styleOverride.isEmpty() && !QStringList{ "centered", "anchored", "ring", "text", "phone" }.contains(styleOverride)) {
+        fprintf(stderr, "taos-launcher: style must be centered, anchored, ring, text or phone\n");
+        return 2;
+    }
     const bool reduce = p.isSet(optReduce) || qEnvironmentVariable("TAOS_REDUCE_MOTION") == QLatin1String("1");
 
     // single instance, decided before any window work
@@ -110,6 +121,8 @@ int main(int argc, char **argv) {
     const search::Installed installed = search::installDefaultProviders(&engine);
     launcher::Controller controller(&engine, installed.frecency);
     controller.setConfig(installed.config);
+    controller.setStyleOverride(styleOverride);
+    controller.setMenu(std::make_shared<search::AppMenu>(installed.apps, installed.frecency), std::make_shared<search::ActionMenu>());
     controller.setSender(std::make_shared<search::UnavailableSender>());
     controller.setLaunchDelay(theme.reduceMotion() ? 0 : 170);
     QQmlEngine::setObjectOwnership(&controller, QQmlEngine::CppOwnership);
