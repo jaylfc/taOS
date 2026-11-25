@@ -77,6 +77,7 @@ bool parse(const QByteArray &data, const QString &id, DesktopEntry *out) {
             else if (key == QLatin1String("Exec")) e.exec = val;
             else if (key == QLatin1String("StartupWMClass")) e.startupWMClass = val;
             else if (key == QLatin1String("X-taOS-AppId")) e.taosAppId = val;
+            else if (key == QLatin1String("X-taOS-ContainerApp")) e.containerApp = val;
             else if (key == QLatin1String("NoDisplay")) e.noDisplay = val == QLatin1String("true");
             else if (key == QLatin1String("Hidden")) e.hidden = val == QLatin1String("true");
             else if (key == QLatin1String("Terminal")) e.terminal = val == QLatin1String("true");
@@ -165,8 +166,12 @@ const DesktopEntry *DesktopIndex::byId(const QString &id) const {
 
 const DesktopEntry *DesktopIndex::matchWindow(const QString &appId) const {
     if (appId.isEmpty()) return nullptr;
-    if (const DesktopEntry *e = byId(appId)) return e;
     const QString lower = appId.toLower();
+    // An app group's app wins over a host launcher with the same program id (a host chromium.desktop): the running
+    // window of the group app folds into the group app's pinned icon instead of showing a second one.
+    for (const DesktopEntry &e : m_entries)
+        if (!e.containerApp.isEmpty() && (e.startupWMClass.toLower() == lower || e.taosAppId.toLower() == lower)) return &e;
+    if (const DesktopEntry *e = byId(appId)) return e;
     for (const DesktopEntry &e : m_entries)
         if (e.id.toLower() == lower) return &e;
     for (const DesktopEntry &e : m_entries)

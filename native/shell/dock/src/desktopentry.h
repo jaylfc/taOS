@@ -14,6 +14,7 @@ struct DesktopEntry {
     QString id;               // file id without ".desktop" (subdirectories joined with "-")
     QString path;
     QString name, icon, exec, startupWMClass, taosAppId;
+    QString containerApp;     // X-taOS-ContainerApp: an app installed in an app group (its launcher, not a host copy of the same program)
     bool noDisplay = false, hidden = false, terminal = false, singleMainWindow = false;
     QVector<DesktopAction> actions;
     // The action that opens a new window (new-window / NewWindow / a name "New Window"), or null.

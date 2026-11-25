@@ -62,6 +62,29 @@ private slots:
         QCOMPARE(a, (QStringList{QStringLiteral("--x"), QStringLiteral("a b"), QStringLiteral("100%")}));
         QVERIFY(!Desktop::commandLine(QStringLiteral("%U"), &p, &a));
     }
+
+    void appGroupAppsFoldIntoTheirOwnLauncherNotAHostCopy() {
+        // each catalogue app: the window app_id its manifest declares, with a host launcher of the same program present
+        const struct { const char *app, *window; } apps[] = {{"chromium", "chromium"}, {"firefox", "firefox"}, {"claude-desktop", "com.anthropic.Claude"},
+                                                            {"kilo-desktop", "kilo"}, {"antigravity", "antigravity-ide"}};
+        DesktopIndex idx;
+        for (const char *host : {"chromium", "firefox", "antigravity-ide"}) {
+            DesktopEntry h; h.id = QString::fromLatin1(host); h.name = h.id; h.exec = QString::fromLatin1(host); idx.add(h);
+        }
+        for (const auto &a : apps) {
+            DesktopEntry e;
+            e.id = QStringLiteral("taos-appgroups-") + QString::fromLatin1(a.app);
+            e.name = e.id; e.exec = QStringLiteral("taos-appgroups run ") + QString::fromLatin1(a.app);
+            e.startupWMClass = QString::fromLatin1(a.window); e.taosAppId = e.startupWMClass; e.containerApp = QString::fromLatin1(a.app);
+            idx.add(e);
+        }
+        for (const auto &a : apps)
+            QCOMPARE(idx.matchWindow(QString::fromLatin1(a.window))->id, QStringLiteral("taos-appgroups-") + QString::fromLatin1(a.app));
+        // and the host copy still matches when nothing from a group claims it
+        DesktopIndex only;
+        DesktopEntry h; h.id = QStringLiteral("chromium"); h.name = h.id; h.exec = QStringLiteral("chromium"); only.add(h);
+        QCOMPARE(only.matchWindow(QStringLiteral("chromium"))->id, QStringLiteral("chromium"));
+    }
     void matchesWindowsToApps() {
         DesktopIndex idx;
         auto add = [&](const char *id, const char *wm, const char *exec) {
