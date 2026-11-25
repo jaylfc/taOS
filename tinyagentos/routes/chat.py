@@ -15,6 +15,13 @@ from tinyagentos.auth_context import (
 )
 from tinyagentos.chat.reactions import maybe_trigger_semantic
 from tinyagentos.device_auth import current_user_or_device
+from tinyagentos.session_fields import (
+    next_turn_index,
+    session_fields,
+)
+from tinyagentos.session_fields import (
+    session_date_iso as _session_date_iso,
+)
 
 router = APIRouter()
 
@@ -80,6 +87,9 @@ async def _capture_user_memory(
     metadata: dict,
     setting_key: str,
     user_id: str = "user",
+    session_id: str | None = None,
+    turn_index: int | None = None,
+    session_date: str | None = None,
 ) -> None:
     """Fire-and-forget user memory capture. Never raises."""
     if not user_memory or not content:
@@ -88,12 +98,22 @@ async def _capture_user_memory(
         settings = await user_memory.get_settings(user_id)
         if not settings.get(setting_key):
             return
+        meta = dict(metadata or {})
+        session_id = session_id or meta.get("session_id") or meta.get("channel_id")
+        if session_id is not None:
+            if turn_index is None:
+                turn_index = meta.get("turn_index", 0)
+            if session_date is None:
+                session_date = _session_date_iso(meta.get("timestamp"))
+            meta.update(
+                session_fields(session_id, turn_index, session_date)
+            )
         await user_memory.save_chunk(
             user_id,
             content=content,
             title=title,
             collection=collection,
-            metadata=metadata,
+            metadata=meta,
         )
     except Exception as e:  # pragma: no cover - capture is best-effort
         logger.debug(f"user memory capture failed: {e}")
@@ -208,6 +228,8 @@ async def chat_ws(websocket: WebSocket):
                         },
                         setting_key="capture_conversations",
                         user_id=user_id,
+                        session_id=data["channel_id"],
+                        session_date=_session_date_iso(message.get("created_at")),
                     ))
 
             elif msg_type == "typing":
@@ -431,6 +453,12 @@ async def post_message(request: Request, user: CurrentUser = Depends(current_use
     import time as _time
     _http_expires_at = (_time.time() + _http_ttl) if isinstance(_http_ttl, (int, float)) and _http_ttl > 0 else None
 
+    # Derive the turn index from the stored conversation (count of existing
+    # messages in the channel) so it survives a restart instead of living in
+    # an in-memory dict. Computed before send_message so it reflects the turns
+    # already stored, not the one being inserted.
+    turn_index = await next_turn_index(await msg_store.count_messages(channel_id))
+
     message = await msg_store.send_message(
         channel_id=channel_id,
         author_id=body["author_id"],
@@ -464,6 +492,9 @@ async def post_message(request: Request, user: CurrentUser = Depends(current_use
                     "timestamp": message.get("created_at"),
                 },
                 setting_key="capture_conversations",
+                session_id=channel_id,
+                turn_index=turn_index,
+                session_date=_session_date_iso(message.get("created_at")),
             ))
 
     # Auto-archive every message for the zero-loss layer
@@ -471,13 +502,21 @@ async def post_message(request: Request, user: CurrentUser = Depends(current_use
     if archive:
         try:
             await archive.record(
-                "conversation",
-                {
+                event_type="conversation",
+                data={
                     "content": content,
                     "channel_id": channel_id,
                     "message_id": message.get("id"),
                     "author_id": body["author_id"],
                     "author_type": body.get("author_type", "agent"),
+                    # session_id / turn_index / session_date let taOSmd's
+                    # answer_context widen a hit into its neighbours and date
+                    # it correctly (taosmd PR #783).
+                    **session_fields(
+                        channel_id,
+                        turn_index,
+                        _session_date_iso(message.get("created_at")),
+                    ),
                 },
                 agent_name=body["author_id"] if body.get("author_type") == "agent" else None,
                 summary=content[:100],

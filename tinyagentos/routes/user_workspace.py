@@ -4,12 +4,14 @@ import asyncio
 import json
 import logging
 import shutil
+import time
 from pathlib import Path
 
 from fastapi import APIRouter, File, Form, Query, Request, UploadFile
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from pydantic import BaseModel
 
+from tinyagentos.session_fields import session_date_iso, session_fields
 from tinyagentos.workspace_trash import (
     TrashItemNotFound,
     TrashRestoreConflict,
@@ -46,7 +48,16 @@ async def _capture_file_activity(
             content=f"File {action}: {filename}",
             title=filename,
             collection="files",
-            metadata={"path": path, "size": size, "action": action},
+            metadata={
+                "path": path,
+                "size": size,
+                "action": action,
+                **session_fields(
+                    path,
+                    0,
+                    session_date_iso(time.time()),
+                ),
+            },
         )
     except Exception as e:  # pragma: no cover - best-effort
         logger.debug(f"file activity capture failed: {e}")

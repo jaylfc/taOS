@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import logging
+import time
 
 import httpx
 
 from tinyagentos.adapters.retry_policy import ROUTER_TIMEOUT_SECONDS
 from tinyagentos.channel_hub.message import IncomingMessage, OutgoingMessage, parse_inline_hints
+from tinyagentos.session_fields import session_date_iso, session_fields
 
 logger = logging.getLogger(__name__)
 
@@ -102,6 +104,11 @@ class MessageRouter:
         if not archive:
             return
         try:
+            sf = session_fields(
+                channel_id or getattr(message, "channel_id", "") or "",
+                0,
+                session_date_iso(time.time()),
+            )
             if isinstance(message, IncomingMessage):
                 await archive.record(
                     "conversation",
@@ -113,6 +120,7 @@ class MessageRouter:
                         "channel_id": message.channel_id,
                         "direction": "inbound",
                         "message_id": message.id,
+                        **sf,
                     },
                     agent_name=agent_name,
                     summary=f"[{message.platform}] {message.from_name}: {message.text[:80]}",
@@ -125,6 +133,7 @@ class MessageRouter:
                         "platform": platform,
                         "channel_id": channel_id,
                         "direction": "outbound",
+                        **sf,
                     },
                     agent_name=agent_name,
                     summary=f"[{platform}→] {message.content[:80]}",
