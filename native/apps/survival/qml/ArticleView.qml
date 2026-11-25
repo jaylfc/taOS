@@ -136,6 +136,23 @@ Item {
                     }
                 }
             }
+            ColumnLayout {
+                visible: root.art.kind === "loading"
+                anchors { left: parent.left; right: parent.right; top: parent.top; margins: Look.space5 }
+                spacing: Look.space3
+                Skeleton { Layout.preferredWidth: 260; Layout.preferredHeight: 28 }
+                Skeleton { Layout.fillWidth: true; Layout.preferredHeight: 14 }
+                Skeleton { Layout.fillWidth: true; Layout.preferredHeight: 14 }
+                Skeleton { Layout.preferredWidth: 340; Layout.preferredHeight: 14 }
+                Accessible.role: Accessible.StaticText
+                Accessible.name: qsTr("Opening the article")
+            }
+            EmptyState {
+                visible: root.art.kind === "toolarge"
+                anchors.centerIn: parent
+                glyph: "info"; title: qsTr("This article is too large to display")
+                detail: qsTr("It is bigger than the reader can lay out without slowing the whole app. Try a more specific article.")
+            }
             EmptyState {
                 visible: root.art.kind === "missing"
                 anchors.centerIn: parent

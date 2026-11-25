@@ -17,10 +17,15 @@ struct SanitizedArticle
     QStringList images;       // pack paths of the images that were kept
     QStringList links;        // pack paths of the links that were kept
     int blockedRemote = 0;    // remote or non-pack links and images that were dropped
-    bool truncated = false;   // the article was cut at the size limit
+    bool truncated = false;   // the article was cut at the size or time limit: show "too large" instead
 };
 
-constexpr qsizetype kMaxArticleHtml = 6 * 1024 * 1024;
+// What the reader's rich text can lay out without freezing the window: output beyond this, or more than
+// kMaxElementDepth nested elements, or more than kMaxTableDepth nested tables, is cut or flattened.
+constexpr qsizetype kMaxArticleHtml = 1536 * 1024;
+constexpr int kMaxElementDepth = 32;
+constexpr int kMaxTableDepth = 3;
+constexpr int kSanitizeBudgetMs = 3000;
 
 /// `articlePath` is where the article lives in the pack (relative links resolve against it), `packId` names the pack in
 /// the addresses that are written.

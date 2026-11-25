@@ -12,10 +12,13 @@
 #include <QNetworkRequest>
 #include <QStorageInfo>
 #include <QtConcurrent>
+#include <algorithm>
 
 namespace Taos::Survival {
 
 namespace {
+// the pack's size from the catalogue plus a margin of 1 percent (at least 64 KiB)
+qint64 kSizeMargin(qint64 bytes) { return std::max<qint64>(64 * 1024, bytes / 100); }
 QString normSha(const QString &s) { return s.trimmed().toLower(); }
 bool safeFileName(const QString &f)
 {
@@ -246,9 +249,13 @@ bool PackManager::download(const QString &id, QString *error)
         return fail(QStringLiteral("This pack is already installed."));
     // file: addresses exist for the tests only; a catalogue from outside can never make the app read a local file
     const bool fileOk = p.url.scheme() == QStringLiteral("file") && qEnvironmentVariableIsSet("TAOS_SURVIVAL_ALLOW_FILE_URLS");
-    if (p.url.isEmpty() || !(p.url.scheme() == QStringLiteral("https") || p.url.scheme() == QStringLiteral("http") || fileOk))
+    if (p.url.isEmpty())
         return fail(p.recipe.isEmpty() ? QStringLiteral("This pack has no download address.")
                                        : QStringLiteral("This pack has no publisher download. See how to make it."));
+    if (!(p.url.scheme() == QStringLiteral("https") || fileOk))
+        return fail(QStringLiteral("Packs are only downloaded over https."));
+    if (p.bytes <= 0)
+        return fail(QStringLiteral("This pack does not say how big it is, so the download cannot be limited. Download refused."));
     if (p.sha256.isEmpty())
         return fail(QStringLiteral("This pack has no checksum, so it cannot be verified. Download refused."));
     if (p.needsAcceptance && !licenceAccepted(id))
@@ -302,6 +309,12 @@ void PackManager::startRequest(const QString &id)
         }
         if (jj.file && status != 416 && (status == 0 || status < 400))
             jj.file->write(r->readAll());
+        // never more than the catalogue says plus a small margin: a server that keeps sending is cut off
+        if (jj.file && jj.file->size() > m_catalogue.value(id).bytes + kSizeMargin(m_catalogue.value(id).bytes)) {
+            QFile::remove(jj.partPath);
+            r->setProperty("overflow", true);
+            r->abort();
+        }
     });
     connect(r, &QNetworkReply::downloadProgress, this, [this, id](qint64 got, qint64 total) {
         if (!m_jobs.contains(id)) return;
@@ -335,10 +348,21 @@ void PackManager::finishDownload(const QString &id)
     const qint64 status = r->attribute(QNetworkRequest::HttpStatusCodeAttribute).toLongLong();
     if (j.file && r->bytesAvailable() > 0 && (status == 0 || status < 400))
         j.file->write(r->readAll());
+    if (j.file && j.file->size() > m_catalogue.value(id).bytes + kSizeMargin(m_catalogue.value(id).bytes)) {
+        j.file->close();
+        QFile::remove(j.partPath);
+        failJob(id, QStringLiteral("The server sent more than the pack should hold (larger than the catalogue says), so the download was deleted."));
+        return;
+    }
     if (j.file) j.file->close();
     const QNetworkReply::NetworkError err = r->error();
     const QString errText = r->errorString();
     const bool cancelled = err == QNetworkReply::OperationCanceledError;
+    if (cancelled && r->property("overflow").toBool()) {
+        QFile::remove(j.partPath);
+        failJob(id, QStringLiteral("The server sent more than the pack should hold, larger than the catalogue says, so the download was stopped and deleted."));
+        return;
+    }
     if (status == 416) {   // asked for bytes past the end: the partial file was complete or wrong; start clean next time
         QFile::remove(j.partPath);
         failJob(id, QStringLiteral("The partial download did not match the server. Try again."));

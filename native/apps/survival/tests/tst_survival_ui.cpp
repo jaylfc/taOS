@@ -93,6 +93,7 @@ private Q_SLOTS:
         QVERIFY(waitFor([&] { return !lib->property("results").toList().isEmpty(); }, 4000));
         QCOMPARE(lib->property("results").toList().first().toMap().value(u"path"_s).toString(), u"water"_s);
         QMetaObject::invokeMethod(lib, "openArticle", Q_ARG(QString, u"water"_s));
+        QVERIFY(waitFor([&] { return lib->property("article").toMap().value(u"kind"_s).toString() == u"article"_s; }));
         const QVariantMap art = lib->property("article").toMap();
         QCOMPARE(art.value(u"kind"_s).toString(), u"article"_s);
         QVERIFY(art.value(u"html"_s).toString().contains(u"Boil the water"_s));
@@ -101,7 +102,14 @@ private Q_SLOTS:
         QMetaObject::invokeMethod(lib, "openLink", Q_ARG(QString, u"https://evil.example/"_s));
         QCOMPARE(lib->property("article").toMap().value(u"title"_s).toString(), art.value(u"title"_s).toString());
         QMetaObject::invokeMethod(lib, "openLink", Q_ARG(QString, u"zim:local-lib/fire"_s));
+        QVERIFY(waitFor([&] { return lib->property("article").toMap().value(u"title"_s).toString() == u"Fire lighting"_s; }));
         QCOMPARE(lib->property("article").toMap().value(u"title"_s).toString(), u"Fire lighting"_s);
+        // a huge article becomes a plain "too large" state and the window stays responsive
+        QElapsedTimer t; t.start();
+        QMetaObject::invokeMethod(lib, "openArticle", Q_ARG(QString, u"huge"_s));
+        QVERIFY2(t.elapsed() < 500, "opening an article must not block the window");
+        QVERIFY(waitFor([&] { const QString k = lib->property("article").toMap().value(u"kind"_s).toString(); return k == u"toolarge"_s || k == u"article"_s; }, 15000));
+        QCOMPARE(lib->property("article").toMap().value(u"kind"_s).toString(), u"toolarge"_s);
         QTest::qWait(150);
         QVERIFY(!m_win->grabWindow().isNull());
     }
