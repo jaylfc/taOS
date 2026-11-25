@@ -84,7 +84,7 @@ async def bootstrap(request: Request, agent: str | None = None):
         )
 
     via = getattr(request.state, "via", None)
-    if via == "registry_jwt_deployed_agent":
+    if via in ("registry_jwt_deployed_agent", "agent_token"):
         expected = getattr(request.state, "agent_name", None)
         if expected and agent != expected:
             return JSONResponse({"error": "forbidden: agent does not match credential"}, status_code=403)
@@ -190,7 +190,7 @@ async def events_stream(request: Request, agent: str):
         return JSONResponse({"error": "Unauthorized"}, status_code=401)
 
     via = getattr(request.state, "via", None)
-    if via == "registry_jwt_deployed_agent":
+    if via in ("registry_jwt_deployed_agent", "agent_token"):
         expected = getattr(request.state, "agent_name", None)
         if expected and agent != expected:
             return JSONResponse({"error": "forbidden: agent does not match credential"}, status_code=403)
@@ -234,7 +234,7 @@ async def reply_ingest(request: Request, agent: str):
         return JSONResponse({"error": "Unauthorized"}, status_code=401)
 
     via = getattr(request.state, "via", None)
-    if via == "registry_jwt_deployed_agent":
+    if via in ("registry_jwt_deployed_agent", "agent_token"):
         expected = getattr(request.state, "agent_name", None)
         if expected and agent != expected:
             return JSONResponse({"error": "forbidden: agent does not match credential"}, status_code=403)

@@ -44,7 +44,7 @@ def _local_token_caller(request: Request) -> tuple[bool, str | None]:
     when request.state.via == "local_token" but no agent_name is bound
     (host/unbound token). Returns (False, None) otherwise.
     """
-    if getattr(request.state, "via", None) == "local_token":
+    if getattr(request.state, "via", None) in ("local_token", "agent_token"):
         return True, getattr(request.state, "agent_name", None)
     return False, None
 

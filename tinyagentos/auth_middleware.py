@@ -169,6 +169,37 @@ def _resolve_bound_local_token_agent(request: Request, auth_mgr, presented: str)
     return None
 
 
+async def _stamp_local_token_identity(request: Request, auth_mgr, presented: str):
+    """Stamp request.state for a valid local token. Returns the bound agent
+    name, ``None`` for the host-user token, or ``False`` to reject.
+
+    The host-user (unbound) token maps to the primary user and is admin, as it
+    always was. A per-agent token authenticates as THAT AGENT acting for its
+    registry owner: ``via == "agent_token"``, ``is_admin`` False, ``user_id`` the
+    owner (``None`` when the registry cannot attribute the agent, so
+    user-scoped routes refuse it rather than fall back to the primary user).
+    """
+    bound_agent = _resolve_bound_local_token_agent(request, auth_mgr, presented)
+    if bound_agent is False:
+        return False
+    if bound_agent:
+        from tinyagentos.auth_context import resolve_agent_owner
+
+        try:
+            owner = await resolve_agent_owner(request, bound_agent)
+        except Exception:  # noqa: BLE001 - fail closed: no owner, no user
+            owner = None
+        request.state.user_id = owner
+        request.state.is_admin = False
+        request.state.via = "agent_token"
+        return bound_agent
+    primary = auth_mgr.get_primary_user()
+    request.state.user_id = primary["id"] if primary else None
+    request.state.is_admin = primary is not None
+    request.state.via = "local_token"
+    return None
+
+
 # /auth/pin-login is session-exempt for the same reason as /auth/login: it is
 # how a session is obtained, so requiring one would be circular. It is NOT
 # unguarded -- the route refuses any request that is not from the device's own
@@ -1123,14 +1154,10 @@ class AuthMiddleware(BaseHTTPMiddleware):
                     presented = auth_header[7:].strip()
                     if presented and auth_mgr.validate_local_token(presented):
                         # Local token: same-host trust. Mirrors the non-exempt
-                        # flow -- maps to the primary/admin user, and is NOT
-                        # admin before onboarding, when there is no primary
-                        # user to be admin of.
-                        primary = auth_mgr.get_primary_user()
-                        request.state.user_id = primary["id"] if primary else None
-                        request.state.is_admin = primary is not None
-                        request.state.via = "local_token"
-                        bound_agent = _resolve_bound_local_token_agent(request, auth_mgr, presented)
+                        # flow (host token: primary/admin user, not admin before
+                        # onboarding; per-agent token: that agent, its owner,
+                        # never admin).
+                        bound_agent = await _stamp_local_token_identity(request, auth_mgr, presented)
                         if bound_agent is False:
                             return _unauthenticated(path, {"error": "Authentication required"})
                         if bound_agent:
@@ -1288,16 +1315,7 @@ class AuthMiddleware(BaseHTTPMiddleware):
                 # current_user-gated routes still 401 while middleware-only
                 # routes proceed as before. (Not failing closed here: the
                 # local token already authenticates, so it is not a bypass.)
-                primary = auth_mgr.get_primary_user()
-                if primary:
-                    request.state.user_id = primary["id"]
-                    request.state.is_admin = True
-                    request.state.via = "local_token"
-                else:
-                    request.state.user_id = None
-                    request.state.is_admin = False
-                    request.state.via = "local_token"
-                bound_agent = _resolve_bound_local_token_agent(request, auth_mgr, presented)
+                bound_agent = await _stamp_local_token_identity(request, auth_mgr, presented)
                 if bound_agent is False:
                     return _unauthenticated(path, {"error": "Authentication required"})
                 if bound_agent:

@@ -114,7 +114,7 @@ def _local_token_caller(request: Request) -> tuple[bool, str | None]:
     way these routes tell an agent apart from the human's browser session (both
     arrive as the primary user).
     """
-    if getattr(request.state, "via", None) == "local_token":
+    if getattr(request.state, "via", None) in ("local_token", "agent_token"):
         return True, getattr(request.state, "agent_name", None)
     return False, None
 

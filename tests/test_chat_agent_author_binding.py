@@ -46,6 +46,8 @@ class TestChatAgentAuthorBinding:
         """A bound agent's token forces author_id/author_type to the bound name,
         ignoring any caller-supplied values."""
         ch = await _create_channel_dm(app)
+        from agent_owner_helper import own_agent
+        await own_agent(app, "agent-a", app.state.auth.find_user("admin")["id"])
         async with _bound_client(app, "agent-a") as c:
             resp = await c.post("/api/chat/messages", json={
                 "channel_id": ch["id"],

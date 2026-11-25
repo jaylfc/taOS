@@ -236,9 +236,10 @@ agent workspace routes run, with the resource owner taken to be the primary user
 while photo folders are still per-machine rather than per-user: a member session
 that is neither the owner nor an admin gets no Photos entry from
 `GET /api/files/locations` and `403` on every `/api/photos/*` route, trash
-included. A local token is mapped to the primary user and marked admin by the
-middleware, so a deployed agent clears that check; the routes then mirror
-`_local_token_caller` (`tinyagentos/routes/memory.py`) on `via == "local_token"`
+included. A per-agent local token authenticates as the agent acting for its registry
+owner (never admin), so it clears that check only when its owner is the primary
+user; the routes then mirror `_local_token_caller`
+(`tinyagentos/routes/memory.py`) on `via` in (`local_token`, `agent_token`)
 to keep it read-only: listing, download and `GET /api/photos/trash` work, while
 `DELETE /api/photos/files/{path}` and `POST /api/photos/trash/{id}/restore`
 answer `403`.
@@ -257,9 +258,18 @@ be reused, so the archived list and the restore and purge routes resolve the own
 through `original.registry_canonical_id`, looked up as an exact registry id (no
 configured name, slug or handle stands in for it, so an agent named after another
 agent's canonical id does not own that archive). An entry without one is admin-only; a
-per-agent local token (marked admin by the middleware) lists only its own agent,
+per-agent local token (`via == "agent_token"`, never admin) lists only its own agent,
 sees no archives and cannot restore or purge one; and
 `resolve_agent_owner` (`tinyagentos/auth_context.py`) attributes an empty id to nobody.
+
+**A per-agent local token is the agent, not an admin.** `AuthMiddleware` stamps it
+`via == "agent_token"`, `is_admin` False and `user_id` = the agent's registry owner
+(`None` when the registry cannot attribute the agent, so user-scoped routes refuse
+it instead of falling back to the primary user). `require_admin`, the settings
+router gate and the skill-exec/delegation helpers refuse it; the routes agents
+need (bootstrap, thinking, chat author binding, skill-exec for assigned skills,
+memory, broker, workspace) fence it to its own agent. The host-user token
+(`via == "local_token"`, no agent) is unchanged. `/api/kg/*` stays admin-only.
 
 **A per-agent local token dies with its agent's name.** It is bound by name, so
 archive and purge revoke it, a new deploy under the name revokes any token still
