@@ -42,6 +42,9 @@ BOT_TOKEN = "123456:ABC-DEF1234ghIkl-zyx57W2v1u123ew11"
 STORE_SECRET = "hunter2-store-secret-98765"
 CONN_PASSWORD = "connpass987"
 WALLHAVEN_KEY = "wallhaven-key-abcdef123456"
+DISCORD_WEBHOOK_URL = "https://discord.com/api/webhooks/123456789012345678/discord-webhook-token-abcdef"
+SLACK_WEBHOOK_URL = "https://hooks.slack.com/services/T00000000/B00000000/slack-webhook-token-abcdef"
+GENERIC_WEBHOOK_URL = "https://hooks.example.com/notify/hook-secret-token-abcdef"
 ALL_SECRETS = [KEY_ONLY_VALUE, SHAPE_VALUE, BOT_TOKEN, STORE_SECRET, CONN_PASSWORD, WALLHAVEN_KEY]
 
 
@@ -301,3 +304,155 @@ class TestExportRoute:
         finally:
             await member_client.aclose()
         assert resp.status_code == 403
+
+
+class TestExportHardening:
+    # jaylfc's pre-merge points on PR #4560 (comment 7172175976), points 1-3
+    # at the sanitize layer.
+
+    def test_webhook_urls_redacted_wholesale(self):
+        redactions: list[dict] = []
+        data = {"webhooks": [
+            {"type": "discord", "url": DISCORD_WEBHOOK_URL},
+            {"type": "slack", "url": SLACK_WEBHOOK_URL},
+            {"type": "generic", "url": GENERIC_WEBHOOK_URL},
+        ]}
+        out = sanitize_for_export(data, "config", redactions, known_values=[])
+        assert [e["url"] for e in out["webhooks"]] == ["[REDACTED]"] * 3
+        assert [e["type"] for e in out["webhooks"]] == ["discord", "slack", "generic"]
+        paths = {r["path"] for r in redactions}
+        assert "config.webhooks[0].url" in paths
+        assert "config.webhooks[1].url" in paths
+        assert "config.webhooks[2].url" in paths
+
+    def test_webhook_url_shape_masked_in_free_text(self):
+        redactions: list[dict] = []
+        out = sanitize_for_export(
+            {"note": f"alerts go to {DISCORD_WEBHOOK_URL} and {SLACK_WEBHOOK_URL}"},
+            "config", redactions, known_values=[],
+        )
+        assert "discord-webhook-token-abcdef" not in out["note"]
+        assert "slack-webhook-token-abcdef" not in out["note"]
+        # Host stays readable, like connection-string masking keeps the host.
+        assert "discord.com" in out["note"]
+        assert "hooks.slack.com" in out["note"]
+        assert redactions
+
+    def test_whole_word_key_pin_hash_salt_redacted(self):
+        data = {
+            "FOO_KEY": "foo-key-value",
+            "MY_PIN": "123456",
+            "pin_hash": "pin-hash-value",
+            "session_hash": "session-hash-value",
+            "password_salt": "salt-value",
+        }
+        out = sanitize_for_export(data, "config", [], known_values=[])
+        for k in data:
+            assert out[k] == "[REDACTED]", k
+
+    def test_substring_lookalikes_not_redacted(self):
+        # Whole-word matching is the guard: these contain key/pin/hash as
+        # substrings of longer words and must survive untouched.
+        data = {
+            "keyboard_layout": "us",
+            "monkey_name": "george",
+            "keylime_pie": "dessert",
+            "hashbrown_style": "crispy",
+            "pinned_view": "home",
+        }
+        out = sanitize_for_export(data, "config", [], known_values=[])
+        assert out == data
+
+    def test_absolute_paths_relativised_to_data_dir(self):
+        redactions: list[dict] = []
+        data = {
+            "taosmd_dir": "/srv/taos/taosmd",
+            "agents": [{"name": "a", "workspace": "/srv/taos/agents/a"}],
+        }
+        out = sanitize_for_export(
+            data, "config", redactions, known_values=[], data_dir="/srv/taos"
+        )
+        assert out["taosmd_dir"] == "taosmd"
+        assert out["agents"][0]["workspace"] == "agents/a"
+        paths = {r["path"] for r in redactions}
+        assert "config.taosmd_dir" in paths
+        assert "config.agents[0].workspace" in paths
+
+    def test_absolute_path_outside_data_dir_stripped_to_basename(self):
+        redactions: list[dict] = []
+        data = {"agents": [{"name": "a", "workspace": "/home/someone/private/ws"}]}
+        out = sanitize_for_export(
+            data, "agents", redactions, known_values=[], data_dir="/srv/taos"
+        )
+        assert out["agents"][0]["workspace"] == "ws"
+        assert "/home/someone" not in json.dumps(out)
+        assert redactions and redactions[0]["path"] == "agents.agents[0].workspace"
+
+    def test_relative_paths_untouched(self):
+        data = {"taosmd_dir": "taosmd", "workspace": "agents/a"}
+        out = sanitize_for_export(
+            data, "config", [], known_values=[], data_dir="/srv/taos"
+        )
+        assert out == data
+
+
+@pytest.mark.asyncio
+class TestBuildExportBundleHardening:
+    async def test_webhook_urls_absent_from_bundle_bytes(self, tmp_path):
+        config = AppConfig(
+            webhooks=[
+                {"type": "discord", "url": DISCORD_WEBHOOK_URL},
+                {"type": "slack", "url": SLACK_WEBHOOK_URL},
+            ],
+            config_path=tmp_path / "config.yaml",
+        )
+        bundle = await build_export_bundle(config=config)
+        raw = json.dumps(bundle)
+        assert DISCORD_WEBHOOK_URL not in raw
+        assert SLACK_WEBHOOK_URL not in raw
+        assert "discord-webhook-token-abcdef" not in raw
+        assert "slack-webhook-token-abcdef" not in raw
+        hooks = bundle["config"]["webhooks"]
+        assert [h["url"] for h in hooks] == ["[REDACTED]", "[REDACTED]"]
+        assert [h["type"] for h in hooks] == ["discord", "slack"]
+
+    async def test_absolute_paths_not_verbatim_and_recorded(self, tmp_path):
+        config = AppConfig(
+            agents=[{"name": "agent-one", "workspace": "/home/someone/private/ws"}],
+            taosmd_dir=str(tmp_path / "taosmd-data"),
+            config_path=tmp_path / "config.yaml",
+        )
+        bundle = await build_export_bundle(config=config)
+        raw = json.dumps(bundle)
+        assert str(tmp_path / "taosmd-data") not in raw
+        assert "/home/someone/private/ws" not in raw
+        assert bundle["config"]["taosmd_dir"] == "taosmd-data"
+        assert bundle["agents"]["active"][0]["workspace"] == "ws"
+        paths = {e["path"] for e in bundle["manifest"]["excluded"]}
+        assert "config.taosmd_dir" in paths
+        assert "agents.active[0].workspace" in paths
+
+    async def test_manifest_marks_all_users_data(self, tmp_path):
+        config = AppConfig(config_path=tmp_path / "config.yaml")
+        bundle = await build_export_bundle(config=config)
+        assert bundle["manifest"]["contains_all_users_data"] is True
+
+
+@pytest.mark.asyncio
+class TestExportSizeCap:
+    async def test_serialize_raises_over_cap(self, monkeypatch):
+        from tinyagentos import backup_export
+
+        monkeypatch.setattr(backup_export, "MAX_EXPORT_BYTES", 8, raising=False)
+        with pytest.raises(backup_export.ExportTooLargeError):
+            backup_export.serialize_export_bundle({"manifest": {"format": "x"}})
+
+    async def test_route_returns_413_over_cap(self, client, app, monkeypatch):
+        await app.state.agent_registry.init()
+        await app.state.desktop_settings.init()
+        monkeypatch.setattr(
+            "tinyagentos.backup_export.MAX_EXPORT_BYTES", 8, raising=False
+        )
+        resp = await client.get("/api/settings/export")
+        assert resp.status_code == 413
+        assert "error" in resp.json()

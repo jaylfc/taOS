@@ -18,7 +18,7 @@ from urllib.parse import urlparse
 import httpx
 import yaml
 from fastapi import APIRouter, Depends, HTTPException, Request, UploadFile
-from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi.responses import JSONResponse, Response, StreamingResponse
 from pydantic import BaseModel
 
 from tinyagentos.auto_update import PREF_NAMESPACE, is_valid_branch_name, resolve_tracked_branch
@@ -434,9 +434,15 @@ async def export_settings_bundle(request: Request):
     name/category references, and the bundle's manifest lists every
     redaction and omission. Admin-gated by this router's dependency, like
     every handler in this module. Import/restore of a bundle is the
-    follow-on slice, not this endpoint.
+    follow-on slice, not this endpoint. The serialized bundle is
+    size-capped (backup_export.MAX_EXPORT_BYTES): an oversized bundle is
+    refused with 413 rather than served unbounded.
     """
-    from tinyagentos.backup_export import build_export_bundle
+    from tinyagentos.backup_export import (
+        ExportTooLargeError,
+        build_export_bundle,
+        serialize_export_bundle,
+    )
 
     state = request.app.state
     bundle = await build_export_bundle(
@@ -447,9 +453,14 @@ async def export_settings_bundle(request: Request):
         secrets=getattr(state, "secrets", None),
         agent_registry=getattr(state, "agent_registry", None),
     )
+    try:
+        payload = serialize_export_bundle(bundle)
+    except ExportTooLargeError as exc:
+        return JSONResponse({"error": str(exc)}, status_code=413)
     filename = f"taos-export-{int(time.time())}.json"
-    return JSONResponse(
-        content=bundle,
+    return Response(
+        content=payload,
+        media_type="application/json",
         headers={"Content-Disposition": f'attachment; filename="{filename}"'},
     )
 

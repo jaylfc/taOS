@@ -686,6 +686,12 @@ function BackupSection() {
             fields are marked as redacted in the bundle and listed in its
             manifest.
           </p>
+          <p className="text-xs text-amber-400 mb-3">
+            Warning: this bundle contains every user&rsquo;s data on this
+            install — all accounts&rsquo; preferences and settings, not just
+            yours. Treat the downloaded file like a full backup of the
+            install and store it somewhere private.
+          </p>
           <Button size="sm" onClick={exportBundle} disabled={exporting}>
             <Download size={14} className={exporting ? "animate-bounce" : ""} />
             {exporting ? "Exporting..." : "Export Bundle (JSON)"}

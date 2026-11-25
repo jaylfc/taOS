@@ -27,6 +27,23 @@ Secret handling, in order of strength:
    are deliberately NOT applied: an export that masks backend addresses
    cannot be restored from.
 
+4. **Webhook URLs are credentials.** A ``url`` under a ``webhooks``
+   section is replaced wholesale, whatever its shape, and Discord/Slack
+   webhook URLs are masked wherever they appear in a string (the host
+   stays readable; the credential path does not). The export key list
+   also extends log_redaction's with the whole words ``key``, ``pin``,
+   ``hash`` and ``salt`` -- a file that leaves the box is matched more
+   strictly than log output; whole-word tokenisation keeps
+   ``keyboard_layout`` and ``monkey_name`` safe.
+5. **Absolute paths do not leave the box.** Values under ``taosmd_dir``
+   and ``workspace`` keys are rewritten relative to the data dir when
+   they live under it, and reduced to their final component otherwise.
+
+The manifest flags ``contains_all_users_data`` -- the bundle holds every
+account's preferences, not just the exporting admin's -- and the
+serialized bundle is size-capped (``MAX_EXPORT_BYTES``), so runaway
+growth fails with a clear error instead of an unbounded response.
+
 Every redaction and every deliberate omission is recorded in the bundle's
 ``manifest.excluded`` list, so nothing vanishes silently. The manifest
 also carries the format name/version and export time so a future import
@@ -34,8 +51,11 @@ slice can validate a bundle before applying it.
 """
 from __future__ import annotations
 
+import json
+import os
 import re
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any
 
 from tinyagentos import __version__
@@ -51,6 +71,42 @@ FORMAT = "taos-backup-export"
 FORMAT_VERSION = 1
 
 _SENSITIVE_SET = frozenset(k.lower() for k in _SENSITIVE_KEYS)
+
+# Export is stricter than log redaction: the file leaves the box, so the
+# whole words ``key``, ``pin``, ``hash`` and ``salt`` are sensitive here
+# too (FOO_KEY, MY_PIN, pin_hash, *_salt -- env-style SCREAMING_SNAKE
+# names tokenise exactly like snake_case ones). log_redaction's own list
+# is deliberately NOT widened: it drives log masking repo-wide. Matching
+# stays whole-word (see _key_tokens), so substring lookalikes such as
+# ``keyboard_layout``, ``monkey_name`` and ``pinned_view`` are untouched.
+_EXTRA_SENSITIVE_WORDS = frozenset({"key", "pin", "hash", "salt"})
+_EFFECTIVE_SENSITIVE_SET = _SENSITIVE_SET | _EXTRA_SENSITIVE_WORDS
+
+# Discord/Slack webhook URLs embed their credential in the path; mask
+# the path and keep the host, the same readability trade as
+# connection-string passwords. The structural half of the webhook rule
+# (any ``url`` under a ``webhooks`` section, whatever the host) lives in
+# sanitize_for_export.
+_WEBHOOK_URL_RE = re.compile(
+    r"(?P<pre>https://(?:discord\.com|discordapp\.com)/api/webhooks/"
+    r"|https://hooks\.slack\.com/services/)(?P<secret>\S+)"
+)
+
+# Keys whose values are host filesystem paths. Absolute values leak the
+# host layout (usernames, mount points) into a file meant to be kept and
+# shared, so they are rewritten relative to the data dir or stripped.
+_PATH_KEYS = frozenset({"taosmd_dir", "workspace"})
+_DRIVE_RE = re.compile(r"^[A-Za-z]:[\\/]")
+
+# The bundle is assembled in memory; cap the serialized size so a
+# pathological install fails with a clear error instead of an unbounded
+# response. Realistic bundles (config + prefs + projects) are kilobytes
+# to low megabytes, so this only trips on runaway growth.
+MAX_EXPORT_BYTES = 64 * 1024 * 1024
+
+
+class ExportTooLargeError(ValueError):
+    """The serialized export bundle exceeds MAX_EXPORT_BYTES."""
 
 # Mirrors log_redaction's floor: a shorter known value is too likely a
 # common substring to mask on.
@@ -76,13 +132,14 @@ def _key_tokens(key: str) -> list[str]:
 
 
 def _is_secret_key(key: str) -> bool:
-    if key.lower() in _SENSITIVE_SET:
+    if key.lower() in _EFFECTIVE_SENSITIVE_SET:
         return True
     tokens = _key_tokens(key)
-    if any(t in _SENSITIVE_SET for t in tokens):
+    if any(t in _EFFECTIVE_SENSITIVE_SET for t in tokens):
         return True
     return any(
-        f"{a}_{b}" in _SENSITIVE_SET for a, b in zip(tokens, tokens[1:])
+        f"{a}_{b}" in _EFFECTIVE_SENSITIVE_SET
+        for a, b in zip(tokens, tokens[1:])
     )
 
 
@@ -105,6 +162,9 @@ def _sanitize_string(
     cleaned = _CONN_STR_RE.sub(
         lambda m: m.group("pre") + PLACEHOLDER + m.group("post"), cleaned
     )
+    cleaned = _WEBHOOK_URL_RE.sub(
+        lambda m: m.group("pre") + PLACEHOLDER, cleaned
+    )
     cleaned = _TOKEN_SHAPE_RE.sub(PLACEHOLDER, cleaned)
     if cleaned != text:
         redactions.append({
@@ -114,18 +174,52 @@ def _sanitize_string(
     return cleaned
 
 
+def _rewrite_path(
+    value: str,
+    path: str,
+    redactions: list[dict],
+    data_dir: str | None,
+) -> str | None:
+    """Rewrite an absolute path for export, or None if *value* is not one.
+
+    Under the data dir the path becomes relative to it (meaningful again
+    on a fresh install with a different layout); outside it, only the
+    final component survives. Either way the rewrite is recorded.
+    """
+    if not (value.startswith("/") or _DRIVE_RE.match(value)):
+        return None
+    if data_dir:
+        rel = os.path.relpath(value, data_dir)
+        if rel != ".." and not rel.startswith(".." + os.sep):
+            redactions.append({
+                "path": path,
+                "reason": "absolute path rewritten relative to the data dir",
+            })
+            return rel
+    redactions.append({
+        "path": path,
+        "reason": "absolute path outside the data dir; reduced to its "
+                  "final component so the host layout is not exported",
+    })
+    return os.path.basename(value.rstrip("/")) or value
+
+
 def sanitize_for_export(
     value: Any,
     path: str,
     redactions: list[dict],
     *,
     known_values: list[str] | tuple[str, ...] = (),
+    data_dir: str | None = None,
+    _in_webhooks: bool = False,
 ) -> Any:
     """Return a copy of *value* with every secret removed.
 
     ``path`` is the dotted location used in redaction records
     (``config.backends[0].api_key``). ``redactions`` is appended to, one
     entry per redaction, each ``{"path": ..., "reason": ...}``.
+    ``data_dir`` is the install's data directory, used to rewrite the
+    absolute paths named in ``_PATH_KEYS`` relative to it.
     """
     if isinstance(value, dict):
         out: dict = {}
@@ -142,20 +236,64 @@ def sanitize_for_export(
                 else:
                     out[k] = v
                 continue
+            if _in_webhooks and isinstance(k, str) and k.lower() == "url":
+                # A webhook URL is itself a credential (Discord/Slack
+                # tokens live in the path; generic endpoints embed
+                # theirs unpredictably), so it is replaced wholesale
+                # whatever its shape.
+                if v not in (None, "", [], {}):
+                    redactions.append({
+                        "path": child,
+                        "reason": "webhook URL; webhook URLs are "
+                                  "credentials and are never exported",
+                    })
+                    out[k] = PLACEHOLDER
+                else:
+                    out[k] = v
+                continue
+            if (
+                isinstance(k, str)
+                and k.lower() in _PATH_KEYS
+                and isinstance(v, str)
+            ):
+                rewritten = _rewrite_path(v, child, redactions, data_dir)
+                if rewritten is not None:
+                    out[k] = rewritten
+                    continue
             out[k] = sanitize_for_export(
-                v, child, redactions, known_values=known_values
+                v, child, redactions, known_values=known_values,
+                data_dir=data_dir,
+                _in_webhooks=_in_webhooks
+                or (isinstance(k, str) and k.lower() == "webhooks"),
             )
         return out
     if isinstance(value, (list, tuple)):
         return [
             sanitize_for_export(
-                v, f"{path}[{i}]", redactions, known_values=known_values
+                v, f"{path}[{i}]", redactions, known_values=known_values,
+                data_dir=data_dir, _in_webhooks=_in_webhooks,
             )
             for i, v in enumerate(value)
         ]
     if isinstance(value, str):
         return _sanitize_string(value, path, redactions, list(known_values))
     return value
+
+
+def serialize_export_bundle(bundle: dict) -> str:
+    """Serialize *bundle*, refusing anything over MAX_EXPORT_BYTES.
+
+    The bundle is built whole in memory; the cap turns runaway growth
+    into a clear error at the route instead of an unbounded response.
+    """
+    raw = json.dumps(bundle)
+    size = len(raw.encode("utf-8"))
+    if size > MAX_EXPORT_BYTES:
+        raise ExportTooLargeError(
+            f"export bundle is {size} bytes, over the "
+            f"{MAX_EXPORT_BYTES}-byte cap"
+        )
+    return raw
 
 
 async def build_export_bundle(
@@ -201,8 +339,16 @@ async def build_export_bundle(
             "reason": "secrets store unavailable on this install",
         })
 
+    # The data dir is the config file's directory, the codebase-wide
+    # convention (routes derive it from config_path the same way).
+    config_path = getattr(config, "config_path", None)
+    data_dir = str(Path(config_path).parent) if config_path else None
+
     def clean(value: Any, path: str) -> Any:
-        return sanitize_for_export(value, path, redactions, known_values=known_values)
+        return sanitize_for_export(
+            value, path, redactions, known_values=known_values,
+            data_dir=data_dir,
+        )
 
     bundle: dict[str, Any] = {}
 
@@ -284,6 +430,7 @@ async def build_export_bundle(
         "format_version": FORMAT_VERSION,
         "exported_at": exported_at,
         "taos_version": __version__,
+        "contains_all_users_data": True,
         "sections": [k for k in bundle],
         "excluded": omissions + redactions,
     }
