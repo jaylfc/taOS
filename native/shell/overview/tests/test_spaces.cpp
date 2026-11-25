@@ -112,10 +112,14 @@ private slots:
     void bareStartupWorkspaceIsNotAdoptedAndPersonGoesBack() {
         { Store st(path()); Rec r; Engine e(&st, &r);
           e.sync(Snap().ws(QStringLiteral("1")).ws(QStringLiteral("2"), true).win(1, QStringLiteral("1")).win(2, QStringLiteral("2")).s, OUT); }
-        Store st(path()); QVERIFY(st.load(nullptr));
-        Rec rec; Engine e(&st, &rec);
-        e.sync(Snap().ws(QStringLiteral("1"), true).s, OUT);   // sway booted on an empty workspace "1"... which is known
-        QVERIFY(rec.cmds.isEmpty());
+        QVERIFY(QFile::copy(path(), path("saved.json")));
+        {   // sway booted on an empty workspace that IS one of the spaces: nothing to fix
+            Store st(path()); QVERIFY(st.load(nullptr));
+            Rec rec; Engine e(&st, &rec);
+            e.sync(Snap().ws(QStringLiteral("1"), true).s, OUT);
+            QVERIFY(rec.cmds.isEmpty());
+        }
+        QFile::remove(path()); QVERIFY(QFile::copy(path("saved.json"), path()));
         Store st2(path()); QVERIFY(st2.load(nullptr));
         Rec rec2; Engine e2(&st2, &rec2);
         e2.sync(Snap().ws(QStringLiteral("9"), true).s, OUT);   // booted on a stray empty "9"
