@@ -120,7 +120,21 @@ def _build_one(name: str, backend: dict, lazy: dict) -> LazyBackendProxy | None:
         )
         return None
     keep_alive_minutes = backend.get("keep_alive_minutes", 10)
-    idle_timeout = float(keep_alive_minutes) * 60.0
+    try:
+        idle_timeout = float(keep_alive_minutes) * 60.0
+    except (TypeError, ValueError):
+        logger.warning(
+            "lazy wiring: %s skipped — keep_alive_minutes %r is not a number",
+            name, keep_alive_minutes,
+        )
+        return None
+    if not idle_timeout >= 0:  # negative or NaN
+        logger.warning(
+            "lazy wiring: %s skipped — keep_alive_minutes %r does not "
+            "give a usable idle timeout",
+            name, keep_alive_minutes,
+        )
+        return None
     return LazyBackendProxy(
         proxy_port=proxy_port,
         backend_host=_host_of(backend_url),

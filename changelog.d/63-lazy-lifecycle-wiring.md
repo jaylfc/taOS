@@ -23,3 +23,11 @@
   displaced an explicitly configured rkllama and generation failed with
   `KeyError: 'images'`. The fallback now orders by priority first, with
   the sd-cpp > rkllama > ollama preference breaking ties only.
+
+- **Review hardening on the lazy wiring** — the HealthMonitor now probes
+  wrapped backends at their real server URL (the public proxy URL would
+  cold-start them and keep them warm); an invalid `keep_alive_minutes`
+  skips that entry's wrapping with a warning instead of failing start-up;
+  the proxies start as the last start-up step, so a failed or cancelled
+  start-up cannot strand a bound listener; and the image-backend fallback
+  above also skips disabled backends.

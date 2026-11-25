@@ -177,3 +177,11 @@ async def test_idle_backend_is_stopped_after_registry_ttl():
                 await client.get(backend_url + "/", timeout=2.0)
     finally:
         await stop_lazy_proxies(proxies)
+
+
+@pytest.mark.parametrize("bad", ["abc", None, -5, float("nan")])
+def test_build_skips_invalid_keep_alive_minutes(bad):
+    """An invalid keep_alive_minutes must not raise at start-up (jaylfc
+    review): the entry's lazy wrapping is skipped with a warning instead
+    of taking the whole app down."""
+    assert build_lazy_proxies([_lazy_entry(keep_alive_minutes=bad)]) == {}

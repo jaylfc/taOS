@@ -1306,15 +1306,6 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
         lifecycle_manager.shared_client = http_client  # reuse shared client (#660)
         app.state.lifecycle_manager = lifecycle_manager
 
-        # Lazy lifecycle wrappers (#63) — one LazyBackendProxy per backend
-        # entry that opts in with a `lazy` block. Starting a proxy only
-        # binds its public port; the real backend subprocess starts on the
-        # first inbound connection and stops after the entry's keep-alive
-        # TTL. start_lazy_proxies never raises (a failed bind is logged).
-        lazy_proxies = build_lazy_proxies(config.backends)
-        await start_lazy_proxies(lazy_proxies)
-        app.state.lazy_backend_proxies = lazy_proxies
-
         # Trace registry — per-agent hourly-bucketed SQLite for zero-loss capture.
         from tinyagentos.trace_store import TraceStoreRegistry
         app.state.trace_registry = TraceStoreRegistry(data_dir)
@@ -1772,6 +1763,21 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
                     source="system.lifecycle",
                 )
         logger.info("startup complete — accepting requests")
+
+        # Lazy lifecycle wrappers (#63) — one LazyBackendProxy per backend
+        # entry that opts in with a `lazy` block. Starting a proxy only
+        # binds its public port; the real backend subprocess starts on the
+        # first inbound connection and stops after the entry's keep-alive
+        # TTL. This runs as the LAST startup step, immediately before the
+        # yield: a startup that fails or is cancelled earlier can then
+        # never strand a bound proxy listener (the shutdown stop below
+        # only runs once the yield is reached). app.state is populated
+        # before the start await so the shutdown path always sees the
+        # proxies, and start_lazy_proxies never raises (a failed bind is
+        # logged).
+        lazy_proxies = build_lazy_proxies(config.backends)
+        app.state.lazy_backend_proxies = lazy_proxies
+        await start_lazy_proxies(lazy_proxies)
 
         yield
         # NOTE: controller restart/shutdown does NOT touch agent containers --

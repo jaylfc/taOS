@@ -10,6 +10,7 @@ import psutil
 from tinyagentos.agent_db import get_agent_db
 from tinyagentos.backend_adapters import check_backend_health
 from tinyagentos.config import AppConfig
+from tinyagentos.lazy_backend_wiring import probe_target
 from tinyagentos.metrics import MetricsStore
 from tinyagentos.notifications import NotificationStore
 from tinyagentos.qmd_client import QmdClient
@@ -73,7 +74,13 @@ class HealthMonitor:
         # 1. Backend health
         for backend in self.config.backends:
             try:
-                result = await check_backend_health(self.http_client, backend)
+                # Lazy-wrapped backends (#63) are probed at their real
+                # server URL, not the public proxy URL — probing the
+                # proxy would cold-start the backend and keep it warm
+                # forever (same retargeting as the catalog prober).
+                result = await check_backend_health(
+                    self.http_client, probe_target(backend)
+                )
                 status_val = 1.0 if result["status"] == "ok" else 0.0
                 await self.metrics.insert(f"backend.{backend['name']}.status", status_val, now)
                 await self.metrics.insert(

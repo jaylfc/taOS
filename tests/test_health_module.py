@@ -486,3 +486,23 @@ async def test_poll_once_backend_response_ms_default_zero(tmp_path):
     ms_call = [c for c in monitor.metrics.insert.call_args_list
                if c.args[0] == "backend.b1.response_ms"][0]
     assert ms_call.args[1] == 0.0
+
+
+@pytest.mark.asyncio
+async def test_poll_once_probes_lazy_backend_at_real_server(tmp_path):
+    """A lazy-wrapped backend (#63) must be probed at its real server URL,
+    not the public proxy URL: probing the proxy would cold-start the
+    backend on the first poll and keep it warm forever (jaylfc review)."""
+    backend = {
+        "name": "local-stable-diffusion-cpp",
+        "type": "sd-cpp",
+        "url": "http://127.0.0.1:30450",
+        "lazy": {"backend_url": "http://127.0.0.1:30451"},
+    }
+    monitor = _make_monitor(tmp_path, backends=[backend])
+    with patch("tinyagentos.health.check_backend_health", new_callable=AsyncMock,
+               return_value={"status": "ok", "response_ms": 1}) as mock_check:
+        await monitor._poll_once()
+    probed = mock_check.call_args[0][1]
+    assert probed["url"] == "http://127.0.0.1:30451"
+    assert probed["name"] == backend["name"]

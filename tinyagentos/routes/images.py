@@ -134,7 +134,13 @@ def _get_image_backend(
     #    (#63) hijacked image generation from a configured rkllama, and
     #    the generate route then parsed a non-sd-cpp response as an
     #    sd-cpp one (KeyError: 'images').
-    candidates = [b for b in config.backends if b.get("type") in preference]
+    #    Disabled entries are skipped (as build_lazy_proxies skips them):
+    #    they stay in config.backends, and a disabled entry must never win
+    #    selection over an enabled one.
+    candidates = [
+        b for b in config.backends
+        if b.get("type") in preference and b.get("enabled", True)
+    ]
     candidates.sort(
         key=lambda b: (b.get("priority", 99), preference[b["type"]])
     )

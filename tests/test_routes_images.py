@@ -321,3 +321,21 @@ class TestGetImageBackendStaticFallback:
         ])
         assert (url, btype, name) == (
             "http://localhost:8080", "rkllama", "configured-rkllama")
+
+
+class TestGetImageBackendDisabledEntries(TestGetImageBackendStaticFallback):
+    """Disabled backends must not be selected by the static fallback
+    (CodeRabbit): a disabled entry stays in config.backends, and with
+    priority-first ordering a disabled priority-1 rkllama would otherwise
+    beat an enabled priority-99 sd-cpp and generation would post to a
+    service the user turned off."""
+
+    def test_disabled_backends_are_skipped(self):
+        url, btype, name = self._pick([
+            {"name": "disabled-rkllama", "type": "rkllama",
+             "url": "http://localhost:8080", "priority": 1, "enabled": False},
+            {"name": "auto-sdcpp", "type": "sd-cpp",
+             "url": "http://127.0.0.1:30450", "priority": 99, "enabled": True},
+        ])
+        assert (url, btype, name) == (
+            "http://127.0.0.1:30450", "sd-cpp", "auto-sdcpp")
