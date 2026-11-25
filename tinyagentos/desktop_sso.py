@@ -184,12 +184,10 @@ class DesktopSessionService:
 def _write_links(path: Path, links: dict[int, str]) -> None:
     body = "# uid -> taOS person. Edited by `python -m tinyagentos.desktop_sso`; root only.\n"
     body += "".join(f"{u} {n}\n" for u, n in sorted(links.items()))
+    from tinyagentos.atomic_io import atomic_write_text
+
     path.parent.mkdir(parents=True, exist_ok=True, mode=0o755)
-    tmp = path.with_name(path.name + ".new")
-    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o644)
-    with os.fdopen(fd, "w") as f:
-        f.write(body)
-    os.replace(tmp, path)
+    atomic_write_text(path, body, mode=0o644)
 
 
 def main(argv: list[str] | None = None, *, links_path: str | None = None, trusted_uid: int = 0) -> int:
