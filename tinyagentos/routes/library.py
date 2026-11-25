@@ -19,7 +19,7 @@ from pathlib import Path
 from fastapi import APIRouter, Depends, File, Form, Request, UploadFile
 from fastapi.responses import JSONResponse
 
-from tinyagentos.auth_context import CurrentUser
+from tinyagentos.auth_context import CurrentUser, require_admin
 from tinyagentos.device_auth import current_user_or_device
 from tinyagentos.library_collections import handoff_to_collections
 from tinyagentos.library_pipeline import run_pipeline
@@ -628,9 +628,14 @@ async def get_library_settings(request: Request):
     return await store.get_settings()
 
 
-@router.put("/api/library/settings")
+@router.put("/api/library/settings", dependencies=[Depends(require_admin)])
 async def update_library_settings(request: Request):
     """Update library settings from a JSON body.
+
+    Admin-only (library-wide settings; a plain member must not change
+    them for everyone -- #2060 review). Reads stay open to any signed-in
+    user: the values are not secret (the cap is already exposed via
+    /api/library/usage) and the desktop pane loads them for every user.
 
     Accepts any subset of {preferred_quality, storage_cap_bytes};
     omitted fields keep their current values. Qualities use the backend

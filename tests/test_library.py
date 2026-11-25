@@ -3427,3 +3427,81 @@ class TestLibrarySettingsRoutes:
         resp = await client.post(f"/api/library/items/{item_id}/download")
         assert resp.status_code == 202
         assert resp.json()["quality"] == "480"
+
+
+async def _library_member_client(app) -> AsyncClient:
+    """Cookie'd client for a non-admin member session on *app*.
+
+    Mirrors tests/test_settings_authz.py::_member_client: the ``client``
+    fixture's admin invites a plain member, who gets a session cookie.
+    Callers must depend on ``client`` (or otherwise set up the admin)
+    before calling this.
+    """
+    from taos_test_csrf import csrf_event_hooks
+
+    auth_mgr = app.state.auth
+    invite_code = auth_mgr.add_user_invite("member", "admin")
+    auth_mgr.complete_invite(
+        "member", invite_code, "Test Member", "", "memberlibrarypass123"
+    )
+    member = auth_mgr.find_user("member")
+    token = auth_mgr.create_session(member["username"])
+    return AsyncClient(
+        transport=ASGITransport(app=app),
+        base_url="http://test",
+        cookies={"taos_session": token},
+        # Behave like the SPA for CSRF (echo the bound token into the
+        # header); without this every mutating request 403s on CSRF
+        # before the route's own authorization ever runs.
+        event_hooks=csrf_event_hooks(),
+    )
+
+
+class TestLibrarySettingsAdminOnly:
+    """#2060 review (jaylfc): the library settings are library-wide, so a
+    plain member must not be able to change them for everyone. Writes are
+    admin-only (tinyagentos.auth_context.require_admin); reads stay open
+    to any signed-in user, matching the mixed-router pattern and the
+    desktop pane, which loads the settings for every user."""
+
+    @pytest.mark.asyncio
+    async def test_member_put_settings_refused_and_unchanged(self, client, app):
+        member_client = await _library_member_client(app)
+        try:
+            resp = await member_client.put(
+                "/api/library/settings",
+                json={"preferred_quality": "1080", "storage_cap_bytes": 1},
+            )
+        finally:
+            await member_client.aclose()
+        assert resp.status_code == 403
+        # The refusal happens before any state changes: the admin's view
+        # still shows the untouched defaults.
+        resp = await client.get("/api/library/settings")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["preferred_quality"] == "720"
+        assert data["storage_cap_bytes"] == 50 * 1024 * 1024 * 1024
+
+    @pytest.mark.asyncio
+    async def test_member_get_settings_allowed(self, client, app):
+        member_client = await _library_member_client(app)
+        try:
+            resp = await member_client.get("/api/library/settings")
+        finally:
+            await member_client.aclose()
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["preferred_quality"] == "720"
+        assert data["storage_cap_bytes"] == 50 * 1024 * 1024 * 1024
+
+    @pytest.mark.asyncio
+    async def test_admin_put_settings_still_works(self, client):
+        resp = await client.put(
+            "/api/library/settings",
+            json={"preferred_quality": "1080", "storage_cap_bytes": 4096},
+        )
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["preferred_quality"] == "1080"
+        assert data["storage_cap_bytes"] == 4096
