@@ -1,11 +1,11 @@
 {
  "blkid": {
-  "out": "DEVNAME=ext4.img\nLABEL=data\nUUID=82aeb1d0-62c1-48d5-bb75-bbe3ebe8e155\nVERSION=1.0\nFSBLOCKSIZE=1024\nBLOCK_SIZE=1024\nFSLASTBLOCK=65536\nFSSIZE=67108864\nTYPE=ext4\nUSAGE=filesystem\n",
+  "out": "DEVNAME=ext4.img\nLABEL=data\nUUID=ba2054a8-2c56-44a7-9f46-95e47e3deaec\nVERSION=1.0\nFSBLOCKSIZE=1024\nBLOCK_SIZE=1024\nFSLASTBLOCK=65536\nFSSIZE=67108864\nTYPE=ext4\nUSAGE=filesystem\n",
   "rc": 0
  },
  "synthetic_image": false,
  "wipefs": {
-  "out": "{\n   \"signatures\": [\n      {\n         \"device\": \"ext4.img\",\n         \"offset\": \"0x438\",\n         \"type\": \"ext4\",\n         \"uuid\": \"82aeb1d0-62c1-48d5-bb75-bbe3ebe8e155\",\n         \"label\": \"data\"\n      }\n   ]\n}\n",
+  "out": "{\n   \"signatures\": [\n      {\n         \"device\": \"ext4.img\",\n         \"offset\": \"0x438\",\n         \"type\": \"ext4\",\n         \"uuid\": \"ba2054a8-2c56-44a7-9f46-95e47e3deaec\",\n         \"label\": \"data\"\n      }\n   ]\n}\n",
   "rc": 0
  }
 }

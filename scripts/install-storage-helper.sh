@@ -55,8 +55,10 @@ trap 'rm -f "$TMP"' EXIT
 sed "s/@TAOS_USER@/$SVC_USER/g" "$SRC/packaging/taos-storage.sudoers" > "$TMP"
 visudo -c -f "$TMP" >/dev/null || die "the rendered sudoers entry failed visudo -c; nothing was installed"
 
-install -d "${OWN[@]}" -m 0755 "$ROOT/usr/local/sbin" "$ROOT/usr/local/lib/taos-storage" "$ROOT/etc/sudoers.d" \
-    "$ROOT/etc/taos/storage/areas" "$ROOT/srv/taos/storage"
+# Standard system directories are created if missing but never re-moded
+# (/etc/sudoers.d in particular is not 0755 on every system).
+mkdir -p "$ROOT/usr/local/sbin" "$ROOT/etc/sudoers.d" "$ROOT/etc/taos/storage" "$ROOT/srv/taos"
+install -d "${OWN[@]}" -m 0755 "$ROOT/usr/local/lib/taos-storage" "$ROOT/etc/taos/storage/areas" "$ROOT/srv/taos/storage"
 install -d "${OWN[@]}" -m 0700 "$ROOT/etc/taos/keys"
 install "${OWN[@]}" -m 0644 "$SRC/tinyagentos/storage_classifier.py" "$ROOT/usr/local/lib/taos-storage/storage_classifier.py"
 install "${OWN[@]}" -m 0755 "$SRC/scripts/taos-storage-helper" "$ROOT/usr/local/sbin/taos-storage-helper"

@@ -319,11 +319,18 @@ def create_key(env, name):
 
 def _failure(steps, step, detail):
     last = steps[-1] if steps else None
-    state = STATES.get(last, "see steps")
     if step in ("partition", "encrypt", "format"):
-        state = f"the step '{step}' failed part-way and may have written to the disk; last completed: {last or 'none'}. {state}"
+        state = (f"the step '{step}' failed part-way and may have written to the disk; "
+                 f"last completed step: {last or 'none'}; check the disk before using it")
+    else:
+        state = STATES.get(last, "see steps")
     return {"ok": False, "refused": False, "failed_step": step, "error": detail, "steps": steps,
             "state": state, "note": "nothing was undone; the state above is what exists now"}
+
+
+def partition_script(name):
+    """The exact sfdisk input: one GPT partition spanning the disk, named taos-<name>."""
+    return f"label: gpt\nunit: sectors\n\nstart=2048, type=L, name=taos-{name}\n"
 
 
 def cmd_add(env, device, name, kind, confirm):
@@ -389,8 +396,7 @@ def _add(env, device, name, kind, confirm, steps):
         raise Refused(f"the disk is in use and cannot be opened exclusively: {exc}")
 
     # ---- partition
-    script = f"label: gpt\nunit: sectors\n\nstart=2048, type=L, name=taos-{name}\n"
-    command(env, "partition", ["sfdisk", "--quiet", real], input=script)
+    command(env, "partition", ["sfdisk", "--quiet", real], input=partition_script(name))
     steps.append("partitioned")
     command(env, "settle", ["udevadm", "settle"])
     lsb = json.loads(command(env, "find-partition", ["lsblk", "-J", "-b", "-O", real]))
@@ -424,7 +430,8 @@ def _add(env, device, name, kind, confirm, steps):
         if uid is None or gid is None:
             raise StepFailed("format", "the service account is unknown")
         fstype, opts = "ntfs-3g", f"defaults,nofail,x-systemd.device-timeout=10,uid={uid},gid={gid},umask=0077"
-        cryptline = f"{mapper} PARTUUID={partuuid} none tcrypt-veracrypt,tcrypt-keyfile={key_path},nofail"
+        # keyfile-only tcrypt: /dev/null as the password source so boot never prompts (crypttab(5))
+        cryptline = f"{mapper} PARTUUID={partuuid} /dev/null tcrypt-veracrypt,tcrypt-keyfile={key_path},nofail"
     steps.append("formatted")
     fs_uuid = command(env, "fs-uuid", ["blkid", "-s", "UUID", "-o", "value", dev]).strip()
     if not fs_uuid:

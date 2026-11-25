@@ -13,7 +13,7 @@ from pathlib import Path
 from tinyagentos.storage_classifier import Probe, Policy
 
 FIXTURES = Path(__file__).parent / "fixtures" / "storage"
-GPT_LINUX = "0fc63daf-8483-4772-8e79-3d69d8478480"
+GPT_LINUX = "0fc63daf-8483-4772-8e79-3d69d8477de4"
 
 # every key a real `lsblk -J -b -O` node carries (lsblk 2.41.5)
 _LSBLK_KEYS = (

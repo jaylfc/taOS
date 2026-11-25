@@ -396,3 +396,35 @@ def test_collect_then_classify_end_to_end_with_a_fake_machine():
     res = {d["path"]: d for d in classify(snap).disks}
     assert res["/dev/sdb"]["class"] == "available", res["/dev/sdb"]["reasons"]
     assert res["/dev/sda"]["class"] == "protected"
+
+
+def test_empty_partition_whose_blkid_prints_only_its_own_entry_is_still_available():
+    # blkid -p on a partition node commonly prints PART_ENTRY_* (rc 0) with no TYPE
+    p = part("sdb", 1)
+    snap = build("gpt_emptypart", parts=[p])
+    entry = "DEVNAME=/dev/sdb1\nPART_ENTRY_SCHEME=gpt\nPART_ENTRY_NAME=x\nPART_ENTRY_TYPE=0fc63daf\nPART_ENTRY_NUMBER=1\n"
+    snap["devices"]["/dev/sdb"]["/dev/sdb1"]["blkid"] = Probe(True, entry, "", 0)
+    assert verdict(snap)["class"] == "available"
+
+
+def test_partition_blkid_with_a_type_tag_protects_even_beside_part_entry_tags():
+    p = part("sdb", 1)
+    snap = build("gpt_emptypart", parts=[p])
+    out = "DEVNAME=/dev/sdb1\nPART_ENTRY_SCHEME=gpt\nTYPE=crypto_LUKS\nUSAGE=crypto\n"
+    snap["devices"]["/dev/sdb"]["/dev/sdb1"]["blkid"] = Probe(True, out, "", 0)
+    assert_protected(snap, "TYPE")
+
+
+def test_automounted_boot_entry_does_not_protect_every_disk_when_the_real_mount_resolves():
+    fm = json.dumps({"filesystems": [
+        {"target": "/", "source": "/dev/sda2"},
+        {"target": "/boot/efi", "source": "systemd-1"},
+        {"target": "/boot/efi", "source": "/dev/sda2"}]})
+    res = classify(build("blank", findmnt=fm, mounts="/dev/sda2 / ext4 rw 0 0\nsystemd-1 /boot/efi autofs rw 0 0\n/dev/sda2 /boot/efi vfat rw 0 0\n"))
+    assert {d["path"]: d["class"] for d in res.disks}["/dev/sdb"] == "available"
+
+
+def test_boot_target_that_never_resolves_still_protects_every_disk():
+    fm = json.dumps({"filesystems": [{"target": "/", "source": "/dev/sda2"}, {"target": "/boot", "source": "systemd-1"}]})
+    res = classify(build("blank", findmnt=fm, mounts="/dev/sda2 / ext4 rw 0 0\nsystemd-1 /boot autofs rw 0 0\n"))
+    assert all(d["class"] == "protected" for d in res.disks)

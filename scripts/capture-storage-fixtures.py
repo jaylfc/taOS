@@ -112,8 +112,8 @@ def main(scratch, out):
             "part1": probe(name + "-part1.img"),
         }
 
-    partitioned("gpt", "0FC63DAF-8483-4772-8E79-3D69D8478480", None, [])
-    partitioned("gpt", "0FC63DAF-8483-4772-8E79-3D69D8478480", "mkfs.ext4", ["-q", "-L", "d"])
+    partitioned("gpt", "0fc63daf-8483-4772-8e79-3d69d8477de4", None, [])
+    partitioned("gpt", "0fc63daf-8483-4772-8e79-3d69d8477de4", "mkfs.ext4", ["-q", "-L", "d"])
     partitioned("dos", "83", None, [])
     partitioned("dos", "83", "mkfs.ext4", ["-q"])
 

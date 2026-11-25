@@ -453,3 +453,36 @@ def test_helper_refuses_when_the_disk_listing_itself_fails(helper, world):
     out = add(helper, env, dev)
     assert out["refused"] is True and "safety check could not run" in out["error"]
     assert "sfdisk" not in m.tools()
+
+
+def test_the_partition_script_makes_one_named_linux_partition_with_real_sfdisk(helper, tmp_path):
+    """Run the helper's exact sfdisk input against an image FILE and read the result back."""
+    import shutil
+    import subprocess
+    sfdisk = shutil.which("sfdisk") or "/usr/sbin/sfdisk"
+    if not os.path.exists(sfdisk):
+        pytest.skip("sfdisk not installed")
+    img = tmp_path / "t.img"
+    with open(img, "wb") as f:
+        f.truncate(64 * 1024 * 1024)
+    r = subprocess.run([sfdisk, "--quiet", str(img)], input=helper.partition_script("photos"), capture_output=True, text=True)
+    assert r.returncode == 0, r.stderr
+    doc = json.loads(subprocess.run([sfdisk, "-J", str(img)], capture_output=True, text=True, check=True).stdout)
+    parts = doc["partitiontable"]["partitions"]
+    assert doc["partitiontable"]["label"] == "gpt" and len(parts) == 1
+    assert parts[0]["name"] == "taos-photos" and parts[0]["type"].lower() == "0fc63daf-8483-4772-8e79-3d69d8477de4"
+    assert parts[0]["start"] == 2048
+
+
+def test_failure_state_never_contradicts_itself(helper, world):
+    env, m, dev = world
+    m.fail_on = "sfdisk"
+    out = add(helper, env, dev)
+    assert "part-way" in out["state"] and "nothing was written" not in out["state"]
+
+
+def test_shared_crypttab_line_uses_dev_null_so_boot_never_prompts(helper, world):
+    env, m, dev = world
+    add(helper, env, dev, kind="shared")
+    fields = Path(env.crypttab).read_text().split()
+    assert fields[2] == "/dev/null" and "tcrypt-keyfile=" in fields[3]

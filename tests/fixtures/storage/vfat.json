@@ -1,11 +1,11 @@
 {
  "blkid": {
-  "out": "DEVNAME=vfat.img\nUUID=A802-A4A3\nVERSION=FAT32\nFSBLOCKSIZE=512\nBLOCK_SIZE=512\nFSSIZE=67108864\nTYPE=vfat\nUSAGE=filesystem\n",
+  "out": "DEVNAME=vfat.img\nUUID=0444-A9D3\nVERSION=FAT32\nFSBLOCKSIZE=512\nBLOCK_SIZE=512\nFSSIZE=67108864\nTYPE=vfat\nUSAGE=filesystem\n",
   "rc": 0
  },
  "synthetic_image": false,
  "wipefs": {
-  "out": "{\n   \"signatures\": [\n      {\n         \"device\": \"vfat.img\",\n         \"offset\": \"0x52\",\n         \"type\": \"vfat\",\n         \"uuid\": \"A802-A4A3\",\n         \"label\": null\n      },{\n         \"device\": \"vfat.img\",\n         \"offset\": \"0x0\",\n         \"type\": \"vfat\",\n         \"uuid\": \"A802-A4A3\",\n         \"label\": null\n      },{\n         \"device\": \"vfat.img\",\n         \"offset\": \"0x1fe\",\n         \"type\": \"vfat\",\n         \"uuid\": \"A802-A4A3\",\n         \"label\": null\n      }\n   ]\n}\n",
+  "out": "{\n   \"signatures\": [\n      {\n         \"device\": \"vfat.img\",\n         \"offset\": \"0x52\",\n         \"type\": \"vfat\",\n         \"uuid\": \"0444-A9D3\",\n         \"label\": null\n      },{\n         \"device\": \"vfat.img\",\n         \"offset\": \"0x0\",\n         \"type\": \"vfat\",\n         \"uuid\": \"0444-A9D3\",\n         \"label\": null\n      },{\n         \"device\": \"vfat.img\",\n         \"offset\": \"0x1fe\",\n         \"type\": \"vfat\",\n         \"uuid\": \"0444-A9D3\",\n         \"label\": null\n      }\n   ]\n}\n",
   "rc": 0
  }
 }

@@ -1,6 +1,6 @@
 {
  "blkid": {
-  "out": "DEVNAME=gpt_no_parts.img\nPTUUID=109fee6c-3e4f-4410-a934-54ccb75b973d\nPTTYPE=gpt\n",
+  "out": "DEVNAME=gpt_no_parts.img\nPTUUID=d4a1f1d4-a6fb-41a3-8b65-ede2ccfcd49f\nPTTYPE=gpt\n",
   "rc": 0
  },
  "synthetic_image": false,

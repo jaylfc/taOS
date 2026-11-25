@@ -46,7 +46,7 @@ REAL_DISK_RE = re.compile(r"^(sd[a-z]+|vd[a-z]+|xvd[a-z]+|nvme\d+n\d+|mmcblk\d+)
 TABLE_SIGNATURES = frozenset({"gpt", "PMBR", "dos"})
 
 # The only partition types that count as "an ordinary empty data partition".
-GPT_LINUX_FS = "0fc63daf-8483-4772-8e79-3d69d8478480"
+GPT_LINUX_FS = "0fc63daf-8483-4772-8e79-3d69d8477de4"
 DOS_LINUX = "0x83"
 
 # Mount targets that make a disk the system disk. If the source of one of
@@ -309,17 +309,23 @@ def classify(snap: dict, policy: Policy | None = None, known_serials=(), known_w
             if parts and parts[0].startswith("/dev/"):
                 swap_sources.append(parts[0])
 
-    seen_system = set()
+    resolved_targets: set = set()
     for source, target in mount_entries:
         d = disk_of(source) if source.startswith("/dev/") else None
         if d:
             mounted_disks.setdefault(d, []).append(f"{source} is mounted at {target}")
+            resolved_targets.add(target)
             if target in SYSTEM_TARGETS:
                 system_disks.add(d)
-        if target in SYSTEM_TARGETS and not d and target not in seen_system:
-            seen_system.add(target)
+    # An automount placeholder (source "systemd-1") may list a system target
+    # before the real mount does; only a target NO entry resolves is a problem.
+    for target in SYSTEM_TARGETS:
+        if target in resolved_targets:
+            continue
+        srcs = sorted({s or "unknown" for s, t in mount_entries if t == target})
+        if srcs:
             global_reasons.append(
-                f"the device behind {target} ({source or 'unknown'}) cannot be matched to a disk, "
+                f"the device behind {target} ({', '.join(srcs)}) cannot be matched to a disk, "
                 "so the system disk cannot be identified"
             )
     if "/" not in {t for _, t in mount_entries} and not global_reasons:
@@ -454,8 +460,13 @@ def _classify_disk(top, snap, policy, global_reasons, mounted, swaps, system, by
         ptype = (p.get("parttype") or "").lower()
         if ptype not in (GPT_LINUX_FS, DOS_LINUX):
             reasons.append(f"{p['path']} has partition type '{ptype or 'unknown'}', which may hold data or system files")
-        if pp.get("blkid") and pp["blkid"].ok and pp["blkid"].rc != 2:
-            reasons.append(f"{p['path']} carries a signature (blkid)")
+        if pp.get("blkid") and pp["blkid"].ok:
+            # blkid -p on a partition node may print the partition's own entry
+            # (PART_ENTRY_*, DEVNAME) even when it is empty; anything else is a
+            # filesystem, member or table signature.
+            extra = sorted(k for k in _blkid_tags(pp["blkid"].out) if k != "DEVNAME" and not k.startswith(("PART_ENTRY_", "ID_PART_ENTRY_")))
+            if extra:
+                reasons.append(f"{p['path']} carries a signature (blkid: {', '.join(extra)})")
         if pp.get("wipefs") and pp["wipefs"].ok:
             try:
                 psigs = _wipefs_types(pp["wipefs"].out)

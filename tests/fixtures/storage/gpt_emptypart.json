@@ -1,7 +1,7 @@
 {
  "disk": {
   "blkid": {
-   "out": "DEVNAME=gpt_emptypart.img\nPTUUID=19cc64e5-47ec-4ce5-982e-762259a22c75\nPTTYPE=gpt\n",
+   "out": "DEVNAME=gpt_emptypart.img\nPTUUID=8e421752-f514-4b08-a975-df0c57a690d7\nPTTYPE=gpt\n",
    "rc": 0
   },
   "synthetic_image": false,

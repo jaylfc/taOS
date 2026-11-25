@@ -46,7 +46,7 @@ def loop(tmp_path):
     img = tmp_path / "disk.img"
     img.write_bytes(b"")
     os.truncate(img, 512 * 1024 * 1024)
-    dev = subprocess.run(["losetup", "--find", "--show", str(img)], capture_output=True, text=True, check=True).stdout.strip()
+    dev = subprocess.run(["losetup", "--find", "--show", "--partscan", str(img)], capture_output=True, text=True, check=True).stdout.strip()
     assert re.fullmatch(r"/dev/loop\d+", dev)
     yield dev
     subprocess.run(["umount", str(tmp_path / "srv" / "looparea")], capture_output=True)

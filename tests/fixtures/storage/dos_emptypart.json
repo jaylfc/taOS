@@ -1,7 +1,7 @@
 {
  "disk": {
   "blkid": {
-   "out": "DEVNAME=dos_emptypart.img\nPTUUID=a1fcb8fa\nPTTYPE=dos\n",
+   "out": "DEVNAME=dos_emptypart.img\nPTUUID=3e344be5\nPTTYPE=dos\n",
    "rc": 0
   },
   "synthetic_image": false,
