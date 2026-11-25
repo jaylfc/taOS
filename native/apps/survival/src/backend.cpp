@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
+#include <QFileInfo>
 #include "backend.h"
 
 #include <QDir>
@@ -656,10 +657,24 @@ void KitEngine::refresh()
 
 // ---- the whole -----------------------------------------------------------------------------------------------------
 SurvivalBackend::SurvivalBackend(const QString &dataDir, QObject *parent)
-    : QObject(parent), m_packs(dataDir), m_library(&m_packs), m_map(&m_packs, dataDir), m_radios(), m_kits(&m_packs, &m_radios, &m_map)
+    : QObject(parent), m_packs(dataDir), m_library(&m_packs), m_map(&m_packs, dataDir), m_radios(), m_kits(&m_packs, &m_radios, &m_map),
+      m_meshClient(MeshClient::defaultSocketPath()), m_socketMesh(&m_meshClient), m_tak(&m_fakeMesh, dataDir),
+      m_firmware(&m_fwClient, QString::fromLocal8Bit(qgetenv("USER")))
 {
     m_radios.scan();
     m_kits.refresh();
+    m_fakeMesh.setReason(m_meshClient.socketPath().isEmpty() ? tr("There is no runtime directory (XDG_RUNTIME_DIR is not set), so the mesh engine's socket cannot be found.")
+                                                             : tr("The mesh engine is not running. Start it from taOStak, or run: systemctl --user start taos-mesh"));
+    // the real backend when the engine's socket exists; otherwise the stand-in says so, and the socket is watched for
+    if (QFileInfo::exists(m_meshClient.socketPath()))
+        setMesh(&m_socketMesh);
+    m_meshWatch.setInterval(3000);
+    connect(&m_meshWatch, &QTimer::timeout, this, [this] {
+        if (m_mesh != &m_socketMesh && QFileInfo::exists(m_meshClient.socketPath()))
+            setMesh(&m_socketMesh);
+    });
+    m_meshWatch.start();
+    m_meshClient.start();
 }
 
 void SurvivalBackend::setMesh(MeshBackend *b)
@@ -667,6 +682,7 @@ void SurvivalBackend::setMesh(MeshBackend *b)
     if (m_mesh)
         m_mesh->disconnect(this);
     m_mesh = b ? b : &m_fakeMesh;
+    m_tak.setBackend(m_mesh);
     for (auto sig : {&MeshBackend::radiosChanged, &MeshBackend::identitiesChanged, &MeshBackend::messagesChanged})
         connect(m_mesh, sig, this, &SurvivalBackend::meshChanged);
     Q_EMIT meshChanged();

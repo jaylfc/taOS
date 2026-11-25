@@ -1,0 +1,71 @@
+{
+  "backup": {
+    "detail": "Meshtastic configuration saved",
+    "dir": "/home/user/data",
+    "status": "saved"
+  },
+  "ok": true,
+  "restore": {
+    "argv": [
+      "/home/user/data",
+      "--port",
+      "/home/user/data",
+      "--configure",
+      "/home/user/data"
+    ],
+    "status": "restored"
+  },
+  "stage": "done",
+  "steps": [
+    {
+      "detail": "Meshtastic configuration saved",
+      "name": "backup",
+      "ok": true,
+      "status": "saved"
+    },
+    {
+      "argv": [
+        "/home/user/data",
+        "--chip",
+        "esp32s3",
+        "--port",
+        "/home/user/data",
+        "--baud",
+        "460800",
+        "write_flash",
+        "-z",
+        "0x0",
+        "/home/user/data",
+        "0x340000",
+        "/home/user/data",
+        "0x670000",
+        "/home/user/data"
+      ],
+      "name": "flash",
+      "ok": true
+    },
+    {
+      "detail": "meshtastic answered on /home/user/data",
+      "name": "verify",
+      "ok": true,
+      "status": "confirmed"
+    },
+    {
+      "detail": {
+        "argv": [
+          "/home/user/data",
+          "--port",
+          "/home/user/data",
+          "--configure",
+          "/home/user/data"
+        ],
+        "status": "restored"
+      },
+      "name": "restore"
+    }
+  ],
+  "verify": {
+    "detail": "meshtastic answered on /home/user/data",
+    "status": "confirmed"
+  }
+}

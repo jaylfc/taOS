@@ -1,0 +1,17 @@
+{
+  "id": 1,
+  "ok": true,
+  "result": [
+    {
+      "delivery": "",
+      "fromId": "!28af67cc",
+      "id": "3d63799fa6f83777e533cf87712d2706",
+      "outgoing": false,
+      "text": "hello mesh",
+      "threadId": "ch:meshtastic:0",
+      "timeMs": 1795581844099,
+      "toId": "!ffffffff",
+      "trust": "claimed"
+    }
+  ]
+}

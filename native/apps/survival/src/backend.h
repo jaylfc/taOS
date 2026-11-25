@@ -16,6 +16,8 @@
 #include "packmanager.h"
 #include "radiodetector.h"
 #include "statestore.h"
+#include "socketmeshbackend.h"
+#include "takengine.h"
 #include "articlehtml.h"
 #include "zimarchive.h"
 
@@ -255,6 +257,8 @@ class SurvivalBackend : public QObject
     Q_PROPERTY(QObject *map READ map CONSTANT)
     Q_PROPERTY(QObject *radios READ radios CONSTANT)
     Q_PROPERTY(QObject *kits READ kits CONSTANT)
+    Q_PROPERTY(QObject *tak READ tak CONSTANT)
+    Q_PROPERTY(QObject *firmware READ firmware CONSTANT)
     Q_PROPERTY(QObject *mesh READ mesh NOTIFY meshChanged)
     Q_PROPERTY(bool meshAvailable READ meshAvailable NOTIFY meshChanged)
     Q_PROPERTY(QString meshReason READ meshReason NOTIFY meshChanged)
@@ -265,6 +269,10 @@ public:
     QObject *map() { return &m_map; }
     QObject *radios() { return &m_radios; }
     QObject *kits() { return &m_kits; }
+    QObject *tak() { return &m_tak; }
+    QObject *firmware() { return &m_firmware; }
+    TakEngine *takEngine() { return &m_tak; }
+    FirmwareEngine *firmwareEngine() { return &m_firmware; }
     QObject *mesh() { return m_mesh; }
     bool meshAvailable() const { return m_mesh && m_mesh->available(); }
     QString meshReason() const { return m_mesh ? m_mesh->unavailableReason() : QString(); }
@@ -286,7 +294,13 @@ private:
     RadioEngine m_radios;
     KitEngine m_kits;
     FakeMeshBackend m_fakeMesh;
+    MeshClient m_meshClient;
+    SocketMeshBackend m_socketMesh;
     MeshBackend *m_mesh = &m_fakeMesh;
+    TakEngine m_tak;
+    FirmwareClient m_fwClient;
+    FirmwareEngine m_firmware;
+    QTimer m_meshWatch;
 };
 
 /// Registers the Taos.Survival QML module: the Survival singleton (which also adds the zimimg image provider to the

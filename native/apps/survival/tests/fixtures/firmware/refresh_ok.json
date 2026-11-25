@@ -1,0 +1,91 @@
+{
+  "ok": true,
+  "reports": [
+    {
+      "detail": "",
+      "errors": [],
+      "fetched": [
+        "meshtastic:tbeam:2.7.26.54e0d8d",
+        "meshtastic:heltec-v3:2.7.26.54e0d8d",
+        "meshtastic:heltec-v4:2.7.26.54e0d8d",
+        "meshtastic:tbeam-s3:2.7.26.54e0d8d",
+        "meshtastic:rak4631:2.7.26.54e0d8d",
+        "meshtastic:t1000e:2.7.26.54e0d8d",
+        "meshtastic:xiao-nrf52840:2.7.26.54e0d8d",
+        "meshtastic:rak4631:2.7.25.104df5f",
+        "meshtastic:t1000e:2.7.25.104df5f",
+        "meshtastic:xiao-nrf52840:2.7.25.104df5f"
+      ],
+      "network": "meshtastic",
+      "notes": [
+        "meshtastic:tbeam:2.7.25.104df5f: 2.7.25.104df5f predates the release flash map (firmware-tbeam-2.7.25.104df5f.mt.json); not offered for ESP32 boards",
+        "meshtastic:heltec-v3:2.7.25.104df5f: 2.7.25.104df5f predates the release flash map (firmware-heltec-v3-2.7.25.104df5f.mt.json); not offered for ESP32 boards",
+        "meshtastic:heltec-v4:2.7.25.104df5f: 2.7.25.104df5f predates the release flash map (firmware-heltec-v4-2.7.25.104df5f.mt.json); not offered for ESP32 boards",
+        "meshtastic:tbeam-s3:2.7.25.104df5f: 2.7.25.104df5f predates the release flash map (firmware-tbeam-s3-core-2.7.25.104df5f.mt.json); not offered for ESP32 boards"
+      ],
+      "retry_after_epoch": null,
+      "skipped": 0,
+      "status": "ok"
+    },
+    {
+      "detail": "",
+      "errors": [],
+      "fetched": [
+        "meshcore:heltec-v3:1.18.0:ble",
+        "meshcore:heltec-v3:1.18.0:usb",
+        "meshcore:heltec-v4:1.18.0:ble",
+        "meshcore:heltec-v4:1.18.0:usb",
+        "meshcore:tbeam:1.18.0:ble",
+        "meshcore:tbeam:1.18.0:usb",
+        "meshcore:tbeam-s3:1.18.0:ble",
+        "meshcore:tbeam-s3:1.18.0:usb",
+        "meshcore:rak4631:1.18.0:ble",
+        "meshcore:rak4631:1.18.0:usb",
+        "meshcore:t1000e:1.18.0:ble",
+        "meshcore:t1000e:1.18.0:usb",
+        "meshcore:xiao-nrf52840:1.18.0:ble",
+        "meshcore:xiao-nrf52840:1.18.0:usb",
+        "meshcore:heltec-v3:1.17.1:ble",
+        "meshcore:heltec-v3:1.17.1:usb",
+        "meshcore:heltec-v4:1.17.1:ble",
+        "meshcore:heltec-v4:1.17.1:usb",
+        "meshcore:tbeam:1.17.1:ble",
+        "meshcore:tbeam:1.17.1:usb",
+        "meshcore:tbeam-s3:1.17.1:ble",
+        "meshcore:tbeam-s3:1.17.1:usb",
+        "meshcore:rak4631:1.17.1:ble",
+        "meshcore:rak4631:1.17.1:usb",
+        "meshcore:t1000e:1.17.1:ble",
+        "meshcore:t1000e:1.17.1:usb",
+        "meshcore:xiao-nrf52840:1.17.1:ble",
+        "meshcore:xiao-nrf52840:1.17.1:usb"
+      ],
+      "network": "meshcore",
+      "notes": [],
+      "retry_after_epoch": null,
+      "skipped": 0,
+      "status": "ok"
+    },
+    {
+      "detail": "",
+      "errors": [],
+      "fetched": [
+        "rnode:heltec-v3:1.86",
+        "rnode:heltec-v4:1.86",
+        "rnode:tbeam:1.86",
+        "rnode:tbeam-s3:1.86",
+        "rnode:rak4631:1.86",
+        "rnode:heltec-v3:1.85",
+        "rnode:heltec-v4:1.85",
+        "rnode:tbeam:1.85",
+        "rnode:tbeam-s3:1.85",
+        "rnode:rak4631:1.85"
+      ],
+      "network": "rnode",
+      "notes": [],
+      "retry_after_epoch": null,
+      "skipped": 0,
+      "status": "ok"
+    }
+  ]
+}

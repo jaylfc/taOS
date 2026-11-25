@@ -1,0 +1,27 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# The taOS mesh radio engine as a user service. RECEIVE-ONLY by default: it stores what its radios hear and refuses to
+# transmit. It opens no radio on its own: name one in TAOS_MESH_ARGS (see below). Survival Studio talks to it through
+# the socket in the runtime directory.
+#
+# To allow sending, or to name a radio, put the arguments in ~/.config/taos-mesh/mesh.env, for example
+#     TAOS_MESH_ARGS=--receive-only --device /dev/ttyACM0
+# and for sending allowed (the owner also has to turn sending on in the app)
+#     TAOS_MESH_ARGS=--device /dev/ttyACM0
+# then: systemctl --user restart taos-mesh
+[Unit]
+Description=taOS mesh radio engine (receive-only unless told otherwise)
+Documentation=https://github.com/jaylfc/taOS/tree/native/native/mesh
+
+[Service]
+Type=simple
+Environment=TAOS_MESH_ARGS=--receive-only
+EnvironmentFile=-%h/.config/taos-mesh/mesh.env
+ExecStart=%h/.local/bin/taos-mesh daemon $TAOS_MESH_ARGS
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=yes
+PrivateTmp=yes
+Nice=10
+
+[Install]
+WantedBy=default.target

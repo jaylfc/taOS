@@ -1,0 +1,528 @@
+{
+  "device": {
+    "candidates": [
+      "heltec-v3",
+      "tbeam"
+    ],
+    "chip": null,
+    "family": "esp32",
+    "id": "usb-10c4-ea60-SN1-1-1",
+    "kind": "serial",
+    "mount": null,
+    "pid": "ea60",
+    "port": "/dev/ttyUSB0",
+    "probe": "skipped",
+    "product": "Fake board",
+    "serial_number": "SN1",
+    "uf2_board_id": null,
+    "uf2_model": null,
+    "vid": "10c4"
+  },
+  "firmware": [
+    {
+      "board": "tbeam",
+      "chip": "esp32",
+      "fetched_at": "2026-11-25T07:27:20Z",
+      "files": [
+        {
+          "offset": "0x0",
+          "path": "meshtastic/2.7.26.54e0d8d/firmware-tbeam-2.7.26.54e0d8d.factory.bin",
+          "role": "factory",
+          "sha256": "2d7fc852e30a3e6b82a50a36e14a1fe04b6faf033565093dfdad041996a6652b",
+          "size": 50
+        },
+        {
+          "offset": "0x340000",
+          "path": "meshtastic/2.7.26.54e0d8d/mt-esp32-ota.bin",
+          "role": "ota",
+          "sha256": "e350a3e4585f4b3d40fa4b659d728b293df5944bb3266024ec7ce16d4dadfd85",
+          "size": 31
+        },
+        {
+          "offset": "0x670000",
+          "path": "meshtastic/2.7.26.54e0d8d/littlefs-tbeam-2.7.26.54e0d8d.bin",
+          "role": "littlefs",
+          "sha256": "c42e4b342d0c0409a1a03b0531fac7db4955f34cb601349fd409ae333e415aa6",
+          "size": 51
+        }
+      ],
+      "id": "meshtastic:tbeam:2.7.26.54e0d8d",
+      "licence_id": "GPL-3.0-only",
+      "licence_url": "https://github.com/meshtastic/firmware/blob/master/LICENSE",
+      "method": "esptool",
+      "network": "meshtastic",
+      "source": "http://127.0.0.1:41661/dl/x/firmware-esp32-2.7.26.54e0d8d.zip",
+      "source_sha256": "ec5817a59dc468e4d6be4d13e59e0b0f405da8ee57addcf42e21222ff2a8d29a",
+      "unsigned_by_publisher": true,
+      "usable_now": false,
+      "variant": "",
+      "verification": "release-host-digest",
+      "version": "2.7.26.54e0d8d"
+    },
+    {
+      "board": "heltec-v3",
+      "chip": "esp32s3",
+      "fetched_at": "2026-11-25T07:27:20Z",
+      "files": [
+        {
+          "offset": "0x0",
+          "path": "meshtastic/2.7.26.54e0d8d/firmware-heltec-v3-2.7.26.54e0d8d.factory.bin",
+          "role": "factory",
+          "sha256": "94c18e67465715b8428622b0115cd053348457516b74785a1095edfb70f46ac7",
+          "size": 54
+        },
+        {
+          "offset": "0x340000",
+          "path": "meshtastic/2.7.26.54e0d8d/mt-esp32s3-ota.bin",
+          "role": "ota",
+          "sha256": "ab4ca5f919992eb6b4a244d527f187d47306d8c499961f44e271f123e08746f0",
+          "size": 28
+        },
+        {
+          "offset": "0x670000",
+          "path": "meshtastic/2.7.26.54e0d8d/littlefs-heltec-v3-2.7.26.54e0d8d.bin",
+          "role": "littlefs",
+          "sha256": "17ac543ab36017de26e8de6a94edc71730a07a5cf94301b9e2a5e4d917a4c500",
+          "size": 55
+        }
+      ],
+      "id": "meshtastic:heltec-v3:2.7.26.54e0d8d",
+      "licence_id": "GPL-3.0-only",
+      "licence_url": "https://github.com/meshtastic/firmware/blob/master/LICENSE",
+      "method": "esptool",
+      "network": "meshtastic",
+      "source": "http://127.0.0.1:41661/dl/x/firmware-esp32s3-2.7.26.54e0d8d.zip",
+      "source_sha256": "0d8fd0895c485071b0df4d7e69799d6fbb25a0b5457373603fe34e4bf127e67a",
+      "unsigned_by_publisher": true,
+      "usable_now": false,
+      "variant": "",
+      "verification": "release-host-digest",
+      "version": "2.7.26.54e0d8d"
+    },
+    {
+      "board": "heltec-v3",
+      "chip": "esp32s3",
+      "fetched_at": "2026-11-25T07:27:20Z",
+      "files": [
+        {
+          "offset": "0x0",
+          "path": "meshcore/1.18.0/Heltec_v3_companion_radio_ble-v1.18.0-81dbae5-merged.bin",
+          "role": "factory",
+          "sha256": "b16bc61a6fcdc27899b27bf568dc888740fcd5e13818a106f1db0026dd8d1cad",
+          "size": 74
+        }
+      ],
+      "id": "meshcore:heltec-v3:1.18.0:ble",
+      "licence_id": "MIT",
+      "licence_url": "https://github.com/meshcore-dev/MeshCore/blob/main/license.txt",
+      "method": "esptool",
+      "network": "meshcore",
+      "source": "http://127.0.0.1:41661/dl/x/Heltec_v3_companion_radio_ble-v1.18.0-81dbae5-merged.bin",
+      "source_sha256": "b16bc61a6fcdc27899b27bf568dc888740fcd5e13818a106f1db0026dd8d1cad",
+      "unsigned_by_publisher": true,
+      "usable_now": false,
+      "variant": "ble",
+      "verification": "release-host-digest",
+      "version": "1.18.0"
+    },
+    {
+      "board": "heltec-v3",
+      "chip": "esp32s3",
+      "fetched_at": "2026-11-25T07:27:20Z",
+      "files": [
+        {
+          "offset": "0x0",
+          "path": "meshcore/1.18.0/Heltec_v3_companion_radio_usb-v1.18.0-81dbae5-merged.bin",
+          "role": "factory",
+          "sha256": "41bd2393f7a0fb10c242a6d4f8721a93371459b8369b842c222b797cbebf4e5a",
+          "size": 74
+        }
+      ],
+      "id": "meshcore:heltec-v3:1.18.0:usb",
+      "licence_id": "MIT",
+      "licence_url": "https://github.com/meshcore-dev/MeshCore/blob/main/license.txt",
+      "method": "esptool",
+      "network": "meshcore",
+      "source": "http://127.0.0.1:41661/dl/x/Heltec_v3_companion_radio_usb-v1.18.0-81dbae5-merged.bin",
+      "source_sha256": "41bd2393f7a0fb10c242a6d4f8721a93371459b8369b842c222b797cbebf4e5a",
+      "unsigned_by_publisher": true,
+      "usable_now": false,
+      "variant": "usb",
+      "verification": "release-host-digest",
+      "version": "1.18.0"
+    },
+    {
+      "board": "tbeam",
+      "chip": "esp32",
+      "fetched_at": "2026-11-25T07:27:20Z",
+      "files": [
+        {
+          "offset": "0x0",
+          "path": "meshcore/1.18.0/Tbeam_SX1262_companion_radio_ble-v1.18.0-81dbae5-merged.bin",
+          "role": "factory",
+          "sha256": "19a4d3beec5cd04f00100f19eeabbab9e86fb264fc87ddc3841d394a6d283546",
+          "size": 77
+        }
+      ],
+      "id": "meshcore:tbeam:1.18.0:ble",
+      "licence_id": "MIT",
+      "licence_url": "https://github.com/meshcore-dev/MeshCore/blob/main/license.txt",
+      "method": "esptool",
+      "network": "meshcore",
+      "source": "http://127.0.0.1:41661/dl/x/Tbeam_SX1262_companion_radio_ble-v1.18.0-81dbae5-merged.bin",
+      "source_sha256": "19a4d3beec5cd04f00100f19eeabbab9e86fb264fc87ddc3841d394a6d283546",
+      "unsigned_by_publisher": true,
+      "usable_now": false,
+      "variant": "ble",
+      "verification": "release-host-digest",
+      "version": "1.18.0"
+    },
+    {
+      "board": "tbeam",
+      "chip": "esp32",
+      "fetched_at": "2026-11-25T07:27:20Z",
+      "files": [
+        {
+          "offset": "0x0",
+          "path": "meshcore/1.18.0/Tbeam_SX1262_companion_radio_usb-v1.18.0-81dbae5-merged.bin",
+          "role": "factory",
+          "sha256": "7c872a186b26a3cb1f03459f0f1faf7af4825ef25ea925a8dec30434ecfae52a",
+          "size": 77
+        }
+      ],
+      "id": "meshcore:tbeam:1.18.0:usb",
+      "licence_id": "MIT",
+      "licence_url": "https://github.com/meshcore-dev/MeshCore/blob/main/license.txt",
+      "method": "esptool",
+      "network": "meshcore",
+      "source": "http://127.0.0.1:41661/dl/x/Tbeam_SX1262_companion_radio_usb-v1.18.0-81dbae5-merged.bin",
+      "source_sha256": "7c872a186b26a3cb1f03459f0f1faf7af4825ef25ea925a8dec30434ecfae52a",
+      "unsigned_by_publisher": true,
+      "usable_now": false,
+      "variant": "usb",
+      "verification": "release-host-digest",
+      "version": "1.18.0"
+    },
+    {
+      "board": "heltec-v3",
+      "chip": "esp32s3",
+      "fetched_at": "2026-11-25T07:27:20Z",
+      "files": [
+        {
+          "offset": "0x0",
+          "path": "meshcore/1.17.1/Heltec_v3_companion_radio_ble-v1.17.1-81dbae5-merged.bin",
+          "role": "factory",
+          "sha256": "ff38412f4b1659aceccb2df474a2b4a09f51f3fe8b21bbdfddaf7d5b3f4a0770",
+          "size": 74
+        }
+      ],
+      "id": "meshcore:heltec-v3:1.17.1:ble",
+      "licence_id": "MIT",
+      "licence_url": "https://github.com/meshcore-dev/MeshCore/blob/main/license.txt",
+      "method": "esptool",
+      "network": "meshcore",
+      "source": "http://127.0.0.1:41661/dl/x/Heltec_v3_companion_radio_ble-v1.17.1-81dbae5-merged.bin",
+      "source_sha256": "ff38412f4b1659aceccb2df474a2b4a09f51f3fe8b21bbdfddaf7d5b3f4a0770",
+      "unsigned_by_publisher": true,
+      "usable_now": false,
+      "variant": "ble",
+      "verification": "release-host-digest",
+      "version": "1.17.1"
+    },
+    {
+      "board": "heltec-v3",
+      "chip": "esp32s3",
+      "fetched_at": "2026-11-25T07:27:20Z",
+      "files": [
+        {
+          "offset": "0x0",
+          "path": "meshcore/1.17.1/Heltec_v3_companion_radio_usb-v1.17.1-81dbae5-merged.bin",
+          "role": "factory",
+          "sha256": "0fbffb262603381bd3930fab7e4022f40e3dbd8b079b6f8415b3574682e8079c",
+          "size": 74
+        }
+      ],
+      "id": "meshcore:heltec-v3:1.17.1:usb",
+      "licence_id": "MIT",
+      "licence_url": "https://github.com/meshcore-dev/MeshCore/blob/main/license.txt",
+      "method": "esptool",
+      "network": "meshcore",
+      "source": "http://127.0.0.1:41661/dl/x/Heltec_v3_companion_radio_usb-v1.17.1-81dbae5-merged.bin",
+      "source_sha256": "0fbffb262603381bd3930fab7e4022f40e3dbd8b079b6f8415b3574682e8079c",
+      "unsigned_by_publisher": true,
+      "usable_now": false,
+      "variant": "usb",
+      "verification": "release-host-digest",
+      "version": "1.17.1"
+    },
+    {
+      "board": "tbeam",
+      "chip": "esp32",
+      "fetched_at": "2026-11-25T07:27:20Z",
+      "files": [
+        {
+          "offset": "0x0",
+          "path": "meshcore/1.17.1/Tbeam_SX1262_companion_radio_ble-v1.17.1-81dbae5-merged.bin",
+          "role": "factory",
+          "sha256": "5097bc98cf15004d45bf6593101c88387e76a86dc7c96775d67f23a878dd9800",
+          "size": 77
+        }
+      ],
+      "id": "meshcore:tbeam:1.17.1:ble",
+      "licence_id": "MIT",
+      "licence_url": "https://github.com/meshcore-dev/MeshCore/blob/main/license.txt",
+      "method": "esptool",
+      "network": "meshcore",
+      "source": "http://127.0.0.1:41661/dl/x/Tbeam_SX1262_companion_radio_ble-v1.17.1-81dbae5-merged.bin",
+      "source_sha256": "5097bc98cf15004d45bf6593101c88387e76a86dc7c96775d67f23a878dd9800",
+      "unsigned_by_publisher": true,
+      "usable_now": false,
+      "variant": "ble",
+      "verification": "release-host-digest",
+      "version": "1.17.1"
+    },
+    {
+      "board": "tbeam",
+      "chip": "esp32",
+      "fetched_at": "2026-11-25T07:27:20Z",
+      "files": [
+        {
+          "offset": "0x0",
+          "path": "meshcore/1.17.1/Tbeam_SX1262_companion_radio_usb-v1.17.1-81dbae5-merged.bin",
+          "role": "factory",
+          "sha256": "56dd9514ee84827f962e7c055ec9b083b5aaf3414aad4cc1e309603495c4d9e2",
+          "size": 77
+        }
+      ],
+      "id": "meshcore:tbeam:1.17.1:usb",
+      "licence_id": "MIT",
+      "licence_url": "https://github.com/meshcore-dev/MeshCore/blob/main/license.txt",
+      "method": "esptool",
+      "network": "meshcore",
+      "source": "http://127.0.0.1:41661/dl/x/Tbeam_SX1262_companion_radio_usb-v1.17.1-81dbae5-merged.bin",
+      "source_sha256": "56dd9514ee84827f962e7c055ec9b083b5aaf3414aad4cc1e309603495c4d9e2",
+      "unsigned_by_publisher": true,
+      "usable_now": false,
+      "variant": "usb",
+      "verification": "release-host-digest",
+      "version": "1.17.1"
+    },
+    {
+      "board": "heltec-v3",
+      "chip": "esp32s3",
+      "fetched_at": "2026-11-25T07:27:20Z",
+      "files": [
+        {
+          "offset": "0xe000",
+          "path": "rnode/1.86/rnode_firmware_heltec32v3.boot_app0",
+          "role": "boot_app0",
+          "sha256": "fc49fb03929378b99ec443fbb70af61e54ac3d6b863313415334bcf1711fd207",
+          "size": 47
+        },
+        {
+          "offset": "0x0",
+          "path": "rnode/1.86/rnode_firmware_heltec32v3.bootloader",
+          "role": "bootloader",
+          "sha256": "cb7c7b9e559e92882a17e3c6a5573a768ac44adb2c4b026ad34e90ecdbe935af",
+          "size": 40
+        },
+        {
+          "offset": "0x8000",
+          "path": "rnode/1.86/rnode_firmware_heltec32v3.partitions",
+          "role": "partitions",
+          "sha256": "ba2dc57b884abb72f062037df5be8221d50afdf2868108023f8cc866874b21c6",
+          "size": 43
+        },
+        {
+          "offset": "0x10000",
+          "path": "rnode/1.86/rnode_firmware_heltec32v3.bin",
+          "role": "firmware",
+          "sha256": "43bb65840068b1038f62c9089c6a95f719a5eff8c13e7de5364735cdf73d5d0d",
+          "size": 41
+        },
+        {
+          "offset": "0x210000",
+          "path": "rnode/1.86/rnode_heltec32v3_console_image.bin",
+          "role": "console",
+          "sha256": "37c06ec25479de65670dbf54f61d2ca6e659ee4e7eab6c542f7bbb8b7f518046",
+          "size": 29
+        }
+      ],
+      "id": "rnode:heltec-v3:1.86",
+      "licence_id": "GPL-3.0-only",
+      "licence_url": "https://github.com/markqvist/RNode_Firmware/blob/master/LICENSE",
+      "method": "esptool",
+      "network": "rnode",
+      "source": "http://127.0.0.1:41661/dl/1.86/rnode_firmware_heltec32v3.zip",
+      "source_sha256": "be472e7b5633f3c4ed10ca7eee18c02a3dc47d7194dab60b9bc4e14c2befaeac",
+      "unsigned_by_publisher": false,
+      "usable_now": false,
+      "variant": "",
+      "verification": "publisher-checksum",
+      "version": "1.86"
+    },
+    {
+      "board": "tbeam",
+      "chip": "esp32",
+      "fetched_at": "2026-11-25T07:27:20Z",
+      "files": [
+        {
+          "offset": "0xe000",
+          "path": "rnode/1.86/rnode_firmware_tbeam_sx1262.boot_app0",
+          "role": "boot_app0",
+          "sha256": "7052c2b5484e1fc36220db68c662236f24bb2bd5e9626f98be7eda0a7e789b01",
+          "size": 49
+        },
+        {
+          "offset": "0x1000",
+          "path": "rnode/1.86/rnode_firmware_tbeam_sx1262.bootloader",
+          "role": "bootloader",
+          "sha256": "7a38bf7248c893298428f2d6d9da2b66081f1aedda745436f62a570267364beb",
+          "size": 42
+        },
+        {
+          "offset": "0x8000",
+          "path": "rnode/1.86/rnode_firmware_tbeam_sx1262.partitions",
+          "role": "partitions",
+          "sha256": "774a9fca0aa04eba6e523df75f6c6f2ce8c0637e264b512e95946d77d848f99b",
+          "size": 45
+        },
+        {
+          "offset": "0x10000",
+          "path": "rnode/1.86/rnode_firmware_tbeam_sx1262.bin",
+          "role": "firmware",
+          "sha256": "7e5268f824e7666e9f840544de06af3d7203e6478c64c1c86cf657f5e89ade61",
+          "size": 43
+        },
+        {
+          "offset": "0x210000",
+          "path": "rnode/1.86/rnode_tbeam_sx1262_console_image.bin",
+          "role": "console",
+          "sha256": "37c06ec25479de65670dbf54f61d2ca6e659ee4e7eab6c542f7bbb8b7f518046",
+          "size": 29
+        }
+      ],
+      "id": "rnode:tbeam:1.86",
+      "licence_id": "GPL-3.0-only",
+      "licence_url": "https://github.com/markqvist/RNode_Firmware/blob/master/LICENSE",
+      "method": "esptool",
+      "network": "rnode",
+      "source": "http://127.0.0.1:41661/dl/1.86/rnode_firmware_tbeam_sx1262.zip",
+      "source_sha256": "ef825770037dd738aa2f68eb45cc6c72b19da65500cce381ee41ac3724f74eb3",
+      "unsigned_by_publisher": false,
+      "usable_now": false,
+      "variant": "",
+      "verification": "publisher-checksum",
+      "version": "1.86"
+    },
+    {
+      "board": "heltec-v3",
+      "chip": "esp32s3",
+      "fetched_at": "2026-11-25T07:27:20Z",
+      "files": [
+        {
+          "offset": "0xe000",
+          "path": "rnode/1.85/rnode_firmware_heltec32v3.boot_app0",
+          "role": "boot_app0",
+          "sha256": "c3cf203e422de3e301fe5a8d1e4da9163573f2cee6d6434d1dd402f39c7f7630",
+          "size": 47
+        },
+        {
+          "offset": "0x0",
+          "path": "rnode/1.85/rnode_firmware_heltec32v3.bootloader",
+          "role": "bootloader",
+          "sha256": "3d1509886bf2f8d3f8197b94f1f89cca502075d61d9cb10e262a8793670eaef2",
+          "size": 40
+        },
+        {
+          "offset": "0x8000",
+          "path": "rnode/1.85/rnode_firmware_heltec32v3.partitions",
+          "role": "partitions",
+          "sha256": "42e145281f8edc736de40f36fd9cf679eb02c7321f4c3f6be20f08682a78dfeb",
+          "size": 43
+        },
+        {
+          "offset": "0x10000",
+          "path": "rnode/1.85/rnode_firmware_heltec32v3.bin",
+          "role": "firmware",
+          "sha256": "1b923f8d18fa08cff10935ff6ec0eb8ec0bff97a3c5c483bd377d0880150f3a7",
+          "size": 41
+        },
+        {
+          "offset": "0x210000",
+          "path": "rnode/1.85/rnode_heltec32v3_console_image.bin",
+          "role": "console",
+          "sha256": "37c06ec25479de65670dbf54f61d2ca6e659ee4e7eab6c542f7bbb8b7f518046",
+          "size": 29
+        }
+      ],
+      "id": "rnode:heltec-v3:1.85",
+      "licence_id": "GPL-3.0-only",
+      "licence_url": "https://github.com/markqvist/RNode_Firmware/blob/master/LICENSE",
+      "method": "esptool",
+      "network": "rnode",
+      "source": "http://127.0.0.1:41661/dl/1.85/rnode_firmware_heltec32v3.zip",
+      "source_sha256": "111b6a16fbbe1fe0315063694de0c8f9f7a26999a030dbbe68ead36066855c04",
+      "unsigned_by_publisher": false,
+      "usable_now": false,
+      "variant": "",
+      "verification": "publisher-checksum",
+      "version": "1.85"
+    },
+    {
+      "board": "tbeam",
+      "chip": "esp32",
+      "fetched_at": "2026-11-25T07:27:20Z",
+      "files": [
+        {
+          "offset": "0xe000",
+          "path": "rnode/1.85/rnode_firmware_tbeam_sx1262.boot_app0",
+          "role": "boot_app0",
+          "sha256": "d31ef3b851860fe3d82579c8c52442fd93b54958f04f41a3154b6da20bf575f2",
+          "size": 49
+        },
+        {
+          "offset": "0x1000",
+          "path": "rnode/1.85/rnode_firmware_tbeam_sx1262.bootloader",
+          "role": "bootloader",
+          "sha256": "26f965bcd04629d9be988d62ebad7e4173e46d047d7104ffc96330e773fda871",
+          "size": 42
+        },
+        {
+          "offset": "0x8000",
+          "path": "rnode/1.85/rnode_firmware_tbeam_sx1262.partitions",
+          "role": "partitions",
+          "sha256": "2b503bb479069e5bd9c91a70c835e5d64e19f1f3ab0af54d75ddffb2a9850bc3",
+          "size": 45
+        },
+        {
+          "offset": "0x10000",
+          "path": "rnode/1.85/rnode_firmware_tbeam_sx1262.bin",
+          "role": "firmware",
+          "sha256": "3a18f404bd6b758532fa704e7966c100377c2b15a9f9c379de8c45a06cc43218",
+          "size": 43
+        },
+        {
+          "offset": "0x210000",
+          "path": "rnode/1.85/rnode_tbeam_sx1262_console_image.bin",
+          "role": "console",
+          "sha256": "37c06ec25479de65670dbf54f61d2ca6e659ee4e7eab6c542f7bbb8b7f518046",
+          "size": 29
+        }
+      ],
+      "id": "rnode:tbeam:1.85",
+      "licence_id": "GPL-3.0-only",
+      "licence_url": "https://github.com/markqvist/RNode_Firmware/blob/master/LICENSE",
+      "method": "esptool",
+      "network": "rnode",
+      "source": "http://127.0.0.1:41661/dl/1.85/rnode_firmware_tbeam_sx1262.zip",
+      "source_sha256": "e612151326fd2fa0f27e25ea6a90bdca6c10a326956be7dce427566c8d9ae3b8",
+      "unsigned_by_publisher": false,
+      "usable_now": false,
+      "variant": "",
+      "verification": "publisher-checksum",
+      "version": "1.85"
+    }
+  ],
+  "ok": true
+}

@@ -17,6 +17,8 @@ FocusScope {
     readonly property var engine: Survival.map
     readonly property alias view: mv
     property string selectedMarker: ""
+    property string selectedPerson: ""
+    signal personClicked(string node)
     property var pick: null                 // {lon, lat, x, y} of the last tap on empty map
     function focusSearch() { searchField.forceActiveFocus() }
     function setSearch(t) { searchField.text = t }
@@ -216,9 +218,44 @@ FocusScope {
         }
     }
 
+
+    // people on the map: each identity's last known position, with how long ago; tap one for their trail and messages
+    property int viewTick: 0
+    Connections { target: mv; function onViewChanged() { stage.viewTick++ } }
+    Repeater {
+        model: stage.takMode && stage.engine.loaded ? Survival.tak.places : []
+        delegate: Item {
+            id: who
+            required property var modelData
+            objectName: "mapPerson-" + modelData.node
+            readonly property var sp: { stage.viewTick; return mv.screenPos(modelData.lon, modelData.lat) }
+            readonly property bool inView: sp.x >= -20 && sp.x <= stage.width + 20 && sp.y >= -20 && sp.y <= stage.height + 20
+            visible: inView
+            x: sp.x - width / 2
+            y: sp.y - 11
+            width: tag.width
+            height: 22
+            Accessible.role: Accessible.Button
+            Accessible.name: qsTr("%1, %2").arg(modelData.name).arg(modelData.positionAgo)
+            Accessible.onPressAction: stage.personClicked(modelData.node)
+            Rectangle {
+                id: tag
+                height: 22; width: lab.visible ? lab.implicitWidth + 28 : 22; radius: 11
+                color: Look.tint(Look.ground, 0.9)
+                border.width: 1; border.color: Look.tint(Look.accent, 0.6)
+                Rectangle { x: 6; anchors.verticalCenter: parent.verticalCenter; width: 10; height: 10; radius: 5; color: Look.accent }
+                TaosText { id: lab; x: 22; anchors.verticalCenter: parent.verticalCenter; font.pixelSize: Look.caption; font.weight: Font.Medium
+                           visible: mv.zoom >= 8 || stage.selectedPerson === who.modelData.node
+                           text: who.modelData.name + "  " + who.modelData.positionAgo }
+            }
+            TapHandler { onTapped: stage.personClicked(who.modelData.node) }
+        }
+    }
+
     // tap on empty map: what can be done here
     GlassPanel {
         id: pickCard
+        objectName: "pickCard"
         visible: stage.pick !== null && !stage.pickingMe
         strong: true
         radius: Look.radiusCard - 2

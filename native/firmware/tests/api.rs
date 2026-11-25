@@ -385,3 +385,91 @@ fn consent_licence_and_flash_need_the_owner_nonce_not_just_the_token() {
         & 0o777;
     assert_eq!(mode, 0o600);
 }
+
+/// What the Survival Studio app sends (the real engine, its own fakes): every action carries a nonce minted for that
+/// action and subject, the actor is exactly "person", the unsigned image is acknowledged, and a named person actor is
+/// refused. The app mints each nonce over the owner socket when the person presses the button.
+#[test]
+fn the_app_flash_request_shape_is_accepted_and_a_named_person_actor_is_not() {
+    let srv = Server::start();
+    publish_all(&srv, None);
+    let env = Env::new(&srv.base);
+    env.add_usb("1-1", "10c4", "ea60", "SN1", "ttyUSB0");
+    let a = start(&env);
+    let c = |m: &str, p: &str, b: Option<Value>| call(&a, m, p, b, true, "", None).1;
+    for n in ["meshtastic", "meshcore", "rnode"] {
+        let v = c(
+            "POST",
+            "/v1/licences/accept",
+            Some(json!({"network":n,"by":"Test Owner","owner_nonce":mint(&env,"licence.accept",n)})),
+        );
+        assert_eq!(v["ok"], true, "{v}");
+    }
+    c("POST", "/v1/library/refresh", Some(json!({})));
+    let subject = "usb-10c4-ea60-SN1-1-1|meshtastic:heltec-v3:2.7.26.54e0d8d";
+    let body = json!({"device":"usb-10c4-ea60-SN1-1-1","entry":"meshtastic:heltec-v3:2.7.26.54e0d8d","confirm":"Heltec V3","ack_unsigned":true});
+    let mut named = body.clone();
+    named["actor"] = "person:Test Owner".into();
+    named["owner_nonce"] = mint(&env, "flash.run", subject).into();
+    let v = c("POST", "/v1/flash/run", Some(named));
+    assert_eq!(v["code"], "consent_required", "{v}");
+    let mut app = body;
+    app["actor"] = "person".into();
+    app["owner_nonce"] = mint(&env, "flash.run", subject).into();
+    let v = c("POST", "/v1/flash/run", Some(app.clone()));
+    assert_eq!(v["ok"], true, "{v}");
+    // single use: the same nonce does not work twice
+    let v = c("POST", "/v1/flash/run", Some(app));
+    assert_ne!(v["ok"], true, "{v}");
+}
+
+/// Writes the real API's answers for the app's fixtures. Runs only when TAOS_FW_DUMP_FIXTURES names a directory.
+#[test]
+fn dump_app_fixtures_when_asked() {
+    let Ok(dir) = std::env::var("TAOS_FW_DUMP_FIXTURES") else {
+        return;
+    };
+    let put = |name: &str, v: &Value| {
+        std::fs::write(
+            format!("{dir}/{name}.json"),
+            serde_json::to_string_pretty(v).unwrap(),
+        )
+        .unwrap()
+    };
+    let srv = Server::start();
+    publish_all(&srv, None);
+    let env = Env::new(&srv.base);
+    env.add_usb("1-1", "10c4", "ea60", "SN1", "ttyUSB0");
+    let a = start(&env);
+    let c = |m: &str, p: &str, b: Option<Value>| call(&a, m, p, b, true, "", None).1;
+    put("boards", &c("GET", "/v1/boards", None));
+    put("licences_pending", &c("GET", "/v1/licences", None));
+    for n in ["meshtastic", "meshcore", "rnode"] {
+        c(
+            "POST",
+            "/v1/licences/accept",
+            Some(json!({"network":n,"by":"Test Owner","owner_nonce":mint(&env,"licence.accept",n)})),
+        );
+    }
+    put("licences_accepted", &c("GET", "/v1/licences", None));
+    put("refresh_ok", &c("POST", "/v1/library/refresh", Some(json!({}))));
+    put("library", &c("GET", "/v1/library", None));
+    put("devices", &c("GET", "/v1/devices", None));
+    put(
+        "device_firmware",
+        &c("GET", "/v1/devices/usb-10c4-ea60-SN1-1-1/firmware", None),
+    );
+    let subject = "usb-10c4-ea60-SN1-1-1|meshtastic:heltec-v3:2.7.26.54e0d8d";
+    let body = json!({"device":"usb-10c4-ea60-SN1-1-1","entry":"meshtastic:heltec-v3:2.7.26.54e0d8d"});
+    put("plan", &c("POST", "/v1/flash/plan", Some(body.clone())));
+    let mut run = body;
+    run["owner_nonce"] = mint(&env, "flash.run", subject).into();
+    put("run_unconfirmed", &c("POST", "/v1/flash/run", Some(run.clone())));
+    run["owner_nonce"] = mint(&env, "flash.run", subject).into();
+    run["confirm"] = "Heltec V3".into();
+    run["actor"] = "person".into();
+    put("run_unacknowledged", &c("POST", "/v1/flash/run", Some(run.clone())));
+    run["owner_nonce"] = mint(&env, "flash.run", subject).into();
+    run["ack_unsigned"] = true.into();
+    put("run_done", &c("POST", "/v1/flash/run", Some(run)));
+}

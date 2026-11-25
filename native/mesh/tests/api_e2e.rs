@@ -321,3 +321,111 @@ fn malformed_requests_get_an_error_not_a_hang() {
     rd.read_line(&mut b).unwrap();
     assert!(b.contains("unknown_method"));
 }
+
+#[test]
+fn health_says_whether_the_engine_is_receive_only_and_that_it_cannot_configure_radios_yet() {
+    let ro = up(true);
+    let h = call(&ro.sock, "health", "owner", json!({})).unwrap();
+    assert_eq!(h["result"]["receive_only"], true, "{h}");
+    assert_eq!(h["result"]["device_config"], false);
+    assert_eq!(h["result"]["device_config_write"], false);
+    let rw = up(false);
+    let h = call(&rw.sock, "health", "owner", json!({})).unwrap();
+    assert_eq!(h["result"]["receive_only"], false, "{h}");
+}
+
+/// Writes the real daemon's answers to the app's methods, so the app's fixtures are captured, not typed.
+/// Runs only when TAOS_MESH_DUMP_FIXTURES names a directory.
+#[test]
+fn dump_app_fixtures_when_asked() {
+    let Ok(dir) = std::env::var("TAOS_MESH_DUMP_FIXTURES") else { return };
+    let u = up(true);
+    wait_for(&u.sock, 4);
+    let c = call(&u.sock, "contacts.create", "owner", json!({"name": "Sam", "notes": "neighbour with a handset"})).unwrap();
+    let cid = c["result"]["contact"].as_str().unwrap().to_string();
+    // the node that sent the broadcast text becomes Sam
+    let msgs = call(&u.sock, "messages", "owner", json!({"filter": {"kind": "text"}})).unwrap();
+    let node = msgs["result"][0]["from"].as_str().unwrap().to_string();
+    call(&u.sock, "identities.assign", "owner", json!({"node": node, "identity": format!("contact:{cid}")})).unwrap();
+    let put = |name: &str, v: Value| std::fs::write(format!("{dir}/{name}.json"), serde_json::to_string_pretty(&v).unwrap()).unwrap();
+    put("health", call(&u.sock, "health", "owner", json!({})).unwrap());
+    put("radios", call(&u.sock, "radios", "owner", json!({})).unwrap());
+    put("app.radios", call(&u.sock, "app.radios", "owner", json!({})).unwrap());
+    put("app.identities", call(&u.sock, "app.identities", "owner", json!({})).unwrap());
+    put("app.messages", call(&u.sock, "app.messages", "owner", json!({})).unwrap());
+    put("messages.text", call(&u.sock, "messages", "owner", json!({"filter": {"kind": "text"}})).unwrap());
+    put("messages.position", call(&u.sock, "messages", "owner", json!({"filter": {"kind": "position"}})).unwrap());
+    put("last_positions", call(&u.sock, "last_positions", "owner", json!({})).unwrap());
+    put("identities.list", call(&u.sock, "identities.list", "owner", json!({})).unwrap());
+    put("no_config", call(&u.sock, "device.config", "owner", json!({"radio": node})).unwrap());
+}
+
+/// The exact requests the Survival Studio app sends on every refresh. The app's own fixtures were captured without
+/// the `limit` and `newest_first` fields, so this is the test that the daemon accepts what the app really asks.
+#[test]
+fn the_daemon_accepts_every_request_the_app_sends_and_honours_limit_and_order() {
+    let u = up(true);
+    wait_for(&u.sock, 4);
+    let text = json!({"filter": {"kind": "text", "limit": 2000, "newest_first": true}});
+    let position = json!({"filter": {"kind": "position", "limit": 4000, "newest_first": true}});
+    for (m, p) in [
+        ("health", json!({})),
+        ("app.radios", json!({})),
+        ("app.identities", json!({})),
+        ("last_positions", json!({})),
+        ("identities.list", json!({})),
+        ("messages", text),
+        ("messages", position),
+    ] {
+        let r = call(&u.sock, m, "owner", p).unwrap();
+        assert_eq!(r["ok"], true, "{m}: {r}");
+    }
+    let all = call(&u.sock, "messages", "owner", json!({"filter": {}})).unwrap();
+    let all = all["result"].as_array().unwrap();
+    assert!(all.len() >= 2);
+    let newest = call(
+        &u.sock,
+        "messages",
+        "owner",
+        json!({"filter": {"limit": 1, "newest_first": true}}),
+    )
+    .unwrap();
+    let newest = newest["result"].as_array().unwrap();
+    assert_eq!(newest.len(), 1, "limit is honoured");
+    let max = all.iter().map(|r| r["host_ts_ms"].as_u64().unwrap()).max();
+    assert_eq!(newest[0]["host_ts_ms"].as_u64(), max, "newest_first returns the newest");
+}
+
+#[test]
+fn the_owner_can_open_and_forget_a_radio_and_it_is_remembered_and_a_bad_port_is_a_plain_error() {
+    let u = up(true);
+    let dir = u._t.path().join("saved");
+    std::fs::create_dir_all(&dir).unwrap();
+    taos_mesh::api::set_radios_file(Some(dir.join("radios.json")));
+    // a port that cannot be opened: plain error, nothing remembered
+    let r = call(&u.sock, "radios.connect", "owner", json!({"device": "/dev/does-not-exist-taos"})).unwrap();
+    assert_eq!(r["error"]["code"], "connect_failed", "{r}");
+    assert!(r["error"]["message"].as_str().unwrap().contains("/dev/does-not-exist-taos"));
+    assert!(call(&u.sock, "radios.saved", "owner", json!({})).unwrap()["result"].as_array().unwrap().is_empty());
+    // Bluetooth is refused in words, not attempted
+    let r = call(&u.sock, "radios.connect", "owner", json!({"device": "ble:AA:BB"})).unwrap();
+    assert!(r["error"]["message"].as_str().unwrap().contains("Bluetooth"));
+    // a radio that opens (a local TCP stand-in, no probe because the network is named) is remembered once
+    let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let spec = format!("tcp:{}", l.local_addr().unwrap());
+    for _ in 0..2 {
+        let r = call(&u.sock, "radios.connect", "owner", json!({"device": spec, "network": "meshtastic"})).unwrap();
+        assert_eq!(r["ok"], true, "{r}");
+    }
+    let saved = call(&u.sock, "radios.saved", "owner", json!({})).unwrap();
+    assert_eq!(saved["result"].as_array().unwrap().len(), 1, "{saved}");
+    assert_eq!(saved["result"][0]["device"], spec.as_str());
+    let r = call(&u.sock, "radios.disconnect", "owner", json!({"device": spec})).unwrap();
+    assert_eq!(r["ok"], true);
+    assert!(call(&u.sock, "radios.saved", "owner", json!({})).unwrap()["result"].as_array().unwrap().is_empty());
+    // owner only
+    for m in ["radios.connect", "radios.disconnect", "radios.saved"] {
+        assert_eq!(call(&u.sock, m, "agent:scout", json!({"device": "x"})).unwrap()["error"]["code"], "forbidden");
+    }
+    taos_mesh::api::set_radios_file(None);
+}

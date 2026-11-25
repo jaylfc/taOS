@@ -1,0 +1,27 @@
+{
+  "id": 1,
+  "ok": true,
+  "result": {
+    "assignments": [
+      {
+        "identity": "contact:ce5ba23796e",
+        "name": null,
+        "node": "!28af67cc"
+      }
+    ],
+    "contacts": [
+      {
+        "created_by": "owner",
+        "created_ts": 1795581844110,
+        "id": "ce5ba23796e",
+        "linked_account": null,
+        "linked_ts": null,
+        "locations_hidden_ts": null,
+        "name": "Sam",
+        "notes": "neighbour with a handset",
+        "positions_told": false,
+        "positions_told_date": null
+      }
+    ]
+  }
+}

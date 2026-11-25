@@ -1,0 +1,43 @@
+{
+  "id": 1,
+  "ok": true,
+  "result": [
+    {
+      "broadcast": true,
+      "channel": 0,
+      "dir": "in",
+      "from": "!7ed23c00",
+      "host_ts_ms": 1795581844099,
+      "id": "0ac70d56164970a0d6bcba4450c92b10",
+      "kind": "position",
+      "network": "meshtastic",
+      "observer": "contact:ce5ba23796e",
+      "owner": "person:jay",
+      "packet_id": 78,
+      "position": {
+        "alt_m": 35,
+        "gps_accuracy_mm": 3000,
+        "hdop": 120,
+        "lat": 51.45,
+        "lon": -1.23,
+        "pdop": 150,
+        "precision_bits": 32,
+        "sats": 9,
+        "source": "packet",
+        "time": 1764000100
+      },
+      "radio": "!28af67cc",
+      "raw_hex": "12480d003cd27e15ffffffff22230803121f0da0a5aa1e15205144ff18232564812469589601607870b817980109b80120354e00000045000010c048016094ffffffffffffffff017803",
+      "signal": {
+        "hop_limit": 1,
+        "hop_start": 3,
+        "hops": 2,
+        "rssi": -108,
+        "snr": -2.25
+      },
+      "to": "!ffffffff",
+      "trust": "claimed",
+      "v": 1
+    }
+  ]
+}

@@ -1,0 +1,25 @@
+{
+  "devices": [
+    {
+      "candidates": [
+        "heltec-v3"
+      ],
+      "chip": "esp32s3",
+      "family": "esp32",
+      "id": "usb-10c4-ea60-SN1-1-1",
+      "kind": "serial",
+      "mount": null,
+      "pid": "ea60",
+      "port": "/dev/ttyUSB0",
+      "probe": "ok",
+      "product": "Fake board",
+      "serial_number": "SN1",
+      "uf2_board_id": null,
+      "uf2_model": null,
+      "vid": "10c4"
+    }
+  ],
+  "ok": true,
+  "probe_skipped_busy": false,
+  "probed": true
+}

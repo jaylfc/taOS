@@ -8,6 +8,7 @@
 #include <QWheelEvent>
 
 #include "backend.h"
+#include "fakemesh.h"
 #include "fixtures.h"
 
 using namespace Taos::Survival;
@@ -35,6 +36,8 @@ class TstSurvivalUi : public QObject
     FakeHost *m_fake = nullptr;
     AppHost *m_host = nullptr;
     SurvivalBackend *m_backend = nullptr;
+    FakeEngines::FakeMeshEngine *m_mesh = nullptr;
+    FakeEngines::FakeFirmware *m_fw = nullptr;
     QQuickWindow *m_win = nullptr;
 
     void section(const char *id)
@@ -58,6 +61,15 @@ private Q_SLOTS:
         QDir().mkpath(r + u"/survival/packs"_s);
         QVERIFY(Fixture::writeZim(r + u"/survival/packs/lib.zim"_s));
         QVERIFY(Fixture::writePmtiles(r + u"/survival/packs/area.pmtiles"_s));
+        // stand-in engines (the real engines' captured JSON), started before the backend looks for them; nothing here
+        // opens a radio, writes a setting or flashes a board
+        m_mesh = new FakeEngines::FakeMeshEngine(QStringLiteral(MESH_FIXTURES_DIR) + u"/mesh"_s);
+        QVERIFY(m_mesh->listen(r + u"/mesh.sock"_s));
+        m_fw = new FakeEngines::FakeFirmware(QStringLiteral(MESH_FIXTURES_DIR) + u"/firmware"_s, r + u"/fw"_s);
+        qputenv("TAOS_MESH_SOCKET", (r + u"/mesh.sock"_s).toUtf8());
+        qputenv("TAOS_FIRMWARE_DIR", (r + u"/fw"_s).toUtf8());
+        qputenv("TAOS_FIRMWARE_PORT", QByteArray::number(m_fw->port()));
+        qputenv("TAOS_SURVIVAL_NO_SYSTEMCTL", "1");
         g_prev = qInstallMessageHandler(handler);
         m_backend = new SurvivalBackend(r + u"/survival"_s);
         registerSurvivalQml(m_backend);
@@ -74,6 +86,8 @@ private Q_SLOTS:
     {
         delete m_host;
         delete m_fake;
+        delete m_fw;
+        delete m_mesh;
         qInstallMessageHandler(g_prev);
         delete m_backend;
     }
@@ -158,6 +172,175 @@ private Q_SLOTS:
         const auto radios = m_backend->radios()->property("radios").toList();
         for (const QVariant &r : radios)
             QVERIFY(r.toMap().value(u"protocol"_s).toString().isEmpty());
+    }
+    void demo_launch_flags_never_plan_or_flash_unless_the_demo_switch_is_set()
+    {
+        section("taostak");
+        auto *page = byName(m_win, u"page-taostak"_s);
+        auto *tak = m_backend->tak();
+        QVERIFY(waitFor([&] { return tak->property("available").toBool(); }, 8000));
+        QMetaObject::invokeMethod(page, "back");
+        qunsetenv("TAOS_SURVIVAL_DEMO");
+        const int plans = m_fw->count(u"POST"_s, u"/v1/flash/plan"_s), runs = m_fw->count(u"POST"_s, u"/v1/flash/run"_s);
+        const QStringList args{u"--section"_s, u"taostak"_s, u"--tak-view"_s, u"firmware"_s, u"--demo"_s, u"fwstep=result;typed=Heltec V3"_s};
+        QMetaObject::invokeMethod(m_win, "applyArgs", Q_ARG(QVariant, args));
+        QTest::qWait(1500);
+        QCOMPARE(m_fw->count(u"POST"_s, u"/v1/flash/plan"_s), plans);   // not even a plan
+        QCOMPARE(m_fw->count(u"POST"_s, u"/v1/flash/run"_s), runs);
+        QMetaObject::invokeMethod(page, "back");
+        // with the switch the screens can be scripted for pictures, but a result still needs the plan first
+        qputenv("TAOS_SURVIVAL_DEMO", "1");
+        const QStringList planArgs{u"--section"_s, u"taostak"_s, u"--tak-view"_s, u"firmware"_s, u"--demo"_s, u"fwstep=plan"_s};
+        QMetaObject::invokeMethod(m_win, "applyArgs", Q_ARG(QVariant, planArgs));
+        QTRY_VERIFY_WITH_TIMEOUT(m_fw->count(u"POST"_s, u"/v1/flash/plan"_s) == plans + 1, 5000);
+        QCOMPARE(m_fw->count(u"POST"_s, u"/v1/flash/run"_s), runs);
+        qunsetenv("TAOS_SURVIVAL_DEMO");
+        QMetaObject::invokeMethod(page, "back");
+        QTest::qWait(100);
+    }
+    void sending_can_be_turned_off_from_the_banner_and_gates_the_compose_box()
+    {
+        section("taostak");
+        auto *page = byName(m_win, u"page-taostak"_s);
+        auto *tak = m_backend->tak();
+        QVERIFY(waitFor([&] { return tak->property("available").toBool(); }, 8000));
+        m_mesh->receiveOnly = false;
+        QMetaObject::invokeMethod(tak, "refresh");
+        QVERIFY(waitFor([&] { return !tak->property("receiveOnly").toBool(); }, 5000));
+        QVERIFY(!tak->property("sendingOn").toBool());                 // off until the owner turns it on
+        QMetaObject::invokeMethod(page, "open", Q_ARG(QVariant, u"thread"_s), Q_ARG(QVariant, u"!7ed23c00"_s));
+        QTest::qWait(300);
+        QVERIFY(!visibleByName(m_win, u"composeField"_s)->isEnabled());
+        QVERIFY(!visibleByName(m_win, u"sendingOffButton"_s));
+        QMetaObject::invokeMethod(visibleByName(m_win, u"sendingOnButton"_s), "clicked");
+        QTest::qWait(300);
+        QVERIFY(tak->property("sendingOn").toBool());
+        QVERIFY(visibleByName(m_win, u"composeField"_s)->isEnabled());
+        QMetaObject::invokeMethod(visibleByName(m_win, u"sendingOffButton"_s), "clicked");
+        QTest::qWait(300);
+        QVERIFY(!tak->property("sendingOn").toBool());
+        QVERIFY(!visibleByName(m_win, u"composeField"_s)->isEnabled());
+        QVERIFY(m_mesh->forbiddenSeen().isEmpty());
+        m_mesh->receiveOnly = true;
+        QMetaObject::invokeMethod(tak, "refresh");
+        QMetaObject::invokeMethod(page, "back");
+        QTest::qWait(300);
+    }
+    void tapping_a_person_on_the_map_opens_them_and_not_the_marker_card()
+    {
+        section("taostak");
+        auto *page = byName(m_win, u"page-taostak"_s);
+        auto *tak = m_backend->tak();
+        QVERIFY(waitFor([&] { return tak->property("available").toBool() && !tak->property("places").toList().isEmpty(); }, 8000));
+        QMetaObject::invokeMethod(page, "back");
+        QVERIFY(waitFor([&] { return m_backend->map()->property("loaded").toBool(); }));
+        QTest::qWait(300);
+        auto *view = visibleByName(m_win, u"mapView"_s);
+        QVERIFY(view);
+        const QVariantMap p = tak->property("places").toList().first().toMap();
+        QMetaObject::invokeMethod(view, "setView", Q_ARG(double, p.value(u"lon"_s).toDouble()), Q_ARG(double, p.value(u"lat"_s).toDouble()), Q_ARG(double, 9.0));
+        QTest::qWait(400);
+        auto *tag = visibleByName(m_win, u"mapPerson-"_s + p.value(u"node"_s).toString());
+        QVERIFY(tag);
+        const QPoint at = tag->mapToScene(QPointF(tag->width() / 2, tag->height() / 2)).toPoint();
+        QTest::mouseClick(m_win, Qt::LeftButton, Qt::NoModifier, at);
+        QTest::qWait(300);
+        QCOMPARE(page->property("view").toString(), u"person"_s);
+        QCOMPARE(page->property("viewArg").toString(), p.value(u"node"_s).toString());
+        QVERIFY(!visibleByName(m_win, u"pickCard"_s));                // the tap did not also ask what to drop on the map
+        QMetaObject::invokeMethod(page, "back");
+        QTest::qWait(100);
+    }
+    void taostak_every_view_loads_against_the_engines_and_the_guards_hold()
+    {
+        section("taostak");
+        auto *page = byName(m_win, u"page-taostak"_s);
+        QVERIFY(page);
+        auto *tak = m_backend->tak();
+        QVERIFY(waitFor([&] { return tak->property("available").toBool(); }, 8000));
+        auto open = [&](const char *view, const QString &arg) {
+            QMetaObject::invokeMethod(page, "open", Q_ARG(QVariant, QString::fromLatin1(view)), Q_ARG(QVariant, arg));
+            QTest::qWait(250);
+        };
+        auto back = [&] { QMetaObject::invokeMethod(page, "back"); QTest::qWait(100); };
+        // People
+        page->setProperty("tab", u"people"_s);
+        QTest::qWait(250);
+        QVERIFY(visibleByName(m_win, u"person-!28af67cc"_s));
+        QVERIFY(!visibleByName(m_win, u"engineDown"_s));
+        open("person", u"!28af67cc"_s);
+        QVERIFY(visibleByName(m_win, u"assign-!28af67cc"_s));
+        back();
+        // Radios and the firmware row
+        page->setProperty("tab", u"radios"_s);
+        QTest::qWait(250);
+        QVERIFY(visibleByName(m_win, u"radio-!28af67cc"_s));
+        QVERIFY(visibleByName(m_win, u"firmwareRow"_s));
+        QVERIFY(waitFor([&] { return visibleByName(m_win, u"device-row-/dev/ttyACM0"_s) != nullptr; }, 5000));
+        QVERIFY(visibleByName(m_win, u"connect-/dev/ttyACM0"_s)->isEnabled());   // offered, never pressed here
+        QCOMPARE(m_mesh->count(u"radios.connect"_s), 0);
+        QMetaObject::invokeMethod(visibleByName(m_win, u"assignToggle-!28af67cc"_s), "clicked");
+        QTest::qWait(200);
+        QVERIFY(visibleByName(m_win, u"assign-!28af67cc"_s));
+        // Messages and a conversation: receive-only, so the compose box is off and says why; nothing is sent
+        page->setProperty("tab", u"messages"_s);
+        QTest::qWait(250);
+        QVERIFY(visibleByName(m_win, u"thread-ch:meshtastic:0"_s));
+        open("thread", u"ch:meshtastic:0"_s);
+        auto *compose = visibleByName(m_win, u"composeField"_s);
+        QVERIFY(compose);
+        QVERIFY(!compose->isEnabled());
+        QVERIFY(visibleByName(m_win, u"sendOff"_s));
+        auto *sendBtn = visibleByName(m_win, u"sendButton"_s);
+        QVERIFY(sendBtn && !sendBtn->isEnabled());
+        QVERIFY(m_mesh->forbiddenSeen().isEmpty());
+        QVERIFY(tak->property("unreadTotal").toInt() == 0);   // opening the thread read it
+        back();
+        // Settings: the fake engine does not read radio settings, so the screen says so and the write bar says why
+        open("settings", u"!28af67cc"_s);
+        QVERIFY(visibleByName(m_win, u"settingsUnavailable"_s));
+        auto *review = visibleByName(m_win, u"reviewApply"_s);
+        QVERIFY(review && !review->isEnabled());
+        QVERIFY(visibleByName(m_win, u"applyReason"_s)->property("text").toString().contains(u"Will apply when a radio is connected and you confirm"_s));
+        QCOMPARE(m_mesh->count(u"device.apply"_s), 0);
+        back();
+        // Firmware: library, then the guarded switch up to (not including) the flash
+        open("firmware", QString());
+        QVERIFY(waitFor([&] { return visibleByName(m_win, u"fw-meshcore|heltec-v3"_s) != nullptr; }, 5000));
+        QVERIFY(waitFor([&] { return visibleByName(m_win, u"device-usb-10c4-ea60-SN1-1-1"_s) != nullptr; }, 5000));
+        QMetaObject::invokeMethod(visibleByName(m_win, u"switch-usb-10c4-ea60-SN1-1-1"_s), "clicked");
+        QTest::qWait(250);
+        auto *choice = visibleByName(m_win, u"choice-meshtastic:heltec-v3:2.7.26.54e0d8d"_s);
+        QVERIFY(choice);
+        QMetaObject::invokeMethod(choice, "clicked");
+        QVERIFY(waitFor([&] { return visibleByName(m_win, u"confirmField"_s) != nullptr; }, 5000));
+        auto *typed = visibleByName(m_win, u"confirmField"_s);
+        auto *flash = visibleByName(m_win, u"flashButton"_s);
+        QVERIFY(flash && !flash->isEnabled());
+        typed->setProperty("text", u"heltec v3"_s);
+        QTest::qWait(100);
+        QVERIFY(!flash->isEnabled());                       // the name must be typed exactly
+        typed->setProperty("text", u"Heltec V3"_s);
+        QTest::qWait(100);
+        QVERIFY(!flash->isEnabled());                       // unsigned image: the acknowledgement is a separate step
+        auto *ack = visibleByName(m_win, u"ackUnsigned"_s);
+        QVERIFY(ack);
+        QVERIFY(visibleByName(m_win, u"fwWarnings"_s));
+        ack->setProperty("checked", true);
+        QTest::qWait(100);
+        QVERIFY(flash->isEnabled());
+        QCOMPARE(m_fw->mints.size(), 0);                    // no permission is asked for until the button is pressed
+        QCOMPARE(m_fw->count(u"POST"_s, u"/v1/flash/run"_s), 0);   // nothing flashes until the person presses it
+        QMetaObject::invokeMethod(page, "back");
+        QTest::qWait(100);
+        QVERIFY(g_warnings.isEmpty());
+        // The engine goes away: the page says so instead of showing stale hope
+        page->setProperty("tab", u"people"_s);
+        m_mesh->close();
+        QVERIFY(waitFor([&] { return !tak->property("available").toBool(); }, 8000));
+        QTest::qWait(200);
+        QVERIFY(visibleByName(m_win, u"engineDown"_s));
+        QVERIFY(!m_win->grabWindow().isNull());
     }
     void real_pointer_wheel_and_keys_drive_the_map()
     {

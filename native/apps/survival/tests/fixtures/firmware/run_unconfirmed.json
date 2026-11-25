@@ -1,0 +1,6 @@
+{
+  "code": "confirmation_required",
+  "message": "type the name of the board, as shown on screen, to confirm",
+  "ok": false,
+  "stage": "refused"
+}

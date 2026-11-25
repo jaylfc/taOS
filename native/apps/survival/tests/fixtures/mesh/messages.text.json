@@ -1,0 +1,37 @@
+{
+  "id": 1,
+  "ok": true,
+  "result": [
+    {
+      "broadcast": true,
+      "channel": 0,
+      "dir": "in",
+      "from": "!28af67cc",
+      "host_ts_ms": 1795581844099,
+      "id": "3d63799fa6f83777e533cf87712d2706",
+      "kind": "text",
+      "network": "meshtastic",
+      "observer": "contact:ce5ba23796e",
+      "owner": "person:jay",
+      "packet_id": 305441741,
+      "radio": "!28af67cc",
+      "radio_ts": 1764000000,
+      "raw_hex": "12380dcc67af2815ffffffff220e0801120a68656c6c6f206d65736835cdab34123d00812469450000d040480260a5ffffffffffffffff017803",
+      "sender": {
+        "identity": "contact:ce5ba23796e",
+        "name": "Sam"
+      },
+      "signal": {
+        "hop_limit": 2,
+        "hop_start": 3,
+        "hops": 1,
+        "rssi": -91,
+        "snr": 6.5
+      },
+      "text": "hello mesh",
+      "to": "!ffffffff",
+      "trust": "claimed",
+      "v": 1
+    }
+  ]
+}
