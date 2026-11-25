@@ -48,10 +48,18 @@ export async function fetchConversations(
 
 export async function createConversation(
   slug: string,
+  projectId?: string,
 ): Promise<AgentConversation> {
   const res = await fetch(
     `/api/chat/agents/${encodeURIComponent(slug)}/conversations`,
-    { method: "POST" },
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      // A project-scoped window passes its project so the new session
+      // is stored under that project and stays visible in its
+      // project-filtered channel list.
+      body: JSON.stringify(projectId ? { project_id: projectId } : {}),
+    },
   );
   if (!res.ok) throw new Error(`conversation create failed: ${res.status}`);
   const data = await res.json();

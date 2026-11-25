@@ -91,6 +91,17 @@ describe("conversation API", () => {
     expect(list.map((c) => c.id)).toContain("ch-old");
     expect(list[0].id).toBe("ch-fresh");
   });
+
+  it("createConversation sends the project scope when given one", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ conversation: { id: "ch-p", agent: "mary", title: "New conversation" } }),
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    await createConversation("mary", "prj-7");
+    const body = JSON.parse(fetchMock.mock.calls[0][1].body);
+    expect(body).toEqual({ project_id: "prj-7" });
+  });
 });
 
 describe("AgentSessionControls", () => {

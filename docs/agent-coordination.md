@@ -1211,6 +1211,35 @@ covers:
 - `GET /api/device/v1/state` — scope `agents:read` (owner-filtered agent list)
 - `GET /api/device/v1/events` -- scope `agents:read` (SSE of owner-filtered agent changes; `Last-Event-ID` resume, closes on revoke or scope loss; see docs/routes.d/16-device-v1.md)
 
+## Agent conversation sessions
+
+A conversation session with an agent is a DM channel between one person
+and that agent (`tinyagentos/routes/chat.py`, #2123). Deploy/import
+creates the first session; the desktop's **New chat** button creates
+additional ones so a conversation stuck on a broken model is escapable
+from the UI — creating a session is a pure controller operation that
+never contacts the agent, and previous sessions are kept, never
+discarded. Sessions persist as channel rows, per (user, agent).
+
+- `GET /api/chat/agents/{slug}/conversations` — the caller's own
+  sessions with the agent, most recent first: `id`, `title` (derived
+  from the first user message — no model call), `model` (stamped at
+  creation from the agent's then-current model, so a stale session is
+  visible as stale), `created_at`, `last_message_at`.
+- `POST /api/chat/agents/{slug}/conversations` — create a session.
+  Optional JSON body `{"project_id": "..."}` files the new channel
+  under that project so project-scoped windows keep it visible.
+
+**Auth model.** A person's session only: agent-bound tokens and
+registry JWTs are refused (403), as is any caller with no person
+identity. The channel's human member and `created_by` are the
+creator's own user id (the literal `user` is only the fallback for
+the id-less legacy owner session). Non-admins must own the agent per
+the registry attribution (`resolve_agent_owner`, the same fail-closed
+rule as `require_agent_owner_or_admin`) or hold an accepted share for
+it; listing returns only the caller's own sessions (an admin's list
+also includes the legacy `user`-membered sessions they own).
+
 ## Share destinations (device bearer)
 
 `GET /api/share/destinations` lets a paired device DISCOVER share destinations. It is

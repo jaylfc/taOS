@@ -325,39 +325,46 @@ class ChatMessageStore(BaseStore):
         return result
 
     async def first_user_previews(self, channel_ids: list[str]) -> dict[str, dict]:
-        """Return the first user-authored message per channel.
+        """Return the first user-authored message per channel, in one query.
 
-        Mirrors latest_previews but reads from the start of each
-        channel's index range and only counts messages the human
-        wrote. Used to title agent conversation sessions (#2123) from
-        the first user message, per the issue's design notes (no extra
-        model call just to name a conversation).
+        Used to title agent conversation sessions (#2123) from the
+        first user message, per the issue's design notes (no extra
+        model call just to name a conversation). A window function
+        ranks each channel's user messages by created_at and keeps
+        rank 1, so the cost is one indexed scan regardless of how
+        many channels are asked about (an earlier version ran one
+        query per channel).
 
         Returns {channel_id: {"text": <collapsed content, max 120 chars>,
-                              "author_id": ..., "created_at": ...}}.
+                              "author_id": ..., "author_type": ...,
+                              "created_at": ...}}.
         Empty input returns {} without querying.
         """
         if not channel_ids:
             return {}
 
-        sql = """
+        placeholders = ", ".join("?" for _ in channel_ids)
+        sql = f"""
             SELECT channel_id, content, author_id, author_type, created_at
-            FROM chat_messages
-            WHERE channel_id = ?
-              AND deleted_at IS NULL
-              AND thread_id IS NULL
-              AND ephemeral = 0
-              AND author_type = 'user'
-            ORDER BY created_at ASC
-            LIMIT 1
+            FROM (
+                SELECT channel_id, content, author_id, author_type, created_at,
+                       ROW_NUMBER() OVER (
+                           PARTITION BY channel_id ORDER BY created_at ASC
+                       ) AS rn
+                FROM chat_messages
+                WHERE channel_id IN ({placeholders})
+                  AND deleted_at IS NULL
+                  AND thread_id IS NULL
+                  AND ephemeral = 0
+                  AND author_type = 'user'
+            )
+            WHERE rn = 1
         """
         result: dict[str, dict] = {}
-        for channel_id in channel_ids:
-            async with self._db.execute(sql, (channel_id,)) as cursor:
-                row = await cursor.fetchone()
-                desc = cursor.description
-            if row is None:
-                continue
+        async with self._db.execute(sql, tuple(channel_ids)) as cursor:
+            rows = await cursor.fetchall()
+            desc = cursor.description
+        for row in rows:
             parsed = _parse(row, desc)
             text = " ".join(parsed["content"].split())
             if len(text) > 120:

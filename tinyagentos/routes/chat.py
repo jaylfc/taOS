@@ -10,8 +10,11 @@ from fastapi.responses import JSONResponse, Response
 
 from tinyagentos.auth_context import (
     CurrentUser,
+    agent_bound_name,
     current_user,
+    is_host_caller,
     require_agent_owner_or_admin,
+    resolve_agent_owner,
 )
 from tinyagentos.chat.reactions import maybe_trigger_semantic
 from tinyagentos.device_auth import current_user_or_device
@@ -573,19 +576,105 @@ def channel_read_denied(request: Request, channel: dict) -> JSONResponse | None:
 
 # ── Agent conversation sessions (#2123) ─────────────────────────────
 #
-# A conversation session with an agent is a DM channel between the
-# user and that agent. Deploy/import creates the first one; "New chat"
-# creates additional ones. Nothing here talks to the agent: starting a
-# fresh conversation is a pure controller operation, so it works even
-# when the agent cannot reply (the stuck-conversation case). Previous
-# sessions are kept, never discarded. Replies still route back to the
-# channel the user wrote in, via the bridge's trace -> origin-channel
-# lookup in bridge_session.record_reply.
+# A conversation session with an agent is a DM channel between one
+# person and that agent. Deploy/import creates the first one; "New
+# chat" creates additional ones. Nothing here talks to the agent:
+# starting a fresh conversation is a pure controller operation, so it
+# works even when the agent cannot reply (the stuck-conversation
+# case). Previous sessions are kept, never discarded. Replies still
+# route back to the channel the user wrote in, via the bridge's
+# trace -> origin-channel lookup in bridge_session.record_reply.
+#
+# Sessions belong to a person: the channel's human member is the
+# creator's own user id (the literal "user" is only the fallback for
+# the id-less legacy owner session, whose DM member id it has always
+# been). Listing shows the caller their own sessions; creating or
+# listing requires a person's session (never an agent or service
+# token) and, for non-admins, ownership of the agent per the registry
+# attribution used by require_agent_owner_or_admin, or an accepted
+# share recorded for the agent.
 
 def _find_config_agent(request: Request, slug: str) -> dict | None:
     config = getattr(request.app.state, "config", None)
     agents = getattr(config, "agents", None) or []
     return next((a for a in agents if a.get("name") == slug), None)
+
+
+def _caller_human_id(request: Request) -> str:
+    uid = getattr(request.state, "user_id", None)
+    return str(uid) if uid else "user"
+
+
+def _conversation_human_ids(request: Request) -> set[str]:
+    """Member ids that count as *this caller* on a DM channel.
+
+    Always the caller's own id. For an admin or the host caller, the
+    legacy literal "user" also counts: deploy/import-created sessions
+    carry it, and they belong to the install owner.
+    """
+    ids = {_caller_human_id(request)}
+    if getattr(request.state, "is_admin", False) or is_host_caller(request):
+        ids.add("user")
+    return ids
+
+
+def _require_person_caller(request: Request) -> JSONResponse | None:
+    """403 unless the caller is a person (or the host owner token).
+
+    Agent-bound tokens and registry JWTs are not people: a session is
+    a person's conversation, and letting an agent mint or enumerate
+    them would invert the relationship the feature exists for.
+    """
+    if agent_bound_name(request):
+        return JSONResponse(
+            {"error": "agent tokens cannot manage conversation sessions"},
+            status_code=403,
+        )
+    via = getattr(request.state, "via", None) or ""
+    if via.startswith("registry_jwt"):
+        return JSONResponse(
+            {"error": "agent tokens cannot manage conversation sessions"},
+            status_code=403,
+        )
+    if (
+        getattr(request.state, "user_id", None)
+        or getattr(request.state, "is_admin", False)
+        or is_host_caller(request)
+        or via in ("session", "device_bearer", "local_token", "loopback")
+    ):
+        return None
+    return JSONResponse(
+        {"error": "a signed-in person is required"}, status_code=403,
+    )
+
+
+async def _require_agent_access(
+    request: Request, slug: str,
+) -> JSONResponse | None:
+    """403 unless the caller may open conversations with *slug*.
+
+    Admins and the host caller may; a member must own the agent (per
+    the registry attribution in resolve_agent_owner) or hold an
+    accepted share for it. An agent the registry cannot attribute is
+    nobody's, matching require_agent_owner_or_admin's fail-closed
+    rule for non-admins.
+    """
+    if getattr(request.state, "is_admin", False) or is_host_caller(request):
+        return None
+    uid = getattr(request.state, "user_id", None)
+    if not uid:
+        return JSONResponse({"error": "forbidden"}, status_code=403)
+    owner = await resolve_agent_owner(request, slug)
+    if owner is not None and str(owner) == str(uid):
+        return None
+    shares = getattr(request.app.state, "user_shares", None)
+    if shares is not None:
+        try:
+            if await shares.user_can_access("agent", slug, str(uid)):
+                return None
+        except Exception:
+            pass
+    return JSONResponse({"error": "forbidden"}, status_code=403)
 
 
 def _serialize_conversation(channel: dict, agent: dict, title: str | None) -> dict:
@@ -604,12 +693,13 @@ def _serialize_conversation(channel: dict, agent: dict, title: str | None) -> di
 
 async def _agent_conversations(request: Request, agent: dict) -> list[dict]:
     slug = agent["name"]
+    human_ids = _conversation_human_ids(request)
     ch_store = request.app.state.chat_channels
     channels = await ch_store.list_channels(member_id=slug)
     convs = [
         c for c in channels
         if c.get("type") == "dm"
-        and "user" in (c.get("members") or [])
+        and bool(set(c.get("members") or []) & human_ids)
         and caller_can_read_channel(request, c)
     ]
     titles: dict[str, dict] = {}
@@ -632,6 +722,10 @@ async def list_agent_conversations(request: Request, slug: str):
     agent = _find_config_agent(request, slug)
     if agent is None:
         return JSONResponse({"error": "agent not found"}, status_code=404)
+    denied = _require_person_caller(request) or await _require_agent_access(
+        request, slug)
+    if denied:
+        return denied
     conversations = await _agent_conversations(request, agent)
     return {"conversations": conversations}
 
@@ -641,6 +735,20 @@ async def create_agent_conversation(request: Request, slug: str):
     agent = _find_config_agent(request, slug)
     if agent is None:
         return JSONResponse({"error": "agent not found"}, status_code=404)
+    denied = _require_person_caller(request) or await _require_agent_access(
+        request, slug)
+    if denied:
+        return denied
+    # Optional body: {"project_id": "..."} when the caller is a
+    # project-scoped window, so the new session belongs to that
+    # project's channel list instead of vanishing from it.
+    project_id = ""
+    try:
+        body = await request.json()
+    except Exception:
+        body = None
+    if isinstance(body, dict):
+        project_id = str(body.get("project_id") or "")
     ch_store = request.app.state.chat_channels
     settings: dict = {}
     if agent.get("model"):
@@ -648,13 +756,15 @@ async def create_agent_conversation(request: Request, slug: str):
         # on a stale/broken model is visible as such in the selector.
         settings["model"] = agent["model"]
     display_name = agent.get("display_name") or slug
+    human = _caller_human_id(request)
     channel = await ch_store.create_channel(
         name=display_name,
         type="dm",
-        created_by="user",
-        members=["user", slug],
+        created_by=human,
+        members=[human, slug],
         description=f"Direct messages with {display_name}",
         settings=settings,
+        project_id=project_id,
     )
     return {"conversation": _serialize_conversation(channel, agent, None)}
 

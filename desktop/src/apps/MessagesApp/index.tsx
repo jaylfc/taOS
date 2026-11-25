@@ -915,6 +915,7 @@ export function MessagesApp({
   const [selectedChannel, setSelectedChannel] = useState<string | null>(null);
   const [agentConversations, setAgentConversations] = useState<AgentConversation[]>([]);
   const [creatingConversation, setCreatingConversation] = useState(false);
+  const selectedChannelRef = useRef<string | null>(null);
   // External taOSmd coordination bus (read-only). Selecting a bus channel is a
   // separate mode from the internal project channels: when busSelected is set,
   // the detail pane shows the read-only bus viewer instead of the chat panel.
@@ -1012,6 +1013,10 @@ export function MessagesApp({
   const prevChannelRef = useRef<string | null>(null);
   const lastFetchRef = useRef<number>(0);
   const backedOutRef = useRef(false);
+
+  useEffect(() => {
+    selectedChannelRef.current = selectedChannel;
+  }, [selectedChannel]);
 
   /* ---- fetch channels + unread ---- */
   const fetchChannels = useCallback(async () => {
@@ -2184,6 +2189,7 @@ export function MessagesApp({
       ? (currentChannel.members ?? []).find((m) => m !== "user")
       : undefined;
 
+  const lastMessageId = messages.length ? (messages[messages.length - 1]?.id ?? null) : null;
   useEffect(() => {
     if (!dmAgentSlug) {
       setAgentConversations([]);
@@ -2194,14 +2200,19 @@ export function MessagesApp({
       .then((list) => { if (!cancelled) setAgentConversations(list); })
       .catch(() => { if (!cancelled) setAgentConversations([]); });
     return () => { cancelled = true; };
-  }, [dmAgentSlug, selectedChannel]);
+  }, [dmAgentSlug, selectedChannel, lastMessageId]);
 
   const handleNewConversation = useCallback(async () => {
     if (!dmAgentSlug || creatingConversation) return;
+    const originChannel = selectedChannelRef.current;
     setCreatingConversation(true);
     try {
-      const conv = await createConversation(dmAgentSlug);
+      const conv = await createConversation(dmAgentSlug, scope?.projectId);
       await fetchChannels();
+      // If the user navigated away while creation was in flight, the
+      // new session simply exists in the list — do not select it over
+      // the channel the user chose in the meantime.
+      if (selectedChannelRef.current !== originChannel) return;
       setAgentConversations(
         await fetchConversations(dmAgentSlug).catch(() => [] as AgentConversation[]),
       );
@@ -2211,7 +2222,7 @@ export function MessagesApp({
     } finally {
       setCreatingConversation(false);
     }
-  }, [dmAgentSlug, creatingConversation, fetchChannels, handleSelectChannel]);
+  }, [dmAgentSlug, creatingConversation, fetchChannels, handleSelectChannel, scope?.projectId]);
   // #1741: derive the stall banner. Silent for the first 20s of no activity
   // (healthy responses resolve well before then), a soft "taking longer" hint
   // after, and an amber "may be stalled" warning with a recovery pointer at 75s.

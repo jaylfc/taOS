@@ -10,6 +10,7 @@ the previous conversation.
 from __future__ import annotations
 
 import pytest
+import pytest_asyncio
 
 AGENT = "test-agent"
 
@@ -111,3 +112,83 @@ async def test_group_channel_with_agent_is_not_a_conversation(client):
     assert resp.status_code == 200
     resp = await client.get(f"/api/chat/agents/{AGENT}/conversations")
     assert resp.json()["conversations"] == []
+
+
+# ── Authorization gates (review round on #2123) ─────────────────────
+# Sessions belong to a person: creating/listing requires a person's
+# session, and a non-admin member must own the agent (registry
+# attribution) or hold a share. test-agent here is a config-only agent
+# with no registry row, so it is attributable to nobody and a member
+# is refused on both routes; an agent bearer token is refused outright.
+
+async def _invite_member(app) -> dict:
+    """Invite + complete a non-admin member; returns the user record.
+    Mirrors tests/test_global_routers_authz.py."""
+    auth_mgr = app.state.auth
+    existing = auth_mgr.find_user("member")
+    if existing:
+        return existing
+    invite_code = auth_mgr.add_user_invite("member", "admin")
+    auth_mgr.complete_invite(
+        "member", invite_code, "Test Member", "", "memberauthzpass123")
+    return auth_mgr.find_user("member")
+
+
+@pytest_asyncio.fixture
+async def member_client(app, client):
+    """Cookie'd, CSRF-armed client for a non-admin member session.
+    Depends on ``client`` so the admin the fixture creates exists."""
+    from httpx import ASGITransport, AsyncClient
+    from taos_test_csrf import csrf_event_hooks
+
+    member = await _invite_member(app)
+    token = app.state.auth.create_session(
+        user_id=member["id"], long_lived=True)
+    ac = AsyncClient(
+        transport=ASGITransport(app=app),
+        base_url="http://test",
+        cookies={"taos_session": token},
+        event_hooks=csrf_event_hooks(),
+    )
+    yield ac
+    await ac.aclose()
+
+
+@pytest.mark.asyncio
+async def test_member_cannot_list_or_create_sessions(member_client):
+    resp = await member_client.get(f"/api/chat/agents/{AGENT}/conversations")
+    assert resp.status_code == 403
+    resp = await member_client.post(f"/api/chat/agents/{AGENT}/conversations")
+    assert resp.status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_agent_token_cannot_manage_sessions(client, app):
+    from httpx import ASGITransport, AsyncClient
+
+    from tinyagentos.agent_registry_store import mint_registry_token
+
+    registry = app.state.agent_registry
+    grants = app.state.agent_grants
+    for store in (registry, grants):
+        if store._db is None:
+            await store.init()
+    priv, _pub = app.state.agent_registry_keypair
+    rec = await registry.register(
+        framework="claude-code", display_name="taOS dev",
+        allow_reserved=True, origin="internal", handle="@conv-agent",
+    )
+    cid = rec["canonical_id"]
+    if rec.get("status") != "active":
+        await registry.set_status(cid, "active")
+    token = mint_registry_token(
+        cid, priv, user_id="u", framework="claude-code", project_id=None)
+
+    async with AsyncClient(
+        transport=ASGITransport(app=app), base_url="http://test",
+        headers={"Authorization": f"Bearer {token}"},
+    ) as ac:
+        resp = await ac.get(f"/api/chat/agents/{AGENT}/conversations")
+        assert resp.status_code == 403
+        resp = await ac.post(f"/api/chat/agents/{AGENT}/conversations")
+        assert resp.status_code == 403
