@@ -420,3 +420,29 @@ def test_main_end_to_end_clean_fixture_exits_zero(tmp_path, capsys):
         ["--licences", "--lock", str(lock)], lookup=lambda n, v: table[n],
     )
     assert rc == 0, capsys.readouterr().out
+
+
+@pytest.mark.parametrize("licence", [
+    "MIT (proprietary)", "MIT (CC-BY-NC-4.0)", "Apache-2.0 (non-commercial)",
+    "BSD (GPL-2.0-only)", "MIT (SSPL-1.0)", "MIT ((proprietary))",
+    "License :: OSI Approved :: MIT License (proprietary)",
+])
+def test_parenthetical_qualifier_with_restrictive_term_blocks(licence):
+    assert _cls(licence) == "blocked", licence
+
+
+@pytest.mark.parametrize("licence", [
+    "MIT (some custom note)", "Apache-2.0 (see file)", "MIT ()",
+    "(MIT", "MIT)", "MIT (Apache-2.0", "((MIT)", "MIT (a (b)",
+    "License :: OSI Approved :: MIT License (see LICENSE",
+])
+def test_unknown_parenthetical_or_unbalanced_parens_fail(licence):
+    assert _cls(licence) == "unknown-licence", licence
+
+
+@pytest.mark.parametrize("licence", [
+    "MIT (MIT)", "Apache License (2.0)", "ISC License (ISCL)",
+    "License :: OSI Approved :: GNU General Public License v3 or later (GPLv3+)",
+])
+def test_parenthetical_abbreviation_of_allowed_licence_still_ok(licence):
+    assert _cls(licence) is None, licence

@@ -1,3 +1,4 @@
 ### Fixed
 
 - **Dependency licence check recognises real licence strings.** `scripts/check_install_licences.py` now classifies PyPI `License ::` classifiers, SPDX ids and SPDX expressions (AND, OR, WITH, parentheses). Any non-allowed operand of an AND blocks; an OR passes when one side is allowed. Non-commercial, no-derivatives, proprietary, GPL-2.0-only, SSPL, BSL, Elastic and Commons Clause terms block. AGPL-3.0 and GPL-3.0 are allowed because taOS is AGPL-only. A licence string the check cannot recognise now fails as `unknown-licence` instead of passing. `main()` takes `--lock` and an injectable lookup so it can run end to end on a fixture environment.
+- Parenthetical qualifiers on a licence string are classified too: `MIT (proprietary)` blocks, an unknown qualifier fails, and unbalanced parentheses fail.

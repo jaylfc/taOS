@@ -288,10 +288,43 @@ def _norm(text: str) -> str:
     return " ".join(t.split())
 
 
+def _split_parentheticals(raw: str) -> tuple[str, list[str]] | None:
+    """Pull every parenthetical out of ``raw``; None when parens are unbalanced."""
+    contents: list[str] = []
+    text = raw
+    inner = re.compile(r"\(([^()]*)\)")
+    while True:
+        m = inner.search(text)
+        if not m:
+            break
+        contents.append(m.group(1))
+        text = text[: m.start()] + " " + text[m.end():]
+    if "(" in text or ")" in text:
+        return None
+    return text.strip(), contents
+
+
 def _classify_atom(text: str) -> str:
     raw = text.strip()
     if not raw or raw.upper() == "UNKNOWN":
         return UNKNOWN
+    if "(" in raw or ")" in raw:
+        # A parenthetical is part of the licence claim, so it is classified too:
+        # "MIT (proprietary)" must not read as MIT. Restrictive words inside
+        # block, unknown text fails, unbalanced parentheses fail. Abbreviations
+        # of an allowed licence ("(GPLv3+)", "(ISCL)") classify as allowed.
+        parts = _split_parentheticals(raw)
+        if parts is None:
+            return UNKNOWN
+        outer, contents = parts
+        # A bare version in parentheses ("Apache License (2.0)") belongs to the name.
+        versions = [c for c in contents if re.fullmatch(r"\s*v?\d+(?:\.\d+)*\s*", c)]
+        contents = [c for c in contents if c not in versions]
+        outer = " ".join([outer, *versions]).strip()
+        pieces = [_classify_atom(c) for c in contents]
+        if outer:
+            pieces.append(_classify_atom(outer))
+        return _all_of(pieces)
     t = _norm(raw)
     if not t:
         return UNKNOWN
