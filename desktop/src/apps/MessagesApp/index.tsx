@@ -49,6 +49,12 @@ import { type PinnedMessage } from "../chat/PinnedMessagesPopover";
 import { AllThreadsList } from "../chat/AllThreadsList";
 import { ChannelSwitcher } from "../chat/ChannelSwitcher";
 import { useChatNotifications } from "../chat/useChatNotifications";
+import { AgentSessionControls } from "../chat/AgentSessionControls";
+import {
+  fetchConversations,
+  createConversation,
+  type AgentConversation,
+} from "../chat/agent-sessions";
 import { MessageInput } from "../chat/MessageInput";
 import { describeChannelParty } from "../chat/channel-party";
 import { MessageList, type MessageListHandle } from "../chat/MessageList";
@@ -907,6 +913,8 @@ export function MessagesApp({
   const [archivedAgents, setArchivedAgents] = useState<ArchivedAgentEntry[]>([]);
   const [agentRosterReady, setAgentRosterReady] = useState(false);
   const [selectedChannel, setSelectedChannel] = useState<string | null>(null);
+  const [agentConversations, setAgentConversations] = useState<AgentConversation[]>([]);
+  const [creatingConversation, setCreatingConversation] = useState(false);
   // External taOSmd coordination bus (read-only). Selecting a bus channel is a
   // separate mode from the internal project channels: when busSelected is set,
   // the detail pane shows the read-only bus viewer instead of the chat panel.
@@ -2169,6 +2177,41 @@ export function MessagesApp({
   const allChannels = [...channels, ...archivedChannels];
   const currentChannel = allChannels.find((c) => c.id === selectedChannel);
   const isCurrentArchived = currentChannel?.settings?.archived === true;
+
+  /* ---- agent conversation sessions (#2123) ---- */
+  const dmAgentSlug =
+    currentChannel?.type === "dm"
+      ? (currentChannel.members ?? []).find((m) => m !== "user")
+      : undefined;
+
+  useEffect(() => {
+    if (!dmAgentSlug) {
+      setAgentConversations([]);
+      return;
+    }
+    let cancelled = false;
+    fetchConversations(dmAgentSlug)
+      .then((list) => { if (!cancelled) setAgentConversations(list); })
+      .catch(() => { if (!cancelled) setAgentConversations([]); });
+    return () => { cancelled = true; };
+  }, [dmAgentSlug, selectedChannel]);
+
+  const handleNewConversation = useCallback(async () => {
+    if (!dmAgentSlug || creatingConversation) return;
+    setCreatingConversation(true);
+    try {
+      const conv = await createConversation(dmAgentSlug);
+      await fetchChannels();
+      setAgentConversations(
+        await fetchConversations(dmAgentSlug).catch(() => [] as AgentConversation[]),
+      );
+      handleSelectChannel(conv.id);
+    } catch {
+      /* ignore — the selector stays on the current conversation */
+    } finally {
+      setCreatingConversation(false);
+    }
+  }, [dmAgentSlug, creatingConversation, fetchChannels, handleSelectChannel]);
   // #1741: derive the stall banner. Silent for the first 20s of no activity
   // (healthy responses resolve well before then), a soft "taking longer" hint
   // after, and an amber "may be stalled" warning with a recovery pointer at 75s.
@@ -2380,6 +2423,16 @@ export function MessagesApp({
             )}
           </div>
         </header>
+      )}
+      {selectedChannel && dmAgentSlug && (
+        <AgentSessionControls
+          slug={dmAgentSlug}
+          conversations={agentConversations}
+          currentChannelId={selectedChannel}
+          onSelect={handleSelectChannel}
+          onNewChat={handleNewConversation}
+          creating={creatingConversation}
+        />
       )}
       {selectedChannel && !atBottom && (
         <button
