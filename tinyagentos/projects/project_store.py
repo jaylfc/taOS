@@ -506,6 +506,30 @@ class ProjectStore(ProjectsDBStore):
             keys = [d[0] for d in cur.description]
         return [dict(zip(keys, r)) for r in rows]
 
+    async def list_project_ids_for_member(self, member_id: str) -> list[str]:
+        """Project ids where *member_id* holds a HUMAN ``project_members`` row.
+
+        The complement of ``list_for_user`` (projects a person OWNS): this
+        is the projects a person is IN. The agent directory's visibility
+        scoping (#2119) needs exactly that set. The match is restricted
+        to human rows on purpose: native/clone rows store AGENT ids taken
+        from requests, and nothing stops one of those ids equalling a
+        person's user id -- reading agent rows as memberships would let a
+        planted row grant a person (and their directory view) a project
+        they were never a member of. Human rows are the only kind that
+        represents a person's membership, and they store the person's
+        user id (the invite/collab paths key them so).
+        """
+        if not member_id:
+            return []
+        async with self._read(
+            "SELECT project_id FROM project_members "
+            "WHERE member_id = ? AND member_kind = 'human'",
+            (member_id,),
+        ) as cur:
+            rows = await cur.fetchall()
+        return [r[0] for r in rows]
+
     async def get_member(self, project_id: str, member_id: str) -> dict | None:
         async with self._read(
             "SELECT * FROM project_members WHERE project_id = ? AND member_id = ?",

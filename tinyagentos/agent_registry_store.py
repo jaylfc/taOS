@@ -17,6 +17,7 @@ import json
 import logging
 import re
 import time
+import unicodedata
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -87,6 +88,46 @@ CREATE UNIQUE INDEX IF NOT EXISTS ux_agent_active_handle
 # ---------------------------------------------------------------------------
 
 VALID_STATUSES = frozenset({"pending", "active", "suspended", "revoked", "rejected"})
+
+# Bios (#2119): a short, agent-maintained "who is who" line on the registry
+# record. The cap keeps the directory skimmable; control characters are
+# stripped on write because a bio is agent-authored free text that OTHER
+# agents read -- it is untrusted data, and embedded newlines/NULs would let one
+# agent forge structure (fake line breaks, truncated strings) in whatever
+# surface renders it. The same reasoning extends past C0/C1 controls to the
+# invisible Unicode troublemakers: format characters (Cf -- bidi overrides,
+# zero-width spaces, isolates), line/paragraph separators (Zl/Zp) and lone
+# surrogates (Cs) are dropped, and the text is NFKC-normalised so lookalike
+# compatibility characters fold to their plain forms before storage.
+BIO_MAX_CHARS = 200
+
+_BIO_CONTROL_CHARS = re.compile(r"[\x00-\x1f\x7f-\x9f]")
+
+_BIO_DROP_CATEGORIES = frozenset({"Cf", "Zl", "Zp", "Cs"})
+
+
+def sanitize_bio(text: str) -> str:
+    """Normalise *text* and strip everything a stored bio must not contain.
+
+    NFKC-normalise, drop Unicode categories Cf/Zl/Zp/Cs and the C0/C1
+    control range, then NFKC-normalise AGAIN: dropping a format character
+    can join a base letter and a combining mark that only the second pass
+    composes, so a single pass would store text that is not in normal
+    form and over-count it against the cap. Length is NOT enforced here
+    -- callers check the sanitised length against BIO_MAX_CHARS so a bio
+    that only exceeds the cap via stripped characters is not rejected for
+    content that would never be stored (and one that only exceeds it
+    AFTER normalisation is).
+    """
+    normalised = unicodedata.normalize("NFKC", text or "")
+    kept = "".join(
+        ch
+        for ch in normalised
+        if unicodedata.category(ch) not in _BIO_DROP_CATEGORIES
+    )
+    recomposed = unicodedata.normalize("NFKC", kept)
+    return _BIO_CONTROL_CHARS.sub("", recomposed).strip()
+
 
 # Maps (from_status, to_status) → True for allowed transitions.
 _VALID_TRANSITIONS: frozenset[tuple[str, str]] = frozenset({
@@ -328,6 +369,28 @@ async def _migration_v8_backfill_sponsorship(conn) -> None:
             (canonical_id, _LEGACY_SPONSORSHIP_PROJECT, sponsor_contact_id, now),
         )
     await conn.commit()
+
+
+async def _migration_v9_add_bio(conn) -> None:
+    """Add bio column (idempotent) for the agent directory (#2119).
+
+    The bio lives on the registry record itself -- the registry is the
+    identity source of truth, so a second store would split identity across
+    two places and reintroduce exactly the divergence #2114 was about.
+    Existing rows get the empty default: no bio is a truthful bio for an
+    agent that has not written one yet.
+    """
+    existing_cols = {
+        row[1]
+        for row in await (
+            await conn.execute("PRAGMA table_info(agent_registry)")
+        ).fetchall()
+    }
+    if "bio" not in existing_cols:
+        await conn.execute(
+            "ALTER TABLE agent_registry ADD COLUMN bio TEXT NOT NULL DEFAULT ''"
+        )
+        await conn.commit()
 
 
 # ---------------------------------------------------------------------------
@@ -701,6 +764,7 @@ class AgentRegistryStore(BaseStore):
         await _migration_v6_add_install_id(self._db)
         await _migration_v7_add_sponsor_contact_id(self._db)
         await _migration_v8_backfill_sponsorship(self._db)
+        await _migration_v9_add_bio(self._db)
         # Created after the status migration so the partial index's WHERE clause
         # can reference the status column on the pre-status migration path.
         # Guard the index creation too: if some path we did not anticipate still
@@ -1520,6 +1584,37 @@ class AgentRegistryStore(BaseStore):
                         f"handle {handle!r} is already owned by another active agent"
                     ) from exc
                 raise
+            await self._db.commit()
+            return await self.get(canonical_id)
+
+    async def set_bio(self, canonical_id: str, bio: str) -> Optional[dict]:
+        """Set the self-maintained directory bio on *canonical_id* (#2119).
+
+        The bio is sanitised (control characters stripped) and capped at
+        BIO_MAX_CHARS -- the cap is checked AFTER sanitising, against what
+        will actually be stored. Raises ValueError when the sanitised bio
+        exceeds the cap. Returns the updated record, or None if
+        *canonical_id* does not exist.
+
+        This is the ONLY write path for the column: project membership in
+        the directory is derived from agent_sponsorship rows, never stored
+        here, so a bio write can never manufacture a membership.
+        """
+        if self._db is None:
+            raise RuntimeError("AgentRegistryStore not initialised")
+        cleaned = sanitize_bio(bio)
+        if len(cleaned) > BIO_MAX_CHARS:
+            raise ValueError(
+                f"bio is {len(cleaned)} chars; the cap is {BIO_MAX_CHARS}"
+            )
+        async with self._write_lock:
+            record = await self.get(canonical_id)
+            if record is None:
+                return None
+            await self._db.execute(
+                "UPDATE agent_registry SET bio = ? WHERE canonical_id = ?",
+                (cleaned, canonical_id),
+            )
             await self._db.commit()
             return await self.get(canonical_id)
 

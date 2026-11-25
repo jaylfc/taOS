@@ -85,10 +85,24 @@ async def save_widgets(request: Request):
 # ---------------------------------------------------------------------------
 
 
+# The assistant_studio namespace is per-person: it carries each person's
+# own Assistant Studio PA selection, and the agent directory (#2119) reads
+# it back keyed by the person. Keying the sync by the caller keeps every
+# person's pick separate. All other namespaces keep the install-wide
+# "user" bucket they have always used.
+_PER_USER_PREFERENCE_NAMESPACES = {"assistant_studio"}
+
+
+def _preference_owner(request: Request, namespace: str) -> str:
+    if namespace in _PER_USER_PREFERENCE_NAMESPACES:
+        return getattr(request.state, "user_id", None) or "user"
+    return "user"
+
+
 @router.get("/api/preferences/{namespace}")
 async def get_preference(request: Request, namespace: str):
     store = request.app.state.desktop_settings
-    data = await store.get_preference("user", namespace)
+    data = await store.get_preference(_preference_owner(request, namespace), namespace)
     return JSONResponse(data)
 
 
@@ -101,7 +115,7 @@ async def save_preference(request: Request, namespace: str):
             {"error": "preference body must be a JSON object"},
             status_code=400,
         )
-    await store.save_preference("user", namespace, body)
+    await store.save_preference(_preference_owner(request, namespace), namespace, body)
     return JSONResponse({"ok": True})
 
 

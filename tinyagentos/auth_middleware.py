@@ -281,6 +281,7 @@ _AGENT_TOKEN_PATHS = (
     | frozenset({
         "/api/agents/me/models",
         "/api/agents/me/model",
+        "/api/agents/directory",
         "/api/desktop/command",
         "/api/desktop/screenshot",
         "/api/desktop/layout",
@@ -573,6 +574,17 @@ _AGENT_ROTATE_ROUTES = (
     ("POST", re.compile(rf"^/api/agents/registry/{_SEG}/rotate-tokens$")),
 )
 
+# Directory bio an agent may write with its own registry JWT (#2119): the
+# bio is self-maintained, so the ONLY writer is the owning agent. The route
+# verifies the JWT identity == the path canonical_id (an agent may only set
+# its OWN bio), exactly like the rotate path above. There is deliberately
+# no session variant of this pattern: a human session reaches the handler
+# through the normal session gate and is refused there, because the bio's
+# credential is the agent's own token.
+_AGENT_BIO_ROUTES = (
+    ("PUT", re.compile(rf"^/api/agents/registry/{_SEG}/bio$")),
+)
+
 
 def _is_agent_task_path(method: str, path: str) -> bool:
     """True only for the exact subset of task routes a project_tasks token may
@@ -652,6 +664,12 @@ def _is_agent_rotate_path(method: str, path: str) -> bool:
     return any(m == method and rx.match(path) for m, rx in _AGENT_ROTATE_ROUTES)
 
 
+def _is_agent_bio_path(method: str, path: str) -> bool:
+    """True only for PUT /api/agents/registry/{id}/bio, which an agent may
+    reach with its own registry JWT to maintain its directory bio (#2119).
+    The route verifies the JWT identity == canonical_id, so the allowlist
+    entry can never be used to write another agent's bio."""
+    return any(m == method and rx.match(path) for m, rx in _AGENT_BIO_ROUTES)
 # Self-only secrets read routes: an agent may reach GET /api/agents/self/secrets/{name}
 # with its registry JWT holding the ``secrets_read_own`` scope. The agent name
 # is derived from the token's canonical_id; the path name is never trusted for
@@ -1348,6 +1366,7 @@ class AuthMiddleware(BaseHTTPMiddleware):
                         or _is_agent_files_path(request.method, path)
                         or _is_agent_scope_request_path(request.method, path)
                         or _is_agent_rotate_path(request.method, path)
+                        or _is_agent_bio_path(request.method, path)
                         or _is_agent_secrets_self_path(request.method, path)
                         or _is_agent_auth_broker_path(request.method, path)
                         or _is_container_request_action_path(request.method, path)
