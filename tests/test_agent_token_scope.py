@@ -177,7 +177,8 @@ class TestAgentRoutesStillWork:
                 "/api/skill-exec/code_exec/call", json={"args": {"code": "print(1)"}}
             )
         # the route admits the agent; the host-RCE skill's own check refuses it
-        assert "requires admin or local-token" in resp.text, resp.text
+        assert resp.status_code == 403, resp.text
+        assert "not available to agent tokens" in resp.text
 
     async def test_skill_exec_call_cannot_name_another_agent(self, app, world):
         async with _bearer(app, world["tokens"]["mem-bot"]) as c:
@@ -280,3 +281,72 @@ class TestCrystallizeCarriesAgent:
         seen.clear()
         await worker._do_crystallize({"session_id": "s1", "agent_name": "payload-bot"})
         assert seen["agent_name"] == "payload-bot"
+
+
+@pytest.mark.asyncio
+class TestOutsideTheMatrix:
+    async def test_taosgo_app_join_refuses_agent_token(self, app, world):
+        async with _bearer(app, world["tokens"]["mem-bot"]) as c:
+            resp = await c.post("/api/taosgo/app-join")
+        assert resp.status_code == 403, resp.text
+        assert "preauth" not in resp.text
+
+    async def test_taosgo_app_join_host_token_still_works(self, app, world):
+        async with _bearer(app, world["host"]) as c:
+            resp = await c.post("/api/taosgo/app-join")
+        assert resp.status_code == 200, resp.text
+        assert "preauth_key" in resp.json()
+
+    @pytest.mark.parametrize("method,path", [
+        ("GET", "/api/cluster/leases"),
+        ("POST", "/api/cluster/leases/claim"),
+        ("POST", "/api/cluster/leases/release"),
+    ])
+    async def test_cluster_leases_refuse_agent_token(self, app, world, method, path):
+        body = {"resource_id": "gpu0", "lease_id": "x"}
+        async with _bearer(app, world["tokens"]["mem-bot"]) as c:
+            resp = await c.request(method, path, json=body if method == "POST" else None)
+        assert resp.status_code == 403, (path, resp.status_code, resp.text[:200])
+
+    async def test_cluster_leases_host_token_still_admitted(self, app, world):
+        async with _bearer(app, world["host"]) as c:
+            resp = await c.get("/api/cluster/leases")
+        assert resp.status_code == 200, resp.text
+
+
+@pytest.mark.asyncio
+class TestOwnerlessAgentMigration:
+    async def test_old_config_agent_gets_the_install_owner_and_can_reply(self, app, world):
+        from tinyagentos.migrations.agent_owner import assign_ownerless_agents
+
+        cfg = app.state.config
+        cfg.agents.append({"name": "old-bot"})  # an old config row: no registry id
+        token = app.state.auth.mint_agent_local_token("old-bot")
+        ch = app.state.chat_channels
+        if ch._db is None:
+            await ch.init()
+        if app.state.chat_messages._db is None:
+            await app.state.chat_messages.init()
+        if app.state.device_store._db is None:
+            await app.state.device_store.init()
+        channel = await ch.create_channel(name="dm", type="dm", created_by="user",
+                                          members=["old-bot", world["admin"]["id"]])
+        body = {"channel_id": channel["id"], "content": "hi"}
+        async with _bearer(app, token) as c:
+            before = await c.post("/api/chat/messages", json=body)
+        assert before.status_code in (401, 403)
+
+        owned_before = {a["name"]: a.get("registry_canonical_id") for a in cfg.agents if a["name"] in ("mem-bot", "adm-bot")}
+        assigned = await assign_ownerless_agents(cfg, app.state.agent_registry, app.state.auth)
+        assert "old-bot" in assigned and not {"mem-bot", "adm-bot"} & set(assigned)
+        row = await app.state.agent_registry.get(
+            next(a for a in cfg.agents if a["name"] == "old-bot")["registry_canonical_id"])
+        assert row["user_id"] == world["admin"]["id"]
+        # agents that already had an owner are untouched
+        assert {a["name"]: a.get("registry_canonical_id") for a in cfg.agents if a["name"] in ("mem-bot", "adm-bot")} == owned_before
+        # idempotent
+        assert await assign_ownerless_agents(cfg, app.state.agent_registry, app.state.auth) == []
+
+        async with _bearer(app, token) as c:
+            after = await c.post("/api/chat/messages", json=body)
+        assert after.status_code == 200, after.text

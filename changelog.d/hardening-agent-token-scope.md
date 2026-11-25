@@ -10,3 +10,6 @@
   belongs to. The `code_exec` skill refuses agent tokens.
 - Crystallized sessions now carry the session's agent into the knowledge-graph
   write instead of the anonymous "system" subject.
+- App-join and the cluster lease and task-report routes refuse per-agent tokens.
+  A start-up step assigns agents with no registry owner to the install owner so
+  their tokens can still post in chat. `code_exec` answers 403 to agent tokens.
