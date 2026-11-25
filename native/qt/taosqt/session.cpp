@@ -98,8 +98,10 @@ void Session::setState(State s)
 void Session::setError(const Error &e)
 {
     const QString t = e.userMessage();
-    if (t != m_errorText) {
+    const bool unreachable = e.kind() == Error::Network;
+    if (t != m_errorText || unreachable != m_unreachable) {
         m_errorText = t;
+        m_unreachable = unreachable;
         Q_EMIT errorTextChanged();
     }
 }
@@ -144,13 +146,9 @@ void Session::useSavedSession(const QByteArray &savedSession)
 
 void Session::verify()
 {
-    // CONTROLLER CHANGE PENDING (carded by the coordinator): today
-    // `/auth/me` (routes/auth.py auth_me) reads only the session cookie, so a
-    // bearer-only credential (LocalTokenSource) gets 401 here on the real
-    // controller and falls back to the sign-in prompt. The fix belongs in the
-    // controller (accept Bearer on /auth/me), not here: do not probe another
-    // route. Cookie sessions (password sign-in, the desktop session store) work
-    // today.
+    // `/auth/me` answers a cookie session and, for the host local token, a bearer
+    // (routes/auth.py auth_me, `_bearer_person`). A controller older than that
+    // answers a bearer-only credential with 401 and the sign-in prompt follows.
     m_client->call(u"auth.me"_s)->then(this, [this](const Result &res) {
         if (res.ok()) {
             m_user = res.value.toObject(); // auth.me returns the user object

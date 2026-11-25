@@ -68,7 +68,8 @@ for pair in $apps; do
 done
 # Command line tools of the apps: the binary and the same wrapper (so the Qt environment is set), no launcher entry.
 #   taos-webapp   the web apps engine: web app instances launch as `taos-webapp launch <id>` from their .desktop files
-for name in taos-webapp taos-survival-cli; do
+#   taos-session  the desktop's shared taOS sign-in: status, login (password on stdin), logout
+for name in taos-webapp taos-survival-cli taos-session; do
     src=""
     for d in $bin_dirs; do
         s=$(find "$d" -type f -name "$name" -perm -u+x 2>/dev/null | head -n 1)

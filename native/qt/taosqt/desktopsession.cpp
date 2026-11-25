@@ -30,10 +30,14 @@ QByteArray DesktopSessionTokenSource::read() const
     const QFileInfo fi(m_path);
     if (!fi.exists() || !fi.isFile() || fi.isSymLink())
         return {};
-    // Never trust a file someone else owns or can read.
-    if (fi.ownerId() != ::getuid() || (fi.permissions() & (QFileDevice::ReadGroup | QFileDevice::WriteGroup
-                                                          | QFileDevice::ExeGroup | QFileDevice::ReadOther
-                                                          | QFileDevice::WriteOther | QFileDevice::ExeOther)))
+    // Never trust a file someone else owns or can read, nor one in a directory
+    // someone else owns or can list or write (they could swap the file).
+    constexpr auto others = QFileDevice::ReadGroup | QFileDevice::WriteGroup | QFileDevice::ExeGroup
+        | QFileDevice::ReadOther | QFileDevice::WriteOther | QFileDevice::ExeOther;
+    if (fi.ownerId() != ::getuid() || (fi.permissions() & others))
+        return {};
+    const QFileInfo di(fi.absolutePath());
+    if (!di.isDir() || di.isSymLink() || di.ownerId() != ::getuid() || (di.permissions() & others))
         return {};
     QFile f(m_path);
     return f.open(QIODevice::ReadOnly) ? f.readAll().trimmed() : QByteArray();
@@ -81,16 +85,32 @@ void DesktopSessionTokenSource::remember(const QByteArray &sessionJson)
         return;
     f.setPermissions(QFileDevice::ReadOwner | QFileDevice::WriteOwner);
     f.write(sessionJson);
+    clearSignedOut();
     m_written = sessionJson.trimmed();
     m_offered = m_written;
     if (f.commit() && !m_watcher.directories().contains(dir))
         m_watcher.addPath(dir);
 }
 
-void DesktopSessionTokenSource::forget()
+bool DesktopSessionTokenSource::signedOut() const
+{
+    return !m_path.isEmpty() && QFileInfo::exists(QFileInfo(m_path).absolutePath() + u"/signed-out"_s);
+}
+
+void DesktopSessionTokenSource::clearSignedOut()
 {
     if (!m_path.isEmpty())
+        QFile::remove(QFileInfo(m_path).absolutePath() + u"/signed-out"_s);
+}
+
+void DesktopSessionTokenSource::forget()
+{
+    if (!m_path.isEmpty()) {
         QFile::remove(m_path);
+        QFile mark(QFileInfo(m_path).absolutePath() + u"/signed-out"_s);
+        if (mark.open(QIODevice::WriteOnly))
+            mark.setPermissions(QFileDevice::ReadOwner | QFileDevice::WriteOwner);
+    }
     m_offered.clear();
     m_written.clear();
 }

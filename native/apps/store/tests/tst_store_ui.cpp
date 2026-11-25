@@ -116,6 +116,44 @@ private Q_SLOTS:
         delete m_fake;
     }
 
+    // The desktop's shared session is missing: the Store says so in words, offers one Sign in, and after it the live
+    // catalogue replaces the saved one with no restart. An unreachable controller is a different message.
+    void a_signed_out_store_offers_one_sign_in_and_the_live_catalogue_follows()
+    {
+        delete m_host;
+        m_host = nullptr;
+        QDir(qEnvironmentVariable("XDG_DATA_HOME") + u"/taos"_s).removeRecursively();
+        QDir(qEnvironmentVariable("XDG_DATA_HOME") + u"/applications"_s).removeRecursively();
+        m_fake->config({{u"store"_s, u"seed"_s}, {u"admin"_s, false}, {u"outcome"_s, QJsonObject()}, {u"install_delay_ms"_s, 0}, {u"catalog_fail"_s, 0}});
+        // nobody signed in this login: the host's sign-in is refused, exactly the state a missing session file leaves
+        m_host = new AppHost(m_fake->url(), u"alex"_s, u"not-the-password"_s, u"my.taos.store"_s);
+        QVERIFY(waitFor([this] { return m_host->session().state() == Taos::Session::SignedOut && !m_host->session().errorText().isEmpty(); }));
+        m_win = m_host->load(u"qrc:/my.taos.store/Main.qml"_s);
+        QVERIFY(m_win);
+        auto *engine = m_win->property("engine").value<QObject *>();
+        QVERIFY(engine);
+        QVERIFY(waitFor([&] { return visibleByName(m_win, u"deviceSignIn"_s) != nullptr
+                                  && (visibleByName(m_win, u"statusSignIn"_s) != nullptr || visibleByName(m_win, u"errorSignIn"_s) != nullptr); }));
+        QVERIFY(!m_host->session().unreachable());
+
+        const QString shots = qEnvironmentVariable("TAOS_STORE_SHOT_DIR");   // opt-in: look at the states (README of the PR)
+        const auto shot = [&](const QString &name) { if (!shots.isEmpty()) { m_win->resize(1500, 950); QTest::qWait(400); m_win->grabWindow().save(shots + u"/"_s + name); } };
+        shot(u"store-signed-out.png"_s);
+        auto *pop = m_win->findChild<QObject *>(u"signInPopover"_s);
+        QVERIFY(pop);
+        QVERIFY(!pop->property("opened").toBool());
+        click(visibleByName(m_win, u"deviceSignIn"_s));
+        QVERIFY(waitFor([&] { return pop->property("opened").toBool(); }));
+        shot(u"store-sign-in-open.png"_s);
+
+        m_host->session().signIn(u"alex"_s, u"hunter2-secret-pw"_s);
+        QVERIFY(waitFor([&] { return !pop->property("opened").toBool(); }));   // closes itself once signed in
+        QVERIFY(waitFor([&] { return engine->property("loaded").toBool() && !engine->property("usingSnapshot").toBool(); }));
+        shot(u"store-signed-in.png"_s);
+        QVERIFY(waitFor([&] { return visibleByName(m_win, u"deviceSignIn"_s) == nullptr && visibleByName(m_win, u"statusSignIn"_s) == nullptr
+                                  && visibleByName(m_win, u"errorSignIn"_s) == nullptr; }));
+    }
+
     void the_test_runs_in_its_own_home()
     {
         QVERIFY(qEnvironmentVariable("XDG_DATA_HOME").startsWith(m_home.path()));

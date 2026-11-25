@@ -252,7 +252,10 @@ QList<Cmd> catalog() {
                   {QStringLiteral("lock screen"), QStringLiteral("away")}, QStringLiteral("swaylock"), {QStringLiteral("swaylock"), QStringLiteral("-f")});
       c.orNeeds = {QStringLiteral("loginctl")}; c.altArgv = {{QStringLiteral("loginctl"), QStringLiteral("lock-session")}}; v << c; }
     v << cmd(QStringLiteral("logout"), QStringLiteral("Log out"), QStringLiteral("End this session"), QStringLiteral("system-log-out"),
-             {QStringLiteral("sign out"), QStringLiteral("exit")}, QStringLiteral("swaymsg"), {QStringLiteral("swaymsg"), QStringLiteral("exit")}, true);
+             {QStringLiteral("sign out"), QStringLiteral("exit")}, QStringLiteral("swaymsg"),
+             // sign out of taOS at the controller first (revokes the desktop session, removes the file; a missing tool or
+             // an unreachable controller never blocks logging out), then end the session
+             {QStringLiteral("sh"), QStringLiteral("-c"), QStringLiteral("taos-session logout >/dev/null 2>&1; exec swaymsg exit")}, true);
     v << cmd(QStringLiteral("reboot"), QStringLiteral("Restart"), QStringLiteral("Restart this computer"), QStringLiteral("system-reboot"),
              {QStringLiteral("reboot")}, QStringLiteral("systemctl"), {QStringLiteral("systemctl"), QStringLiteral("reboot")}, true);
     v << cmd(QStringLiteral("poweroff"), QStringLiteral("Shut down"), QStringLiteral("Turn this computer off"), QStringLiteral("system-shutdown"),

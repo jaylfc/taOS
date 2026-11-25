@@ -54,6 +54,15 @@ else
     STATE_DIR=/tmp/taos-shell-$(id -u)
 fi
 
+# The desktop sign-in service (no password: the controller maps this Linux account to its taOS person) runs
+# with the session when it is installed. It exits 0 at once when the controller has no sign-in socket or the
+# account is not linked, and is then not restarted. Found by name, so an install without it is unchanged.
+if [ -z "${TAOS_SHELL_NO_SSO:-}" ] && command -v taos-session >/dev/null 2>&1; then
+    case " $COMPONENTS " in *" taos-session "*) ;; *) COMPONENTS="$COMPONENTS taos-session" ;; esac
+    TAOS_SHELL_ARGS_TAOS_SESSION=${TAOS_SHELL_ARGS_TAOS_SESSION:-sso}
+    export TAOS_SHELL_ARGS_TAOS_SESSION
+fi
+
 log() { printf 'taos-shell-session: %s\n' "$*" >&2; }
 
 find_bin() {

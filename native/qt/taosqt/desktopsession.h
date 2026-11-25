@@ -39,6 +39,13 @@ public:
 
     /// `<runtime dir>/taos/session`, or empty when there is no runtime dir.
     QString path() const { return m_path; }
+    /// The stored snapshot when it passes the owner-only checks, else empty.
+    QByteArray stored() const { return read(); }
+    /// `<runtime dir>/taos/signed-out`: present after a sign-out (forget()) until the next sign-in
+    /// (remember() or clearSignedOut()). The desktop single sign-on service does not sign a person
+    /// back in while it exists, so signing out stays signed out.
+    bool signedOut() const;
+    void clearSignedOut();
 
 private:
     QByteArray read() const;

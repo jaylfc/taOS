@@ -9,7 +9,7 @@ set_target_properties(taos_apps_common PROPERTIES POSITION_INDEPENDENT_CODE ON)
 
 set(TAOS_APPS_QML_DIR ${CMAKE_CURRENT_SOURCE_DIR}/qml)
 set(TAOS_APPS_QML_FILES
-  qmldir Look.qml Format.qml TaosText.qml Backdrop.qml GlassPanel.qml Glyph.qml Chip.qml TaosButton.qml TaosField.qml TaosArea.qml TaosCombo.qml TaosCheck.qml EmptyState.qml SignInForm.qml
+  qmldir Look.qml Format.qml TaosText.qml Backdrop.qml GlassPanel.qml Glyph.qml Chip.qml TaosButton.qml TaosField.qml TaosArea.qml TaosCombo.qml TaosCheck.qml EmptyState.qml SignInForm.qml SignInPopover.qml
   ScopeBadge.qml ConsentCard.qml SignInCard.qml Logic.js
   AppTile.qml CornerCaps.qml CoverArt.qml PillButton.qml SidebarItem.qml Skeleton.qml SectionHeader.qml ShelfCard.qml
   CompactRow.qml Hero.qml DetailHeader.qml

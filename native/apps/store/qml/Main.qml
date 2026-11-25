@@ -36,6 +36,8 @@ TaosWindow {
         onToast: (text) => win.showToast(text)
     }
 
+    SignInPopover { id: signIn; objectName: "signInPopover"; appName: qsTr("The Store") }
+
     function showToast(text) { toastText = text; toastTimer.restart() }
     Timer { id: toastTimer; interval: 4500; onTriggered: win.toastText = "" }
 
@@ -67,9 +69,16 @@ TaosWindow {
     Shortcut { sequence: "Escape"; enabled: win.detailId !== ""; onActivated: win.detailId = "" }
 
     readonly property var sectionDefs: engine.revision >= 0 ? engine.sections : []
+    // The desktop's shared session is missing or was refused: the one fix is to sign in (here, once, for every app)
+    readonly property bool needsSignIn: !Taos.session.unreachable
+        && (Taos.session.state === Session.SignedOut || engine.errorKind === "unauthenticated")
     readonly property string deviceText: {
         const p = engine.profileId
-        if (p === "") return engine.usingSnapshot ? qsTr("Not connected") : qsTr("Reading this device")
+        if (Taos.session.unreachable) return qsTr("Cannot reach the controller")
+        if (p === "") {
+            if (win.needsSignIn) return qsTr("Signed out")
+            return engine.usingSnapshot ? qsTr("Not connected") : qsTr("Reading this device")
+        }
         const t = p.replace(/-/g, " ")
         return t.charAt(0).toUpperCase() + t.slice(1)
     }
@@ -169,7 +178,10 @@ TaosWindow {
                         TaosText { text: win.deviceText; Layout.fillWidth: true; elide: Text.ElideRight
                                    font.pixelSize: Look.small; color: Look.textSecondary }
                     }
-                    Rectangle { width: 8; height: 8; radius: 4
+                    PillButton { visible: win.needsSignIn; text: qsTr("Sign in"); compact: true; variant: "primary"
+                                 objectName: "deviceSignIn"; accessibleName: qsTr("Sign in to taOS")
+                                 onClicked: signIn.open() }
+                    Rectangle { visible: !win.needsSignIn; width: 8; height: 8; radius: 4
                                 color: engine.loaded && !engine.usingSnapshot ? Look.success : Look.warning }
                 }
             }
@@ -229,18 +241,28 @@ TaosWindow {
                 Rectangle { width: 6; height: 6; radius: 3; color: Look.warning }
                 TaosText { Layout.fillWidth: true; text: engine.statusText; elide: Text.ElideRight
                            font.pixelSize: Look.small; color: Look.textSecondary }
-                PillButton { text: qsTr("Try again"); compact: true; variant: "outline"; Layout.preferredHeight: 24
-                             accessibleName: qsTr("Try the controller again"); onClicked: engine.refresh() }
+                PillButton { visible: win.needsSignIn; text: qsTr("Sign in"); compact: true; variant: "primary"; Layout.preferredHeight: 24
+                             objectName: "statusSignIn"; accessibleName: qsTr("Sign in to taOS"); onClicked: signIn.open() }
+                PillButton { visible: !win.needsSignIn; text: qsTr("Try again"); compact: true; variant: "outline"; Layout.preferredHeight: 24
+                             accessibleName: qsTr("Try the controller again")
+                             onClicked: { if (Taos.session.unreachable) Taos.session.start(); engine.refresh() } }
             }
         }
-        // a plain line when a loaded catalogue has since failed to refresh
-        TaosText {
+        // a plain line when a loaded catalogue has since failed to refresh (or none could be loaded and no saved one is shown)
+        RowLayout {
             visible: engine.errorText !== "" && !engine.usingSnapshot && win.section !== "webapps" && win.section !== "themes"
-            objectName: "errorLine"
             Layout.fillWidth: true; Layout.leftMargin: Look.space5; Layout.rightMargin: Look.space5; Layout.topMargin: Look.space3
-            wrapMode: Text.Wrap; font.pixelSize: Look.small; color: Look.textSecondary
-            text: qsTr("The catalogue could not be refreshed. %1").arg(engine.errorText)
-            Accessible.ignored: false; Accessible.role: Accessible.AlertMessage; Accessible.name: text
+            spacing: Look.space2
+            TaosText {
+                objectName: "errorLine"
+                Layout.fillWidth: true
+                wrapMode: Text.Wrap; font.pixelSize: Look.small; color: Look.textSecondary
+                text: win.needsSignIn ? qsTr("Sign in to taOS to see the live catalogue.")
+                                      : qsTr("The catalogue could not be refreshed. %1").arg(engine.errorText)
+                Accessible.ignored: false; Accessible.role: Accessible.AlertMessage; Accessible.name: text
+            }
+            PillButton { visible: win.needsSignIn; text: qsTr("Sign in"); compact: true; variant: "primary"
+                         objectName: "errorSignIn"; accessibleName: qsTr("Sign in to taOS"); onClicked: signIn.open() }
         }
 
         Item {

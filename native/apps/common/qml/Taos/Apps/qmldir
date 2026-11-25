@@ -16,6 +16,7 @@ ConsentCard 1.0 ConsentCard.qml
 SignInCard 1.0 SignInCard.qml
 EmptyState 1.0 EmptyState.qml
 SignInForm 1.0 SignInForm.qml
+SignInPopover 1.0 SignInPopover.qml
 AppTile 1.0 AppTile.qml
 CornerCaps 1.0 CornerCaps.qml
 CoverArt 1.0 CoverArt.qml

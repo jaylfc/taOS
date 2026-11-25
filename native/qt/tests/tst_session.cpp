@@ -182,6 +182,76 @@ private Q_SLOTS:
         QVERIFY(!QFileInfo::exists(file));
     }
 
+    void aSessionFileInsideASymlinkedDirectoryIsNeverTrusted()
+    {
+        // Someone who can swap the directory can swap the file: the directory itself must be a plain
+        // directory we own with no group or other access.
+        QTemporaryDir run;
+        QVERIFY(run.isValid());
+        QTemporaryDir elsewhere;
+        QVERIFY(elsewhere.isValid());
+        {
+            Session a(fastOptions(fake.url()));
+            a.setTokenSource(new DesktopSessionTokenSource(elsewhere.path()));
+            a.signIn(u"alex"_s, FAKE_PASSWORD);
+            QTRY_COMPARE(a.state(), Session::SignedIn);
+        }
+        QVERIFY(QFileInfo::exists(elsewhere.filePath(u"taos/session"_s)));
+        QVERIFY(QFile::link(elsewhere.filePath(u"taos"_s), run.filePath(u"taos"_s)));
+        Session b(fastOptions(fake.url()));
+        b.setTokenSource(new DesktopSessionTokenSource(run.path()));
+        QSignalSpy need(&b, &Session::signInRequired);
+        b.start();
+        QCOMPARE(need.size(), 1);
+        QCOMPARE(b.state(), Session::SignedOut);
+    }
+
+    void aRefusedDesktopSessionAsksOnceAndOneSignInFixesEveryApp()
+    {
+        QTemporaryDir run;
+        QVERIFY(run.isValid());
+        {
+            Session a(fastOptions(fake.url()));
+            a.setTokenSource(new DesktopSessionTokenSource(run.path()));
+            a.signIn(u"alex"_s, FAKE_PASSWORD);
+            QTRY_COMPARE(a.state(), Session::SignedIn);
+        }
+        fake.config({{u"expire"_s, true}});
+        // two apps are open when the controller refuses the stored session
+        Session store(fastOptions(fake.url()));
+        store.setTokenSource(new DesktopSessionTokenSource(run.path()));
+        Session agents(fastOptions(fake.url()));
+        agents.setTokenSource(new DesktopSessionTokenSource(run.path()));
+        QSignalSpy needStore(&store, &Session::signInRequired);
+        QSignalSpy needAgents(&agents, &Session::signInRequired);
+        store.start();
+        agents.start();
+        QTRY_VERIFY(needStore.size() >= 1);
+        QTRY_VERIFY(needAgents.size() >= 1);
+        QCOMPARE(store.state(), Session::SignedOut);
+        QVERIFY(!store.unreachable()); // refused, not unreachable: the prompt is "sign in"
+        // one sign-in, in the Store, fixes the other app too
+        store.signIn(u"alex"_s, FAKE_PASSWORD);
+        QTRY_COMPARE(store.state(), Session::SignedIn);
+        QTRY_COMPARE_WITH_TIMEOUT(agents.state(), Session::SignedIn, 5000);
+        QVERIFY(agents.userName() == store.userName());
+    }
+
+    void anUnreachableControllerIsReportedAsUnreachableNotAsSignedOut()
+    {
+        Session s(fastOptions(QUrl(u"http://127.0.0.1:9"_s)));
+        s.setTokenSource(new LocalTokenSource(u"local-token-123"_s));
+        QSignalSpy failed(&s, &Session::signInFailed);
+        s.start();
+        QTRY_COMPARE(failed.size(), 1);
+        QVERIFY(s.unreachable());
+        // a refusal is not "unreachable"
+        Session t(fastOptions(fake.url()));
+        t.signIn(u"alex"_s, u"wrong"_s);
+        QTRY_VERIFY(!t.errorText().isEmpty());
+        QVERIFY(!t.unreachable());
+    }
+
     void savedSessionRoundTrip()
     {
         QByteArray stored;
