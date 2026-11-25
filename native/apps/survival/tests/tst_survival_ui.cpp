@@ -244,13 +244,38 @@ private Q_SLOTS:
         QVERIFY(provider.requestImage(u"local-lib/index"_s, &size, QSize()).isNull());   // not an image
         QVERIFY(provider.requestImage(u"other-pack/I/drop.png"_s, &size, QSize()).isNull());
     }
-    void kit_lists_the_templates()
+    void kit_is_a_gear_manager_with_a_devices_kind()
     {
         section("kit");
         QVERIFY(visibleByName(m_win, u"page-kit"_s));
-        QVERIFY(waitFor([&] { return visibleByName(m_win, u"kit-pocket"_s) != nullptr; }));
-        QVERIFY(visibleByName(m_win, u"kit-laptop"_s));
+        QVERIFY(visibleByName(m_win, u"readiness"_s));
+        QVERIFY(visibleByName(m_win, u"kit-devices"_s));
+        auto *gear = m_backend->gear();
+        QVERIFY(gear);
+        // starting from a list makes a kit with every line at zero; filling an item changes the readiness
+        QString id;
+        QMetaObject::invokeMethod(gear, "createFromScenario", Q_RETURN_ARG(QString, id), Q_ARG(QString, u"first-aid"_s), Q_ARG(QString, QString()), Q_ARG(bool, false));
+        QVERIFY(!id.isEmpty());
+        QTest::qWait(200);
+        QVERIFY(visibleByName(m_win, u"kit-"_s + id));
+        QCOMPARE(gear->property("selected").toString(), id);
         QVERIFY(!m_win->grabWindow().isNull());
+        QMetaObject::invokeMethod(gear, "runAudit", Q_ARG(QString, u"first-aid"_s));
+        QCOMPARE(gear->property("audit").toMap().value(u"score"_s).toInt(), 0);
+        QVariantMap item{{u"name"_s, u"Scissors"_s}, {u"category"_s, u"firstaid"_s}, {u"qty"_s, u"1"_s}, {u"unit"_s, u"pcs"_s}, {u"expires"_s, u"not a date"_s}};
+        QString err;
+        QMetaObject::invokeMethod(gear, "saveItem", Q_RETURN_ARG(QString, err), Q_ARG(QVariantMap, item));
+        QVERIFY(!err.isEmpty());   // a bad date is refused in words
+        item[u"expires"_s] = u"2099-01-01"_s;
+        QMetaObject::invokeMethod(gear, "saveItem", Q_RETURN_ARG(QString, err), Q_ARG(QVariantMap, item));
+        QVERIFY2(err.isEmpty(), qPrintable(err));
+        QVERIFY(gear->property("audit").toMap().value(u"score"_s).toInt() > 0);
+        QMetaObject::invokeMethod(gear, "select", Q_ARG(QString, u"devices"_s));
+        QTest::qWait(200);
+        QVERIFY(waitFor([&] { return visibleByName(m_win, u"kit-pocket"_s) != nullptr; }));   // the device checks are the Devices kind
+        QVERIFY(!m_win->grabWindow().isNull());
+        QMetaObject::invokeMethod(gear, "select", Q_ARG(QString, QString()));
+        QMetaObject::invokeMethod(gear, "removeKit", Q_ARG(QString, id));
     }
     void keyboard_switches_sections()
     {

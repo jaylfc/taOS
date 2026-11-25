@@ -54,6 +54,10 @@ TaosWindow {
         }
         const ptab = argValue(args, "--pack-tab")
         if (ptab !== "") { section = "library"; libraryPage.mode = "packs"; libraryPage.packTab = ptab }
+        const gk = argValue(args, "--gear-kit")
+        if (gk !== "") { section = "kit"; Qt.callLater(() => { Survival.gear.selectByName(gk)
+            const gc = argValue(args, "--gear-check")
+            if (gc !== "") { Survival.gear.tab = "check"; Survival.gear.runAudit(gc) } }) }
         const art = argValue(args, "--article")
         if (art !== "") { section = "library"; if (Survival.library.packId === "" && libraryPage.installed.length > 0) Survival.library.open(libraryPage.installed[0].id); Survival.library.openArticle(art); libraryPage.mode = "read"; libraryPage.reading = true }
         const pk = argValue(args, "--open-pack")

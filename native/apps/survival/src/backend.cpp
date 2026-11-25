@@ -13,6 +13,7 @@
 
 #include "articlehtml.h"
 #include "content.h"
+#include "gearengine.h"
 #include "kit.h"
 #include "mapview.h"
 #include "paths.h"
@@ -691,6 +692,7 @@ SurvivalBackend::SurvivalBackend(const QString &dataDir, QObject *parent)
     m_radios.scan();
     m_kits.refresh();
     auto *packs = &m_packs;
+    m_gear = new GearEngine(dataDir, this);
     m_catalog = new CatalogEngine(packs, this);
     m_collections = new CollectionsEngine(packs, this);
     m_mapPacks = new MapPacksEngine(packs, &m_exec, this);
