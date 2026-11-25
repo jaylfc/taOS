@@ -102,6 +102,58 @@ describe("mergeServerNotifications", () => {
     store.mergeServerNotifications(many);
     expect(useNotificationStore.getState().notifications).toHaveLength(100);
   });
+
+  it("keeps an active transient toast that the feed never contains", () => {
+    const store = useNotificationStore.getState();
+    // A live-only (transient) item arrives via the event stream; polls
+    // never contain it (it has no stored row), so the merge must keep it
+    // until it is dismissed (CodeRabbit, PR #4507).
+    store.mergeServerNotifications([{ ...srv(-770, 100), transient: true }]);
+    store.mergeServerNotifications([srv(1, 50)]);
+    const all = useNotificationStore.getState().notifications;
+    expect(all.some((n) => n.id === "srv--770" && !n.archived)).toBe(true);
+  });
+
+  it("a dismissed transient id cannot swallow a later toast reusing the id", () => {
+    const store = useNotificationStore.getState();
+    store.mergeServerNotifications([{ ...srv(-771, 100), transient: true }]);
+    store.dismiss("srv--771");
+    // The server restarts and its transient counter restarts with it: a
+    // NEW toast arrives under the same id. The dismissed-id set must not
+    // suppress it (CodeRabbit, PR #4507).
+    store.mergeServerNotifications([{ ...srv(-771, 200), transient: true }]);
+    const active = useNotificationStore
+      .getState()
+      .notifications.filter((n) => n.id === "srv--771" && !n.archived);
+    expect(active).toHaveLength(1);
+    expect(active[0].timestamp).toBe(200);
+    // The retained archived copy of the recycled id must not linger next
+    // to the fresh record: ids are unique across the FULL array, not
+    // only among active records (CodeRabbit, PR #4507).
+    const all = useNotificationStore.getState().notifications;
+    const ids = all.map((n) => n.id);
+    expect(new Set(ids).size).toBe(ids.length);
+    expect(all.filter((n) => n.id === "srv--771")).toHaveLength(1);
+  });
+
+  it("retained transients cannot starve ordinary feed records out of the cap", () => {
+    const store = useNotificationStore.getState();
+    // A burst of live-only toasts: the feed never returns them, so they
+    // survive across polls only through retention.
+    const burst = Array.from({ length: 105 }, (_, i) => ({
+      ...srv(-1000 - i, 2000 + i),
+      transient: true,
+    }));
+    store.mergeServerNotifications(burst);
+    // A later poll brings one ordinary, older, unread record. Without a
+    // separate bound on retained transients, the retained burst fills
+    // the 100-record cap and the ordinary record is dropped for good
+    // (CodeRabbit, PR #4507).
+    store.mergeServerNotifications([srv(1, 10)]);
+    const all = useNotificationStore.getState().notifications;
+    expect(all.some((n) => n.id === "srv-1")).toBe(true);
+    expect(useNotificationStore.getState().unreadCount()).toBeGreaterThanOrEqual(1);
+  });
 });
 
 describe("dismiss archives instead of removing", () => {

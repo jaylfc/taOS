@@ -40,8 +40,10 @@ async def test_mute_suppresses_claim_notification(client):
     pid = (await client.post("/api/projects", json={"name": "A", "slug": "a"})).json()["id"]
     t = (await client.post(f"/api/projects/{pid}/tasks", json={"title": "T1"})).json()
 
-    store = client._transport.app.state.notifications
-    await store.set_event_muted("task.claimed", True)
+    resp = await client.put(
+        "/api/notifications/prefs/task.claimed", json={"muted": True}
+    )
+    assert resp.status_code == 200
 
     resp = await client.post(f"/api/projects/{pid}/tasks/{t['id']}/claim", json={"claimer_id": "agent-1"})
     assert resp.status_code == 200

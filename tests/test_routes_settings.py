@@ -188,6 +188,43 @@ class TestSettingsRoutes:
         assert worker_join[0]["muted"] is True
 
     @pytest.mark.asyncio
+    async def test_notification_pref_write_rejected_before_onboarding(
+        self, app, tmp_path
+    ):
+        """Pre-onboarding the host local token authenticates with NO
+        user_id (there is no primary user yet). A notification-pref write
+        in that state must be refused -- not silently filed under the
+        legacy ownerless key, where it would apply to nobody while the
+        caller sees success (CodeRabbit, PR #4507)."""
+        from httpx import ASGITransport, AsyncClient
+
+        store = app.state.notifications
+        if store._db is not None:
+            await store.close()
+        store.db_path = tmp_path / "notifications.db"
+        await store.init()
+        app.state._startup_complete = True
+        token = app.state.auth.get_local_token()
+        try:
+            async with AsyncClient(
+                transport=ASGITransport(app=app),
+                base_url="http://test",
+                headers={"Authorization": f"Bearer {token}"},
+            ) as bare:
+                resp = await bare.post(
+                    "/api/settings/notification-prefs/worker.join",
+                    json={"muted": True},
+                )
+                assert resp.status_code == 401, resp.text
+                resp = await bare.get("/api/settings/notification-prefs")
+                assert resp.status_code == 401, resp.text
+            # Nothing was written under the legacy '' owner.
+            prefs = await store.get_event_prefs("")
+            assert all(p["muted"] is False for p in prefs)
+        finally:
+            await store.close()
+
+    @pytest.mark.asyncio
     async def test_get_backup_schedule_default_off(self, client):
         resp = await client.get("/api/settings/backup-schedule")
         assert resp.status_code == 200

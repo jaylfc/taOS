@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   fetchServerNotifications,
+  mapRow,
   markServerRead,
   markAllServerRead,
   archiveServerNotification,
@@ -149,6 +150,28 @@ describe("server-notifications", () => {
       expect(items[1].meta).toBeUndefined();
       expect(items[2].action).toBeUndefined();
       expect(items[2].meta).toBeUndefined();
+    });
+  });
+
+  describe("mapRow centre visibility", () => {
+    it("marks a centre-off live row transient so it stays toast-only", () => {
+      // The row is stored server-side but Centre-hidden for its owner;
+      // the live copy must not enter this client's Centre list or unread
+      // count before -- or after -- the next feed poll (CodeRabbit,
+      // PR #4507).
+      const n = mapRow({
+        id: 9, timestamp: 5, level: "info", title: "T", message: "m",
+        read: false, source: "app.installed", show_centre: false,
+      });
+      expect(n.transient).toBe(true);
+    });
+
+    it("leaves centre-visible rows non-transient", () => {
+      const n = mapRow({
+        id: 10, timestamp: 5, level: "info", title: "T", message: "m",
+        read: false, source: "app.installed", show_centre: true,
+      });
+      expect(n.transient).toBeUndefined();
     });
   });
 

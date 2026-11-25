@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, afterEach } from "vitest";
-import { render, screen, fireEvent, waitFor } from "@testing-library/react";
+import { render, screen, fireEvent, waitFor, within } from "@testing-library/react";
 import { NotificationsPanel } from "./NotificationsPanel";
 
 function jsonResponse(obj: unknown) {
@@ -97,7 +97,9 @@ describe("NotificationsPanel", () => {
     expect(await screen.findByText("Worker joined")).toBeInTheDocument();
     expect(screen.getByText("Backend up")).toBeInTheDocument();
     expect(screen.queryByRole("alert")).not.toBeInTheDocument();
-    expect(fetchSpy).toHaveBeenCalledTimes(2);
+    // 2 prefs loads + 1 DND load, which is chained after a successful
+    // prefs load (#206) and silently ignored on shape mismatch.
+    expect(fetchSpy).toHaveBeenCalledTimes(3);
   });
 
   it("re-shows the error when Retry still fails (not a blank panel or spinner)", async () => {
@@ -114,5 +116,89 @@ describe("NotificationsPanel", () => {
     expect(await screen.findByRole("alert")).toHaveTextContent("Could not reach backend.");
     expect(screen.queryByText("Loading...")).not.toBeInTheDocument();
     expect(fetchSpy).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe("NotificationsPanel delivery controls (#206)", () => {
+  afterEach(() => vi.restoreAllMocks());
+
+  function routedFetch(calls: { url: string; method: string; body?: unknown }[]) {
+    return vi.spyOn(globalThis, "fetch").mockImplementation((input, init) => {
+      const url = String(input);
+      const method = init?.method ?? "GET";
+      calls.push({
+        url,
+        method,
+        body: init?.body ? JSON.parse(String(init.body)) : undefined,
+      });
+      if (url === "/api/notifications/dnd") {
+        return Promise.resolve(
+          jsonResponse({ enabled: false, start: "22:00", end: "07:00" }),
+        );
+      }
+      if (method === "PUT") return Promise.resolve(jsonResponse({}));
+      return Promise.resolve(
+        jsonResponse([
+          { event_type: "worker.join", muted: false, style: "banner", show_centre: true },
+        ]),
+      );
+    });
+  }
+
+  it("saves a delivery style change for a source", async () => {
+    const calls: { url: string; method: string; body?: unknown }[] = [];
+    routedFetch(calls);
+    render(<NotificationsPanel />);
+    expect(await screen.findByText("Worker joined")).toBeInTheDocument();
+    const styleGroup = screen.getByRole("group", {
+      name: "Worker joined delivery style",
+    });
+    fireEvent.click(within(styleGroup).getByRole("button", { name: "Alert" }));
+    await waitFor(() => {
+      expect(
+        calls.some(
+          (c) =>
+            c.method === "PUT" &&
+            c.url.includes("/api/notifications/prefs/worker.join") &&
+            (c.body as { style?: string })?.style === "alert",
+        ),
+      ).toBe(true);
+    });
+  });
+
+  it("saves a Notification Centre visibility change", async () => {
+    const calls: { url: string; method: string; body?: unknown }[] = [];
+    routedFetch(calls);
+    render(<NotificationsPanel />);
+    expect(await screen.findByText("Worker joined")).toBeInTheDocument();
+    fireEvent.click(screen.getByLabelText("Worker joined in Notification Centre"));
+    await waitFor(() => {
+      expect(
+        calls.some(
+          (c) =>
+            c.method === "PUT" &&
+            c.url.includes("/api/notifications/prefs/worker.join") &&
+            (c.body as { show_centre?: boolean })?.show_centre === false,
+        ),
+      ).toBe(true);
+    });
+  });
+
+  it("renders Do Not Disturb and saves the toggle", async () => {
+    const calls: { url: string; method: string; body?: unknown }[] = [];
+    routedFetch(calls);
+    render(<NotificationsPanel />);
+    const dndSwitch = await screen.findByLabelText("Do Not Disturb");
+    fireEvent.click(dndSwitch);
+    await waitFor(() => {
+      expect(
+        calls.some(
+          (c) =>
+            c.method === "PUT" &&
+            c.url === "/api/notifications/dnd" &&
+            (c.body as { enabled?: boolean })?.enabled === true,
+        ),
+      ).toBe(true);
+    });
   });
 });

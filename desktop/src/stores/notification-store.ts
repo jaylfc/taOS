@@ -18,6 +18,18 @@ export interface Notification {
   data?: Record<string, unknown>;
   /** When true the notification has been dismissed/archived. */
   archived?: boolean;
+  /** Alert-style delivery (#206): the toast stays until dismissed instead
+   *  of auto-expiring. Set from the backend row's `persistent` flag. */
+  persistent?: boolean;
+  /** Toast-only live copy (#206): must not render in the Notification
+   *  Centre or count as unread there. Produced for rows whose owner has
+   *  Centre visibility off for the source: the backend stores the row
+   *  marked show_centre = 0 and filters it from the Centre listing, and
+   *  mapRow marks the live copy transient (from the payload's show_centre)
+   *  so the toast shows without the row entering the Centre before -- or
+   *  after -- the next feed poll. Older servers sent never-stored rows
+   *  with `transient` already set; the handling covers both. */
+  transient?: boolean;
 }
 
 interface NotificationStore {
@@ -39,6 +51,12 @@ interface NotificationStore {
 }
 
 let counter = 0;
+
+// Cap on live-only (transient) server records retained across feed polls.
+// The feed never returns them, so without a separate bound a burst of
+// retained transients could occupy the whole 100-record Centre capacity
+// and starve ordinary feed records out of the store (CodeRabbit, PR #4507).
+const MAX_RETAINED_TRANSIENTS = 20;
 
 // Notification sources that must stay pinned at the top of the active inbox
 // until they are archived (i.e. the server has decided the request). Reading a
@@ -87,9 +105,22 @@ export const useNotificationStore = create<NotificationStore>((set, get) => ({
       // Keep every client-origin item ("notif-N") untouched, plus any archived
       // server items (they must survive polls). Drop the old unarchived server
       // items (replaced by the fresh list), de-dupe, sort newest-first.
-      const kept = s.notifications.filter(
-        (n) => !n.id.startsWith("srv-") || n.archived,
-      );
+      // A kept record whose id the fresh list already carries is dropped:
+      // the fresh copy wins, so a recycled id (e.g. a transient id reused
+      // after a server restart) never appears twice in the store.
+      const mergedIds = new Set(merged.map((n) => n.id));
+      // The store is newest-first, so the transient bound keeps the most
+      // recent ones.
+      let retainedTransients = 0;
+      const kept = s.notifications.filter((n) => {
+        if (mergedIds.has(n.id)) return false;
+        if (!n.id.startsWith("srv-")) return true;
+        if (n.transient) {
+          retainedTransients += 1;
+          return retainedTransients <= MAX_RETAINED_TRANSIENTS;
+        }
+        return !!n.archived;
+      });
       const combined = [...merged, ...kept];
       // Pinned grant requests always lead the active inbox (newest-first among
       // them), then everything else newest-first. The 100-item cap applies
@@ -119,7 +150,7 @@ export const useNotificationStore = create<NotificationStore>((set, get) => ({
           if (n.source === "agent_scope_requests" || n.source === "auth_requests") {
             return { ...n, read: true };
           }
-          if (n.id.startsWith("srv-")) {
+          if (n.id.startsWith("srv-") && !n.transient) {
             dismissedServerIds.add(n.id);
             void archiveServerNotification(id);
           }
@@ -154,8 +185,10 @@ export const useNotificationStore = create<NotificationStore>((set, get) => ({
           if (n.source === "agent_scope_requests" || n.source === "auth_requests") {
             return n;
           }
-          dismissedServerIds.add(n.id);
-          void archiveServerNotification(n.id);
+          if (!n.transient) {
+            dismissedServerIds.add(n.id);
+            void archiveServerNotification(n.id);
+          }
           return { ...n, archived: true };
         }
         // Local (non-srv-) notifications: archive them as before
@@ -174,7 +207,9 @@ export const useNotificationStore = create<NotificationStore>((set, get) => ({
   },
 
   unreadCount() {
-    return get().notifications.filter((n) => !n.read && !n.archived).length;
+    return get().notifications.filter(
+      (n) => !n.read && !n.archived && !n.transient,
+    ).length;
   },
 
   archivedNotifications() {

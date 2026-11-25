@@ -237,3 +237,131 @@ async def test_notification_add_without_user_id_still_broadcasts(notif_store):
     await notif_store.add("System alert", "everyone sees this")
 
     assert bcast_q.get_nowait() is not None
+
+
+# ---------------------------------------------------------------------------
+# Broadcast notifications: per-recipient delivery prefs on the SSE stream
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_stream_suppresses_broadcast_for_a_muting_user(notif_store):
+    """A broadcast notification.added event must not reach an SSE client
+    whose own prefs suppress that source (mute / style none / DND) --
+    personal rows are decided in add(), broadcasts are decided here, at
+    the fan-out point that knows the recipient (CodeRabbit, PR #4507)."""
+    from tinyagentos.routes.event_stream import events_stream
+
+    bus = EventBus()
+    await notif_store.set_event_muted("u1", "worker.join", True)
+
+    req = MagicMock()
+    req.state.user_id = "u1"
+    req.app.state.event_bus = bus
+    req.app.state.notifications = notif_store
+    req.is_disconnected = AsyncMock(return_value=False)
+
+    resp = await events_stream(req)
+    assert resp.status_code == 200
+
+    frames: list[str] = []
+
+    async def _collect():
+        async for chunk in resp.body_iterator:
+            frames.append(chunk)
+
+    task = asyncio.create_task(_collect())
+    try:
+        await asyncio.sleep(0.2)
+        await bus.broadcast(
+            _make_event(
+                payload={
+                    "id": 11, "title": "Muted", "message": "m", "level": "info",
+                    "source": "worker.join", "user_id": None,
+                }
+            )
+        )
+        await asyncio.sleep(0.5)
+        assert not any("Muted" in f for f in frames), frames
+
+        await bus.broadcast(
+            _make_event(
+                payload={
+                    "id": 12, "title": "Audible", "message": "m", "level": "info",
+                    "source": "backend.up", "user_id": None,
+                }
+            )
+        )
+        for _ in range(50):
+            if any("Audible" in f for f in frames):
+                break
+            await asyncio.sleep(0.1)
+        assert any("Audible" in f for f in frames), frames
+    finally:
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+
+
+@pytest.mark.asyncio
+async def test_stream_marks_broadcast_persistent_for_alert_recipients(notif_store):
+    """A broadcast frame must carry persistent: true for a recipient whose
+    own style for the source is alert -- and only for them: broadcast rows
+    are inserted with the default banner pref, so add() cannot set it.
+    The shared event.payload must not be mutated (CodeRabbit, PR #4507)."""
+    import json as _json
+
+    from tinyagentos.routes.event_stream import events_stream
+
+    bus = EventBus()
+    await notif_store.set_event_pref("u1", "backend.up", style="alert")
+
+    async def _frames_for(user_id):
+        req = MagicMock()
+        req.state.user_id = user_id
+        req.app.state.event_bus = bus
+        req.app.state.notifications = notif_store
+        req.is_disconnected = AsyncMock(return_value=False)
+        resp = await events_stream(req)
+        frames: list[str] = []
+
+        async def _collect():
+            async for chunk in resp.body_iterator:
+                frames.append(chunk)
+
+        task = asyncio.create_task(_collect())
+        return frames, task
+
+    frames_u1, task_u1 = await _frames_for("u1")
+    frames_u2, task_u2 = await _frames_for("u2")
+    try:
+        await asyncio.sleep(0.2)
+        payload = {
+            "id": 21, "title": "Backend up", "message": "m", "level": "info",
+            "source": "backend.up", "user_id": None,
+        }
+        await bus.broadcast(_make_event(payload=payload))
+        for _ in range(50):
+            if any("Backend up" in f for f in frames_u1) and any(
+                "Backend up" in f for f in frames_u2
+            ):
+                break
+            await asyncio.sleep(0.1)
+
+        def _payload_of(frames):
+            for f in frames:
+                for line in f.splitlines():
+                    if line.startswith("data: "):
+                        data = _json.loads(line[6:])
+                        if data.get("payload", {}).get("title") == "Backend up":
+                            return data["payload"]
+            return None
+
+        p1 = _payload_of(frames_u1)
+        p2 = _payload_of(frames_u2)
+        assert p1 is not None and p1.get("persistent") is True
+        assert p2 is not None and not p2.get("persistent")
+        # The shared event payload was not mutated for either recipient.
+        assert "persistent" not in payload
+    finally:
+        task_u1.cancel()
+        task_u2.cancel()
+        await asyncio.gather(task_u1, task_u2, return_exceptions=True)

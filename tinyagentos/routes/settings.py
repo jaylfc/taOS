@@ -557,7 +557,16 @@ async def test_webhook(request: Request):
 async def get_notification_prefs(request: Request):
     """Return notification event preferences."""
     notif_store = request.app.state.notifications
-    prefs = await notif_store.get_event_prefs()
+    user_id = str(getattr(request.state, "user_id", "") or "")
+    if not user_id:
+        # Pre-onboarding the host local token authenticates with no user
+        # (there is no primary user yet). Delivery prefs are personal:
+        # refuse rather than read/write the legacy ownerless rows, where
+        # a write would apply to nobody while reporting success (#206).
+        return JSONResponse(
+            {"error": "Authentication required"}, status_code=401
+        )
+    prefs = await notif_store.get_event_prefs(user_id)
     return {"prefs": prefs}
 
 
@@ -567,7 +576,13 @@ async def toggle_notification_pref(request: Request, event_type: str):
     body = await request.json()
     muted = body.get("muted", False)
     notif_store = request.app.state.notifications
-    await notif_store.set_event_muted(event_type, muted)
+    user_id = str(getattr(request.state, "user_id", "") or "")
+    if not user_id:
+        # See get_notification_prefs: no authenticated user, no write.
+        return JSONResponse(
+            {"error": "Authentication required"}, status_code=401
+        )
+    await notif_store.set_event_muted(user_id, event_type, muted)
     return {"status": "updated", "event_type": event_type, "muted": muted}
 
 

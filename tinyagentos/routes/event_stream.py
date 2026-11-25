@@ -78,11 +78,50 @@ async def events_stream(request: Request):
                 except asyncio.TimeoutError:
                     yield ":keepalive\n\n"
                     continue
+                payload = event.payload
+                if (
+                    event.kind == "notification.added"
+                    and isinstance(event.payload, dict)
+                    and not event.payload.get("user_id")
+                ):
+                    # Broadcast notification: personal rows were decided
+                    # against the recipient's prefs in NotificationStore
+                    # .add(), but a broadcast has no recipient at insert
+                    # time -- apply THIS recipient's mute / style / DND
+                    # here, at the fan-out point that knows them (#206).
+                    # Best-effort: any failure delivers the event.
+                    _notif_store = getattr(
+                        request.app.state, "notifications", None
+                    )
+                    if _notif_store is not None:
+                        try:
+                            _allowed = await _notif_store.live_delivery_allowed(
+                                user_id,
+                                event.payload.get("source") or "system",
+                            )
+                        except Exception:
+                            _allowed = True
+                        if not _allowed:
+                            continue
+                        # This recipient's style may be "alert" even
+                        # though the broadcast row was inserted with the
+                        # default banner pref: mark THEIR frame persistent,
+                        # on a copy -- the shared payload must not change
+                        # for other recipients (#206).
+                        try:
+                            _style = await _notif_store.live_delivery_style(
+                                user_id,
+                                event.payload.get("source") or "system",
+                            )
+                        except Exception:
+                            _style = None
+                        if _style == "alert":
+                            payload = {**event.payload, "persistent": True}
                 seq += 1
                 data = json.dumps(
                     {
                         "type": event.kind,
-                        "payload": event.payload,
+                        "payload": payload,
                         "ts": event.ts,
                         "id": event.trace_id,
                     }

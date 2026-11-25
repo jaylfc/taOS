@@ -192,7 +192,9 @@ export function NotificationCentre() {
   const openWindow = useProcessStore((s) => s.openWindow);
   const [checklistDismissed, setChecklistDismissed] = useState(false);
 
-  const active = notifications.filter((n) => !n.archived);
+  // Transient rows are live-only (toast-only delivery, #206): they were
+  // never stored server-side and must not appear in the Centre.
+  const active = notifications.filter((n) => !n.archived && !n.transient);
   // The store already keeps pinned grant requests first (newest-first among
   // them), so rendering `active` in order is enough; the panel scrolls through
   // every row rather than capping the list.

@@ -367,7 +367,7 @@ async def test_cleanup_prunes_id_records_with_their_rows(world):
 async def test_replace_respects_a_muted_source(world):
     async with _client(world["app"], world["alice_tok"]) as c:
         a = (await c.post(URL, json=_body(id="m1", summary="before"))).json()
-        await world["app"].state.notifications.set_event_muted("os:thunderbird", True)
+        await world["app"].state.notifications.set_event_muted(world["alice"], "os:thunderbird", True)
         r = (await c.post(URL, json=_body(id="m2", summary="after", replaces="m1"))).json()
         assert r == {"id": None, "duplicate": False, "stored": False, "reason": "muted"}
         assert [x["title"] for x in await _rows(c)] == ["before"] and a["id"]

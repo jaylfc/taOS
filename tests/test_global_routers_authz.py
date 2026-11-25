@@ -474,8 +474,9 @@ class TestMcpMemberRejected:
 @pytest.mark.asyncio
 class TestNotificationsPrefsMemberRejected:
     async def test_put_pref_rejected_and_not_applied(self, client, app):
-        """Member cannot mute/unmute global notification event types."""
-        # First, verify the default state (unmuted)
+        """A member's pref change applies to the member only (per-person
+        settings, PR #4507): the member's own PUT succeeds, and the admin's
+        prefs are untouched by it."""
         event_type = "app.failed"
         resp = await client.get("/api/notifications/prefs")
         assert resp.status_code == 200
@@ -483,18 +484,42 @@ class TestNotificationsPrefsMemberRejected:
         pref = next(p for p in prefs if p["event_type"] == event_type)
         assert pref["muted"] is False
 
-        # Member tries to mute it
         member = await _member_client(app)
         try:
             resp = await member.put(
                 f"/api/notifications/prefs/{event_type}", json={"muted": True}
             )
+            assert resp.status_code == 200, resp.text
+            # The member sees their own change...
+            resp = await member.get("/api/notifications/prefs")
+            assert resp.status_code == 200
+            mpref = next(
+                p for p in resp.json() if p["event_type"] == event_type
+            )
+            assert mpref["muted"] is True
+            # ...and a forged identity in the body changes nothing: the
+            # route keys on the caller, so this still lands on the member.
+            # The forgery names the admin's REAL user id and a value that
+            # differs from the admin's current state, so a cross-user leak
+            # would flip the admin's pref and fail the checks below
+            # (CodeRabbit nitpick, PR #4507).
+            admin_id = app.state.auth.get_primary_user()["id"]
+            resp = await member.put(
+                f"/api/notifications/prefs/{event_type}",
+                json={"muted": True, "user_id": admin_id},
+            )
+            assert resp.status_code == 200, resp.text
+            # It landed on the member (the caller), whose pref stays True.
+            resp = await member.get("/api/notifications/prefs")
+            assert resp.status_code == 200
+            mpref = next(
+                p for p in resp.json() if p["event_type"] == event_type
+            )
+            assert mpref["muted"] is True
         finally:
             await member.aclose()
-        assert resp.status_code == 403, resp.text
-        assert resp.json() == FORBIDDEN
 
-        # Verify the value is unchanged
+        # The admin's own prefs were never touched by any of it.
         resp = await client.get("/api/notifications/prefs")
         assert resp.status_code == 200
         prefs = resp.json()
@@ -502,11 +527,14 @@ class TestNotificationsPrefsMemberRejected:
         assert pref["muted"] is False
 
     async def test_admin_put_pref_allowed(self, client, app):
-        """Admin can mute/unmute global notification event types."""
+        """Admin can mute/unmute their own notification event types."""
         event_type = "app.failed"
         resp = await client.put(f"/api/notifications/prefs/{event_type}", json={"muted": True})
         assert resp.status_code == 200, resp.text
-        assert resp.json() == {"event_type": event_type, "muted": True}
+        # PUT returns the full pref since #206 (style/show_centre added).
+        body = resp.json()
+        assert body["event_type"] == event_type
+        assert body["muted"] is True
 
         # Verify it's changed
         resp = await client.get("/api/notifications/prefs")
@@ -515,14 +543,95 @@ class TestNotificationsPrefsMemberRejected:
         pref = next(p for p in prefs if p["event_type"] == event_type)
         assert pref["muted"] is True
 
+    async def test_member_cannot_read_admin_prefs(self, client, app):
+        """Jay's ask (PR #4507): a second signed-in member reads only their
+        own preferences -- the admin's non-default values are not visible
+        to them, because the route keys every read on the caller."""
+        event_type = "backend.down"
+        resp = await client.put(
+            f"/api/notifications/prefs/{event_type}", json={"muted": True}
+        )
+        assert resp.status_code == 200, resp.text
+
+        member = await _member_client(app)
+        try:
+            resp = await member.get("/api/notifications/prefs")
+            assert resp.status_code == 200
+            mpref = next(
+                p for p in resp.json() if p["event_type"] == event_type
+            )
+            # The member sees their OWN pref (default), not the admin's.
+            assert mpref["muted"] is False
+        finally:
+            await member.aclose()
+
+        # The admin's value is intact and visible to the admin.
+        resp = await client.get("/api/notifications/prefs")
+        pref = next(p for p in resp.json() if p["event_type"] == event_type)
+        assert pref["muted"] is True
+
+    async def test_member_dnd_is_isolated_from_admin(self, client, app):
+        """Jay's ask (PR #4507): Do Not Disturb is per person at the route
+        level -- a member neither reads nor changes the admin's window,
+        and their own window never touches the admin's."""
+        resp = await client.put(
+            "/api/notifications/dnd",
+            json={
+                "enabled": True,
+                "start": "01:00",
+                "end": "02:00",
+                "timezone": "UTC",
+            },
+        )
+        assert resp.status_code == 200, resp.text
+
+        member = await _member_client(app)
+        try:
+            # The member cannot read the admin's DND: they get their own
+            # (still the default, disabled).
+            resp = await member.get("/api/notifications/dnd")
+            assert resp.status_code == 200
+            mdnd = resp.json()
+            assert mdnd["enabled"] is False
+
+            # The member sets their own window...
+            resp = await member.put(
+                "/api/notifications/dnd",
+                json={
+                    "enabled": True,
+                    "start": "03:00",
+                    "end": "04:00",
+                    "timezone": "UTC",
+                },
+            )
+            assert resp.status_code == 200, resp.text
+            resp = await member.get("/api/notifications/dnd")
+            mdnd = resp.json()
+            assert mdnd["enabled"] is True
+            assert mdnd["start"] == "03:00"
+            assert mdnd["end"] == "04:00"
+        finally:
+            await member.aclose()
+
+        # ...and the admin's window is exactly what the admin set.
+        resp = await client.get("/api/notifications/dnd")
+        assert resp.status_code == 200
+        adnd = resp.json()
+        assert adnd["enabled"] is True
+        assert adnd["start"] == "01:00"
+        assert adnd["end"] == "02:00"
+
     async def test_local_token_put_pref_allowed(self, client, app):
-        """Local token can mute/unmute global notification event types."""
+        """Local token can mute/unmute its own notification event types."""
         bare = _local_token_client(app)
         try:
             event_type = "app.failed"
             resp = await bare.put(f"/api/notifications/prefs/{event_type}", json={"muted": True})
             assert resp.status_code == 200, resp.text
-            assert resp.json() == {"event_type": event_type, "muted": True}
+            # PUT returns the full pref since #206 (style/show_centre added).
+            body = resp.json()
+            assert body["event_type"] == event_type
+            assert body["muted"] is True
         finally:
             await bare.aclose()
 

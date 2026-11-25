@@ -4,6 +4,9 @@ import asyncio
 import json
 import logging
 import time
+from datetime import datetime
+from datetime import timezone as dt_timezone
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from tinyagentos.base_store import BaseStore
 
@@ -11,6 +14,21 @@ from tinyagentos.base_store import BaseStore
 # The notify_user tool schema, the POST /api/notifications route, and the
 # desktop toast/archive renderers all consume this set.
 VALID_LEVELS = frozenset({"info", "success", "warning", "error"})
+
+# Per-source delivery styles (#206): "banner" toasts and auto-dismisses,
+# "alert" toasts and stays until dismissed (published with persistent=True),
+# "none" is stored in the Notification Centre with no live fan-out.
+DELIVERY_STYLES = ("banner", "alert", "none")
+DEFAULT_DND = {"enabled": False, "start": "22:00", "end": "07:00", "timezone": "UTC"}
+
+
+def _valid_hhmm(value) -> bool:
+    """True for a zero-padded 24h "HH:MM" string."""
+    if not isinstance(value, str) or len(value) != 5 or value[2] != ":":
+        return False
+    hh, mm = value[:2], value[3:]
+    return hh.isdigit() and mm.isdigit() and int(hh) <= 23 and int(mm) <= 59
+
 
 logger = logging.getLogger(__name__)
 
@@ -33,12 +51,24 @@ CREATE TABLE IF NOT EXISTS notifications (
     source TEXT,
     archived INTEGER NOT NULL DEFAULT 0,
     data TEXT,
-    user_id TEXT
+    user_id TEXT,
+    show_centre INTEGER NOT NULL DEFAULT 1
 );
 CREATE INDEX IF NOT EXISTS idx_notif_ts ON notifications(timestamp DESC);
 CREATE TABLE IF NOT EXISTS notification_prefs (
-    event_type TEXT PRIMARY KEY,
-    muted INTEGER NOT NULL DEFAULT 0
+    user_id TEXT NOT NULL DEFAULT '',
+    event_type TEXT NOT NULL,
+    muted INTEGER NOT NULL DEFAULT 0,
+    style TEXT NOT NULL DEFAULT 'banner',
+    show_centre INTEGER NOT NULL DEFAULT 1,
+    PRIMARY KEY (user_id, event_type)
+);
+CREATE TABLE IF NOT EXISTS notification_dnd (
+    user_id TEXT PRIMARY KEY,
+    enabled INTEGER NOT NULL DEFAULT 0,
+    start TEXT NOT NULL DEFAULT '22:00',
+    end TEXT NOT NULL DEFAULT '07:00',
+    timezone TEXT NOT NULL DEFAULT 'UTC'
 );
 CREATE TABLE IF NOT EXISTS notification_user_state (
     notification_id INTEGER NOT NULL,
@@ -155,12 +185,97 @@ class NotificationStore(BaseStore):
                 "ALTER TABLE notifications ADD COLUMN user_id TEXT"
             )
             await self._db.commit()
+        # `show_centre` marks rows their owner's pref kept out of the
+        # Notification Centre at insert time (#206): stored, but hidden
+        # from the Centre listing. Guarded ALTER; rows from before the
+        # column keep the visible default.
+        if "show_centre" not in cols:
+            await self._db.execute(
+                "ALTER TABLE notifications ADD COLUMN show_centre INTEGER NOT NULL DEFAULT 1"
+            )
+            await self._db.commit()
         # `digest` on os_notification_ids: an earlier version of the table had no such column, and
         # CREATE TABLE IF NOT EXISTS leaves an existing table as it was. Guarded ALTER, like the above;
         # rows from before the column keep the empty default.
         id_cols = {row[1] for row in await (await self._db.execute("PRAGMA table_info(os_notification_ids)")).fetchall()}
         if "digest" not in id_cols:
             await self._db.execute("ALTER TABLE os_notification_ids ADD COLUMN digest TEXT NOT NULL DEFAULT ''")
+            await self._db.commit()
+        # Per-person delivery prefs (#206): the shipped prefs table keys
+        # rows by event_type alone (mute was a global setting). SQLite
+        # cannot change a primary key in place, so a table without a
+        # user_id column is rebuilt with the composite key. Existing rows
+        # are preserved under the legacy '' owner, where they no longer
+        # apply to anyone: a global mute has no person to attribute it
+        # to, and attributing it to one person would recreate the global
+        # setting under a personal name.
+        pref_cols = {row[1] for row in await (await self._db.execute("PRAGMA table_info(notification_prefs)")).fetchall()}
+        if pref_cols and "user_id" not in pref_cols:
+            style_expr = "style" if "style" in pref_cols else "'banner'"
+            centre_expr = "show_centre" if "show_centre" in pref_cols else "1"
+            # An interrupted earlier run can leave the staging table on
+            # disk (the CREATE below commits in autocommit mode, before
+            # the copy does). It holds nothing the migration depends on
+            # -- the source table is intact until the DROP/RENAME commit
+            # -- so drop any leftover and rerun clean.
+            await self._db.execute("DROP TABLE IF EXISTS notification_prefs_new")
+            await self._db.execute(
+                "CREATE TABLE notification_prefs_new ("
+                "user_id TEXT NOT NULL DEFAULT '', event_type TEXT NOT NULL, "
+                "muted INTEGER NOT NULL DEFAULT 0, "
+                "style TEXT NOT NULL DEFAULT 'banner', "
+                "show_centre INTEGER NOT NULL DEFAULT 1, "
+                "PRIMARY KEY (user_id, event_type))"
+            )
+            await self._db.execute(
+                "INSERT OR IGNORE INTO notification_prefs_new "
+                "(user_id, event_type, muted, style, show_centre) "
+                f"SELECT '', event_type, muted, {style_expr}, {centre_expr} "
+                "FROM notification_prefs"
+            )
+            await self._db.execute("DROP TABLE notification_prefs")
+            await self._db.execute(
+                "ALTER TABLE notification_prefs_new RENAME TO notification_prefs"
+            )
+            await self._db.commit()
+        # The schema-column guard (scripts/check_schema_column_migrations.py)
+        # requires every column the CREATE TABLE gained to also appear as a
+        # guarded ALTER in this file. The rebuild above is the real migration
+        # for legacy tables -- SQLite cannot change a primary key in place --
+        # and it runs FIRST, so these ALTERs can never suppress it: by this
+        # point every real path (rebuilt table, fresh CREATE, or a table that
+        # already had the composite key) has all three columns, and the
+        # PRAGMA-guarded ALTERs are no-ops there. They still earn their keep
+        # on a table that has the composite key but somehow lost a column.
+        pref_cols = {row[1] for row in await (await self._db.execute("PRAGMA table_info(notification_prefs)")).fetchall()}
+        if pref_cols and "user_id" not in pref_cols:
+            await self._db.execute(
+                "ALTER TABLE notification_prefs ADD COLUMN user_id TEXT NOT NULL DEFAULT ''"
+            )
+            await self._db.commit()
+        if pref_cols and "style" not in pref_cols:
+            await self._db.execute(
+                "ALTER TABLE notification_prefs ADD COLUMN style TEXT NOT NULL DEFAULT 'banner'"
+            )
+            await self._db.commit()
+        if pref_cols and "show_centre" not in pref_cols:
+            await self._db.execute(
+                "ALTER TABLE notification_prefs ADD COLUMN show_centre INTEGER NOT NULL DEFAULT 1"
+            )
+            await self._db.commit()
+        # Same move for notification_dnd if an early single-row shape is
+        # present (it held no per-person data worth preserving).
+        dnd_cols = {row[1] for row in await (await self._db.execute("PRAGMA table_info(notification_dnd)")).fetchall()}
+        if dnd_cols and "user_id" not in dnd_cols:
+            await self._db.execute("DROP TABLE notification_dnd")
+            await self._db.execute(
+                "CREATE TABLE notification_dnd ("
+                "user_id TEXT PRIMARY KEY, "
+                "enabled INTEGER NOT NULL DEFAULT 0, "
+                "start TEXT NOT NULL DEFAULT '22:00', "
+                "end TEXT NOT NULL DEFAULT '07:00', "
+                "timezone TEXT NOT NULL DEFAULT 'UTC')"
+            )
             await self._db.commit()
         # Create the per-user index if it doesn't exist yet. Cannot live in
         # the SCHEMA because the column is added via guarded ALTER after init.
@@ -210,7 +325,10 @@ class NotificationStore(BaseStore):
     ) -> int | None:
         """Create a notification row and fan out to emitters + push.
 
-        Returns the new row id, or None when the source is muted.
+        Returns the new row id, or None when the source is muted for the
+        recipient. A centre-off source still stores its row, marked
+        show_centre = 0; list() filters marked rows out of the owner's
+        Centre view, so nothing is lost (#206).
 
         Args:
             user_id: Scope the notification to a specific user. When None
@@ -228,18 +346,25 @@ class NotificationStore(BaseStore):
                 recorded for ``user_id`` in the SAME transaction as the row, so
                 a crash can never leave a row without its idempotency record.
         """
-        if await self._is_event_muted(source):
+        pref = await self._pref_for(user_id, source)
+        if pref["muted"]:
             return None
         ts = int(time.time()) if timestamp is None else int(timestamp)
         data_json = json.dumps(data) if data is not None else None
+        # show_centre off (#206): the row is STILL stored -- nothing is
+        # lost -- but marked show_centre = 0, and list() filters marked
+        # rows out of the owner's Centre view. The live toast below is
+        # unaffected. (OS-originated rows store either way: their
+        # idempotency record must commit in the same transaction.)
         cursor = await self._db.execute(
-            "INSERT INTO notifications (timestamp, level, title, message, source, data, user_id) VALUES (?, ?, ?, ?, ?, ?, ?)",
-            (ts, level, title, message, source, data_json, user_id),
+            "INSERT INTO notifications (timestamp, level, title, message, source, data, user_id, show_centre) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (ts, level, title, message, source, data_json, user_id, 1 if pref["show_centre"] else 0),
         )
+        row_id = cursor.lastrowid
         if os_client_id is not None:
             await self._db.execute(
                 "INSERT INTO os_notification_ids (user_id, client_id, notification_id, digest) VALUES (?, ?, ?, ?)",
-                (user_id or "", os_client_id, cursor.lastrowid, os_digest),
+                (user_id or "", os_client_id, row_id, os_digest),
             )
         await self._db.commit()
         # Fire webhook notifications in the background
@@ -248,9 +373,9 @@ class NotificationStore(BaseStore):
                 await self._webhook_notifier.notify(title, message, level)
             except Exception as e:
                 logger.warning(f"Webhook notification error: {e}")
-        # Push to EventBus broadcast for SSE delivery — best-effort, never breaks add()
+        # Fan out to the SSE emitter + web-push -- best-effort, never breaks add()
         row = {
-            "id": cursor.lastrowid,
+            "id": row_id,
             "timestamp": ts,
             "level": level,
             "title": title,
@@ -259,12 +384,27 @@ class NotificationStore(BaseStore):
             "source": source,
             "data": data,
             "user_id": user_id,
+            "show_centre": pref["show_centre"],
         }
-        await self._publish(row)
-        return cursor.lastrowid
+        if pref["style"] == "alert":
+            row["persistent"] = True
+        # Style "none" and an active Do Not Disturb window both mean: stored
+        # (above) but no live fan-out -- no toast, no web-push (#206).
+        deliver = pref["style"] != "none" and not (
+            user_id and await self.dnd_active(user_id)
+        )
+        await self._publish(row, deliver=deliver)
+        return row_id
 
-    async def _publish(self, row: dict) -> None:
-        """Fan a stored row out to the SSE emitter and web-push. Best-effort."""
+    async def _publish(self, row: dict, *, deliver: bool = True) -> None:
+        """Fan a row out to the SSE emitter and web-push. Best-effort.
+
+        ``deliver=False`` skips the live fan-out entirely: the delivery
+        style "none" and an active Do Not Disturb window both mean the
+        notification lands in the Notification Centre silently (#206).
+        """
+        if not deliver:
+            return
         if self._event_emitter:
             try:
                 await self._event_emitter(row)
@@ -326,7 +466,7 @@ class NotificationStore(BaseStore):
                 if found[1] != digest:
                     raise OsIdConflict(client_id)
                 return found[0], False
-            if await self._is_event_muted(source):
+            if user_id and await self._is_event_muted(user_id, source):
                 return None, False
             if replaces:
                 async with self._db.execute(
@@ -336,10 +476,11 @@ class NotificationStore(BaseStore):
                     target = await cur.fetchone()
                 if target:
                     ts = int(time.time()) if timestamp is None else int(timestamp)
+                    _pref = await self._pref_for(user_id, source)
                     upd = await self._db.execute(
                         "UPDATE notifications SET timestamp = ?, level = ?, title = ?, message = ?, "
-                        "source = ?, data = ?, read = 0, archived = 0 WHERE id = ? AND user_id = ?",
-                        (ts, level, title, message, source, json.dumps(data), target[0], user_id),
+                        "source = ?, data = ?, read = 0, archived = 0, show_centre = ? WHERE id = ? AND user_id = ?",
+                        (ts, level, title, message, source, json.dumps(data), 1 if _pref["show_centre"] else 0, target[0], user_id),
                     )
                     if upd.rowcount == 0:
                         # The row was removed (retention): the replacement must not be lost.
@@ -360,11 +501,18 @@ class NotificationStore(BaseStore):
                         (user_id, client_id, target[0], digest),
                     )
                     await self._db.commit()
-                    await self._publish({
+                    _row = {
                         "id": target[0], "timestamp": ts, "level": level, "title": title,
                         "message": message, "read": False, "source": source, "data": data,
-                        "user_id": user_id,
-                    })
+                        "user_id": user_id, "show_centre": _pref["show_centre"],
+                    }
+                    if _pref["style"] == "alert":
+                        _row["persistent"] = True
+                    await self._publish(
+                        _row,
+                        deliver=_pref["style"] != "none"
+                        and not (user_id and await self.dnd_active(user_id)),
+                    )
                     return target[0], False
             rid = await self.add(
                 title, message, level=level, source=source, data=data, user_id=user_id,
@@ -383,6 +531,24 @@ class NotificationStore(BaseStore):
             raise ValueError("list() takes user_id or source, not both")
         if user_id is not None:
             # Per-user notifications: include both own notifications and broadcasts
+            # Per-person delivery prefs (#206) are enforced in SQL, before
+            # LIMIT, so hidden rows cannot starve a page:
+            #   * rows marked show_centre = 0 at insert time (their owner's
+            #     centre-off pref) never appear in the Centre listing -- the
+            #     marking is insert-time, so a later pref change neither
+            #     hides nor resurrects stored rows;
+            #   * broadcast rows are shared and carry no per-person marking,
+            #     so they are filtered per reader by the reader's CURRENT
+            #     muted / centre-off sources (the hidden predicate below).
+            # The reader's own unmarked rows are never read-filtered.
+            hidden = await self._hidden_sources(user_id)
+            hidden_placeholders = ",".join("?" * len(hidden))
+            hidden_params: tuple = tuple(sorted(hidden))
+            hidden_pred = ""
+            if hidden:
+                hidden_pred = (
+                    f" AND (n.user_id IS NOT NULL OR n.source IS NULL OR n.source NOT IN ({hidden_placeholders}))"
+                )
             # First, fetch pinned grant requests (non-archived, ignoring read/unread_only)
             pinned_placeholders = ",".join("?" * len(PINNED_SOURCES))
             pinned_sql = (
@@ -390,10 +556,11 @@ class NotificationStore(BaseStore):
                 "COALESCE(nus.read_at, n.read) as read, n.source, n.data, n.user_id "
                 "FROM notifications n "
                 "LEFT JOIN notification_user_state nus ON n.id = nus.notification_id AND nus.user_id = ? "
-                f"WHERE (n.user_id IS NULL OR n.user_id = ?) AND n.archived = 0 AND (n.user_id IS NOT NULL OR nus.archived_at IS NULL) AND n.source IN ({pinned_placeholders}) "
-                "ORDER BY n.timestamp DESC"
+                f"WHERE (n.user_id IS NULL OR n.user_id = ?) AND n.archived = 0 AND (n.user_id IS NOT NULL OR nus.archived_at IS NULL) AND n.source IN ({pinned_placeholders}) AND n.show_centre = 1"
+                + hidden_pred
+                + " ORDER BY n.timestamp DESC"
             )
-            pinned_params: tuple = (user_id, user_id) + PINNED_SOURCES
+            pinned_params: tuple = (user_id, user_id) + PINNED_SOURCES + hidden_params
             async with self._db.execute(pinned_sql, pinned_params) as cursor:
                 pinned_rows = await cursor.fetchall()
             pinned_items = [_serialize_row(r) for r in pinned_rows]
@@ -406,8 +573,14 @@ class NotificationStore(BaseStore):
                 "n.archived = 0",
                 f"(n.source IS NULL OR n.source NOT IN ({pinned_placeholders}))",
                 "(n.user_id IS NOT NULL OR nus.archived_at IS NULL)",
+                "n.show_centre = 1",
             ]
             params_list = [user_id, user_id] + list(PINNED_SOURCES)
+            if hidden:
+                conds.append(
+                    f"(n.user_id IS NOT NULL OR n.source IS NULL OR n.source NOT IN ({hidden_placeholders}))"
+                )
+                params_list += sorted(hidden)
             if unread_only:
                 conds.append("COALESCE(nus.read_at, n.read) = 0")
             sql = (
@@ -480,13 +653,29 @@ class NotificationStore(BaseStore):
     async def unread_count(self, user_id: str | None = None) -> int:
         if user_id is not None:
             # For per-user notifications, include both own notifications and broadcasts
-            # Read state for broadcasts is stored in notification_user_state
+            # Read state for broadcasts is stored in notification_user_state.
+            # The count applies the same filtering as list(), so the badge
+            # never counts rows the Centre cannot show: rows marked
+            # show_centre = 0 at insert time are excluded by their marking,
+            # and broadcast rows by the reader's current hidden (muted /
+            # centre-off) sources. Own unmarked rows are always counted,
+            # including rows stored before a preference change.
+            hidden = await self._hidden_sources(user_id)
+            hidden_pred = ""
+            hidden_params: tuple = ()
+            if hidden:
+                hidden_placeholders = ",".join("?" * len(hidden))
+                hidden_pred = (
+                    f" AND (n.user_id IS NOT NULL OR n.source IS NULL OR n.source NOT IN ({hidden_placeholders}))"
+                )
+                hidden_params = tuple(sorted(hidden))
             sql = (
                 "SELECT COUNT(*) FROM notifications n "
                 "LEFT JOIN notification_user_state nus ON n.id = nus.notification_id AND nus.user_id = ? "
-                "WHERE (n.user_id IS NULL OR n.user_id = ?) AND (n.user_id IS NOT NULL OR nus.archived_at IS NULL) AND COALESCE(nus.read_at, n.read) = 0"
+                "WHERE (n.user_id IS NULL OR n.user_id = ?) AND (n.user_id IS NOT NULL OR nus.archived_at IS NULL) AND COALESCE(nus.read_at, n.read) = 0 AND n.show_centre = 1"
+                + hidden_pred
             )
-            params = (user_id, user_id)
+            params = (user_id, user_id) + hidden_params
         else:
             # Internal/system caller: unfiltered by user
             sql = (
@@ -667,38 +856,217 @@ class NotificationStore(BaseStore):
         user_id: str | None = None,
         webhook: bool = True,
     ) -> None:
-        if await self._is_event_muted(event_type):
+        if user_id and await self._is_event_muted(user_id, event_type):
             return
         await self.add(
             title, message, level=level, source=event_type, user_id=user_id, webhook=webhook
         )
 
-    async def _is_event_muted(self, event_type: str) -> bool:
+    async def _get_event_pref(self, user_id: str, event_type: str) -> dict:
+        """One person's delivery pref for one event type (defaults if unset)."""
         async with self._db.execute(
-            "SELECT muted FROM notification_prefs WHERE event_type = ?", (event_type,)
-        ) as cursor:
-            row = await cursor.fetchone()
-        if row is not None:
-            return bool(row[0])
-        return False
+            "SELECT muted, style, show_centre FROM notification_prefs "
+            "WHERE user_id = ? AND event_type = ?",
+            (user_id, event_type),
+        ) as cur:
+            row = await cur.fetchone()
+        if row is None:
+            return {"muted": False, "style": "banner", "show_centre": True}
+        return {"muted": bool(row[0]), "style": row[1], "show_centre": bool(row[2])}
 
-    async def set_event_muted(self, event_type: str, muted: bool) -> None:
+    async def _pref_for(self, user_id: str | None, event_type: str) -> dict:
+        """The delivery pref governing a notification for its recipient.
+
+        Broadcast/system notifications (no recipient) are governed by the
+        defaults: delivery settings are personal, and with no person there
+        is nobody whose settings could apply.
+        """
+        if not user_id:
+            return {"muted": False, "style": "banner", "show_centre": True}
+        return await self._get_event_pref(user_id, event_type)
+
+    async def _is_event_muted(self, user_id: str, event_type: str) -> bool:
+        return (await self._get_event_pref(user_id, event_type))["muted"]
+
+    async def live_delivery_allowed(self, user_id: str, source: str) -> bool:
+        """Whether a live (toast / web-push) delivery of a ``source``
+        notification may reach ``user_id`` right now.
+
+        Personal rows are decided in add() against the recipient's prefs;
+        a BROADCAST row has no recipient at insert time, so the fan-out
+        points that know the recipients -- the SSE stream and the
+        web-push sender -- consult this per person instead. Muted and
+        style "none" suppress live delivery, as does an active Do Not
+        Disturb window; centre visibility does NOT (it governs the
+        Centre listing, not the toast).
+        """
+        pref = await self._get_event_pref(user_id, source)
+        if pref["muted"] or pref["style"] == "none":
+            return False
+        return not await self.dnd_active(user_id)
+
+    async def live_delivery_style(self, user_id: str, source: str) -> str:
+        """``user_id``'s delivery style for ``source`` ("banner" default).
+
+        The fan-out points consult this alongside live_delivery_allowed()
+        to mark a broadcast frame persistent for recipients whose style
+        is "alert": broadcast rows are inserted with the default pref,
+        so add() cannot set the flag for them (#206).
+        """
+        return (await self._get_event_pref(user_id, source))["style"]
+
+    async def _hidden_sources(self, user_id: str) -> set[str]:
+        """Sources this user muted or hid from their Notification Centre."""
+        async with self._db.execute(
+            "SELECT event_type FROM notification_prefs "
+            "WHERE user_id = ? AND (muted = 1 OR show_centre = 0)",
+            (user_id,),
+        ) as cur:
+            return {row[0] for row in await cur.fetchall()}
+
+    async def get_event_prefs(self, user_id: str) -> list[dict]:
+        """Every event type with this user's prefs merged over the defaults."""
+        async with self._db.execute(
+            "SELECT event_type, muted, style, show_centre "
+            "FROM notification_prefs WHERE user_id = ?",
+            (user_id,),
+        ) as cur:
+            rows = {
+                r[0]: {"muted": bool(r[1]), "style": r[2], "show_centre": bool(r[3])}
+                for r in await cur.fetchall()
+            }
+        defaults = {"muted": False, "style": "banner", "show_centre": True}
+        return [
+            {"event_type": event_type, **rows.get(event_type, defaults)}
+            for event_type in sorted(self.EVENT_TYPES)
+        ]
+
+    async def set_event_pref(
+        self,
+        user_id: str,
+        event_type: str,
+        *,
+        muted: bool | None = None,
+        style: str | None = None,
+        show_centre: bool | None = None,
+    ) -> dict:
+        """Partially update one person's delivery pref for an event type.
+
+        Only the fields passed are written: a single upsert whose conflict
+        clause touches only the specified columns, so two overlapping
+        partial updates cannot restore each other's stale values the way
+        a read-modify-write of the whole row could. The insert side uses
+        defaults for unspecified fields, which only matters for a
+        brand-new row.
+        """
+        if style is not None and style not in DELIVERY_STYLES:
+            raise ValueError(f"unknown delivery style: {style!r}")
+        if muted is None and style is None and show_centre is None:
+            return {
+                "event_type": event_type,
+                **await self._get_event_pref(user_id, event_type),
+            }
+        assignments = []
+        if muted is not None:
+            assignments.append("muted = excluded.muted")
+        if style is not None:
+            assignments.append("style = excluded.style")
+        if show_centre is not None:
+            assignments.append("show_centre = excluded.show_centre")
         await self._db.execute(
-            "INSERT OR REPLACE INTO notification_prefs (event_type, muted) VALUES (?, ?)",
-            (event_type, int(muted)),
+            "INSERT INTO notification_prefs "
+            "(user_id, event_type, muted, style, show_centre) "
+            "VALUES (?, ?, ?, ?, ?) "
+            f"ON CONFLICT(user_id, event_type) DO UPDATE SET {', '.join(assignments)}",
+            (
+                user_id,
+                event_type,
+                int(bool(muted)) if muted is not None else 0,
+                style if style is not None else "banner",
+                int(bool(show_centre)) if show_centre is not None else 1,
+            ),
         )
         await self._db.commit()
+        return {
+            "event_type": event_type,
+            **await self._get_event_pref(user_id, event_type),
+        }
 
-    async def get_event_prefs(self) -> list[dict]:
+    async def set_event_muted(self, user_id: str, event_type: str, muted: bool) -> None:
+        await self.set_event_pref(user_id, event_type, muted=muted)
+
+    async def get_dnd(self, user_id: str) -> dict:
+        """One person's Do Not Disturb settings (defaults if unset)."""
         async with self._db.execute(
-            "SELECT event_type, muted FROM notification_prefs"
-        ) as cursor:
-            rows = await cursor.fetchall()
-        stored = {r[0]: bool(r[1]) for r in rows}
-        return [
-            {"event_type": et, "muted": stored.get(et, False)}
-            for et in self.EVENT_TYPES
-        ]
+            "SELECT enabled, start, end, timezone FROM notification_dnd "
+            "WHERE user_id = ?",
+            (user_id,),
+        ) as cur:
+            row = await cur.fetchone()
+        if row is None:
+            return dict(DEFAULT_DND)
+        return {
+            "enabled": bool(row[0]),
+            "start": row[1],
+            "end": row[2],
+            "timezone": row[3],
+        }
+
+    async def set_dnd(
+        self,
+        user_id: str,
+        *,
+        enabled: bool,
+        start: str,
+        end: str,
+        timezone: str = "UTC",
+    ) -> dict:
+        """Persist one person's DND window, evaluated in their timezone."""
+        if not _valid_hhmm(start) or not _valid_hhmm(end):
+            raise ValueError("DND start/end must be zero-padded HH:MM times")
+        try:
+            ZoneInfo(timezone)
+        except (ZoneInfoNotFoundError, ValueError, TypeError):
+            raise ValueError(f"unknown timezone: {timezone!r}") from None
+        await self._db.execute(
+            "INSERT OR REPLACE INTO notification_dnd "
+            "(user_id, enabled, start, end, timezone) VALUES (?, ?, ?, ?, ?)",
+            (user_id, int(bool(enabled)), start, end, timezone),
+        )
+        await self._db.commit()
+        return {
+            "enabled": bool(enabled),
+            "start": start,
+            "end": end,
+            "timezone": timezone,
+        }
+
+    async def dnd_active(
+        self, user_id: str, now: datetime | None = None
+    ) -> bool:
+        """Whether DND is in effect for this person at ``now``.
+
+        ``now`` is an aware datetime (default: the current instant); the
+        window is compared in the person's own timezone, never server
+        time. A window whose start equals its end is active all day; a
+        window whose start is after its end wraps midnight.
+        """
+        dnd = await self.get_dnd(user_id)
+        if not dnd["enabled"]:
+            return False
+        if now is None:
+            now = datetime.now(dt_timezone.utc)
+        try:
+            tz = ZoneInfo(dnd["timezone"])
+        except (ZoneInfoNotFoundError, ValueError):
+            tz = dt_timezone.utc
+        hhmm = now.astimezone(tz).strftime("%H:%M")
+        start, end = dnd["start"], dnd["end"]
+        if start == end:
+            return True
+        if start < end:
+            return start <= hhmm < end
+        return hhmm >= start or hhmm < end
 
     async def search(
         self,

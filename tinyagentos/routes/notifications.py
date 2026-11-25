@@ -11,8 +11,7 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_valida
 
 from tinyagentos.agent_token_auth import check_agent_scope_for_project, registry_agent_caller
 from tinyagentos.auth import get_current_user
-from tinyagentos.auth_context import require_admin
-from tinyagentos.notifications import VALID_LEVELS, OsIdConflict
+from tinyagentos.notifications import DELIVERY_STYLES, VALID_LEVELS, OsIdConflict
 from tinyagentos.rate_limit import MovingWindowLimiter
 from tinyagentos.routes.auth import _require_admin
 
@@ -495,26 +494,81 @@ async def mark_all_read_counted(request: Request):
 @router.get("/api/notifications/prefs")
 async def get_notification_prefs(request: Request):
     store = request.app.state.notifications
-    return await store.get_event_prefs()
+    return await store.get_event_prefs(_notif_user_id(request))
 
 
-@router.put("/api/notifications/prefs/{event_type}", dependencies=[Depends(require_admin)])
+@router.put("/api/notifications/prefs/{event_type}")
 async def set_notification_pref(request: Request, event_type: str):
     store = request.app.state.notifications
+    user_id = _notif_user_id(request)
     if event_type not in store.EVENT_TYPES:
         return JSONResponse({"error": "unknown_event_type"}, status_code=404)
     try:
         body = await request.json()
     except json.JSONDecodeError:
         return JSONResponse({"error": "Invalid JSON body"}, status_code=400)
-    if not isinstance(body, dict) or "muted" not in body:
-        return JSONResponse({"error": "muted required"}, status_code=400)
-    muted_raw = body["muted"]
-    if not isinstance(muted_raw, bool):
-        return JSONResponse({"error": "muted must be a boolean"}, status_code=400)
-    muted = bool(muted_raw)
-    await store.set_event_muted(event_type, muted)
-    return {"event_type": event_type, "muted": muted}
+    if not isinstance(body, dict):
+        return JSONResponse({"error": "Invalid JSON body"}, status_code=400)
+    updates = {}
+    if "muted" in body:
+        if not isinstance(body["muted"], bool):
+            return JSONResponse({"error": "muted must be a boolean"}, status_code=400)
+        updates["muted"] = body["muted"]
+    if "style" in body:
+        if body["style"] not in DELIVERY_STYLES:
+            return JSONResponse({"error": "unknown delivery style"}, status_code=400)
+        updates["style"] = body["style"]
+    if "show_centre" in body:
+        if not isinstance(body["show_centre"], bool):
+            return JSONResponse(
+                {"error": "show_centre must be a boolean"}, status_code=400
+            )
+        updates["show_centre"] = body["show_centre"]
+    if not updates:
+        return JSONResponse(
+            {"error": "one of muted, style, show_centre required"}, status_code=400
+        )
+    return await store.set_event_pref(user_id, event_type, **updates)
+
+
+@router.get("/api/notifications/dnd")
+async def get_notification_dnd(request: Request):
+    store = request.app.state.notifications
+    return await store.get_dnd(_notif_user_id(request))
+
+
+@router.put("/api/notifications/dnd")
+async def set_notification_dnd(request: Request):
+    store = request.app.state.notifications
+    user_id = _notif_user_id(request)
+    try:
+        body = await request.json()
+    except json.JSONDecodeError:
+        return JSONResponse({"error": "Invalid JSON body"}, status_code=400)
+    if not isinstance(body, dict):
+        return JSONResponse({"error": "Invalid JSON body"}, status_code=400)
+    enabled = body.get("enabled")
+    if not isinstance(enabled, bool):
+        return JSONResponse({"error": "enabled must be a boolean"}, status_code=400)
+    timezone = body.get("timezone", "UTC")
+    if not isinstance(timezone, str):
+        return JSONResponse({"error": "timezone must be a string"}, status_code=400)
+    try:
+        return await store.set_dnd(
+            user_id,
+            enabled=enabled,
+            start=body.get("start"),
+            end=body.get("end"),
+            timezone=timezone,
+        )
+    except ValueError:
+        return JSONResponse(
+            {
+                "error": "start/end must be zero-padded HH:MM times "
+                "and timezone a valid IANA name"
+            },
+            status_code=400,
+        )
 
 
 # ---------------------------------------------------------------------------

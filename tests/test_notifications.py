@@ -456,7 +456,8 @@ async def test_muted_event_type_is_not_dispatched(tmp_path):
     store = NotificationStore(tmp_path / "notif.db")
     await store.init()
     try:
-        await store.set_event_muted("task.claimed", True)
+        # Per-person prefs (#206): the mute is the recipient's own.
+        await store.set_event_muted("u1", "task.claimed", True)
 
         seen_push: list[dict] = []
         seen_emit: list[dict] = []
@@ -475,6 +476,7 @@ async def test_muted_event_type_is_not_dispatched(tmp_path):
             "task-42 claimed by worker-1",
             level="info",
             source="task.claimed",
+            user_id="u1",
         )
         await asyncio.sleep(0)
 
