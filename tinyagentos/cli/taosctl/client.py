@@ -111,6 +111,12 @@ def _extract_error(raw: bytes, status: int) -> str:
     try:
         doc = json.loads(raw)
         if isinstance(doc, dict):
+            # Licence gate (412): show what the person has to accept or set, so
+            # the caller can ask them. The CLI and agents can never accept.
+            if doc.get("needs_license_acceptance") and doc.get("text"):
+                return f"{doc['text']} Ask the person to accept it in the Store app."
+            if doc.get("needs_country") and doc.get("detail"):
+                return str(doc["detail"])
             for key in ("error", "detail", "message"):
                 if doc.get(key):
                     return str(doc[key])

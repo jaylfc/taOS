@@ -25,7 +25,7 @@ from tinyagentos.agent_image import (
     base_image_url_for_alias,
     ensure_image_present,
 )
-from tinyagentos import license_policy
+from tinyagentos import license_gate
 from tinyagentos.auth_context import require_admin
 from tinyagentos.catalog.resolver import (
     DeviceCapability,
@@ -247,12 +247,6 @@ async def forget_install_location(request: Request, app_id: str, location_kind: 
         logger.warning("install_registry delete failed for %s", app_id, exc_info=True)
 
 
-def _request_via(request: Request) -> str | None:
-    """Which credential authenticated this request (set by the auth middleware)."""
-    via = getattr(request.state, "via", None)
-    return via if isinstance(via, str) else None
-
-
 def _get_current_user(request: Request) -> dict | None:
     """Return the currently authenticated user or None."""
     auth = getattr(request.app.state, "auth", None)
@@ -431,6 +425,13 @@ async def _legacy_install(request: Request, body: dict, app_id: str | None, targ
     manifest = _registry_get(registry, app_id) if registry else None
     install_config: dict = {}
     backend = "docker"
+
+    # Shared by v2 services, the setup wizard's backend installs and any other
+    # caller: the licence gate sits here, not only in a route.
+    if manifest is not None:
+        refused = await license_gate.enforce(request, manifest, body)
+        if refused is not None:
+            return refused
 
     if manifest is not None:
         install_block = getattr(manifest, "install", None) or {}
@@ -1030,119 +1031,9 @@ async def install_app(request: Request):
     #
     # Only a person's own session may accept. Agent tokens, service tokens and
     # every registry JWT are refused (allow-list, see via_may_accept).
-    restriction = license_policy.evaluate(manifest, manifest.id)
-    if restriction.restrictive:
-        license_store = getattr(request.app.state, "license_acceptances", None)
-        via = _request_via(request)
-        person_session = license_policy.via_may_accept(via)
-        session_user = _get_current_user(request) if person_session else None
-        acting = session_user
-        if acting is None:
-            uid = getattr(request.state, "user_id", None)
-            auth_mgr = getattr(request.app.state, "auth", None)
-            if isinstance(uid, str) and uid and auth_mgr is not None:
-                acting = auth_mgr.get_user_by_id(uid)
-        user_id = (acting or {}).get("id") or "anonymous"
-        username = (acting or {}).get("username") or ""
-        accepted_now = bool(body.get("accepted", False))
-        country_in = body.get("country")
-
-        def _refuse(error: str, detail: str, status: int, **extra):
-            progress.finish(install_id, success=False, error=error)
-            return JSONResponse(
-                {"error": error, "detail": detail, "license_class": restriction.cls,
-                 "license_id": restriction.acceptance_key, "install_id": install_id, **extra},
-                status_code=status,
-            )
-
-        if accepted_now and (not person_session or session_user is None):
-            return _refuse(
-                "agent_cannot_accept_license",
-                "Only a person signed in to their own session can accept a licence. "
-                "Ask the person to accept it in the Store app.",
-                403,
-            )
-        if country_in is not None:
-            if not person_session or session_user is None:
-                return _refuse(
-                    "agent_cannot_set_country",
-                    "Only a person signed in to their own session can set their country.",
-                    403,
-                )
-            code = license_policy.valid_country(country_in)
-            if code is None:
-                return _refuse(
-                    "invalid_country",
-                    "Country must be a two-letter ISO 3166-1 code such as US or GB.",
-                    400,
-                )
-            request.app.state.auth.set_country(session_user["username"], code)
-            acting = {**(acting or {}), "country": code}
-
-        # Territory-limited licences: the person's own country decides. Unset
-        # fails closed here, and only here; acceptance never overrides an
-        # excluded country.
-        country = (acting or {}).get("country") or ""
-        territory = license_policy.territory_check(restriction, country)
-        if territory == "excluded":
-            return _refuse(
-                "territory_excluded",
-                f"{manifest.name} is under {restriction.name}, which does not apply in your "
-                f"country ({country.upper()}). Accepting the licence does not change that.",
-                403, user_country=country.upper(),
-            )
-        if territory == "needs_country":
-            progress.finish(install_id, success=False, error="needs_country")
-            return JSONResponse(
-                {
-                    "needs_country": True,
-                    "detail": (
-                        f"{manifest.name} is under {restriction.name}, which is limited by "
-                        "country, and your country is not set. Set it in Settings, Account, "
-                        "Country (on desktop or phone), or enter it here when asked, then "
-                        "install again."
-                    ),
-                    "license_class": restriction.cls,
-                    "license_id": restriction.acceptance_key,
-                    "name": manifest.name,
-                    "install_id": install_id,
-                },
-                status_code=412,
-            )
-
-        license_key = restriction.acceptance_key
-        already_accepted = (
-            await license_store.has_accepted(user_id, manifest.id, license_key)
-            if license_store is not None else False
-        )
-        if not already_accepted and not accepted_now:
-            progress.finish(install_id, success=False, error="needs_license_acceptance")
-            return JSONResponse(
-                {
-                    "needs_license_acceptance": True,
-                    "license_id": license_key,
-                    "license_name": restriction.name,
-                    "license_version": restriction.version,
-                    "license_url": restriction.url,
-                    "license_class": restriction.cls,
-                    "weights_license": restriction.name,
-                    "name": manifest.name,
-                    "text": license_policy.acceptance_text(manifest.name, restriction),
-                },
-                status_code=412,
-            )
-        if accepted_now and not already_accepted:
-            if license_store is None:
-                return _refuse(
-                    "license_store_unavailable",
-                    "The licence record could not be saved, so the install was not started.",
-                    503,
-                )
-            await license_store.record_acceptance(
-                user_id, manifest.id, license_key,
-                license_name=restriction.name, license_version=restriction.version,
-                license_url=restriction.url, username=username,
-            )
+    refused = await license_gate.enforce(request, manifest, body, progress, install_id)
+    if refused is not None:
+        return refused
 
     # Non-model manifests use the legacy method-driven path.
     if getattr(manifest, "type", "model") != "model":
@@ -1186,6 +1077,10 @@ async def install_app(request: Request):
                 {"error": f"backend service manifest {result.backend_id!r} not in catalog", "install_id": install_id},
                 status_code=500,
             )
+        # A backend the chain pulls in has its own licence; same gate, same body.
+        refused = await license_gate.enforce(request, backend_manifest, body, progress, install_id)
+        if refused is not None:
+            return refused
         install_block = getattr(backend_manifest, "install", None) or {}
         backend_method = (
             install_block.get("method") if isinstance(install_block, dict) else None

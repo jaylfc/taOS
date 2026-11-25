@@ -7,6 +7,7 @@ import type { CatalogApp, InstallTarget } from "./types";
 import type { ResolveResponse } from "./resolver-types";
 import { filterCatalog, compatFromResolver } from "./filter";
 import { AppIcon, StoreCover } from "./AppIcon";
+import { useGatedInstall } from "./useGatedInstall";
 
 /* ------------------------------------------------------------------
    Mobile Store - Apple App Store-style presentation.
@@ -44,25 +45,16 @@ function GetButton({
   onInstall: (id: string) => void;
   installTargets: InstallTarget[];
 }) {
-  const [busy, setBusy] = useState(false);
-  const [failed, setFailed] = useState(false);
-
-  const handleGet = useCallback(async () => {
+  const { busy, failed, start, dialogs } = useGatedInstall({
+    appId: app.id,
+    appName: app.name,
+    target: installTargets[0]?.name ?? "local",
+    onInstalled: onInstall,
+  });
+  const handleGet = useCallback(() => {
     if (app.installed || busy) return;
-    setBusy(true);
-    setFailed(false);
-    try {
-      const target = installTargets[0]?.name ?? "local";
-      const res = await fetch("/api/store/install-v2", {
-        method: "POST",
-        headers: { "Content-Type": "application/json", Accept: "application/json" },
-        body: JSON.stringify({ app_id: app.id, target_remote: target }),
-      });
-      if (res.ok) onInstall(app.id);
-      else setFailed(true);
-    } catch { setFailed(true); }
-    setBusy(false);
-  }, [app.id, app.installed, busy, installTargets, onInstall]);
+    void start();
+  }, [app.installed, busy, start]);
 
   if (app.installed) {
     // Installed services are managed elsewhere, not launched from the store,
@@ -79,6 +71,7 @@ function GetButton({
   }
 
   return (
+    <>
     <button
       type="button"
       onClick={handleGet}
@@ -92,6 +85,8 @@ function GetButton({
     >
       {busy ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : failed ? "Retry" : "Get"}
     </button>
+    {dialogs}
+    </>
   );
 }
 

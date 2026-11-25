@@ -95,6 +95,24 @@ async def install_marketplace_server(manifest_id: str, request: Request):
     if marketplace is None:
         return _unavailable()
     try:
+        entry = await marketplace.detail(manifest_id)
+    except MCPMarketplaceError as exc:
+        return _error_response(exc)
+    from types import SimpleNamespace
+    from tinyagentos import license_gate
+    try:
+        body = await request.json()
+    except Exception:  # noqa: BLE001 - an empty or non-JSON body means no answers
+        body = {}
+    refused = await license_gate.enforce(
+        request,
+        SimpleNamespace(id=manifest_id, name=str(entry.get("name") or manifest_id),
+                        license=str(entry.get("license") or "")),
+        body if isinstance(body, dict) else {},
+    )
+    if refused is not None:
+        return refused
+    try:
         result = await marketplace.install(manifest_id)
     except MCPMarketplaceError as exc:
         return _error_response(exc)

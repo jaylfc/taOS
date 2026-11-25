@@ -52,11 +52,11 @@ export function CountryPromptDialog({ appName, detail, submitting = false, error
         )}
         <div className="flex justify-end gap-2 px-5 py-4 border-t border-white/5">
           <button type="button" onClick={onDecline} disabled={submitting}
-            className="px-4 py-1.5 rounded-full text-[13px] font-semibold text-shell-text-secondary hover:text-shell-text hover:bg-white/[0.04] transition-colors disabled:opacity-60">
+            className="px-4 py-1.5 min-h-[44px] rounded-full text-[13px] font-semibold text-shell-text-secondary hover:text-shell-text hover:bg-white/[0.04] transition-colors disabled:opacity-60">
             Cancel
           </button>
           <button type="button" onClick={() => { if (code && !submitting) onSave(code); }} disabled={!code || submitting}
-            className="px-4 py-1.5 rounded-full text-[13px] font-bold text-white transition-colors disabled:opacity-60"
+            className="px-4 py-1.5 min-h-[44px] rounded-full text-[13px] font-bold text-white transition-colors disabled:opacity-60"
             style={{ background: "var(--color-accent)" }}>
             {submitting ? "Saving..." : "Save and continue"}
           </button>

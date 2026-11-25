@@ -1071,7 +1071,7 @@ class TestRestrictiveLicenceGate:
     ])
     async def test_agent_cannot_accept_license_any_non_session_credential(self, client, via):
         app = _wire(client, make_licensed_manifest(weights_license="CC-BY-NC 4.0"))
-        with patch("tinyagentos.routes.store_install._request_via", return_value=via):
+        with patch("tinyagentos.license_gate.request_via", return_value=via):
             r = await client.post("/api/store/install-v2",
                                   json={"manifest_id": "lic-service", "accepted": True})
         assert r.status_code == 403, via
