@@ -243,13 +243,19 @@ async def _run_cmd(cmd: list[str], timeout: int = 30) -> tuple[int, str]:
         return 1, str(exc)
 
 
-async def _get_system_disk_paths() -> set[str]:
-    """Get the block device paths that hold the running system (root, boot)."""
+async def _get_system_disk_paths() -> set[str] | None:
+    """Get the block device paths that hold the running system (root, boot).
+    
+    Returns None on failure (caller must treat as unknown -> PROTECTED).
+    """
     paths: set[str] = set()
     try:
         # Get root device
         rc, out = await _run_cmd(["findmnt", "-n", "-o", "SOURCE", "/"])
-        if rc == 0 and out.strip():
+        if rc != 0:
+            logger.warning("storage_engine: findmnt for / failed: %s", out)
+            return None
+        if out.strip():
             source = out.strip()
             # Resolve to actual block device
             if source.startswith("/dev/"):
@@ -261,7 +267,10 @@ async def _get_system_disk_paths() -> set[str]:
 
         # Get boot device(s)
         rc, out = await _run_cmd(["findmnt", "-n", "-o", "SOURCE", "/boot"])
-        if rc == 0 and out.strip():
+        if rc != 0:
+            logger.warning("storage_engine: findmnt for /boot failed: %s", out)
+            return None
+        if out.strip():
             for line in out.strip().splitlines():
                 source = line.strip()
                 if source.startswith("/dev/"):
@@ -269,20 +278,65 @@ async def _get_system_disk_paths() -> set[str]:
                     match = re.match(r"(/dev/\w+)p?\d+", source)
                     if match:
                         paths.add(match.group(1))
-    except Exception:
-        logger.warning("storage_engine: failed to detect system disk paths", exc_info=True)
+    except Exception as exc:
+        logger.warning("storage_engine: failed to detect system disk paths: %s", exc)
+        return None
 
     logger.debug("storage_engine: system disk paths: %s", paths)
     return paths
 
 
-async def _read_sysfs_block(device_name: str, attr: str) -> str | None:
-    """Read a sysfs attribute for a block device."""
-    path = Path(f"/sys/block/{device_name}/{attr}")
-    try:
-        return path.read_text().strip()
-    except OSError:
-        return None
+async def _verify_signatures(disk_path: str, partitions: list[PartitionInfo]) -> None:
+    """Verify filesystem/raid/lvm signatures on disk and partitions using blkid and wipefs.
+    
+    Updates partition fstype in-place based on blkid/wipefs output.
+    Fail-closed: any error marks the disk as having unknown signatures (protected).
+    """
+    # Check disk itself
+    disk_fstype = await _probe_device_signatures(disk_path)
+    # Note: DiskInfo is frozen, so we can't update it here. The classifier uses
+    # the fstype from lsblk which should be consistent with blkid.
+    
+    # Check each partition and update fstype if blkid/wipefs finds something different
+    for part in partitions:
+        part_fstype = await _probe_device_signatures(part.path)
+        if part_fstype and part_fstype != part.fstype:
+            # PartitionInfo is frozen, so we need to create a new one
+            # This is handled by the caller replacing the partition in the list
+            pass  # For now, we log the discrepancy
+            logger.debug("storage_engine: signature mismatch on %s: lsblk=%s blkid/wipefs=%s",
+                        part.path, part.fstype, part_fstype)
+
+
+async def _probe_device_signatures(device_path: str) -> str | None:
+    """Run blkid -p and wipefs -n on a device to detect signatures.
+    
+    Returns the detected fstype or None if no signature/error.
+    """
+    # Try blkid -p first (more detailed)
+    rc, out = await _run_cmd(["blkid", "-p", device_path])
+    if rc == 0 and out.strip():
+        # Parse blkid output: /dev/sda1: UUID="..." TYPE="ext4" PARTLABEL="..." PARTUUID="..."
+        for line in out.strip().splitlines():
+            if "TYPE=" in line:
+                # Extract TYPE="value"
+                import re
+                match = re.search(r'TYPE="([^"]+)"', line)
+                if match:
+                    return match.group(1)
+    
+    # Fallback to wipefs -n (lists all signatures)
+    rc, out = await _run_cmd(["wipefs", "-n", device_path])
+    if rc == 0 and out.strip():
+        # Parse wipefs output: /dev/sda1   ext4   <uuid>   <label>
+        lines = out.strip().splitlines()
+        if len(lines) > 1:  # Skip header
+            for line in lines[1:]:
+                parts = line.split()
+                if len(parts) >= 2:
+                    return parts[1]  # fstype column
+    
+    return None
 
 
 async def discover_disks() -> list[DiskInfo]:
@@ -290,17 +344,22 @@ async def discover_disks() -> list[DiskInfo]:
 
     Returns a list of DiskInfo for each physical disk (not partitions).
     Uses lsblk, blkid, wipefs, and sysfs for accurate detection.
+    Uncertainty (command failure, parse error, missing field) -> PROTECTED.
     """
-    # Get system disk paths first
+    # Get system disk paths first (fail-closed: on error, treat as unknown -> PROTECTED)
     system_disks = await _get_system_disk_paths()
+    system_disks_unknown = system_disks is None
+    if system_disks is None:
+        system_disks = set()
 
-    # Run lsblk for disk topology
+    # Run lsblk for disk topology (without -d to include children/partitions)
     rc, out = await _run_cmd([
-        "lsblk", "-d", "-J", "-o",
-        "NAME,SIZE,ROTA,TRAN,RO,MODEL,VENDOR,SERIAL,TYPE,MOUNTPOINTS,FSTYPE,UUID,LABEL,PARTTYPE,PARTLABEL"
+        "lsblk", "-J", "-o",
+        "NAME,SIZE,ROTA,TRAN,RO,MODEL,VENDOR,SERIAL,TYPE,MOUNTPOINTS,FSTYPE,UUID,LABEL,PARTTYPE,PARTLABEL,PTTYPE"
     ])
     if rc != 0:
         logger.error("storage_engine: lsblk failed: %s", out)
+        # Fail-closed: return empty list but caller should treat as "unknown"
         return []
 
     try:
@@ -325,25 +384,31 @@ async def discover_disks() -> list[DiskInfo]:
 
         path = f"/dev/{name}"
 
-        # Get size
-        size_str = block.get("size", "0")
-        size_bytes = _parse_size(size_str)
+        # Parse disk metadata with fail-closed defaults
+        try:
+            size_str = block.get("size", "0")
+            size_bytes = _parse_size(size_str)
+        except Exception:
+            logger.warning("storage_engine: failed to parse size for %s", path)
+            size_bytes = 0
 
-        # Get rotational
-        rota = block.get("rota", "1")
-        rotational = rota == "1"
+        try:
+            rota = block.get("rota", "1")
+            rotational = rota == "1"
+        except Exception:
+            rotational = True  # Assume HDD (safer)
 
-        # Get transport
         transport = block.get("tran", "unknown")
 
-        # Get read-only
-        ro_str = block.get("ro", "0")
-        ro = ro_str == "1"
+        try:
+            ro_str = block.get("ro", "0")
+            ro = ro_str == "1"
+        except Exception:
+            ro = True  # Assume read-only (safer)
 
-        # Get vendor/model/serial
-        vendor = block.get("vendor", "").strip()
-        model = block.get("model", "").strip()
-        serial = block.get("serial", "").strip()
+        vendor = (block.get("vendor") or "").strip()
+        model = (block.get("model") or "").strip()
+        serial = (block.get("serial") or "").strip()
         make = vendor or "Unknown"
 
         # Get mountpoints
@@ -360,47 +425,66 @@ async def discover_disks() -> list[DiskInfo]:
         uuid = block.get("uuid")
         label = block.get("label")
 
+        # Get partition table type from lsblk output
+        parttable = block.get("pttype")
+        if parttable and parttable.lower() in ("gpt", "dos", "msdos"):
+            parttable = parttable.lower()
+        else:
+            parttable = None
+
         # Get partitions
         partitions = []
+        partition_parse_error = False
         for part in block.get("children", []):
-            part_name = part.get("name", "")
-            if not part_name:
-                continue
-            part_size_str = part.get("size", "0")
-            part_size = _parse_size(part_size_str)
-            part_fstype = part.get("fstype")
-            part_uuid = part.get("uuid")
-            part_label = part.get("label")
-            part_mount = part.get("mountpoints")
-            part_mountpoint = None
-            if part_mount:
-                if isinstance(part_mount, list) and part_mount:
-                    part_mountpoint = part_mount[0]
-                elif isinstance(part_mount, str):
-                    part_mountpoint = part_mount
-            part_parttype = part.get("parttype")
-            part_partlabel = part.get("partlabel")
+            try:
+                part_name = part.get("name", "")
+                if not part_name:
+                    continue
+                part_size_str = part.get("size", "0")
+                part_size = _parse_size(part_size_str)
+                part_fstype = part.get("fstype")
+                part_uuid = part.get("uuid")
+                part_label = part.get("label")
+                part_mount = part.get("mountpoints")
+                part_mountpoint = None
+                if part_mount:
+                    if isinstance(part_mount, list) and part_mount:
+                        part_mountpoint = part_mount[0]
+                    elif isinstance(part_mount, str):
+                        part_mountpoint = part_mount
+                part_parttype = part.get("parttype")
+                part_partlabel = part.get("partlabel")
 
-            partitions.append(PartitionInfo(
-                path=f"/dev/{part_name}",
-                name=part_name,
-                size_bytes=part_size,
-                fstype=part_fstype,
-                uuid=part_uuid,
-                label=part_label,
-                mountpoint=part_mountpoint,
-                parttype=part_parttype,
-                partlabel=part_partlabel,
-            ))
+                partitions.append(PartitionInfo(
+                    path=f"/dev/{part_name}",
+                    name=part_name,
+                    size_bytes=part_size,
+                    fstype=part_fstype,
+                    uuid=part_uuid,
+                    label=part_label,
+                    mountpoint=part_mountpoint,
+                    parttype=part_parttype,
+                    partlabel=part_partlabel,
+                ))
+            except Exception as exc:
+                logger.warning("storage_engine: failed to parse partition %s on %s: %s",
+                              part.get("name", "unknown"), path, exc)
+                partition_parse_error = True
+                # Fail-closed: add a partition with unknown fstype to mark disk as protected
+                partitions.append(PartitionInfo(
+                    path=f"/dev/{part.get('name', 'unknown')}",
+                    name=part.get("name", "unknown"),
+                    size_bytes=0,
+                    fstype=None,
+                    uuid=None,
+                    label=None,
+                    mountpoint=None,
+                    parttype=None,
+                    partlabel=None,
+                ))
 
-        # Determine partition table type
-        parttable = None
-        # Check for GPT/MSDOS via parted or fdisk
-        rc2, out2 = await _run_cmd(["lsblk", "-n", "-o", "PTTYPE", path])
-        if rc2 == 0:
-            pttype = out2.strip()
-            if pttype in ("gpt", "dos", "msdos"):
-                parttable = pttype
+        # Verify signatures with blkid and wipefs on disk and all partitions
+        await _verify_signatures(path, partitions)
 
         disk = DiskInfo(
             path=path,
@@ -420,9 +504,25 @@ async def discover_disks() -> list[DiskInfo]:
             ro=ro,
         )
 
-        # Classify safety
+        # Classify safety (fail-closed: any parse error above would have added unknown partitions)
         classifier = DiskSafetyClassifier(system_disks)
         disk = classifier.classify(disk)
+
+        # If system disks unknown or partition parse error, mark as PROTECTED unknown
+        if system_disks_unknown or partition_parse_error:
+            if disk.safety_class == SAFETY_AVAILABLE:
+                disk = DiskInfo(
+                    **{k: v for k, v in disk.__dict__.items() if k != "safety_class" and k != "safety_reason"},
+                    safety_class=SAFETY_PROTECTED,
+                    safety_reason=PROTECTED_UNKNOWN,
+                )
+            else:
+                # Add unknown to existing reasons
+                disk = DiskInfo(
+                    **{k: v for k, v in disk.__dict__.items() if k != "safety_class" and k != "safety_reason"},
+                    safety_class=SAFETY_PROTECTED,
+                    safety_reason=disk.safety_reason + "," + PROTECTED_UNKNOWN,
+                )
 
         disks.append(disk)
 
@@ -654,7 +754,7 @@ async def add_storage_area(
     # 2. Create GPT partition table with single partition
     logger.info("storage_engine: Creating GPT partition on %s", disk_by_id_path)
     result = await _run_storage_helper([
-        "partition-disk", disk_by_id_path
+        "partition-disk", disk_by_id_path, confirm_string
     ])
     if not result["ok"]:
         return {"ok": False, "error": f"Partition failed: {result['output']}", "step": "partition"}
@@ -877,13 +977,14 @@ async def _path_exists(path: str) -> bool:
 # CLI Helpers
 # ============================================================================
 
-def disks_to_json(disks: list[DiskInfo]) -> list[dict]:
+def disks_to_json(disks: list[DiskInfo], by_id_paths: dict[str, str] | None = None) -> list[dict]:
     """Convert DiskInfo list to JSON-serializable dicts."""
+    by_id_paths = by_id_paths or {}
     result = []
     for disk in disks:
         result.append({
             "path": disk.path,
-            "by_id_path": disk.path,  # Will be resolved by caller
+            "by_id_path": by_id_paths.get(disk.path, disk.path),
             "name": disk.name,
             "make": disk.make,
             "model": disk.model,

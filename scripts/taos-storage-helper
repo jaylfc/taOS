@@ -5,27 +5,31 @@ This script runs via passwordless sudo from the taOS controller.
 Allowed commands are strictly allowlisted to prevent arbitrary command execution.
 
 Commands:
-  partition-disk <by-id-path>          - Create GPT with single partition on disk
-  luks-format <part-path> <name> <key> - Format partition as LUKS2 with key file
-  luks-open <part-path> <name> <key>   - Open LUKS device
-  luks-close <name>                    - Close LUKS device
-  make-fs <device> <label>             - Create ext4 filesystem with label
-  mount-fs <mountpoint>                - Mount filesystem at mountpoint
-  unmount-fs <mountpoint>              - Unmount filesystem
-  write-crypttab <name> <dev> <key>    - Write /etc/crypttab entry
+  partition-disk <by-id-path> <confirm>  - Create GPT with single partition on disk (re-validates disk)
+  luks-format <part-path> <name> <key>   - Format partition as LUKS2 with key file
+  luks-open <part-path> <name> <key>     - Open LUKS device
+  luks-close <name>                      - Close LUKS device
+  make-fs <device> <label>               - Create ext4 filesystem with label
+  mount-fs <mountpoint>                  - Mount filesystem at mountpoint
+  unmount-fs <mountpoint>                - Unmount filesystem
+  write-crypttab <name> <dev> <key>      - Write /etc/crypttab entry
   write-mount-unit <name> <dev> <mp> <encrypted> - Write systemd mount unit
-  remove-mount-unit <name>             - Remove systemd mount unit
-  get-mount-info <mountpoint>          - Get mount info
+  remove-mount-unit <name>               - Remove systemd mount unit
+  get-mount-info <mountpoint>            - Get mount info
 """
 from __future__ import annotations
 
 import argparse
+import json
 import logging
 import os
+import re
 import secrets
 import subprocess
 import sys
+from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Literal
 
 logging.basicConfig(
     level=logging.INFO,
@@ -47,6 +51,58 @@ ALLOWED_COMMANDS = {
     "get-mount-info",
 }
 
+# Safety classification constants (must match storage_engine.py)
+SAFETY_AVAILABLE = "available"
+SAFETY_PROTECTED = "protected"
+PROTECTED_SYSTEM_DISK = "system-disk"
+PROTECTED_MOUNTED = "mounted"
+PROTECTED_READ_ONLY = "read-only"
+PROTECTED_HAS_DATA = "has-data"
+PROTECTED_ENCRYPTED_FOREIGN = "encrypted-foreign"
+PROTECTED_RAID_MEMBER = "raid-member"
+PROTECTED_LVM_MEMBER = "lvm-member"
+PROTECTED_ZFS_MEMBER = "zfs-member"
+PROTECTED_UNKNOWN = "unknown"
+
+DATA_FS_TYPES = frozenset({
+    "ext2", "ext3", "ext4", "xfs", "btrfs", "zfs", "jfs", "reiserfs",
+    "vfat", "ntfs", "exfat", "f2fs", "hfs", "hfs+", "apfs",
+    "iso9660", "udf", "squashfs", "erofs",
+})
+ENCRYPTED_TYPES = frozenset({"crypto_LUKS", "crypto_LUKS1", "crypto_LUKS2", "BitLocker"})
+
+
+@dataclass
+class PartitionInfo:
+    path: str
+    name: str
+    size_bytes: int
+    fstype: str | None = None
+    uuid: str | None = None
+    label: str | None = None
+    mountpoint: str | None = None
+    parttype: str | None = None
+    partlabel: str | None = None
+
+
+@dataclass
+class DiskInfo:
+    path: str
+    name: str
+    make: str
+    model: str
+    serial: str
+    size_bytes: int
+    transport: str
+    rotational: bool
+    partitions: list[PartitionInfo] = field(default_factory=list)
+    mountpoints: list[str] = field(default_factory=list)
+    fstype: str | None = None
+    uuid: str | None = None
+    label: str | None = None
+    parttable_type: str | None = None
+    ro: bool = False
+
 
 def run_cmd(cmd: list[str], check: bool = True, capture: bool = True, input_data: bytes | str | None = None) -> subprocess.CompletedProcess:
     """Run a command and return result."""
@@ -62,21 +118,311 @@ def run_cmd(cmd: list[str], check: bool = True, capture: bool = True, input_data
     return result
 
 
-def cmd_partition_disk(disk_path: str) -> int:
-    """Create GPT partition table with single partition covering whole disk."""
-    # Wipe any existing partition table
-    run_cmd(["wipefs", "-a", disk_path], check=False)
+def _parse_size(size_str: str) -> int:
+    """Parse lsblk size string (e.g., '1.8T', '500G', '100M') to bytes."""
+    size_str = size_str.strip().upper()
+    if not size_str or size_str == "0":
+        return 0
+    multipliers = {
+        "K": 1024, "M": 1024**2, "G": 1024**3, "T": 1024**4, "P": 1024**5, "E": 1024**6,
+        "KI": 1024, "MI": 1024**2, "GI": 1024**3, "TI": 1024**4, "PI": 1024**5, "EI": 1024**6,
+    }
+    for suffix, mult in multipliers.items():
+        if size_str.endswith(suffix):
+            try:
+                return int(float(size_str[:-len(suffix)]) * mult)
+            except ValueError:
+                return 0
+    try:
+        return int(float(size_str))
+    except ValueError:
+        return 0
 
+
+def discover_disk(disk_by_id_path: str) -> DiskInfo | None:
+    """Discover a single disk by its by-id path and classify it.
+    
+    Returns DiskInfo with safety classification, or None if not found.
+    """
+    # Resolve by-id path to real device
+    try:
+        real_path = os.path.realpath(disk_by_id_path)
+    except OSError:
+        logger.error("Failed to resolve path: %s", disk_by_id_path)
+        return None
+    
+    # Get device name (e.g., sda from /dev/sda)
+    device_name = os.path.basename(real_path)
+    if device_name.startswith("dm-") or device_name.startswith("loop"):
+        logger.error("Device %s is a virtual device, refusing", device_name)
+        return None
+    
+    # Run lsblk for this disk and its children
+    rc, out = run_cmd([
+        "lsblk", "-J", "-o",
+        "NAME,SIZE,ROTA,TRAN,RO,MODEL,VENDOR,SERIAL,TYPE,MOUNTPOINTS,FSTYPE,UUID,LABEL,PARTTYPE,PARTLABEL,PTTYPE",
+        real_path
+    ], check=False)
+    if rc != 0:
+        logger.error("lsblk failed for %s: %s", real_path, out)
+        return None
+    
+    try:
+        data = json.loads(out)
+    except json.JSONDecodeError:
+        logger.error("Failed to parse lsblk JSON: %s", out[:200])
+        return None
+    
+    blockdevices = data.get("blockdevices", [])
+    if not blockdevices:
+        logger.error("No block device found for %s", real_path)
+        return None
+    
+    block = blockdevices[0]
+    if block.get("type") != "disk":
+        logger.error("Path %s is not a disk (type=%s)", real_path, block.get("type"))
+        return None
+    
+    name = block.get("name", "")
+    if not name:
+        logger.error("Disk has no name")
+        return None
+    
+    # Parse disk metadata
+    size_str = block.get("size", "0")
+    size_bytes = _parse_size(size_str)
+    rota = block.get("rota", "1")
+    rotational = rota == "1"
+    transport = block.get("tran", "unknown")
+    ro_str = block.get("ro", "0")
+    ro = ro_str == "1"
+    vendor = (block.get("vendor") or "").strip()
+    model = (block.get("model") or "").strip()
+    serial = (block.get("serial") or "").strip()
+    make = vendor or "Unknown"
+    
+    mountpoints = []
+    mp = block.get("mountpoints")
+    if mp:
+        if isinstance(mp, list):
+            mountpoints = [m for m in mp if m]
+        elif isinstance(mp, str):
+            mountpoints = [mp] if mp else []
+    
+    fstype = block.get("fstype")
+    uuid = block.get("uuid")
+    label = block.get("label")
+    parttable = block.get("pttype")
+    if parttable and parttable.lower() in ("gpt", "dos", "msdos"):
+        parttable = parttable.lower()
+    else:
+        parttable = None
+    
+    # Get partitions
+    partitions = []
+    for part in block.get("children", []):
+        part_name = part.get("name", "")
+        if not part_name:
+            continue
+        part_size_str = part.get("size", "0")
+        part_size = _parse_size(part_size_str)
+        part_fstype = part.get("fstype")
+        part_uuid = part.get("uuid")
+        part_label = part.get("label")
+        part_mount = part.get("mountpoints")
+        part_mountpoint = None
+        if part_mount:
+            if isinstance(part_mount, list) and part_mount:
+                part_mountpoint = part_mount[0]
+            elif isinstance(part_mount, str):
+                part_mountpoint = part_mount
+        part_parttype = part.get("parttype")
+        part_partlabel = part.get("partlabel")
+        
+        partitions.append(PartitionInfo(
+            path=f"/dev/{part_name}",
+            name=part_name,
+            size_bytes=part_size,
+            fstype=part_fstype,
+            uuid=part_uuid,
+            label=part_label,
+            mountpoint=part_mountpoint,
+            parttype=part_parttype,
+            partlabel=part_partlabel,
+        ))
+    
+    # Verify signatures with blkid and wipefs on disk and all partitions
+    _verify_signatures(real_path)
+    for part in partitions:
+        _verify_signatures(part.path)
+    
+    disk = DiskInfo(
+        path=real_path,
+        name=name,
+        make=make,
+        model=model,
+        serial=serial,
+        size_bytes=size_bytes,
+        transport=transport,
+        rotational=rotational,
+        partitions=partitions,
+        mountpoints=mountpoints,
+        fstype=fstype,
+        uuid=uuid,
+        label=label,
+        parttable_type=parttable,
+        ro=ro,
+    )
+    
+    # Classify safety (no system disk check in helper - controller handles that)
+    return _classify_disk(disk)
+
+
+def _verify_signatures(device_path: str) -> None:
+    """Run blkid -p and wipefs -n to verify signatures. Log discrepancies."""
+    # Try blkid -p first
+    rc, out = run_cmd(["blkid", "-p", device_path], check=False)
+    if rc == 0 and out.strip():
+        for line in out.strip().splitlines():
+            if "TYPE=" in line:
+                match = re.search(r'TYPE="([^"]+)"', line)
+                if match:
+                    logger.debug("blkid signature on %s: %s", device_path, match.group(1))
+                    return
+    
+    # Fallback to wipefs -n
+    rc, out = run_cmd(["wipefs", "-n", device_path], check=False)
+    if rc == 0 and out.strip():
+        lines = out.strip().splitlines()
+        if len(lines) > 1:
+            for line in lines[1:]:
+                parts = line.split()
+                if len(parts) >= 2:
+                    logger.debug("wipefs signature on %s: %s", device_path, parts[1])
+                    return
+
+
+def _has_data_fs(disk: DiskInfo) -> bool:
+    if disk.fstype and disk.fstype in DATA_FS_TYPES:
+        return True
+    for part in disk.partitions:
+        if part.fstype and part.fstype in DATA_FS_TYPES:
+            return True
+    return False
+
+
+def _is_encrypted_foreign(disk: DiskInfo) -> bool:
+    if disk.fstype and disk.fstype in ENCRYPTED_TYPES:
+        return True
+    for part in disk.partitions:
+        if part.fstype and part.fstype in ENCRYPTED_TYPES:
+            return True
+    return False
+
+
+def _is_raid_member(disk: DiskInfo) -> bool:
+    if disk.fstype == "linux_raid_member":
+        return True
+    for part in disk.partitions:
+        if part.fstype == "linux_raid_member":
+            return True
+    return False
+
+
+def _is_lvm_member(disk: DiskInfo) -> bool:
+    if disk.fstype == "LVM2_member":
+        return True
+    for part in disk.partitions:
+        if part.fstype == "LVM2_member":
+            return True
+    return False
+
+
+def _is_zfs_member(disk: DiskInfo) -> bool:
+    if disk.fstype and disk.fstype.startswith("zfs_"):
+        return True
+    for part in disk.partitions:
+        if part.fstype and part.fstype.startswith("zfs_"):
+            return True
+    return False
+
+
+def _classify_disk(disk: DiskInfo) -> DiskInfo:
+    """Classify disk safety (without system disk check)."""
+    reasons: list[str] = []
+    
+    if disk.ro:
+        reasons.append(PROTECTED_READ_ONLY)
+    
+    if disk.mountpoints:
+        reasons.append(PROTECTED_MOUNTED)
+    for part in disk.partitions:
+        if part.mountpoint:
+            reasons.append(PROTECTED_MOUNTED)
+            break
+    
+    if _has_data_fs(disk):
+        reasons.append(PROTECTED_HAS_DATA)
+    
+    if _is_encrypted_foreign(disk):
+        reasons.append(PROTECTED_ENCRYPTED_FOREIGN)
+    
+    if _is_raid_member(disk):
+        reasons.append(PROTECTED_RAID_MEMBER)
+    
+    if _is_lvm_member(disk):
+        reasons.append(PROTECTED_LVM_MEMBER)
+    
+    if _is_zfs_member(disk):
+        reasons.append(PROTECTED_ZFS_MEMBER)
+    
+    if reasons:
+        disk.safety_class = SAFETY_PROTECTED
+        disk.safety_reason = ",".join(reasons)
+    else:
+        disk.safety_class = SAFETY_AVAILABLE
+        disk.safety_reason = None
+    
+    return disk
+
+
+def cmd_partition_disk(disk_by_id_path: str, confirm: str) -> int:
+    """Create GPT partition table with single partition covering whole disk.
+    
+    Re-validates disk safety and confirm string before any write.
+    """
+    # Re-validate disk
+    disk = discover_disk(disk_by_id_path)
+    if not disk:
+        logger.error("Disk not found or invalid: %s", disk_by_id_path)
+        return 1
+    
+    # Verify confirm string matches exactly: "<model> <serial>"
+    expected_confirm = f"{disk.model} {disk.serial}".strip()
+    if confirm != expected_confirm:
+        logger.error("Confirm string mismatch. Expected: %s, Got: %s", expected_confirm, confirm)
+        return 1
+    
+    # Refuse unless available
+    if disk.safety_class != SAFETY_AVAILABLE:
+        logger.error("Disk is not available: %s", disk.safety_reason)
+        return 1
+    
+    logger.info("Disk validated as available: %s (%s)", disk_by_id_path, disk.serial)
+    
+    # Wipe any existing partition table (with check=True now!)
+    run_cmd(["wipefs", "-a", disk.path], check=True)
+    
     # Create GPT with single partition
-    run_cmd(["parted", "-s", disk_path, "mklabel", "gpt"])
-    run_cmd(["parted", "-s", disk_path, "mkpart", "primary", "0%", "100%"])
-    run_cmd(["parted", "-s", disk_path, "set", "1", "legacy_boot", "on"])
-
+    run_cmd(["parted", "-s", disk.path, "mklabel", "gpt"])
+    run_cmd(["parted", "-s", disk.path, "mkpart", "primary", "0%", "100%"])
+    run_cmd(["parted", "-s", disk.path, "set", "1", "legacy_boot", "on"])
+    
     # Trigger udev to create partition symlinks
     run_cmd(["udevadm", "settle"], check=False)
-    run_cmd(["partprobe", disk_path], check=False)
+    run_cmd(["partprobe", disk.path], check=False)
     run_cmd(["udevadm", "settle"], check=False)
-
+    
     return 0
 
 
@@ -85,11 +431,14 @@ def cmd_luks_format(part_path: str, name: str, key_file: str) -> int:
     # Generate random key
     key = secrets.token_bytes(64)
 
-    # Write key file (root-only, 0400)
+    # Write key file (root-only, 0400) using os.open with O_CREAT|O_EXCL
     key_dir = Path(key_file).parent
     key_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
-    Path(key_file).write_bytes(key)
-    os.chmod(key_file, 0o400)
+    fd = os.open(key_file, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o400)
+    try:
+        os.write(fd, key)
+    finally:
+        os.close(fd)
 
     # Format LUKS2 with key file
     run_cmd([
@@ -97,7 +446,6 @@ def cmd_luks_format(part_path: str, name: str, key_file: str) -> int:
         "--key-file", "-", part_path
     ], capture=False, check=True, input_data=key)
 
-    # Add key to LUKS (it's already the primary key)
     logger.info("LUKS2 formatted: %s", part_path)
     return 0
 
@@ -245,7 +593,6 @@ def cmd_remove_mount_unit(name: str) -> int:
 
 def cmd_get_mount_info(mountpoint: str) -> int:
     """Get mount info as JSON."""
-    import json
     result = run_cmd(["findmnt", "-J", "-o", "TARGET,SOURCE,FSTYPE,SIZE,AVAIL,USED", mountpoint])
     if result.returncode == 0:
         print(result.stdout)
@@ -266,10 +613,10 @@ def main() -> int:
 
     try:
         if args.command == "partition-disk":
-            if len(args.args) != 1:
-                logger.error("partition-disk requires <disk-path>")
+            if len(args.args) != 2:
+                logger.error("partition-disk requires <disk-by-id-path> <confirm>")
                 return 1
-            return cmd_partition_disk(args.args[0])
+            return cmd_partition_disk(args.args[0], args.args[1])
 
         elif args.command == "luks-format":
             if len(args.args) != 3:

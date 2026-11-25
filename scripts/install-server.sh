@@ -2469,6 +2469,35 @@ install_linux_systemd_system() {
     $sudo_cmd install -m 0755 "$INSTALL_DIR/scripts/rebuild-desktop.sh" /usr/local/bin/taos-rebuild-desktop
     log "installed /usr/local/bin/taos-rebuild-desktop"
 
+    # Install storage helper (taOS #4512 fix-forward)
+    $sudo_cmd install -m 0755 "$INSTALL_DIR/scripts/taos-storage-helper" /usr/local/bin/taos-storage-helper
+    log "installed /usr/local/bin/taos-storage-helper"
+
+    # Install sudoers rule for storage helper (narrowly scoped)
+    cat <<'SUDOERS_EOF' | $sudo_cmd tee /etc/sudoers.d/taos-storage > /dev/null
+# taOS storage helper - narrowly scoped passwordless sudo for taos user
+# Only allows /usr/local/bin/taos-storage-helper with specific allowed commands
+taos ALL=(root) NOPASSWD: /usr/local/bin/taos-storage-helper partition-disk /dev/disk/by-id/* *
+taos ALL=(root) NOPASSWD: /usr/local/bin/taos-storage-helper luks-format /dev/disk/by-id/* * /etc/taos/keys/*.key
+taos ALL=(root) NOPASSWD: /usr/local/bin/taos-storage-helper luks-open /dev/disk/by-id/* * /etc/taos/keys/*.key
+taos ALL=(root) NOPASSWD: /usr/local/bin/taos-storage-helper luks-close *
+taos ALL=(root) NOPASSWD: /usr/local/bin/taos-storage-helper make-fs /dev/disk/by-id/* *
+taos ALL=(root) NOPASSWD: /usr/local/bin/taos-storage-helper mount-fs /srv/taos/storage/*
+taos ALL=(root) NOPASSWD: /usr/local/bin/taos-storage-helper unmount-fs /srv/taos/storage/*
+taos ALL=(root) NOPASSWD: /usr/local/bin/taos-storage-helper write-crypttab * /dev/disk/by-id/* /etc/taos/keys/*.key
+taos ALL=(root) NOPASSWD: /usr/local/bin/taos-storage-helper write-mount-unit * /dev/disk/by-id/* /srv/taos/storage/* *
+taos ALL=(root) NOPASSWD: /usr/local/bin/taos-storage-helper remove-mount-unit *
+taos ALL=(root) NOPASSWD: /usr/local/bin/taos-storage-helper get-mount-info /srv/taos/storage/*
+SUDOERS_EOF
+    $sudo_cmd chmod 440 /etc/sudoers.d/taos-storage
+    log "installed /etc/sudoers.d/taos-storage"
+
+    # Create /etc/taos/keys directory (0700 root)
+    $sudo_cmd mkdir -p /etc/taos/keys
+    $sudo_cmd chmod 0700 /etc/taos/keys
+    $sudo_cmd chown root:root /etc/taos/keys
+    log "created /etc/taos/keys (0700 root)"
+
     # Stamp the template from the repo, substituting install-time variables.
     # The service runs as the dedicated 'taos' system user, not the installer's
     # $USER.  The installer itself still runs as root.

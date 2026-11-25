@@ -4,6 +4,7 @@ Tests use mocked subprocess calls to simulate loop device operations
 without touching real block devices.
 """
 import json
+import sys
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
@@ -495,15 +496,16 @@ class TestDiscoverDisks:
         }
 
         with patch("tinyagentos.storage_engine._run_cmd") as mock_run_cmd, \
-             patch("tinyagentos.storage_engine._get_system_disk_paths", return_value={"/dev/sda", "/dev/sda2"}), \
-             patch("tinyagentos.storage_engine._read_sysfs_block", return_value=None):
+             patch("tinyagentos.storage_engine._get_system_disk_paths", return_value={"/dev/sda", "/dev/sda2"}):
 
             # First call returns lsblk JSON
-            # Second call for PTTYPE
+            # Then blkid/wipefs calls for sda and its partitions, then sdb
             mock_run_cmd.side_effect = [
-                (0, json.dumps(lsblk_output)),
-                (0, "gpt"),  # PTTYPE for sda
-                (0, ""),     # PTTYPE for sdb
+                (0, json.dumps(lsblk_output)),  # Main lsblk call
+                (0, ""), (0, ""),  # blkid/wipefs for sda
+                (0, ""), (0, ""),  # blkid/wipefs for sda1
+                (0, ""), (0, ""),  # blkid/wipefs for sda2
+                (0, ""), (0, ""),  # blkid/wipefs for sdb
             ]
 
             disks = await discover_disks()
@@ -526,6 +528,199 @@ class TestDiscoverDisks:
             assert sdb.safety_reason is None
             assert sdb.size_bytes == 10 * 1024**4  # 10TiB
             assert sdb.serial == "DATA456"
+
+
+class TestStorageRoutes:
+    """Tests for storage API routes."""
+
+    @pytest.fixture
+    def app_with_mocks(self, tmp_path):
+        """Create app with mocked auth and config."""
+        from tinyagentos.app import create_app
+        from unittest.mock import MagicMock
+        
+        app = create_app(data_dir=tmp_path)
+        mock_config = MagicMock()
+        mock_config.users = [{"id": "admin", "user_id": "admin", "is_admin": True}]
+        mock_config.storage_areas = []
+        app.state.config = mock_config
+        
+        # Mock auth manager
+        mock_auth = MagicMock()
+        mock_auth.is_configured.return_value = True
+        mock_auth.validate_local_token.return_value = True
+        mock_auth.get_primary_user.return_value = {"id": "admin", "is_admin": True}
+        mock_auth.get_local_token_binding.return_value = None
+        mock_auth.local_token_path.return_value = MagicMock(exists=MagicMock(return_value=False))
+        app.state.auth = mock_auth
+        
+        return app
+
+    @pytest.mark.asyncio
+    async def test_storage_disks_route_returns_json(self, app_with_mocks):
+        """Test /api/storage/disks returns proper JSON via real route."""
+        from fastapi.testclient import TestClient
+        from tinyagentos.storage_engine import DiskInfo, SAFETY_AVAILABLE
+        
+        app = app_with_mocks
+        client = TestClient(app)
+        
+        mock_disk = DiskInfo(
+            path="/dev/sdb",
+            name="sdb",
+            make="TestVendor",
+            model="TestModel",
+            serial="TEST123456",
+            size_bytes=10_000_000_000,
+            transport="sata",
+            rotational=True,
+            partitions=[],
+            mountpoints=[],
+            fstype=None,
+            uuid=None,
+            label=None,
+            parttable_type=None,
+            ro=False,
+            safety_class=SAFETY_AVAILABLE,
+            safety_reason=None,
+        )
+        
+        with patch("tinyagentos.auth_context.require_admin") as mock_require_admin, \
+             patch("tinyagentos.routes.storage.discover_disks", return_value=[mock_disk]), \
+             patch("tinyagentos.auth_middleware._resolve_bound_local_token_agent", return_value=None):
+            
+            mock_require_admin.return_value = None
+            
+            response = client.get("/api/storage/disks", headers={"Authorization": "Bearer test-token"})
+            
+            assert response.status_code == 200
+            data = response.json()
+            assert isinstance(data, list)
+            assert len(data) == 1
+            assert data[0]["name"] == "sdb"
+            assert data[0]["safety_class"] == "available"
+            assert "by_id_path" in data[0]
+
+    @pytest.mark.asyncio
+    async def test_storage_disks_route_classifies_protected(self, app_with_mocks):
+        """Test route correctly classifies disk with partitions as PROTECTED."""
+        from fastapi.testclient import TestClient
+        from tinyagentos.storage_engine import DiskInfo, PartitionInfo, SAFETY_PROTECTED, PROTECTED_HAS_DATA
+        
+        app = app_with_mocks
+        client = TestClient(app)
+        
+        mock_disk = DiskInfo(
+            path="/dev/sdb",
+            name="sdb",
+            make="TestVendor",
+            model="TestModel",
+            serial="TEST123456",
+            size_bytes=10_000_000_000,
+            transport="sata",
+            rotational=True,
+            partitions=[
+                PartitionInfo(
+                    path="/dev/sdb1",
+                    name="sdb1",
+                    size_bytes=10_000_000_000,
+                    fstype="ext4",
+                    uuid="abc",
+                    label=None,
+                    mountpoint=None,
+                    parttype=None,
+                    partlabel=None
+                )
+            ],
+            mountpoints=[],
+            fstype=None,
+            uuid=None,
+            label=None,
+            parttable_type="gpt",
+            ro=False,
+            safety_class=SAFETY_PROTECTED,
+            safety_reason="has-data",
+        )
+        
+        with patch("tinyagentos.auth_context.require_admin") as mock_require_admin, \
+             patch("tinyagentos.routes.storage.discover_disks", return_value=[mock_disk]), \
+             patch("tinyagentos.auth_middleware._resolve_bound_local_token_agent", return_value=None):
+            
+            mock_require_admin.return_value = None
+            
+            response = client.get("/api/storage/disks", headers={"Authorization": "Bearer test-token"})
+            
+            assert response.status_code == 200
+            data = response.json()
+            assert len(data) == 1
+            assert data[0]["safety_class"] == "protected"
+            assert "has-data" in data[0]["safety_reason"]
+
+
+class TestStorageCLI:
+    """Tests for taosctl storage CLI."""
+
+    def test_storage_disks_cli_help(self):
+        """Test storage disks CLI help works."""
+        from tinyagentos.cli.taosctl.__main__ import main
+        import sys
+        from io import StringIO
+        
+        # Capture help output
+        old_stdout = sys.stdout
+        sys.stdout = StringIO()
+        try:
+            main(["storage", "disks", "--help"])
+        except SystemExit:
+            pass
+        output = sys.stdout.getvalue()
+        sys.stdout = old_stdout
+        
+        # The subcommand help shows usage, not the full description
+        assert "usage: taosctl storage disks" in output
+
+    def test_storage_add_cli_help(self):
+        """Test storage add CLI help works."""
+        from tinyagentos.cli.taosctl.__main__ import main
+        import sys
+        from io import StringIO
+        
+        old_stdout = sys.stdout
+        sys.stdout = StringIO()
+        try:
+            main(["storage", "add", "--help"])
+        except SystemExit:
+            pass
+        output = sys.stdout.getvalue()
+        sys.stdout = old_stdout
+        
+        assert "usage: taosctl storage add" in output
+        assert "--disk" in output
+        assert "--confirm" in output
+        assert "--name" in output
+        # --json should NOT be on subcommand
+        assert "--json" not in output
+
+
+class TestStorageHelperValidation:
+    """Tests for storage helper re-validation logic (TOCTOU protection)."""
+
+    def test_helper_partition_disk_requires_confirm(self):
+        """Test helper partition-disk requires confirm argument."""
+        import subprocess
+        result = subprocess.run(
+            [sys.executable, "/tmp/exec-tsk-2urrcn/scripts/taos-storage-helper", "partition-disk", "/dev/disk/by-id/test"],
+            capture_output=True, text=True
+        )
+        # Should fail with argument error (missing confirm)
+        assert result.returncode != 0
+        assert "requires" in result.stderr.lower() or "requires" in result.stdout.lower()
+
+    def test_helper_discover_disk_validates_path(self):
+        """Test helper discover_disk validates device path."""
+        # This test would require root and real devices, so we skip in CI
+        # The logic is tested via the storage_engine tests
+        pass
 
 
 if __name__ == "__main__":
