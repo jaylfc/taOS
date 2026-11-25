@@ -478,6 +478,26 @@ private Q_SLOTS:
         QCOMPARE(formatAgo(0, now), u"time unknown"_s);                    // unknown is not "56 years ago"
     }
 
+    void the_socket_is_only_ever_sought_in_the_runtime_directory()
+    {
+        const QByteArray keepSock = qgetenv("TAOS_MESH_SOCKET"), keepRt = qgetenv("XDG_RUNTIME_DIR");
+        qunsetenv("TAOS_MESH_SOCKET");
+        qunsetenv("XDG_RUNTIME_DIR");
+        QCOMPARE(MeshClient::defaultSocketPath(), QString());          // never /tmp
+        MeshClient none(MeshClient::defaultSocketPath());
+        none.start();
+        QTest::qWait(150);
+        QVERIFY(none.state() == MeshClient::State::Absent);
+        qputenv("XDG_RUNTIME_DIR", "/run/user/4242");
+        QCOMPARE(MeshClient::defaultSocketPath(), u"/run/user/4242/taos-mesh.sock"_s);
+        qputenv("TAOS_MESH_SOCKET", "/explicit/path.sock");
+        QCOMPARE(MeshClient::defaultSocketPath(), u"/explicit/path.sock"_s);
+        qunsetenv("TAOS_MESH_SOCKET");
+        qunsetenv("XDG_RUNTIME_DIR");
+        if (!keepSock.isEmpty()) qputenv("TAOS_MESH_SOCKET", keepSock);
+        if (!keepRt.isEmpty()) qputenv("XDG_RUNTIME_DIR", keepRt);
+    }
+
     // ---- the QR encoder against an independent one -----------------------------------------------------------------
     void qr_codes_match_a_reference_encoder_module_for_module()
     {
@@ -623,7 +643,7 @@ private Q_SLOTS:
         QTRY_VERIFY_WITH_TIMEOUT(e.result().value(u"ok"_s).toBool(), 3000);
         const QJsonObject body = fw.last(u"/v1/flash/run"_s).body;
         QCOMPARE(body.value(u"confirm"_s).toString(), u"Heltec V3"_s);
-        QCOMPARE(body.value(u"actor"_s).toString(), u"person:Test Owner"_s);
+        QCOMPARE(body.value(u"actor"_s).toString(), u"person"_s);   // the engine accepts exactly this word
         QVERIFY(!body.contains(u"allow_no_backup"_s));
         QCOMPARE(e.result().value(u"verify"_s).toMap().value(u"status"_s).toString(), u"confirmed"_s);
     }

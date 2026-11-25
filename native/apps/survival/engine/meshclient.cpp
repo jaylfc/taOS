@@ -50,8 +50,10 @@ QString MeshClient::defaultSocketPath()
     const QByteArray e = qgetenv("TAOS_MESH_SOCKET");
     if (!e.isEmpty())
         return QString::fromLocal8Bit(e);
+    // the engine's socket lives in the runtime directory and nowhere else: without one there is no socket to find, and
+    // a shared directory such as /tmp is never searched
     const QByteArray rt = qgetenv("XDG_RUNTIME_DIR");
-    return (rt.isEmpty() ? QDir::tempPath() : QString::fromLocal8Bit(rt)) + u"/taos-mesh.sock"_s;
+    return rt.isEmpty() ? QString() : QString::fromLocal8Bit(rt) + u"/taos-mesh.sock"_s;
 }
 
 void MeshClient::setState(State s)

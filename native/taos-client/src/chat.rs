@@ -240,6 +240,7 @@ pub enum SendOutcome {
 /// and the stream drops it.
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
+#[allow(clippy::large_enum_variant)]
 pub enum ChatEvent {
     /// A new message (also the broadcast of the caller's own).
     Message(ChatMessage),
@@ -944,7 +945,7 @@ impl Socket {
             };
             self.buf.drain(..used);
             match opcode {
-                0x0 | 0x1 | 0x2 => {
+                0x0..=0x2 => {
                     // Continuation, text, binary. Binary is ignored (the hub only sends text).
                     self.frag.extend_from_slice(&payload);
                     if self.frag.len() > MAX_FRAME {

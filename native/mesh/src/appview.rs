@@ -19,37 +19,65 @@ pub fn thread_of(r: &Record) -> Option<String> {
     if r.broadcast {
         return Some(format!("ch:{}:{}", r.network, r.channel.unwrap_or(0)));
     }
-    let peer = if r.dir == "out" { r.to.clone() } else { r.from.clone() };
-    peer
+    if r.dir == "out" {
+        r.to.clone()
+    } else {
+        r.from.clone()
+    }
 }
 
 pub fn radios(e: &Engine) -> Result<Value, EngineError> {
-    let recs = e.messages("owner", &Filter { kind: Some("telemetry".into()), ..Default::default() })?;
-    let own_info = e.messages("owner", &Filter { kind: Some("nodeinfo".into()), ..Default::default() })?;
+    let recs = e.messages(
+        "owner",
+        &Filter {
+            kind: Some("telemetry".into()),
+            ..Default::default()
+        },
+    )?;
+    let own_info = e.messages(
+        "owner",
+        &Filter {
+            kind: Some("nodeinfo".into()),
+            ..Default::default()
+        },
+    )?;
     let mut out = vec![];
     for r in e.radios() {
         // battery: the radio's own newest device telemetry
         let battery = recs
             .iter()
             .rev()
-            .find(|x| x.from.as_deref() == Some(&r.id) && x.detail.as_ref().is_some_and(|d| d["telemetry"] == "device"))
-            .and_then(|x| x.detail.as_ref().and_then(|d| d["values"]["battery_level"].as_u64()))
+            .find(|x| {
+                x.from.as_deref() == Some(&r.id)
+                    && x.detail
+                        .as_ref()
+                        .is_some_and(|d| d["telemetry"] == "device")
+            })
+            .and_then(|x| {
+                x.detail
+                    .as_ref()
+                    .and_then(|d| d["values"]["battery_level"].as_u64())
+            })
             .map(|b| b as i64)
             .unwrap_or(-1);
         let name = own_info
             .iter()
             .rev()
             .find(|x| x.from.as_deref() == Some(&r.id))
-            .and_then(|x| x.detail.as_ref().and_then(|d| d["long_name"].as_str().map(String::from)))
+            .and_then(|x| {
+                x.detail
+                    .as_ref()
+                    .and_then(|d| d["long_name"].as_str().map(String::from))
+            })
             .filter(|n| !n.is_empty())
             .or_else(|| r.identity.as_ref().map(|i| i.name.clone()))
             .unwrap_or_else(|| r.id.clone());
-        let state = if !r.connected {
-            "offline"
-        } else if r.ready {
-            "connected"
-        } else {
-            "connecting"
+        // the app knows connected | connecting | offline; a link that is
+        // being retried is "connecting"
+        let state = match r.state.as_str() {
+            "connected" => "connected",
+            "offline" => "offline",
+            _ => "connecting",
         };
         out.push(json!({
             "id": r.id, "name": name, "transport": r.network, "link": r.link_kind, "state": state,
@@ -113,7 +141,13 @@ pub fn identities(e: &Engine) -> Result<Value, EngineError> {
 }
 
 pub fn messages(e: &Engine, thread: Option<&str>) -> Result<Value, EngineError> {
-    let recs = e.messages("owner", &Filter { kind: Some("text".into()), ..Default::default() })?;
+    let recs = e.messages(
+        "owner",
+        &Filter {
+            kind: Some("text".into()),
+            ..Default::default()
+        },
+    )?;
     let out: Vec<Value> = recs
         .iter()
         .filter(|r| r.dir == "in" || r.dir == "out")
@@ -133,14 +167,20 @@ pub fn messages(e: &Engine, thread: Option<&str>) -> Result<Value, EngineError> 
 }
 
 pub fn send(e: &Engine, principal: &str, thread: &str, text: &str) -> Value {
-    let (network, to, channel): (String, Option<String>, Option<u32>) = if let Some(rest) = thread.strip_prefix("ch:") {
+    let (network, to, channel): (String, Option<String>, Option<u32>) = if let Some(rest) =
+        thread.strip_prefix("ch:")
+    {
         let mut it = rest.splitn(2, ':');
         let (Some(net), Some(ch)) = (it.next(), it.next().and_then(|c| c.parse().ok())) else {
             return json!({"accepted": false, "messageId": "", "error": "bad channel thread id"});
         };
         (net.to_string(), None, Some(ch))
     } else {
-        let net = if thread.starts_with('!') { NETWORK_MESHTASTIC } else { NETWORK_MESHCORE };
+        let net = if thread.starts_with('!') {
+            NETWORK_MESHTASTIC
+        } else {
+            NETWORK_MESHCORE
+        };
         (net.to_string(), Some(thread.to_string()), Some(0))
     };
     match e.send_text(principal, &network, None, to.as_deref(), channel, text) {

@@ -175,7 +175,14 @@ pub struct MeshcoreDriver {
 
 impl MeshcoreDriver {
     pub fn new(app_name: &str) -> Self {
-        MeshcoreDriver { serial: SerialDecoder::new(), self_prefix: None, app_name: app_name.into(), version: None, decode_errors: 0, draining: false }
+        MeshcoreDriver {
+            serial: SerialDecoder::new(),
+            self_prefix: None,
+            app_name: app_name.into(),
+            version: None,
+            decode_errors: 0,
+            draining: false,
+        }
     }
 
     pub fn radio_id(&self) -> Option<String> {
@@ -188,7 +195,12 @@ impl MeshcoreDriver {
 
     /// Commands that open a session, as payloads (not framed).
     pub fn handshake(&self) -> Vec<Vec<u8>> {
-        vec![app_start(&self.app_name), device_query(), get_contacts(), sync_next_message()]
+        vec![
+            app_start(&self.app_name),
+            device_query(),
+            get_contacts(),
+            sync_next_message(),
+        ]
     }
 
     /// Feed bytes from a serial or TCP stream. Returns decoded frames and
@@ -257,7 +269,10 @@ impl MeshcoreDriver {
             PUSH_SEND_CONFIRMED => {
                 let id = f.get(1..5).map(u32le).unwrap_or(0);
                 let mut i = Inbound::control(f, "send_confirmed");
-                i.event = Event::Ack { request_id: id, error: None };
+                i.event = Event::Ack {
+                    request_id: id,
+                    error: None,
+                };
                 i
             }
             PUSH_ADVERT => Inbound::control(f, "advert"),
@@ -269,7 +284,10 @@ impl MeshcoreDriver {
     fn bad(&mut self, raw: Vec<u8>, why: &str) -> Inbound {
         self.decode_errors += 1;
         let mut i = Inbound::control(raw, "undecodable");
-        i.event = Event::Opaque { port: None, note: why.into() };
+        i.event = Event::Opaque {
+            port: None,
+            note: why.into(),
+        };
         i
     }
 
@@ -284,7 +302,12 @@ impl MeshcoreDriver {
         i.from = Some(prefix);
         let (lat, lon) = (i32le(&f[36..]), i32le(&f[40..]));
         if lat != 0 || lon != 0 {
-            i.position = Some(Position { lat: Some(f64::from(lat) / 1e6), lon: Some(f64::from(lon) / 1e6), source: Some("packet".into()), ..Default::default() });
+            i.position = Some(Position {
+                lat: Some(f64::from(lat) / 1e6),
+                lon: Some(f64::from(lon) / 1e6),
+                source: Some("packet".into()),
+                ..Default::default()
+            });
         }
         i
     }
@@ -296,7 +319,8 @@ impl MeshcoreDriver {
         }
         let prefix = to_hex(&f[1..7]);
         let name_bytes = &f[100..132];
-        let name = String::from_utf8_lossy(name_bytes.split(|b| *b == 0).next().unwrap_or(&[])).into_owned();
+        let name = String::from_utf8_lossy(name_bytes.split(|b| *b == 0).next().unwrap_or(&[]))
+            .into_owned();
         let last_advert = u32le(&f[132..]);
         let (lat, lon) = (i32le(&f[136..]), i32le(&f[140..]));
         let position = (lat != 0 || lon != 0).then(|| Position {
@@ -308,7 +332,12 @@ impl MeshcoreDriver {
         });
         let ev = match &position {
             Some(p) if f[0] == PUSH_NEW_ADVERT => Event::Position(p.clone()),
-            _ => Event::NodeInfo { long_name: name, short_name: String::new(), hw_model: Some(u32::from(f[33])), position: position.clone() },
+            _ => Event::NodeInfo {
+                long_name: name,
+                short_name: String::new(),
+                hw_model: Some(u32::from(f[33])),
+                position: position.clone(),
+            },
         };
         Inbound {
             raw: f.clone(),
@@ -358,10 +387,18 @@ impl MeshcoreDriver {
             channel: None,
             packet_id: None,
             radio_ts: Some(u64::from(ts)),
-            signal: Signal { snr, hops: path_len(plen), ..Default::default() },
+            signal: Signal {
+                snr,
+                hops: path_len(plen),
+                ..Default::default()
+            },
             position: None,
             broadcast: false,
-            trust: if txt_type == 2 { Some("signed".into()) } else { None },
+            trust: if txt_type == 2 {
+                Some("signed".into())
+            } else {
+                None
+            },
         }
     }
 
@@ -395,7 +432,11 @@ impl MeshcoreDriver {
             channel: Some(channel),
             packet_id: None,
             radio_ts: Some(u64::from(ts)),
-            signal: Signal { snr, hops: path_len(plen), ..Default::default() },
+            signal: Signal {
+                snr,
+                hops: path_len(plen),
+                ..Default::default()
+            },
             position: None,
             broadcast: true,
             trust: Some("claimed".into()),

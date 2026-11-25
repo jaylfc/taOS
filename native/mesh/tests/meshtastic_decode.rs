@@ -34,7 +34,11 @@ fn every_fixture_decodes_to_what_the_reference_library_says() {
             assert_eq!(inb.channel, Some(c as u32), "{name}");
         }
         if let Some(t) = e["text"].as_str() {
-            assert!(matches!(&inb.event, Event::Text { text } if text == t), "{name}: {:?}", inb.event);
+            assert!(
+                matches!(&inb.event, Event::Text { text } if text == t),
+                "{name}: {:?}",
+                inb.event
+            );
         }
         if let Some(s) = e["snr"].as_f64() {
             assert_eq!(inb.signal.snr, Some(s as f32), "{name}");
@@ -52,9 +56,19 @@ fn every_fixture_decodes_to_what_the_reference_library_says() {
             assert_eq!(inb.radio_ts, Some(t), "{name} radio_ts");
         }
         if let Some(lat) = e["lat"].as_f64() {
-            let p = inb.position.as_ref().unwrap_or_else(|| panic!("{name}: no position"));
-            assert!((p.lat.unwrap() - lat).abs() < 1e-6, "{name} lat {:?}", p.lat);
-            assert!((p.lon.unwrap() - e["lon"].as_f64().unwrap()).abs() < 1e-6, "{name} lon");
+            let p = inb
+                .position
+                .as_ref()
+                .unwrap_or_else(|| panic!("{name}: no position"));
+            assert!(
+                (p.lat.unwrap() - lat).abs() < 1e-6,
+                "{name} lat {:?}",
+                p.lat
+            );
+            assert!(
+                (p.lon.unwrap() - e["lon"].as_f64().unwrap()).abs() < 1e-6,
+                "{name} lon"
+            );
             if let Some(a) = e["alt"].as_i64() {
                 assert_eq!(p.alt_m, Some(a as i32), "{name} alt");
             }
@@ -65,27 +79,46 @@ fn every_fixture_decodes_to_what_the_reference_library_says() {
                 assert_eq!(p.hdop, Some(h as u32));
                 assert_eq!(p.pdop, e["pdop"].as_u64().map(|x| x as u32));
                 assert_eq!(p.sats, e["sats"].as_u64().map(|x| x as u32));
-                assert_eq!(p.precision_bits, e["precision_bits"].as_u64().map(|x| x as u32));
-                assert_eq!(p.gps_accuracy_mm, e["gps_accuracy_mm"].as_u64().map(|x| x as u32));
+                assert_eq!(
+                    p.precision_bits,
+                    e["precision_bits"].as_u64().map(|x| x as u32)
+                );
+                assert_eq!(
+                    p.gps_accuracy_mm,
+                    e["gps_accuracy_mm"].as_u64().map(|x| x as u32)
+                );
                 assert_eq!(p.accuracy_m, None, "accuracy is not invented from DOP");
             }
         }
         if let Some(l) = e["long_name"].as_str() {
-            assert!(matches!(&inb.event, Event::NodeInfo { long_name, short_name, .. } if long_name == l && short_name == e["short_name"].as_str().unwrap()), "{name}: {:?}", inb.event);
+            assert!(
+                matches!(&inb.event, Event::NodeInfo { long_name, short_name, .. } if long_name == l && short_name == e["short_name"].as_str().unwrap()),
+                "{name}: {:?}",
+                inb.event
+            );
         }
         if let Some(t) = e["telemetry"].as_str() {
-            let Event::Telemetry { kind, values } = &inb.event else { panic!("{name}") };
+            let Event::Telemetry { kind, values } = &inb.event else {
+                panic!("{name}")
+            };
             assert_eq!(kind, t);
             for (k, v) in e.as_object().unwrap() {
                 if ["kind", "from", "telemetry", "radio_ts"].contains(&k.as_str()) {
                     continue;
                 }
-                let got = values[k].as_f64().unwrap_or_else(|| panic!("{name}: telemetry field {k} missing in {values}"));
-                assert!((got - v.as_f64().unwrap()).abs() < 1e-3, "{name}.{k}: {got}");
+                let got = values[k]
+                    .as_f64()
+                    .unwrap_or_else(|| panic!("{name}: telemetry field {k} missing in {values}"));
+                assert!(
+                    (got - v.as_f64().unwrap()).abs() < 1e-3,
+                    "{name}.{k}: {got}"
+                );
             }
         }
         if e["kind"] == "ack" {
-            let Event::Ack { request_id, error } = &inb.event else { panic!() };
+            let Event::Ack { request_id, error } = &inb.event else {
+                panic!()
+            };
             assert_eq!(*request_id as u64, e["request_id"].as_u64().unwrap());
             assert_eq!(error.as_deref(), e["error"].as_str());
         }
@@ -93,13 +126,20 @@ fn every_fixture_decodes_to_what_the_reference_library_says() {
             match v {
                 "my_info" => {
                     assert!(matches!(&inb.event, Event::Control { what } if what == "my_info"));
-                    assert_eq!(inb.from, Some(node_name(e["my_node_num"].as_u64().unwrap() as u32)));
+                    assert_eq!(
+                        inb.from,
+                        Some(node_name(e["my_node_num"].as_u64().unwrap() as u32))
+                    );
                 }
                 "node_info" => {
                     assert_eq!(inb.from, Some(node_name(e["num"].as_u64().unwrap() as u32)));
-                    assert!(matches!(&inb.event, Event::NodeInfo { long_name, short_name, .. } if long_name == e["long_name"].as_str().unwrap() && short_name == e["short_name"].as_str().unwrap()));
+                    assert!(
+                        matches!(&inb.event, Event::NodeInfo { long_name, short_name, .. } if long_name == e["long_name"].as_str().unwrap() && short_name == e["short_name"].as_str().unwrap())
+                    );
                 }
-                "rebooted" => assert!(matches!(&inb.event, Event::Control { what } if what == "rebooted")),
+                "rebooted" => {
+                    assert!(matches!(&inb.event, Event::Control { what } if what == "rebooted"))
+                }
                 other => panic!("{name}: unhandled variant {other}"),
             }
         }
@@ -113,7 +153,9 @@ fn recorded_node_info_from_a_real_radio() {
     let fx = fixture("meshtastic.json");
     let inb = decode(frame_named(&fx, "node_info_heltec_v2_1"));
     assert_eq!(inb.from.as_deref(), Some("!28af67cc"));
-    assert!(matches!(inb.event, Event::NodeInfo { ref long_name, .. } if long_name == "Unknown 67cc"));
+    assert!(
+        matches!(inb.event, Event::NodeInfo { ref long_name, .. } if long_name == "Unknown 67cc")
+    );
 }
 
 #[test]
@@ -134,14 +176,24 @@ fn hop_start_zero_is_unknown_not_direct() {
     let fx = fixture("meshtastic.json");
     let inb = decode(frame_named(&fx, "position_negative_alt"));
     assert_eq!(inb.signal.hops, None);
-    assert_eq!(inb.position.as_ref().unwrap().time, None, "no time sent: unknown, not zero");
+    assert_eq!(
+        inb.position.as_ref().unwrap().time,
+        None,
+        "no time sent: unknown, not zero"
+    );
 }
 
 #[test]
 fn hop_arithmetic_matches_the_firmware_definition() {
     let fx = fixture("meshtastic.json");
-    assert_eq!(decode(frame_named(&fx, "text_broadcast")).signal.hops, Some(1));
-    assert_eq!(decode(frame_named(&fx, "text_direct_utf8")).signal.hops, Some(0));
+    assert_eq!(
+        decode(frame_named(&fx, "text_broadcast")).signal.hops,
+        Some(1)
+    );
+    assert_eq!(
+        decode(frame_named(&fx, "text_direct_utf8")).signal.hops,
+        Some(0)
+    );
 }
 
 #[test]
@@ -196,11 +248,20 @@ fn empty_frame_is_a_frame() {
 fn our_outbound_bytes_equal_the_reference_library_encoding() {
     let fx = fixture("meshtastic.json");
     let o = &fx["outbound"];
-    assert_eq!(encode_want_config(0x7a05_0001), hex(&o["want_config"]["hex"]));
+    assert_eq!(
+        encode_want_config(0x7a05_0001),
+        hex(&o["want_config"]["hex"])
+    );
     let t = &o["text_broadcast"];
-    assert_eq!(encode_text(BROADCAST, 0, "check in ok", 0x0bad_f00d, false), hex(&t["hex"]));
+    assert_eq!(
+        encode_text(BROADCAST, 0, "check in ok", 0x0bad_f00d, false),
+        hex(&t["hex"])
+    );
     let t = &o["text_direct_channel2"];
-    assert_eq!(encode_text(0x28af_67cc, 2, "on my way", 99, true), hex(&t["hex"]));
+    assert_eq!(
+        encode_text(0x28af_67cc, 2, "on my way", 99, true),
+        hex(&t["hex"])
+    );
 }
 
 #[test]

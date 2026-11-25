@@ -244,6 +244,9 @@ private:
         if (r.path == QLatin1String("/v1/devices")) return fx(QStringLiteral("devices"));
         if (r.path.endsWith(QLatin1String("/firmware"))) return fx(QStringLiteral("device_firmware"));
         if (r.path == QLatin1String("/v1/flash/plan")) return fx(QStringLiteral("plan"));
+        if (r.path == QLatin1String("/v1/flash/run") && r.body.contains(QStringLiteral("actor")) && r.body.value(QStringLiteral("actor")).toString() != QLatin1String("person")
+            && !r.body.value(QStringLiteral("actor")).toString().startsWith(QLatin1String("agent:")))
+            return QJsonObject{{QStringLiteral("ok"), false}, {QStringLiteral("stage"), QStringLiteral("refused")}, {QStringLiteral("code"), QStringLiteral("consent_required")}, {QStringLiteral("message"), QStringLiteral("actor must be person or agent:<id>")}};
         if (r.path == QLatin1String("/v1/flash/run"))
             return r.body.value(QStringLiteral("confirm")).toString() == QLatin1String("Heltec V3") ? fx(QStringLiteral("run_done")) : fx(QStringLiteral("run_unconfirmed"));
         return QJsonObject{{QStringLiteral("ok"), false}, {QStringLiteral("error"), QStringLiteral("no route")}};

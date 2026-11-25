@@ -594,7 +594,7 @@ void FirmwareEngine::runFlash(const QString &deviceId, const QString &entryId, c
     }
     m_busy = true;
     Q_EMIT changed();
-    QJsonObject body{{u"device"_s, deviceId}, {u"entry"_s, entryId}, {u"confirm"_s, typedName.trimmed()}, {u"actor"_s, u"person:"_s + m_account}};
+    QJsonObject body{{u"device"_s, deviceId}, {u"entry"_s, entryId}, {u"confirm"_s, typedName.trimmed()}, {u"actor"_s, u"person"_s}};   // exactly "person": the engine takes no other word for the human at the screen
     if (allowNoBackup)
         body.insert(u"allow_no_backup"_s, true);
     m_c->request(u"POST"_s, u"/v1/flash/run"_s, body, this, [this](const FwReply &r) {

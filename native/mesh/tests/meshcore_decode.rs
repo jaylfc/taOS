@@ -17,7 +17,13 @@ fn ready_driver() -> MeshcoreDriver {
 
 fn named(name: &str) -> (Vec<u8>, serde_json::Value) {
     let fx = fixture("meshcore.json");
-    let f = fx["frames"].as_array().unwrap().iter().find(|f| f["name"] == name).unwrap().clone();
+    let f = fx["frames"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|f| f["name"] == name)
+        .unwrap()
+        .clone();
     (hex(&f["hex"]), f["oracle"][0]["payload"].clone())
 }
 
@@ -34,7 +40,10 @@ fn documented_commands_are_byte_exact() {
     assert_eq!(&ours[8..], &doc[8..]);
     assert_eq!(device_query(), hex(&c["device_query_doc"]));
     assert_eq!(sync_next_message(), hex(&c["get_message_doc"]));
-    assert_eq!(send_channel(1, 1_234_567_890, "Hello"), hex(&c["send_channel_doc"]));
+    assert_eq!(
+        send_channel(1, 1_234_567_890, "Hello"),
+        hex(&c["send_channel_doc"])
+    );
 }
 
 #[test]
@@ -70,7 +79,10 @@ fn contact_frame_matches_the_reference_reader() {
     let mut d = ready_driver();
     let (i, cmds) = one(&mut d, raw);
     assert!(cmds.is_empty());
-    assert_eq!(i.from.as_deref(), Some(&o["public_key"].as_str().unwrap()[..12]));
+    assert_eq!(
+        i.from.as_deref(),
+        Some(&o["public_key"].as_str().unwrap()[..12])
+    );
     let p = i.position.unwrap();
     assert!((p.lat.unwrap() - o["adv_lat"].as_f64().unwrap()).abs() < 1e-9);
     assert!((p.lon.unwrap() - o["adv_lon"].as_f64().unwrap()).abs() < 1e-9);
@@ -105,7 +117,10 @@ fn direct_message_v3_decodes_and_asks_for_the_next_one() {
     assert_eq!(i.from.as_deref(), o["pubkey_prefix"].as_str());
     assert_eq!(i.to.as_deref(), Some("010203040506"));
     assert_eq!(i.signal.snr, Some(o["SNR"].as_f64().unwrap() as f32));
-    assert_eq!(i.signal.hops, None, "0xFF path_len is a stored direct route: the hop count is not reported, so unknown");
+    assert_eq!(
+        i.signal.hops, None,
+        "0xFF path_len is a stored direct route: the hop count is not reported, so unknown"
+    );
     assert_eq!(i.radio_ts, o["sender_timestamp"].as_u64());
     assert!(!i.broadcast);
     assert_eq!(cmds, vec![sync_next_message()]);
@@ -121,7 +136,10 @@ fn direct_message_two_hops_and_old_layout() {
     let (raw, o) = named("contact_msg_v2");
     let (i, _) = one(&mut d, raw);
     assert!(matches!(&i.event, Event::Text { text } if text == o["text"].as_str().unwrap()));
-    assert_eq!(i.signal.snr, None, "v2 frames carry no SNR: unknown, not zero");
+    assert_eq!(
+        i.signal.snr, None,
+        "v2 frames carry no SNR: unknown, not zero"
+    );
 }
 
 #[test]
@@ -162,7 +180,9 @@ fn send_confirmation_push_is_an_ack() {
     let (raw, o) = named("send_confirmed_push");
     let mut d = ready_driver();
     let (i, _) = one(&mut d, raw);
-    let Event::Ack { request_id, .. } = i.event else { panic!() };
+    let Event::Ack { request_id, .. } = i.event else {
+        panic!()
+    };
     assert_eq!(format!("{request_id:08x}"), {
         // the reference reader prints the 4 bytes as they arrive
         let h = o["code"].as_str().unwrap();

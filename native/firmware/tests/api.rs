@@ -346,3 +346,30 @@ fn dump_app_fixtures_when_asked() {
     run["confirm"] = "Heltec V3".into();
     put("run_done", &c("POST", "/v1/flash/run", Some(run)));
 }
+
+/// What the app sends to run a flash (the real engine, its own fakes): the actor is exactly "person". A named person
+/// ("person:<name>") is not a word the engine knows and is refused, so the app must not send it.
+#[test]
+fn the_app_flash_request_shape_is_accepted_and_a_named_person_actor_is_not() {
+    let srv = Server::start();
+    publish_all(&srv, None);
+    let env = Env::new(&srv.base);
+    env.add_usb("1-1", "10c4", "ea60", "SN1", "ttyUSB0");
+    let a = start(&env);
+    let c = |m: &str, p: &str, b: Option<Value>| call(&a, m, p, b, true, "", None).1;
+    for n in ["meshtastic", "meshcore", "rnode"] {
+        c("POST", "/v1/licences/accept", Some(json!({"network": n, "by": "Test Owner"})));
+    }
+    c("POST", "/v1/library/refresh", Some(json!({})));
+    c("GET", "/v1/devices?probe=1", None);
+    let body = json!({"device": "usb-10c4-ea60-SN1-1-1", "entry": "meshtastic:heltec-v3:2.7.26.54e0d8d", "confirm": "Heltec V3"});
+    let mut named = body.clone();
+    named["actor"] = "person:Test Owner".into();
+    let v = c("POST", "/v1/flash/run", Some(named));
+    assert_eq!(v["ok"], false, "{v}");
+    assert_eq!(v["code"], "consent_required", "{v}");
+    let mut app = body;
+    app["actor"] = "person".into();
+    let v = c("POST", "/v1/flash/run", Some(app));
+    assert_eq!(v["ok"], true, "{v}");
+}

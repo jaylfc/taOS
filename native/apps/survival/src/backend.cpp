@@ -628,7 +628,8 @@ SurvivalBackend::SurvivalBackend(const QString &dataDir, QObject *parent)
 {
     m_radios.scan();
     m_kits.refresh();
-    m_fakeMesh.setReason(tr("The mesh engine is not running. Start it from taOStak, or run: systemctl --user start taos-mesh"));
+    m_fakeMesh.setReason(m_meshClient.socketPath().isEmpty() ? tr("There is no runtime directory (XDG_RUNTIME_DIR is not set), so the mesh engine's socket cannot be found.")
+                                                             : tr("The mesh engine is not running. Start it from taOStak, or run: systemctl --user start taos-mesh"));
     // the real backend when the engine's socket exists; otherwise the stand-in says so, and the socket is watched for
     if (QFileInfo::exists(m_meshClient.socketPath()))
         setMesh(&m_socketMesh);

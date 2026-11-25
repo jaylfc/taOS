@@ -28,7 +28,11 @@ pub const KNOWN_USB: &[(u16, u16, &str)] = &[
 ];
 /// Vendors whose every product is a candidate (nRF52 boards ship a UF2
 /// bootloader with its own vendor id).
-pub const KNOWN_VENDORS: &[(u16, &str)] = &[(0x239a, "Adafruit/nRF52 bootloader"), (0x2886, "Seeed Studio"), (0x1915, "Nordic Semiconductor")];
+pub const KNOWN_VENDORS: &[(u16, &str)] = &[
+    (0x239a, "Adafruit/nRF52 bootloader"),
+    (0x2886, "Seeed Studio"),
+    (0x1915, "Nordic Semiconductor"),
+];
 
 #[derive(Debug, Clone, Serialize, PartialEq)]
 pub struct SerialCandidate {
@@ -49,35 +53,62 @@ fn read_trim(p: &Path) -> Option<String> {
 /// `dev_root` is `/dev`.
 pub fn scan_serial(sys_root: &Path, dev_root: &Path) -> Vec<SerialCandidate> {
     let mut out = Vec::new();
-    let Ok(rd) = fs::read_dir(sys_root.join("class/tty")) else { return out };
+    let Ok(rd) = fs::read_dir(sys_root.join("class/tty")) else {
+        return out;
+    };
     for e in rd.flatten() {
         let name = e.file_name().to_string_lossy().into_owned();
         if !(name.starts_with("ttyACM") || name.starts_with("ttyUSB")) {
             continue;
         }
         let dev = e.path().join("device");
-        let Ok(real) = fs::canonicalize(&dev) else { continue };
+        let Ok(real) = fs::canonicalize(&dev) else {
+            continue;
+        };
         // the interface directory is one level below the USB device
         let mut cur: Option<PathBuf> = Some(real);
         let mut ids = None;
         for _ in 0..4 {
             let Some(p) = cur else { break };
-            if let (Some(v), Some(pi)) = (read_trim(&p.join("idVendor")), read_trim(&p.join("idProduct"))) {
-                if let (Ok(v), Ok(pi)) = (u16::from_str_radix(&v, 16), u16::from_str_radix(&pi, 16)) {
-                    ids = Some((v, pi, read_trim(&p.join("product")), read_trim(&p.join("manufacturer"))));
+            if let (Some(v), Some(pi)) = (
+                read_trim(&p.join("idVendor")),
+                read_trim(&p.join("idProduct")),
+            ) {
+                if let (Ok(v), Ok(pi)) = (u16::from_str_radix(&v, 16), u16::from_str_radix(&pi, 16))
+                {
+                    ids = Some((
+                        v,
+                        pi,
+                        read_trim(&p.join("product")),
+                        read_trim(&p.join("manufacturer")),
+                    ));
                     break;
                 }
             }
             cur = p.parent().map(|x| x.to_path_buf());
         }
-        let Some((vid, pid, product, manufacturer)) = ids else { continue };
+        let Some((vid, pid, product, manufacturer)) = ids else {
+            continue;
+        };
         let hint = KNOWN_USB
             .iter()
             .find(|(v, p, _)| *v == vid && *p == pid)
             .map(|x| x.2.to_string())
-            .or_else(|| KNOWN_VENDORS.iter().find(|(v, _)| *v == vid).map(|x| x.1.to_string()));
+            .or_else(|| {
+                KNOWN_VENDORS
+                    .iter()
+                    .find(|(v, _)| *v == vid)
+                    .map(|x| x.1.to_string())
+            });
         if let Some(hint) = hint {
-            out.push(SerialCandidate { path: dev_root.join(&name).display().to_string(), vid, pid, product, manufacturer, hint });
+            out.push(SerialCandidate {
+                path: dev_root.join(&name).display().to_string(),
+                vid,
+                pid,
+                product,
+                manufacturer,
+                hint,
+            });
         }
     }
     out.sort_by(|a, b| a.path.cmp(&b.path));
@@ -119,7 +150,12 @@ pub fn probe(link: &mut dyn Link, window: Duration) -> Probe {
     let mut d = MeshtasticDriver::new();
     let hs = d.handshake(0x7a05_0000);
     if let Err(e) = link.write_all(&hs) {
-        return Probe { network: None, radio_id: None, detail: format!("write failed: {e}"), received: vec![] };
+        return Probe {
+            network: None,
+            radio_id: None,
+            detail: format!("write failed: {e}"),
+            received: vec![],
+        };
     }
     let mut seen_frames = 0;
     let mut received: Vec<u8> = Vec::new();
@@ -129,7 +165,12 @@ pub fn probe(link: &mut dyn Link, window: Duration) -> Probe {
         d.my_node.is_some()
     });
     if d.my_node.is_some() {
-        return Probe { network: Some(NETWORK_MESHTASTIC.into()), radio_id: d.radio_id(), detail: format!("{seen_frames} frames"), received };
+        return Probe {
+            network: Some(NETWORK_MESHTASTIC.into()),
+            radio_id: d.radio_id(),
+            detail: format!("{seen_frames} frames"),
+            received,
+        };
     }
     let mut mcd = MeshcoreDriver::new("taos-mesh");
     for c in [meshcore::app_start("taos-mesh"), meshcore::device_query()] {
@@ -142,16 +183,27 @@ pub fn probe(link: &mut dyn Link, window: Duration) -> Probe {
         received.extend_from_slice(b);
         let (frames, _) = mcd.feed_stream(b);
         for f in frames {
-            if matches!(f.event, Event::Control { ref what } if what == "self_info" || what == "device_info") {
+            if matches!(f.event, Event::Control { ref what } if what == "self_info" || what == "device_info")
+            {
                 found = true;
             }
         }
         found && mcd.self_prefix.is_some()
     });
     if found {
-        return Probe { network: Some(NETWORK_MESHCORE.into()), radio_id: mcd.radio_id(), detail: "companion protocol answered".into(), received };
+        return Probe {
+            network: Some(NETWORK_MESHCORE.into()),
+            radio_id: mcd.radio_id(),
+            detail: "companion protocol answered".into(),
+            received,
+        };
     }
-    Probe { network: None, radio_id: None, detail: "no mesh protocol answered".into(), received }
+    Probe {
+        network: None,
+        radio_id: None,
+        detail: "no mesh protocol answered".into(),
+        received,
+    }
 }
 
 // ---- BLE ---------------------------------------------------------------
@@ -168,8 +220,12 @@ pub struct BleDevice {
 #[serde(tag = "state", rename_all = "snake_case")]
 pub enum BleScan {
     /// No BlueZ, or BlueZ without an adapter. Not an error: many hosts have none.
-    NoAdapter { why: String },
-    Devices { devices: Vec<BleDevice> },
+    NoAdapter {
+        why: String,
+    },
+    Devices {
+        devices: Vec<BleDevice>,
+    },
 }
 
 /// Where BLE device facts come from. The real backend asks BlueZ over
@@ -185,7 +241,16 @@ pub struct BluezBusctl;
 impl BleBackend for BluezBusctl {
     fn managed_objects(&self) -> Result<serde_json::Value, String> {
         let out = std::process::Command::new("busctl")
-            .args(["--system", "--auto-start=no", "--json=short", "call", "org.bluez", "/", "org.freedesktop.DBus.ObjectManager", "GetManagedObjects"])
+            .args([
+                "--system",
+                "--auto-start=no",
+                "--json=short",
+                "call",
+                "org.bluez",
+                "/",
+                "org.freedesktop.DBus.ObjectManager",
+                "GetManagedObjects",
+            ])
             .output()
             .map_err(|e| format!("busctl: {e}"))?;
         if !out.status.success() {
@@ -206,16 +271,36 @@ pub fn scan_ble(b: &dyn BleBackend) -> BleScan {
         Ok(v) => v,
         Err(e) => return BleScan::NoAdapter { why: e },
     };
-    let Some(objs) = v.get("data").and_then(|d| d.get(0)).and_then(|d| d.as_object()) else {
-        return BleScan::NoAdapter { why: "unexpected BlueZ reply".into() };
+    let Some(objs) = v
+        .get("data")
+        .and_then(|d| d.get(0))
+        .and_then(|d| d.as_object())
+    else {
+        return BleScan::NoAdapter {
+            why: "unexpected BlueZ reply".into(),
+        };
     };
-    if !objs.values().any(|ifs| ifs.get("org.bluez.Adapter1").is_some()) {
-        return BleScan::NoAdapter { why: "BlueZ has no Bluetooth adapter".into() };
+    if !objs
+        .values()
+        .any(|ifs| ifs.get("org.bluez.Adapter1").is_some())
+    {
+        return BleScan::NoAdapter {
+            why: "BlueZ has no Bluetooth adapter".into(),
+        };
     }
     let mut devices = Vec::new();
     for ifs in objs.values() {
-        let Some(d) = ifs.get("org.bluez.Device1") else { continue };
-        let uuids: Vec<String> = dig(d, "UUIDs").and_then(|u| u.as_array()).map(|a| a.iter().filter_map(|x| x.as_str().map(|s| s.to_lowercase())).collect()).unwrap_or_default();
+        let Some(d) = ifs.get("org.bluez.Device1") else {
+            continue;
+        };
+        let uuids: Vec<String> = dig(d, "UUIDs")
+            .and_then(|u| u.as_array())
+            .map(|a| {
+                a.iter()
+                    .filter_map(|x| x.as_str().map(|s| s.to_lowercase()))
+                    .collect()
+            })
+            .unwrap_or_default();
         let network = if uuids.iter().any(|u| u == MESHTASTIC_BLE_SERVICE) {
             NETWORK_MESHTASTIC
         } else if uuids.iter().any(|u| u == MESHCORE_BLE_SERVICE) {
@@ -224,7 +309,10 @@ pub fn scan_ble(b: &dyn BleBackend) -> BleScan {
             continue;
         };
         devices.push(BleDevice {
-            address: dig(d, "Address").and_then(|x| x.as_str()).unwrap_or("").to_string(),
+            address: dig(d, "Address")
+                .and_then(|x| x.as_str())
+                .unwrap_or("")
+                .to_string(),
             name: dig(d, "Name").and_then(|x| x.as_str()).map(String::from),
             network: network.into(),
             rssi: dig(d, "RSSI").and_then(|x| x.as_i64()).map(|x| x as i32),
@@ -232,4 +320,3 @@ pub fn scan_ble(b: &dyn BleBackend) -> BleScan {
     }
     BleScan::Devices { devices }
 }
-

@@ -67,19 +67,39 @@ pub struct Signal {
 /// What a driver decoded from one frame.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Event {
-    Text { text: String },
+    Text {
+        text: String,
+    },
     Position(Position),
-    NodeInfo { long_name: String, short_name: String, hw_model: Option<u32>, position: Option<Position> },
-    Telemetry { kind: String, values: serde_json::Value },
+    NodeInfo {
+        long_name: String,
+        short_name: String,
+        hw_model: Option<u32>,
+        position: Option<Position>,
+    },
+    Telemetry {
+        kind: String,
+        values: serde_json::Value,
+    },
     /// Routing ack/nak for an earlier packet we sent or saw.
-    Ack { request_id: u32, error: Option<String> },
+    Ack {
+        request_id: u32,
+        error: Option<String>,
+    },
     /// Handshake, config, channel and similar traffic from the radio itself.
-    Control { what: String },
+    Control {
+        what: String,
+    },
     /// A packet whose payload the radio could not decrypt, or a port we do
     /// not decode. The raw bytes are in the record.
-    Opaque { port: Option<u32>, note: String },
+    Opaque {
+        port: Option<u32>,
+        note: String,
+    },
     /// A MeshCore radio accepted a send and says which acknowledgement code to expect.
-    Sent { expected_ack: u32 },
+    Sent {
+        expected_ack: u32,
+    },
 }
 
 impl Event {
@@ -120,7 +140,9 @@ impl Inbound {
     pub fn control(raw: Vec<u8>, what: &str) -> Self {
         Inbound {
             raw,
-            event: Event::Control { what: what.to_string() },
+            event: Event::Control {
+                what: what.to_string(),
+            },
             from: None,
             to: None,
             channel: None,
@@ -230,15 +252,35 @@ pub fn from_hex(s: &str) -> Option<Vec<u8>> {
     if s.len() % 2 != 0 {
         return None;
     }
-    (0..s.len()).step_by(2).map(|i| u8::from_str_radix(s.get(i..i + 2)?, 16).ok()).collect()
+    (0..s.len())
+        .step_by(2)
+        .map(|i| u8::from_str_radix(s.get(i..i + 2)?, 16).ok())
+        .collect()
 }
 
 impl Record {
     /// Compute the stable id from the immutable core. The same frame stored
     /// twice (a replay) gets the same id, so replays are idempotent.
-    pub fn compute_id(dir: &str, network: &str, radio: &str, host_ts_ms: u64, seq: u64, raw_hex: &str, ref_id: Option<&str>, state: Option<&str>) -> String {
+    #[allow(clippy::too_many_arguments)]
+    pub fn compute_id(
+        dir: &str,
+        network: &str,
+        radio: &str,
+        host_ts_ms: u64,
+        seq: u64,
+        raw_hex: &str,
+        ref_id: Option<&str>,
+        state: Option<&str>,
+    ) -> String {
         let mut h = Sha256::new();
-        for part in [dir, network, radio, raw_hex, ref_id.unwrap_or(""), state.unwrap_or("")] {
+        for part in [
+            dir,
+            network,
+            radio,
+            raw_hex,
+            ref_id.unwrap_or(""),
+            state.unwrap_or(""),
+        ] {
             h.update(part.as_bytes());
             h.update([0u8]);
         }
@@ -249,5 +291,8 @@ impl Record {
 }
 
 pub fn now_ms() -> u64 {
-    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0)
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
 }

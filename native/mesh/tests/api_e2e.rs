@@ -6,7 +6,7 @@ use common::*;
 use serde_json::{json, Value};
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::UnixStream;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
@@ -26,7 +26,11 @@ struct Up {
 fn up(receive_only: bool) -> Up {
     let t = TmpDir::new("e2e");
     let engine = Engine::open(&t.path().join("data"), "person:jay").unwrap();
-    let d = Arc::new(Daemon { engine, receive_only, stop: Arc::new(AtomicBool::new(false)) });
+    let d = Arc::new(Daemon {
+        engine,
+        receive_only,
+        stop: Arc::new(AtomicBool::new(false)),
+    });
     let sock = t.path().join("mesh.sock");
     let link = FakeLink::new("fake-e2e");
     let fx = fixture("meshtastic.json");
@@ -37,7 +41,8 @@ fn up(receive_only: bool) -> Up {
         s.extend(frame(&frame_named(&fx, "position_packet")));
         s
     });
-    d.attach(Box::new(link.clone()), "meshtastic", vec![]).unwrap();
+    d.attach(Box::new(link.clone()), "meshtastic", vec![])
+        .unwrap();
     let d2 = d.clone();
     let s2 = sock.clone();
     std::thread::spawn(move || d2.serve(&s2).unwrap());
@@ -46,10 +51,15 @@ fn up(receive_only: bool) -> Up {
         assert!(Instant::now() < end, "socket never came up");
         std::thread::sleep(Duration::from_millis(10));
     }
-    Up { _t: t, sock, link, d }
+    Up {
+        _t: t,
+        sock,
+        link,
+        d,
+    }
 }
 
-fn wait_for(sock: &PathBuf, n: usize) -> Vec<Value> {
+fn wait_for(sock: &Path, n: usize) -> Vec<Value> {
     let end = Instant::now() + Duration::from_secs(5);
     loop {
         let r = call(sock, "messages", "owner", json!({"filter": {}})).unwrap();
@@ -57,22 +67,39 @@ fn wait_for(sock: &PathBuf, n: usize) -> Vec<Value> {
         if v.len() >= n {
             return v;
         }
-        assert!(Instant::now() < end, "only {} records arrived: {r}", v.len());
+        assert!(
+            Instant::now() < end,
+            "only {} records arrived: {r}",
+            v.len()
+        );
         std::thread::sleep(Duration::from_millis(20));
     }
 }
 
-fn cli(sock: &PathBuf, args: &[&str]) -> (i32, String, String) {
-    let o = Command::new(env!("CARGO_BIN_EXE_taos-mesh")).arg("--socket").arg(sock).args(args).output().unwrap();
-    (o.status.code().unwrap(), String::from_utf8_lossy(&o.stdout).into(), String::from_utf8_lossy(&o.stderr).into())
+fn cli(sock: &Path, args: &[&str]) -> (i32, String, String) {
+    let o = Command::new(env!("CARGO_BIN_EXE_taos-mesh"))
+        .arg("--socket")
+        .arg(sock)
+        .args(args)
+        .output()
+        .unwrap();
+    (
+        o.status.code().unwrap(),
+        String::from_utf8_lossy(&o.stdout).into(),
+        String::from_utf8_lossy(&o.stderr).into(),
+    )
 }
 
 #[test]
 fn frames_from_the_radio_arrive_through_the_api_and_the_cli() {
     let u = up(false);
     let recs = wait_for(&u.sock, 4);
-    assert!(recs.iter().any(|r| r["kind"] == "text" && r["text"] == "hello mesh" && r["signal"]["rssi"] == -91));
-    assert!(recs.iter().all(|r| r["radio"] == "!28af67cc" || r["radio"] == "fake-e2e"));
+    assert!(recs
+        .iter()
+        .any(|r| r["kind"] == "text" && r["text"] == "hello mesh" && r["signal"]["rssi"] == -91));
+    assert!(recs
+        .iter()
+        .all(|r| r["radio"] == "!28af67cc" || r["radio"] == "fake-e2e"));
     let radios = call(&u.sock, "radios", "owner", json!({})).unwrap();
     assert_eq!(radios["result"][0]["id"], "!28af67cc");
     assert_eq!(radios["result"][0]["connected"], true);
@@ -93,12 +120,40 @@ fn frames_from_the_radio_arrive_through_the_api_and_the_cli() {
 fn identities_and_link_through_the_cli() {
     let u = up(false);
     wait_for(&u.sock, 4);
-    let (c, out, e) = cli(&u.sock, &["identities", "contact", "Sam", "--notes", "orange handset"]);
+    let (c, out, e) = cli(
+        &u.sock,
+        &["identities", "contact", "Sam", "--notes", "orange handset"],
+    );
     assert_eq!(c, 0, "{e}");
-    let cid = serde_json::from_str::<Value>(&out).unwrap()["contact"].as_str().unwrap().to_string();
-    assert_eq!(cli(&u.sock, &["identities", "assign", "!7ed23c00", &format!("contact:{cid}")]).0, 0);
-    assert_eq!(cli(&u.sock, &["identities", "told", &cid, "--date", "2026-11-25"]).0, 0);
-    let (_, out, _) = cli(&u.sock, &["messages", "--identity", &format!("contact:{cid}")]);
+    let cid = serde_json::from_str::<Value>(&out).unwrap()["contact"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    assert_eq!(
+        cli(
+            &u.sock,
+            &[
+                "identities",
+                "assign",
+                "!7ed23c00",
+                &format!("contact:{cid}")
+            ]
+        )
+        .0,
+        0
+    );
+    assert_eq!(
+        cli(
+            &u.sock,
+            &["identities", "told", &cid, "--date", "2026-11-25"]
+        )
+        .0,
+        0
+    );
+    let (_, out, _) = cli(
+        &u.sock,
+        &["messages", "--identity", &format!("contact:{cid}")],
+    );
     let v: Value = serde_json::from_str(&out).unwrap();
     assert_eq!(v.as_array().unwrap().len(), 1, "{out}");
     assert_eq!(v[0]["sender"]["name"], "Sam");
@@ -116,14 +171,47 @@ fn identities_and_link_through_the_cli() {
 fn an_agent_over_the_api_is_refused_without_a_grant_then_allowed_with_one() {
     let u = up(false);
     wait_for(&u.sock, 4);
-    let r = call(&u.sock, "send", "agent:scout", json!({"network": "meshtastic", "text": "hi", "channel": 0})).unwrap();
+    let r = call(
+        &u.sock,
+        "send",
+        "agent:scout",
+        json!({"network": "meshtastic", "text": "hi", "channel": 0}),
+    )
+    .unwrap();
     assert_eq!(r["ok"], false);
     assert_eq!(r["error"]["code"], "no_grant");
-    let r = call(&u.sock, "grants.add", "agent:scout", json!({"agent": "agent:scout", "network": "meshtastic"})).unwrap();
-    assert_eq!(r["error"]["code"], "forbidden", "an agent cannot grant itself");
-    let (c, _, e) = cli(&u.sock, &["grant", "agent:scout", "--network", "meshtastic", "--channel", "0", "--msgs-per-hour", "5"]);
+    let r = call(
+        &u.sock,
+        "grants.add",
+        "agent:scout",
+        json!({"agent": "agent:scout", "network": "meshtastic"}),
+    )
+    .unwrap();
+    assert_eq!(
+        r["error"]["code"], "forbidden",
+        "an agent cannot grant itself"
+    );
+    let (c, _, e) = cli(
+        &u.sock,
+        &[
+            "grant",
+            "agent:scout",
+            "--network",
+            "meshtastic",
+            "--channel",
+            "0",
+            "--msgs-per-hour",
+            "5",
+        ],
+    );
     assert_eq!(c, 0, "{e}");
-    let r = call(&u.sock, "send", "agent:scout", json!({"network": "meshtastic", "text": "hi", "channel": 0})).unwrap();
+    let r = call(
+        &u.sock,
+        "send",
+        "agent:scout",
+        json!({"network": "meshtastic", "text": "hi", "channel": 0}),
+    )
+    .unwrap();
     assert_eq!(r["ok"], true, "{r}");
     // the daemon thread hands it to the link
     let end = Instant::now() + Duration::from_secs(5);
@@ -135,8 +223,14 @@ fn an_agent_over_the_api_is_refused_without_a_grant_then_allowed_with_one() {
     assert_eq!(c, 0);
     assert!(out.contains("agent:scout"));
     // agents cannot call owner methods
-    assert_eq!(call(&u.sock, "identities.list", "agent:scout", json!({})).unwrap()["error"]["code"], "forbidden");
-    assert_eq!(call(&u.sock, "discover", "agent:scout", json!({})).unwrap()["error"]["code"], "forbidden");
+    assert_eq!(
+        call(&u.sock, "identities.list", "agent:scout", json!({})).unwrap()["error"]["code"],
+        "forbidden"
+    );
+    assert_eq!(
+        call(&u.sock, "discover", "agent:scout", json!({})).unwrap()["error"]["code"],
+        "forbidden"
+    );
 }
 
 #[test]
@@ -144,11 +238,28 @@ fn receive_only_daemon_never_writes_a_send() {
     let u = up(true);
     wait_for(&u.sock, 4);
     let before = u.link.written_bytes();
-    let (c, _, e) = cli(&u.sock, &["send", "--network", "meshtastic", "--text", "nope", "--channel", "0"]);
+    let (c, _, e) = cli(
+        &u.sock,
+        &[
+            "send",
+            "--network",
+            "meshtastic",
+            "--text",
+            "nope",
+            "--channel",
+            "0",
+        ],
+    );
     assert_eq!(c, 0, "{e}");
     std::thread::sleep(Duration::from_millis(300));
     assert_eq!(u.link.written_bytes(), before);
-    let r = call(&u.sock, "messages", "owner", json!({"filter": {"kind": "send_state"}})).unwrap();
+    let r = call(
+        &u.sock,
+        "messages",
+        "owner",
+        json!({"filter": {"kind": "send_state"}}),
+    )
+    .unwrap();
     let _ = r;
     let _ = &u.d;
 }
@@ -158,13 +269,21 @@ fn listen_streams_new_records_as_they_are_stored() {
     let u = up(false);
     wait_for(&u.sock, 4);
     let mut s = UnixStream::connect(&u.sock).unwrap();
-    writeln!(s, "{}", json!({"id": 9, "method": "subscribe", "principal": "owner"})).unwrap();
+    writeln!(
+        s,
+        "{}",
+        json!({"id": 9, "method": "subscribe", "principal": "owner"})
+    )
+    .unwrap();
     let mut rd = BufReader::new(s.try_clone().unwrap());
     let mut first = String::new();
     rd.read_line(&mut first).unwrap();
     assert!(first.contains("subscribed"));
     // the radio says something new
-    u.link.push(&frame(&frame_named(&fixture("meshtastic.json"), "text_direct_utf8")));
+    u.link.push(&frame(&frame_named(
+        &fixture("meshtastic.json"),
+        "text_direct_utf8",
+    )));
     let mut line = String::new();
     s.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
     rd.read_line(&mut line).unwrap();
@@ -180,7 +299,11 @@ fn the_socket_is_private_and_a_second_daemon_cannot_take_it() {
     let mode = std::fs::metadata(&u.sock).unwrap().permissions().mode() & 0o777;
     assert_eq!(mode, 0o600);
     let e = Engine::open(&u._t.path().join("data2"), "x").unwrap();
-    let d2 = Arc::new(Daemon { engine: e, receive_only: true, stop: Arc::new(AtomicBool::new(false)) });
+    let d2 = Arc::new(Daemon {
+        engine: e,
+        receive_only: true,
+        stop: Arc::new(AtomicBool::new(false)),
+    });
     assert!(d2.serve(&u.sock).is_err());
 }
 

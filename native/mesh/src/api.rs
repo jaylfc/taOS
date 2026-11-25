@@ -14,7 +14,8 @@
 use crate::discovery;
 use crate::engine::{Engine, EngineError, Filter, Session};
 use crate::grants::{Grant, OWNER};
-use crate::link::{Link, SerialLink, TcpLink};
+use crate::link::{Connector, Link, SerialConnector, TcpConnector};
+use crate::supervisor;
 use serde::Deserialize;
 use serde_json::{json, Value};
 use std::io::{BufRead, BufReader, Write};
@@ -89,7 +90,12 @@ pub struct Daemon {
 
 impl Daemon {
     /// Open a radio on a link and run its session on a thread.
-    pub fn attach(&self, link: Box<dyn Link>, network: &str, prefeed: Vec<u8>) -> Result<String, EngineError> {
+    pub fn attach(
+        &self,
+        link: Box<dyn Link>,
+        network: &str,
+        prefeed: Vec<u8>,
+    ) -> Result<String, EngineError> {
         let mut sess = Session::new(self.engine.clone(), link, network)?;
         sess.prefeed(prefeed);
         sess.transmit_enabled = !self.receive_only;
@@ -107,22 +113,76 @@ impl Daemon {
         Ok(name)
     }
 
-    pub fn connect_spec(&self, spec: &str, network: Option<&str>) -> Result<Value, String> {
-        let mut link: Box<dyn Link> = if let Some(a) = spec.strip_prefix("tcp:") {
-            Box::new(TcpLink::connect(a).map_err(|e| e.to_string())?)
-        } else {
-            Box::new(SerialLink::open(spec).map_err(|e| format!("{spec}: {e}"))?)
+    /// Run a radio under the supervisor: it reconnects with back-off when
+    /// the link drops. `first` is an already open link (the probe's) with
+    /// the bytes it has received.
+    pub fn attach_supervised(
+        &self,
+        connector: Arc<dyn Connector>,
+        network: &str,
+        first: Option<(Box<dyn Link>, Vec<u8>)>,
+    ) -> String {
+        let label = connector.describe();
+        let sup = supervisor::Supervised {
+            engine: self.engine.clone(),
+            connector,
+            network: network.to_string(),
+            transmit: !self.receive_only,
+            stop: self.stop.clone(),
+            backoff: supervisor::Backoff::standard(),
+            first,
         };
+        let stop = self.stop.clone();
+        std::thread::spawn(move || {
+            supervisor::run(sup, &|d| supervisor::sleep_unless_stopped(&stop, d))
+        });
+        label
+    }
+
+    /// `spec` is a serial path, `tcp:host:port` or `ble:ADDRESS`.
+    pub fn connect_spec(&self, spec: &str, network: Option<&str>) -> Result<Value, String> {
+        if let Some(addr) = spec.strip_prefix("ble:") {
+            let net = match network {
+                Some(n) => n.to_string(),
+                None => match discovery::scan_ble(&discovery::BluezBusctl) {
+                    discovery::BleScan::Devices { devices } => devices
+                        .iter()
+                        .find(|d| d.address.eq_ignore_ascii_case(addr))
+                        .map(|d| d.network.clone())
+                        .ok_or_else(|| {
+                            format!("{spec}: not seen advertising a mesh service; name the network")
+                        })?,
+                    discovery::BleScan::NoAdapter { why } => return Err(format!("{spec}: {why}")),
+                },
+            };
+            let c = Arc::new(crate::ble::BleConnector {
+                address: addr.to_string(),
+                network: net.clone(),
+            });
+            let name = self.attach_supervised(c, &net, None);
+            return Ok(json!({"radio": name, "network": net}));
+        }
+        let connector: Arc<dyn Connector> = if let Some(a) = spec.strip_prefix("tcp:") {
+            Arc::new(TcpConnector(a.to_string()))
+        } else {
+            Arc::new(SerialConnector(spec.to_string()))
+        };
+        let mut link = connector.connect().map_err(|e| format!("{spec}: {e}"))?;
         let (net, pre) = match network {
             Some(n) => (n.to_string(), vec![]),
             None => {
                 let p = discovery::probe(link.as_mut(), Duration::from_millis(2500));
-                (p.network.clone().ok_or_else(|| format!("{spec}: {}", p.detail))?, p.received)
+                (
+                    p.network
+                        .clone()
+                        .ok_or_else(|| format!("{spec}: {}", p.detail))?,
+                    p.received,
+                )
             }
         };
-        // the probe's bytes go into the session first: nothing the radio
+        // the probe's bytes go into the first session: nothing the radio
         // already handed over is dropped
-        let name = self.attach(link, &net, pre).map_err(|e| e.to_string())?;
+        let name = self.attach_supervised(connector, &net, Some((link, pre)));
         Ok(json!({"radio": name, "network": net}))
     }
 
@@ -134,7 +194,9 @@ impl Daemon {
         let id = req.id.clone();
         let p = &req.params;
         let who = req.principal.as_str();
-        let owner_only = |id: &Value| -> Option<Value> { (who != OWNER).then(|| err(id, "forbidden", "owner only")) };
+        let owner_only = |id: &Value| -> Option<Value> {
+            (who != OWNER).then(|| err(id, "forbidden", "owner only"))
+        };
         macro_rules! try_p {
             ($e:expr) => {
                 match $e {
@@ -235,21 +297,39 @@ impl Daemon {
                 ok!(crate::appview::send(&self.engine, who, thread, text))
             }
             "messages" => {
-                let f: Filter = try_p!(serde_json::from_value(p.get("filter").cloned().unwrap_or(json!({}))).map_err(|e| e.to_string()));
+                let f: Filter = try_p!(serde_json::from_value(
+                    p.get("filter").cloned().unwrap_or(json!({}))
+                )
+                .map_err(|e| e.to_string()));
                 // an owner may read as a person (the app does this on a
                 // person's behalf); anyone else reads as themselves
-                let viewer = if who == OWNER { s(p, "as").unwrap_or(OWNER) } else { who };
+                let viewer = if who == OWNER {
+                    s(p, "as").unwrap_or(OWNER)
+                } else {
+                    who
+                };
                 ok!(eng!(self.engine.messages(viewer, &f)))
             }
             "last_positions" => {
-                let viewer = if who == OWNER { s(p, "as").unwrap_or(OWNER) } else { who };
+                let viewer = if who == OWNER {
+                    s(p, "as").unwrap_or(OWNER)
+                } else {
+                    who
+                };
                 ok!(eng!(self.engine.last_positions(viewer)))
             }
             "send" => {
                 let text = try_p!(need(p, "text"));
                 let network = try_p!(need(p, "network"));
                 let ch = p.get("channel").and_then(|c| c.as_u64()).map(|c| c as u32);
-                ok!(eng!(self.engine.send_text(who, network, s(p, "radio"), s(p, "to"), ch, text)))
+                ok!(eng!(self.engine.send_text(
+                    who,
+                    network,
+                    s(p, "radio"),
+                    s(p, "to"),
+                    ch,
+                    text
+                )))
             }
             "identities.list" => {
                 if let Some(e) = owner_only(&id) {
@@ -261,23 +341,36 @@ impl Daemon {
                 let node = try_p!(need(p, "node"));
                 let ident = s(p, "identity");
                 let name = s(p, "name");
-                eng!(self.engine.with_ids(who, |i| i.assign(node, ident, name, OWNER)));
+                eng!(self
+                    .engine
+                    .with_ids(who, |i| i.assign(node, ident, name, OWNER)));
                 ok!(json!({"node": node, "identity": ident}))
             }
             "contacts.create" => {
                 let name = try_p!(need(p, "name"));
-                let cid = eng!(self.engine.with_ids(who, |i| i.create_contact(name, s(p, "notes"), OWNER)));
+                let cid = eng!(self.engine.with_ids(who, |i| i.create_contact(
+                    name,
+                    s(p, "notes"),
+                    OWNER
+                )));
                 ok!(json!({"contact": cid}))
             }
             "contacts.update" => {
                 let cid = try_p!(need(p, "contact"));
-                eng!(self.engine.with_ids(who, |i| i.update_contact(cid, s(p, "name"), s(p, "notes"), OWNER)));
+                eng!(self.engine.with_ids(who, |i| i.update_contact(
+                    cid,
+                    s(p, "name"),
+                    s(p, "notes"),
+                    OWNER
+                )));
                 ok!(json!({"contact": cid}))
             }
             "contacts.told" => {
                 let cid = try_p!(need(p, "contact"));
                 let told = p.get("told").and_then(|t| t.as_bool()).unwrap_or(true);
-                eng!(self.engine.with_ids(who, |i| i.set_told(cid, told, s(p, "date"), OWNER)));
+                eng!(self
+                    .engine
+                    .with_ids(who, |i| i.set_told(cid, told, s(p, "date"), OWNER)));
                 ok!(json!({"contact": cid, "told": told}))
             }
             "link" => {
@@ -329,13 +422,21 @@ impl Daemon {
             }
             if let Ok(v) = serde_json::from_str::<Value>(&line) {
                 if v.get("method").and_then(|m| m.as_str()) == Some("subscribe") {
-                    let who = v.get("principal").and_then(|x| x.as_str()).unwrap_or(OWNER).to_string();
+                    let who = v
+                        .get("principal")
+                        .and_then(|x| x.as_str())
+                        .unwrap_or(OWNER)
+                        .to_string();
                     if who != OWNER {
                         let _ = writeln!(w, "{}", err(&v["id"], "forbidden", "owner only"));
                         continue;
                     }
                     let rx = self.engine.subscribe();
-                    let _ = writeln!(w, "{}", json!({"id": v["id"], "ok": true, "result": {"subscribed": true}}));
+                    let _ = writeln!(
+                        w,
+                        "{}",
+                        json!({"id": v["id"], "ok": true, "result": {"subscribed": true}})
+                    );
                     while let Ok(rec) = rx.recv() {
                         if writeln!(w, "{}", json!({"event": "record", "record": rec})).is_err() {
                             return;
@@ -355,7 +456,10 @@ impl Daemon {
         if socket.exists() {
             // only remove a socket nobody answers on
             if UnixStream::connect(socket).is_ok() {
-                return Err(std::io::Error::new(std::io::ErrorKind::AddrInUse, "another taos-mesh is serving this socket"));
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::AddrInUse,
+                    "another taos-mesh is serving this socket",
+                ));
             }
             std::fs::remove_file(socket)?;
         }
@@ -376,10 +480,13 @@ impl Daemon {
 
 /// Blocking client: one request, one response.
 pub fn call(socket: &Path, method: &str, principal: &str, params: Value) -> Result<Value, String> {
-    let mut s = UnixStream::connect(socket).map_err(|e| format!("cannot reach taos-mesh at {}: {e}", socket.display()))?;
+    let mut s = UnixStream::connect(socket)
+        .map_err(|e| format!("cannot reach taos-mesh at {}: {e}", socket.display()))?;
     let req = json!({"id": 1, "method": method, "principal": principal, "params": params});
     writeln!(s, "{req}").map_err(|e| e.to_string())?;
     let mut line = String::new();
-    BufReader::new(s).read_line(&mut line).map_err(|e| e.to_string())?;
+    BufReader::new(s)
+        .read_line(&mut line)
+        .map_err(|e| e.to_string())?;
     serde_json::from_str(&line).map_err(|e| format!("bad reply: {e}"))
 }

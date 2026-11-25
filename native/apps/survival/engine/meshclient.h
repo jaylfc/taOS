@@ -32,7 +32,7 @@ public:
     Q_ENUM(State)
     explicit MeshClient(QString socketPath, QObject *parent = nullptr);
     ~MeshClient() override;
-    /// $TAOS_MESH_SOCKET, else $XDG_RUNTIME_DIR/taos-mesh.sock.
+    /// $TAOS_MESH_SOCKET (a seam for tests and pictures), else $XDG_RUNTIME_DIR/taos-mesh.sock; empty without a runtime directory.
     static QString defaultSocketPath();
     QString socketPath() const { return m_path; }
     State state() const { return m_state; }
