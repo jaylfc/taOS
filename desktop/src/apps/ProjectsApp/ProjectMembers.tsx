@@ -1,7 +1,13 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { projectsApi, type Project, type ProjectMember } from "@/lib/projects";
 import { AddAgentDialog } from "./AddAgentDialog";
 import { InviteAgentDialog } from "./InviteAgentDialog";
+import {
+  fetchProjectInvites,
+  revokeProjectInvite,
+  PendingInvitesList,
+  type PendingInvite,
+} from "./PendingInvites";
 import { canvasApi } from "./canvas/canvas-api";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { withCsrf } from "@/lib/csrf";
@@ -307,6 +313,7 @@ export function ProjectMembers({ project, onChanged }: { project: Project; onCha
   const [externalRegistryLoaded, setExternalRegistryLoaded] = useState(false);
   const [dialogOpen, setDialogOpen] = useState(false);
   const [inviteOpen, setInviteOpen] = useState(false);
+  const [pendingInvites, setPendingInvites] = useState<PendingInvite[]>([]);
   // D7: the Lead is an exclusive, project-level designation. We keep a local
   // mirror of project.lead_member_id so the selector reflects changes instantly
   // (the backend enforces the one-lead invariant structurally on write).
@@ -370,6 +377,23 @@ export function ProjectMembers({ project, onChanged }: { project: Project; onCha
       .catch(() => {
         if (seq === registryReqSeq.current) setExternalRegistryLoaded(true);
       });
+  };
+
+  // Pending invites live alongside members (#2067): an invite is a
+  // member-to-be, and this is where people look for one after minting.
+  const refreshInvites = useCallback(() => {
+    void fetchProjectInvites(project.id).then((rows) =>
+      setPendingInvites(rows.filter((i) => i.status === "pending")),
+    );
+  }, [project.id]);
+
+  useEffect(() => {
+    refreshInvites();
+  }, [refreshInvites]);
+
+  const cancelInvite = async (invite: PendingInvite) => {
+    await revokeProjectInvite(project.id, invite.invite_id);
+    refreshInvites();
   };
 
   useEffect(() => {
@@ -585,6 +609,10 @@ export function ProjectMembers({ project, onChanged }: { project: Project; onCha
           </ul>
         </section>
       )}
+      <section className="mt-5 pt-4 border-t border-zinc-800" aria-label="Pending invites">
+        <h4 className="text-sm font-medium text-zinc-300 mb-2">Pending invites</h4>
+        <PendingInvitesList invites={pendingInvites} onRevoke={cancelInvite} />
+      </section>
       {dialogOpen && (
         <AddAgentDialog
           projectId={project.id}
@@ -599,8 +627,12 @@ export function ProjectMembers({ project, onChanged }: { project: Project; onCha
       {inviteOpen && (
         <InviteAgentDialog
           projectId={project.id}
-          onClose={() => setInviteOpen(false)}
+          onClose={() => {
+            setInviteOpen(false);
+            refreshInvites();
+          }}
           onMinted={() => {
+            refreshInvites();
             // Do NOT close the dialog here. The mint succeeds and the dialog
             // then renders the invite URL and PIN, which are shown exactly
             // once and cannot be recovered afterwards. Closing on mint threw

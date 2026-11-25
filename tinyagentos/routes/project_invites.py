@@ -906,9 +906,13 @@ async def list_invites(
             "invite_id": i["invite_id"],
             "scopes": _scopes_as_list(i["scopes"]),
             "status": i["status"],
+            "created_ts": i["created_ts"],
             "expires_ts": i["expires_ts"],
             "redeemed_by": i.get("redeemed_by"),
             "kind": i.get("kind", "agent"),
+            "pin_required": bool(i.get("pin_required", 1)),
+            "display_name": i.get("display_name"),
+            "contact_id": i.get("contact_id"),
         }
         for i in items
     ]
@@ -1023,9 +1027,51 @@ async def list_os_invites(
             "invite_id": i["invite_id"],
             "scopes": _scopes_as_list(i["scopes"]),
             "status": i["status"],
+            "created_ts": i["created_ts"],
             "expires_ts": i["expires_ts"],
             "redeemed_by": i.get("redeemed_by"),
+            "kind": i.get("kind", "agent"),
+            "pin_required": bool(i.get("pin_required", 1)),
             "display_name": i.get("display_name"),
+        }
+        for i in items
+    ]
+
+
+@router.get("/api/agents/invites/pending")
+async def list_pending_agent_invites(
+    request: Request,
+    user: CurrentUser = Depends(current_user),
+):
+    """Cross-project aggregate for the Agents app (#2067): every pending
+    agent-kind invite, OS-level and per-project, with the owning project's
+    name so the UI can link to it. Read-only — cancellation stays on the
+    per-project / OS-level DELETE routes. Admin-gated like the OS-level
+    list because it spans projects the caller may not own."""
+    _require_admin(user)
+    store = request.app.state.project_invites
+    project_store = request.app.state.project_store
+    items = await store.list_pending_agent_invites()
+    project_names: dict = {}
+    for i in items:
+        pid = i.get("project_id")
+        if pid is not None and pid not in project_names:
+            project = await project_store.get_project(pid)
+            project_names[pid] = (
+                (project.get("name") or project.get("slug")) if project else None
+            )
+    return [
+        {
+            "invite_id": i["invite_id"],
+            "scopes": _scopes_as_list(i["scopes"]),
+            "status": i["status"],
+            "kind": i.get("kind", "agent"),
+            "created_ts": i["created_ts"],
+            "expires_ts": i["expires_ts"],
+            "pin_required": bool(i.get("pin_required", 1)),
+            "display_name": i.get("display_name"),
+            "project_id": i.get("project_id"),
+            "project_name": project_names.get(i.get("project_id")),
         }
         for i in items
     ]

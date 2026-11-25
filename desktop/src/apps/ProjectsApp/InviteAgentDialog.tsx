@@ -1,6 +1,14 @@
 import { useEffect, useMemo, useState } from "react";
 import { createPortal } from "react-dom";
 import { copyText } from "@/lib/clipboard";
+import {
+  fetchProjectInvites,
+  formatCountdown,
+  revokeProjectInvite,
+  statusChipClass,
+  statusChipLabel,
+  type PendingInvite,
+} from "./PendingInvites";
 
 const SCOPE_PRESETS: { value: string; label: string; defaultOn: boolean; disabled?: boolean; hint?: string }[] = [
   { value: "project_tasks", label: "project_tasks", defaultOn: true, disabled: true, hint: "required for project invites" },
@@ -19,14 +27,6 @@ const INTERVAL_PRESETS: { label: string; secs: number }[] = [
   { label: "6h", secs: 21600 },
 ];
 
-interface InviteRecord {
-  invite_id: string;
-  scopes: string[];
-  status: string;
-  expires_ts: number;
-  redeemed_by: string | null;
-}
-
 interface MintResult {
   invite_id: string;
   pin: string;
@@ -38,34 +38,6 @@ interface MintResult {
 
 function inviteUrl(inviteId: string): string {
   return `${window.location.origin}/i/${inviteId}`;
-}
-
-function formatCountdown(remainingSecs: number): string {
-  if (remainingSecs <= 0) return "expired";
-  const m = Math.floor(remainingSecs / 60);
-  const s = remainingSecs % 60;
-  if (m >= 1) return `${m}m ${s}s`;
-  return `${s}s`;
-}
-
-function statusChipLabel(status: string, redeemedBy: string | null): string {
-  if (status === "redeemed" && redeemedBy) return `redeemed by ${redeemedBy}`;
-  return status;
-}
-
-function statusChipClass(status: string): string {
-  switch (status) {
-    case "pending":
-      return "bg-sky-500/15 text-sky-300 border border-sky-500/25";
-    case "redeemed":
-      return "bg-emerald-500/15 text-emerald-300 border border-emerald-500/25";
-    case "revoked":
-      return "bg-red-500/15 text-red-300 border border-red-500/25";
-    case "expired":
-      return "bg-zinc-700/40 text-zinc-400 border border-zinc-600/40";
-    default:
-      return "bg-zinc-700/40 text-zinc-300 border border-zinc-600/40";
-  }
 }
 
 export function InviteAgentDialog({
@@ -87,14 +59,11 @@ export function InviteAgentDialog({
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [result, setResult] = useState<MintResult | null>(null);
-  const [pending, setPending] = useState<InviteRecord[]>([]);
+  const [pending, setPending] = useState<PendingInvite[]>([]);
   const [now, setNow] = useState(() => Math.floor(Date.now() / 1000));
 
   const refreshPending = () => {
-    fetch(`/api/projects/${projectId}/invites`, { credentials: "include" })
-      .then((r) => (r.ok ? r.json() : []))
-      .then((rows) => setPending(Array.isArray(rows) ? (rows as InviteRecord[]) : []))
-      .catch(() => setPending([]));
+    void fetchProjectInvites(projectId).then(setPending);
   };
 
   useEffect(() => {
@@ -149,16 +118,12 @@ export function InviteAgentDialog({
   };
 
   const onRevoke = async (inviteId: string) => {
-    try {
-      const r = await fetch(`/api/projects/${projectId}/invites/${inviteId}`, {
-        method: "DELETE",
-        credentials: "include",
-      });
-      if (!r.ok && r.status !== 204) throw new Error(`${r.status}`);
-      refreshPending();
-    } catch (err) {
-      setError(String(err));
+    const ok = await revokeProjectInvite(projectId, inviteId);
+    if (!ok) {
+      setError(`Failed to revoke invite ${inviteId}`);
+      return;
     }
+    refreshPending();
   };
 
   const copy = async (text: string) => {
@@ -352,7 +317,7 @@ export function InviteAgentDialog({
                       <span
                         className={`px-1.5 py-0.5 rounded text-[10px] uppercase tracking-wide ${statusChipClass(inv.status)}`}
                       >
-                        {statusChipLabel(inv.status, inv.redeemed_by)}
+                        {statusChipLabel(inv.status, inv.redeemed_by ?? null)}
                       </span>
                       <button
                         type="button"
