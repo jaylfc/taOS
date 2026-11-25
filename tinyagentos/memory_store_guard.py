@@ -153,6 +153,7 @@ def _db_rows(report: Any) -> list[dict[str, Any]]:
                 "db": d.get("db"),
                 "state": d.get("state"),
                 "reason": d.get("reason") or "",
+                "path": d.get("path") or "",
             })
     return rows
 
@@ -215,7 +216,7 @@ async def probe(data_dir: Path | str, *, timeout: float = PROBE_TIMEOUT_S) -> St
                 "Your memories were not touched. The usual cause is another taOS or taOSmd "
                 "process still using the data folder, or one that stopped in the middle of a "
                 "write. What to do: stop any other taOS or taOSmd on this machine, then start "
-                "taOS again (a clean stop settles it). If it still stops, run "
+                "taOS again. If it still stops, run "
                 f"`taosmd --data-dir {root} migrate --probe` and keep its output. Do not "
                 "delete any .db file."
             ),
@@ -245,9 +246,56 @@ async def probe(data_dir: Path | str, *, timeout: float = PROBE_TIMEOUT_S) -> St
     )
 
 
+#: taOSmd's own words (``taosmd.store_probe``) for a non-empty write-ahead log next to a database.
+_WAL_REASON = "live writer or uncheckpointed WAL"
+
+
+def _settle_wal_files(paths: list[str]) -> list[str]:
+    """Checkpoint the write-ahead logs a killed process left behind. Returns the paths settled.
+
+    A WAL holds committed writes that were not yet merged into the database file;
+    merging them loses nothing. A checkpoint that reports ``busy`` means a live
+    writer still holds the database, so that file is left exactly as it is.
+    """
+    import sqlite3
+
+    settled: list[str] = []
+    for path in paths:
+        conn = None
+        try:
+            conn = sqlite3.connect(path, timeout=5.0)
+            busy, _log, _done = conn.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone()
+            if not busy:
+                settled.append(path)
+        except sqlite3.Error as exc:
+            logger.warning("could not settle the write-ahead log of %s: %s", path, exc)
+        finally:
+            if conn is not None:
+                conn.close()
+    return settled
+
+
 async def check_at_startup(data_dir: Path | str) -> StoreStatus:
-    """Probe before any store is opened; raise with the plain instructions when it must not open."""
+    """Probe before any store is opened; raise with the plain instructions when it must not open.
+
+    A process that was killed mid-write leaves a non-empty write-ahead log, which
+    the probe reports as unknown (exit 11). Refusing to start there would never
+    heal, because nothing would open the database to merge it. When every unknown
+    database is unknown for exactly that reason, the committed writes in the logs
+    are merged first (a checkpoint, no data changes) and the store is probed
+    again. A database a live process still holds is left alone and still refuses.
+    """
     status = await probe(data_dir)
+    if status.state == "unknown":
+        unknown = [d for d in status.databases if d.get("state") == "unknown"]
+        if unknown and all(d.get("reason") == _WAL_REASON and d.get("path") for d in unknown):
+            settled = await asyncio.to_thread(_settle_wal_files, [d["path"] for d in unknown])
+            if settled:
+                logger.warning(
+                    "memory store: merged the write-ahead log of %d database(s) left by a process "
+                    "that stopped mid-write (committed writes only, nothing changed)", len(settled),
+                )
+                status = await probe(data_dir)
     if status.can_serve:
         if status.state == "old":
             logger.info("memory store check: %s", status.message)
@@ -256,9 +304,53 @@ async def check_at_startup(data_dir: Path | str) -> StoreStatus:
     raise MemoryStoreGuardError(status.message)
 
 
+async def release_taosmd_stores(data_dir: Path | str) -> list[str]:
+    """Close the stores ``taosmd.answer_context`` and ``taosmd.api`` keep open for ``data_dir``.
+
+    taOSmd caches one set of open stores per data dir for the life of the process
+    (``taosmd.api._stores_cache``; there is no public close). The conversion takes
+    an exclusive lock on the vector store from another process, so while this
+    process still holds the cached one it would always be refused. Releasing the
+    cache lets the next recall reopen what it needs. Returns what was closed.
+    """
+    try:
+        from taosmd import api as _api
+    except Exception:  # noqa: BLE001 - nothing cached if taosmd cannot be imported
+        return []
+    cache = getattr(_api, "_stores_cache", None)
+    lock = getattr(_api, "_stores_lock", None)
+    if not isinstance(cache, dict):
+        logger.warning("taosmd.api has no _stores_cache; cannot release cached stores before the conversion")
+        return []
+    key = _api._resolve_data_dir(Path(data_dir))
+    closed: list[str] = []
+
+    async def _release() -> None:
+        stores = cache.pop(key, None)
+        for name, store in (stores or {}).items():
+            closer = getattr(store, "close", None)
+            if closer is None:
+                continue
+            try:
+                res = closer()
+                if asyncio.iscoroutine(res):
+                    await res
+                closed.append(name)
+            except Exception:  # noqa: BLE001 - logged; the conversion reports if the store is still held
+                logger.warning("could not close cached taosmd store %r", name, exc_info=True)
+
+    if lock is not None:
+        async with lock:
+            await _release()
+    else:
+        await _release()
+    return closed
+
+
 async def convert_vectors(data_dir: Path | str, *, timeout: float = CONVERT_TIMEOUT_S) -> ConvertOutcome:
     """Run ``taosmd migrate --convert-vectors --json``. The caller has the person's consent."""
     root = Path(data_dir)
+    await release_taosmd_stores(root)
     code, out, err, problem = await _run(_cli(root, "--convert-vectors", "--json"), timeout)
     if problem is not None:
         return ConvertOutcome(

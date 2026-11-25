@@ -225,3 +225,82 @@ async def test_health_reports_the_memory_store(booted):
         r = await c.get("/api/health?detailed=true")
     assert r.status_code == 200, r.text
     assert r.json()["subsystems"]["memory_store"]["status"] == "ok"
+
+
+# --- restart safety ------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_a_second_start_after_a_clean_stop_is_not_refused(tmp_path):
+    data = _data_dir(tmp_path, with_040=True)
+    for _ in range(2):
+        app = create_app(data_dir=data)
+        async with app.router.lifespan_context(app):
+            assert app.state.memory_store_status.can_serve
+
+
+def _kill_mid_write(data: Path) -> None:
+    """Leave an uncheckpointed WAL behind, as a killed process does (real process, real sqlite)."""
+    import subprocess
+    import sys
+    import textwrap
+
+    code = textwrap.dedent(
+        """
+        import os, sqlite3, sys
+        c = sqlite3.connect(sys.argv[1])
+        c.execute("PRAGMA journal_mode=WAL")
+        c.execute("PRAGMA wal_autocheckpoint=0")
+        c.execute("CREATE TABLE IF NOT EXISTS crash_marker (x)")
+        c.execute("INSERT INTO crash_marker VALUES ('kept')")
+        c.commit()
+        os._exit(0)
+        """
+    )
+    subprocess.run([sys.executable, "-c", code, str(data / "knowledge-graph.db")], check=True, timeout=60)
+    assert (data / "knowledge-graph.db-wal").stat().st_size > 0
+
+
+@pytest.mark.asyncio
+async def test_start_after_a_killed_process_settles_the_wal_instead_of_refusing_forever(tmp_path):
+    data = _data_dir(tmp_path, with_040=True)
+    _kill_mid_write(data)
+    app = create_app(data_dir=data)
+    async with app.router.lifespan_context(app):
+        assert app.state.memory_store_status.can_serve
+    conn = sqlite3.connect(data / "knowledge-graph.db")
+    try:
+        assert conn.execute("SELECT x FROM crash_marker").fetchone()[0] == "kept"  # the committed write survived
+    finally:
+        conn.close()
+
+
+@pytest.mark.asyncio
+async def test_a_live_writer_is_still_refused_not_settled_from_under_it(tmp_path):
+    data = _data_dir(tmp_path, with_040=True)
+    conn = sqlite3.connect(data / "knowledge-graph.db")
+    conn.execute("PRAGMA wal_autocheckpoint = 0")
+    conn.execute("CREATE TABLE IF NOT EXISTS _t (x)")
+    conn.execute("INSERT INTO _t VALUES (1)")
+    conn.commit()
+    conn.execute("BEGIN IMMEDIATE")  # a writer that is mid-transaction
+    try:
+        status = await guard.probe(data)
+    finally:
+        conn.rollback()
+        conn.close()
+    assert status.state == "unknown" and not status.can_serve
+
+
+@pytest.mark.asyncio
+async def test_conversion_still_works_after_recall_has_read_the_store(booted):
+    """Recall (the real answer_context) opens the vector store in-process; that must not make the conversion refuse."""
+    import taosmd
+
+    app, data = booted
+    got = await taosmd.answer_context("hello from 0.4.0", agent="tester", data_dir=data, budget_tokens=2000)
+    assert got["hits_total"] >= 1
+    outcome = await guard.convert_vectors(data)
+    assert outcome.ok is True and outcome.state == "converted", outcome
+    # and recall keeps working afterwards: the next call reopens the converted store
+    again = await taosmd.answer_context("hello from 0.4.0", agent="tester", data_dir=data, budget_tokens=2000)
+    assert again["hits_total"] >= 1
