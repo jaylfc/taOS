@@ -65,6 +65,7 @@ set_property(TARGET taos_client_ffi PROPERTY INTERFACE_LINK_LIBRARIES
   Threads::Threads ${CMAKE_DL_LIBS} m)
 
 add_subdirectory(taosqt)
+add_subdirectory(tools)
 add_subdirectory(tests)
 if(Qt6Quick_FOUND AND Qt6QuickControls2_FOUND)
   add_subdirectory(demo)

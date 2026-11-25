@@ -271,6 +271,11 @@ class H(BaseHTTPRequestHandler):
 
     def r_POST(self, path, q):
         parts = path.strip("/").split("/")
+        if path == "/auth/logout":
+            # The controller revokes the session server side (routes/auth.py logout).
+            with lock:
+                state["sessions"].pop(self.cookies().get("taos_session"), None)
+            return self.send_json({"ok": True})
         if path == "/api/notifications/os":
             # The OS (freedesktop) notification ingest: one row per client id, retries answer duplicate.
             b = self.body()

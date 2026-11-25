@@ -196,6 +196,18 @@ stays signed out, the call gets 401, and the engine reports `unauthenticated`. T
 A second candidate: `Session::verify` notes that a bearer-only credential gets 401 from `/auth/me` until the controller
 accepts Bearer there. Either way the page now shows the saved catalogue and one quiet status line.
 
+Single sign-on, as built (the "Controller / Not connected" card used to cover three different states):
+- Signed out (no session file, or the controller refused it): the card says "Signed out" and both the card and the
+  status line carry a **Sign in** button. It opens the shared `SignInPopover` (`Taos.Apps`, the same form every app
+  uses). One sign-in stores the session in `$XDG_RUNTIME_DIR/taos/session`; every other open app signs in by itself,
+  and the Store loads the live catalogue with no restart.
+- Controller unreachable (`Session.unreachable`): "Cannot reach the controller" and Try again. Signing in again
+  would not help, so no sign-in button is shown.
+- `taos-session status | login | logout` is the command line (and agent) path. `login` reads the password from
+  stdin only; `logout` revokes the session at the controller and removes the file.
+- Not built: a sign-in at the login screen itself (see the PR for why and the options), a lock policy, and renewal
+  (a session lasts 7 days, 30 when remembered; after that the person is asked once).
+
 Window size: `Main.qml` asks for 1500x950, but a real desktop showed 1190x390 although it already asked for 1120x740, so
 something outside the QML (the compositor's float placement) decided the size. Not found in this repo and not
 testable here: unverified on a real display.

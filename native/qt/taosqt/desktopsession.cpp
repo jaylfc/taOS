@@ -30,10 +30,14 @@ QByteArray DesktopSessionTokenSource::read() const
     const QFileInfo fi(m_path);
     if (!fi.exists() || !fi.isFile() || fi.isSymLink())
         return {};
-    // Never trust a file someone else owns or can read.
-    if (fi.ownerId() != ::getuid() || (fi.permissions() & (QFileDevice::ReadGroup | QFileDevice::WriteGroup
-                                                          | QFileDevice::ExeGroup | QFileDevice::ReadOther
-                                                          | QFileDevice::WriteOther | QFileDevice::ExeOther)))
+    // Never trust a file someone else owns or can read, nor one in a directory
+    // someone else owns or can list or write (they could swap the file).
+    constexpr auto others = QFileDevice::ReadGroup | QFileDevice::WriteGroup | QFileDevice::ExeGroup
+        | QFileDevice::ReadOther | QFileDevice::WriteOther | QFileDevice::ExeOther;
+    if (fi.ownerId() != ::getuid() || (fi.permissions() & others))
+        return {};
+    const QFileInfo di(fi.absolutePath());
+    if (!di.isDir() || di.isSymLink() || di.ownerId() != ::getuid() || (di.permissions() & others))
         return {};
     QFile f(m_path);
     return f.open(QIODevice::ReadOnly) ? f.readAll().trimmed() : QByteArray();

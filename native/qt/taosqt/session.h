@@ -119,6 +119,11 @@ class TAOSQT_EXPORT Session : public QObject
     Q_PROPERTY(QString userName READ userName NOTIFY userChanged)
     Q_PROPERTY(QJsonObject user READ user NOTIFY userChanged)
     Q_PROPERTY(QString errorText READ errorText NOTIFY errorTextChanged)
+    /// The last attempt failed because the controller could not be reached (as
+    /// opposed to refusing the credentials). Apps show "cannot reach the
+    /// controller" instead of a sign-in prompt, because signing in again
+    /// would not help.
+    Q_PROPERTY(bool unreachable READ unreachable NOTIFY errorTextChanged)
     Q_PROPERTY(Taos::Client *client READ client CONSTANT)
 public:
     enum State { SignedOut, SigningIn, SignedIn };
@@ -132,6 +137,7 @@ public:
     QJsonObject user() const { return m_user; }
     QString userName() const { return m_user.value(QStringLiteral("username")).toString(); }
     QString errorText() const { return m_errorText; }
+    bool unreachable() const { return m_unreachable; }
 
     /// Replace the credential source. The Session takes ownership. Takes effect
     /// at the next acquire(); call start() to use it now.
@@ -174,6 +180,7 @@ private:
     State m_state = SignedOut;
     QJsonObject m_user;
     QString m_errorText;
+    bool m_unreachable = false;
     int m_acquireBudget = 3;
 };
 
