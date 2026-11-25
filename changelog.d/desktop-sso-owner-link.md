@@ -1,0 +1,3 @@
+### Added
+
+- **No manual link step for the owner**: the Linux account named in the root-owned `/etc/taos/owner-linux-user` (written by the installer, and once by an update on an existing install) is linked to the install's primary person automatically; it never maps to anyone else, and the file is ignored unless root owns it and nobody else can write it. `python -m tinyagentos.desktop_sso set-owner <linux-user>` writes it. The credential is purely local (no network, no online account needed). Linux accounts for other people (Settings > People) still need the account helper and are not part of this change.

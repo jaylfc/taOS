@@ -15,6 +15,9 @@ by group or other, in a directory the same holds for: the unprivileged
 controller can read it but never change it. ``python -m tinyagentos.desktop_sso
 link|unlink|list`` is the root helper that edits it.
 
+Purely local: this needs no network and no taOSgo/online account. It maps a Linux uid on this machine to a
+local taOS person on this controller; linking an online account is optional and only adds online features.
+
 Protocol: one JSON line in, one JSON line out, then close.
   {"op": "session", "kind": "desktop"}  -> {"session": "<token>", "user_agent": "...", "expires_in": N, "username": "..."}
   {"op": "release"}  -> {"ok": true}   (revokes the session this uid was last issued)
@@ -38,6 +41,7 @@ from typing import Callable
 logger = logging.getLogger(__name__)
 
 DEFAULT_LINKS = "/etc/taos/account-links"
+DEFAULT_OWNER_FILE = "/etc/taos/owner-linux-user"
 DEFAULT_SOCKET = "/run/taos-sso/desktop-sso.sock"
 # Sessions are bound to a User-Agent; every desktop client sends this exact string.
 DESKTOP_USER_AGENT = "taOS-desktop-session/1"
@@ -82,6 +86,27 @@ def load_links(path: str | Path, trusted_uid: int = 0) -> dict[int, str]:
     return links
 
 
+def load_owner_uid(path: str | Path, trusted_uid: int = 0) -> int | None:
+    """The Linux uid of the install owner, from a root-owned one-line file (a user name or a uid).
+
+    Written by the installer, and once by an update on an existing install, so the owner is linked with no
+    link command and without the controller changing anything root-owned. Maps to the primary person only.
+    """
+    p = Path(path)
+    if not p.exists() or not _safe_root_owned(p, trusted_uid):
+        return None
+    who = (p.read_text().split("#", 1)[0].strip().split() or [""])[0]
+    try:
+        if who.isdigit():
+            uid = int(who)
+        else:
+            import pwd
+            uid = pwd.getpwnam(who).pw_uid
+    except KeyError:
+        return None
+    return uid or None
+
+
 def peer_uid(sock: socket.socket) -> int:
     pid, uid, gid = struct.unpack("3i", sock.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED, struct.calcsize("3i")))
     return uid
@@ -95,12 +120,14 @@ class DesktopSessionService:
         socket_path: str | Path = DEFAULT_SOCKET,
         *,
         trusted_uid: int = 0,
+        owner_file: str | Path | None = DEFAULT_OWNER_FILE,
         peer_uid_fn: Callable[[socket.socket], int] = peer_uid,
     ):
         self.auth = auth_mgr
         self.links_path = Path(links_path)
         self.socket_path = Path(socket_path)
         self._trusted_uid = trusted_uid
+        self.owner_file = Path(owner_file) if owner_file else None
         self._peer_uid = peer_uid_fn
         self._issued: dict[tuple[int, str], str] = {}
         self._server: asyncio.AbstractServer | None = None
@@ -140,7 +167,13 @@ class DesktopSessionService:
         if op != "session":
             return {"error": "bad_request"}
         # Re-read on every request: unlinking takes effect at the next renewal.
-        username = load_links(self.links_path, self._trusted_uid).get(uid)
+        links = load_links(self.links_path, self._trusted_uid)
+        if uid not in links and self.owner_file is not None:
+            if load_owner_uid(self.owner_file, self._trusted_uid) == uid:  # the install owner's Linux account
+                owner = self.auth.get_primary_user()
+                if owner:
+                    links[uid] = owner["username"]
+        username = links.get(uid)
         if username is None:
             for k in [k for k in self._issued if k[0] == uid]:  # unlinked: every session of that uid goes
                 self.auth.revoke_session(self._issued.pop(k))
@@ -193,6 +226,24 @@ def _write_links(path: Path, links: dict[int, str]) -> None:
 def main(argv: list[str] | None = None, *, links_path: str | None = None, trusted_uid: int = 0) -> int:
     argv = sys.argv[1:] if argv is None else argv
     path = Path(links_path or os.environ.get("TAOS_ACCOUNT_LINKS", DEFAULT_LINKS))
+    if argv and argv[0] == "set-owner":
+        if os.geteuid() != trusted_uid or len(argv) != 2:
+            print("usage (as root): python -m tinyagentos.desktop_sso set-owner <linux-user>", file=sys.stderr)
+            return 1
+        import pwd
+        try:
+            if pwd.getpwnam(argv[1]).pw_uid == 0:
+                raise KeyError
+        except KeyError:
+            print("unknown or root Linux account", file=sys.stderr)
+            return 2
+        op = Path(os.environ.get("TAOS_OWNER_LINUX_FILE", DEFAULT_OWNER_FILE))
+        op.parent.mkdir(parents=True, exist_ok=True, mode=0o755)
+        tmp = op.with_name(op.name + ".new")
+        tmp.write_text(argv[1] + "\n")
+        tmp.chmod(0o644)
+        os.replace(tmp, op)
+        return 0
     if not argv or argv[0] not in ("link", "unlink", "list"):
         print("usage: python -m tinyagentos.desktop_sso link <linux-user|uid> <taos-user> | unlink <linux-user|uid> | list", file=sys.stderr)
         return 2
