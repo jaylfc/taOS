@@ -12,7 +12,7 @@ FocusScope {
     property real progress: 0
     // the mode shown now; kept while fading out so the content does not change under the fade
     property string shownMode: "switcher"
-    readonly property string font: "Inter"
+    readonly property string font: Style.fontStack
 
     Accessible.role: Accessible.Pane
     Accessible.name: shownMode === "overview" ? qsTr("Window overview") : qsTr("Window switcher")
@@ -52,7 +52,7 @@ FocusScope {
     Rectangle {
         anchors.fill: parent
         color: Style.ground
-        opacity: root.shownMode === "overview" ? root.progress * (Style.dark ? 0.55 : 0.45) : 0
+        opacity: root.shownMode === "overview" ? root.progress * (Style.dark ? 0.55 : 0.72) : 0
     }
     MouseArea {
         anchors.fill: parent
@@ -65,6 +65,7 @@ FocusScope {
         progress: root.progress
     }
     OverviewView {
+        id: overviewView
         anchors.fill: parent
         visible: root.shownMode === "overview"
         progress: root.progress
@@ -87,6 +88,17 @@ FocusScope {
             e.accepted = true; return;
         case Qt.Key_Backspace: Overview.backspace(); e.accepted = true; return;
         default: break;
+        }
+        if (root.mode === "overview") {
+            const ctrl = (e.modifiers & Qt.ControlModifier) !== 0;
+            if (ctrl && e.key === Qt.Key_Left) { Overview.stepSpace(-1); e.accepted = true; return; }
+            if (ctrl && e.key === Qt.Key_Right) { Overview.stepSpace(1); e.accepted = true; return; }
+            if (ctrl && e.key === Qt.Key_N) { Overview.addSpace(); e.accepted = true; return; }
+            if (e.key === Qt.Key_F2) { overviewView.beginRename(""); e.accepted = true; return; }
+            // a digit jumps to that desktop while the search is empty; with text in the search it is part of the text
+            if (!ctrl && noMods && Overview.filterText.length === 0 && e.key >= Qt.Key_1 && e.key <= Qt.Key_9) {
+                Overview.jumpToSpace(e.key - Qt.Key_0); e.accepted = true; return;
+            }
         }
         if (root.mode === "switcher" && e.key === Qt.Key_Q && noMods) { Overview.closeSelected(); e.accepted = true; return; }
         if (root.mode === "overview" && noMods && e.text.length > 0 && e.text.charCodeAt(0) >= 32 && e.text.charCodeAt(0) !== 127) {

@@ -44,16 +44,16 @@ Item {
         anchors.fill: parent
         radius: width / 2
         gradient: Gradient {
-            GradientStop { position: 0.0; color: "#26FFFFFF" }
-            GradientStop { position: 0.55; color: "#00FFFFFF" }
+            GradientStop { position: 0.0; color: Style.glassHighlight }
+            GradientStop { position: 0.55; color: "transparent" }
         }
     }
     Text {
         anchors.centerIn: parent
         anchors.verticalCenterOffset: -mg.diameter * 0.01
         text: mg.initials
-        color: "#FFFFFF"
-        font.family: "Inter"
+        color: Style.accentText
+        font.family: Style.fontStack
         font.weight: Font.Medium
         font.pixelSize: mg.diameter * 0.38
     }
@@ -62,6 +62,6 @@ Item {
         radius: width / 2
         color: "transparent"
         border.width: 1
-        border.color: "#2EFFFFFF"
+        border.color: Style.glassStroke
     }
 }
