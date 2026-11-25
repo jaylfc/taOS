@@ -425,6 +425,26 @@ async def registry_client(app, tmp_data_dir):
     await store.close()
 
 
+async def _member_client(app) -> "AsyncClient":
+    """Cookie'd client for a non-admin member session on *app*.
+
+    Requires the admin created by the ``registry_client`` fixture.
+    """
+    auth_mgr = app.state.auth
+    invite_code = auth_mgr.add_user_invite("member", "admin")
+    auth_mgr.complete_invite(
+        "member", invite_code, "Test Member", "", "memberregistrypass123"
+    )
+    member = auth_mgr.find_user("member")
+    token = auth_mgr.create_session(user_id=member["id"], long_lived=True)
+    return AsyncClient(
+        transport=ASGITransport(app=app),
+        base_url="http://test",
+        cookies={"taos_session": token},
+        event_hooks=csrf_event_hooks(),
+    )
+
+
 @pytest.mark.asyncio
 class TestAgentRegistryRoutes:
 
@@ -477,6 +497,61 @@ class TestAgentRegistryRoutes:
                 json={"framework": "openclaw", "origin": origin},
             )
             assert resp.status_code == 200, f"origin={origin!r} should be accepted"
+
+    async def test_member_taos_deployed_origin_rejected(self, app, registry_client):
+        """A plain member may not mint an active taos-deployed registry row."""
+        display_name = "Member Minted Taos Deployed"
+        member_client = await _member_client(app)
+        try:
+            resp = await member_client.post(
+                "/api/agents/registry/register",
+                json={"framework": "openclaw", "display_name": display_name, "origin": "taos-deployed"},
+            )
+        finally:
+            await member_client.aclose()
+        assert resp.status_code == 403, resp.text
+
+        listed = await registry_client.get("/api/agents/registry")
+        assert listed.status_code == 200
+        names = [r.get("display_name") for r in listed.json()]
+        assert display_name not in names
+
+    async def test_member_omitted_origin_rejected(self, app, registry_client):
+        """origin defaults to taos-deployed, so omitting it is also gated."""
+        display_name = "Member Minted Default Origin"
+        member_client = await _member_client(app)
+        try:
+            resp = await member_client.post(
+                "/api/agents/registry/register",
+                json={"framework": "openclaw", "display_name": display_name},
+            )
+        finally:
+            await member_client.aclose()
+        assert resp.status_code == 403, resp.text
+
+        listed = await registry_client.get("/api/agents/registry")
+        assert listed.status_code == 200
+        names = [r.get("display_name") for r in listed.json()]
+        assert display_name not in names
+
+    async def test_member_external_selfjoin_allowed(self, app, registry_client):
+        """external-selfjoin rows stay open to any signed-in user (created pending)."""
+        member_client = await _member_client(app)
+        try:
+            resp = await member_client.post(
+                "/api/agents/registry/register",
+                json={"framework": "openclaw", "display_name": "Member Self Join", "origin": "external-selfjoin"},
+            )
+        finally:
+            await member_client.aclose()
+        assert resp.status_code == 200, resp.text
+
+    async def test_admin_taos_deployed_origin_allowed(self, registry_client):
+        resp = await registry_client.post(
+            "/api/agents/registry/register",
+            json={"framework": "openclaw", "display_name": "Minted By Admin", "origin": "taos-deployed"},
+        )
+        assert resp.status_code == 200, resp.text
 
     async def test_register_reserved_name_rejected_as_client_error(self, registry_client):
         """A reserved name through the real HTTP caller must 422, not 500 --
