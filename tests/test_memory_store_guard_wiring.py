@@ -297,6 +297,10 @@ async def test_conversion_still_works_after_recall_has_read_the_store(booted):
     import taosmd
 
     app, data = booted
+    # taosmd picks its retrieval recipe from the host hardware: a CPU-only host gets
+    # "lite-pi", whose "fast" strategy does not search the archive. Pin one so the
+    # test says the same on every machine.
+    taosmd.config.set_default_recipe("rrf-9b", data_dir=data)
     got = await taosmd.answer_context("hello from 0.4.0", agent="tester", data_dir=data, budget_tokens=2000)
     assert got["hits_total"] >= 1
     outcome = await guard.convert_vectors(data)
