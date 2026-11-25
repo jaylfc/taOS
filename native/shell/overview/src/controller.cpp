@@ -484,7 +484,7 @@ void Controller::recomputeLayout() {
             items.push_back({ w.conId, QRectF(w.rect).translated(-ws.topLeft()) });
         }
         Packing::Options o;
-        o.gap = std::max<qreal>(24, m_area.width() / 70);
+        o.gap = std::max<qreal>(52, m_area.width() / 70);   // room for the icon and title under each window
         o.minDim = std::min<qreal>(260, m_area.height() / 3);
         o.maxScale = 1.0;
         o.maxItem = QSizeF(m_area.width() * 0.5, m_area.height() * 0.72);
