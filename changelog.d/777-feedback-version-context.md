@@ -1,0 +1,3 @@
+### Added
+
+- **Bug reporter: per-bug version context (#777 Layer 1)** — feedback submissions now auto-attach the local install context: the app version and running commit, the install's identity (the same per-install id the version ping and the controller service identity anchor to), and the recorded update history (the branch + commit the last update left, from the rollback record). The context is stored with the submission and returned by the feedback read paths, so a report can be traced to a version and to whether it was upgrade-related. Entirely local — no server, no registration, no phone-home. Layer 2 of #777 (opt-in central registration) is deliberately not built; it needs its own privacy/consent decision.

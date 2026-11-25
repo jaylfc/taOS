@@ -146,7 +146,7 @@ async def test_list_for_user_returns_expected_keys(store):
     await store.create(user_id="u", type="bug", title="t", body="b")
     rows = await store.list_for_user("u")
     assert len(rows) == 1
-    expected_keys = {"id", "user_id", "type", "title", "body", "app", "created_at", "has_screenshot"}
+    expected_keys = {"id", "user_id", "type", "title", "body", "app", "context", "created_at", "has_screenshot"}
     assert set(rows[0].keys()) == expected_keys
 
 
