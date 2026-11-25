@@ -1,0 +1,3 @@
+### Fixed
+
+- Added memory store format guard that prevents starting a newer memory service on an old-format store without running the guarded conversion path. The guard probes the store format at app startup and during local taOSmd updates, runs the taOSmd conversion tool (backup first, verification after) when the store is older than the service, refuses with a plain user message when the store is newer or conversion is unavailable, and ensures failed or interrupted conversions leave the original store byte-identical.

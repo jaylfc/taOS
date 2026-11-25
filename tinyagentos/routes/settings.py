@@ -1176,6 +1176,90 @@ async def _update_local_taosmd(request: Request) -> dict:
         return {"error": f"taosmd_restart_cmd is not parseable shell syntax: {exc}"}
     if not restart_argv:
         return {"error": "taosmd_restart_cmd parses to an empty command"}
+
+    # Probe the memory store format before updating taOSmd. If the store is
+    # older than the new service, run the guarded conversion. If the store is
+    # newer or unknown, refuse the update and keep the old service running.
+    data_dir = getattr(request.app.state, "config_path", None)
+    if data_dir is not None:
+        data_dir = Path(data_dir).parent
+    else:
+        data_dir = Path("data")
+    try:
+        from taosmd.store_probe import probe_store, ProbeState
+    except Exception as exc:
+        return {
+            "error": (
+                "Memory store format check unavailable: the taosmd probe module "
+                f"could not be loaded ({type(exc).__name__}: {exc}). The store is "
+                "unchanged and your memories are safe. Please update taOS to a "
+                "version that includes the probe module."
+            )
+        }
+
+    report = probe_store(data_dir)
+    if report.state == ProbeState.NEWER:
+        return {
+            "error": (
+                "The memory store on disk was written by a newer version of the "
+                "memory service. This version cannot read it. The store is "
+                "unchanged and your memories are safe. Please update taOS to a "
+                "version that supports this store format."
+            )
+        }
+    if report.state == ProbeState.UNKNOWN:
+        return {
+            "error": (
+                "The memory store format could not be determined (unreadable or "
+                "live writer detected). The store is unchanged and your memories "
+                "are safe. Ensure the memory service is stopped and retry."
+            )
+        }
+
+    if report.state == ProbeState.OLD:
+        # Attempt guarded conversion before pulling the new service
+        try:
+            from taosmd.store_convert import convert_dense_store, EXIT_OK, EXIT_RESTORED, EXIT_REFUSED, EXIT_UNKNOWN_FORMAT, EXIT_ERROR
+        except Exception as exc:
+            return {
+                "error": (
+                    "The memory store needs conversion but the conversion tool is "
+                    f"unavailable ({type(exc).__name__}: {exc}). The store is unchanged "
+                    "and your memories are safe. Please update taOS to a version that "
+                    "includes the conversion tool."
+                )
+            }
+
+        vector_db = data_dir / "vector-memory.db"
+        if vector_db.exists():
+            backup_dir = data_dir / "backups"
+            try:
+                result = convert_dense_store(vector_db, backup_dir=backup_dir)
+            except Exception as exc:
+                return {
+                    "error": (
+                        "Memory store conversion raised an unexpected error: "
+                        f"{type(exc).__name__}: {exc}. The store is unchanged and your "
+                        "memories are safe. Please check the logs and retry."
+                    )
+                }
+
+            if result.exit_code != EXIT_OK:
+                if result.exit_code == EXIT_RESTORED:
+                    return {
+                        "error": (
+                            "Memory store conversion failed and the original store was restored. "
+                            "Your memories are untouched. The backup is kept at "
+                            f"{result.backup_path}. Please check disk space and retry."
+                        )
+                    }
+                return {
+                    "error": (
+                        "Memory store conversion was refused or failed: "
+                        f"{result.message}. Your memories are untouched."
+                    )
+                }
+
     rc, out = await _run_capture(["git", "pull", "--ff-only"], cwd=taosmd_dir)
     if rc != 0:
         return {"error": f"taOSmd git pull failed: {out.strip()[-1500:]}"}
