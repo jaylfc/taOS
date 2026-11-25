@@ -30,6 +30,12 @@ lifecycle:
   auto_manage: false
   keep_alive_minutes: 0  # always-on — router mode itself manages per-model load/unload
   startup_timeout_seconds: 60
+  
+  # Lazy wrapper: start on first connection, stop after idle TTL.
+  # probe_target is used by health checks so probes never keep the backend warm.
+  lazy:
+    probe_target: http://localhost:7835/health
+    idle_ttl_seconds: 600  # CHAT_SMALL TTL (5 min)
 
 # Ladder-matched by tinyagentos.cluster.capabilities.tier_compatible (used
 # by config.py's auto-register gate): one minimum VRAM/RAM entry per
