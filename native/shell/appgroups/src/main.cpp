@@ -35,6 +35,8 @@ QString usage()
                                  the acceptance is recorded with the time, the licence URL and who accepted
   move <app-id> --to group:<name> move an installed app and its data to another group (refused while it runs);
                                  the old data is kept as a dated backup until you delete it
+  icon set <app-id> <file>       use your own icon for an app (PNG or SVG); it is never replaced
+  icon clear <app-id>            go back to the app's own icon
   backups                        data backups left behind by moves
   backups delete <app-id> <stamp> delete one backup
   update <app-id> [--check]      look for (--check) or install a newer version of an app
@@ -183,6 +185,10 @@ int main(int argc, char *argv[])
                                             d.value(u"backup"_s).toString().isEmpty() ? QString() : u" (old data kept in %1 of group %2)"_s.arg(d.value(u"backup"_s).toString(), d.value(u"from"_s).toString()));
         });
     }
+    if (cmd == u"icon"_s && pos.value(1) == u"set"_s && pos.size() == 4)
+        return finish(e.iconSet(pos[2], pos[3]), json, [](const QJsonObject &d) { return d.value(u"icon_path"_s).toString(); });
+    if (cmd == u"icon"_s && pos.value(1) == u"clear"_s && pos.size() == 3)
+        return finish(e.iconClear(pos[2]), json, [](const QJsonObject &d) { return d.value(u"icon_path"_s).toString(); });
     if (cmd == u"backups"_s && pos.size() == 1)
         return finish(e.backups(), json, [](const QJsonObject &d) {
             QStringList l;

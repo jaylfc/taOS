@@ -56,6 +56,9 @@ public:
     // Moves an installed app and its data to another group: staged install there, copy, verify, switch, then the old
     // data is renamed to a dated backup (never deleted) and the old copy of the app is removed. Refused while running.
     Result move(const QString &appId, const QString &toGroup, const Progress &p = {});
+    // A person's own icon for an app (wins over the package's); `iconClear` goes back to the package's icon.
+    Result iconSet(const QString &appId, const QString &file);
+    Result iconClear(const QString &appId);
     Result backups();
     Result backupDelete(const QString &appId, const QString &stamp);
     // Looks for (checkOnly) or installs a newer version: from the app's apt source, or from the publisher's feed.

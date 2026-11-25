@@ -34,6 +34,7 @@ struct Manifest {
     QString package;             // the apt package the recipe leaves installed (version lookup, update); optional
     QString updateFeedUrl;       // optional: the vendor's own JSON feed of current downloads (see update)
     QStringList data;            // the app's own state, relative to its home; empty means the whole home
+    QString iconContainerPath;  // optional: the app's icon file inside the container (when no .desktop file names it)
     QString iconGlyph = QStringLiteral("app");  // code | browser | app (taOS generic glyphs)
     QStringList categories, arch, mimeTypes, launchArgv;
     QJsonObject launchEnv;

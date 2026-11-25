@@ -5,8 +5,23 @@
 # home is not empty), FAKE_COUNT_MISMATCH (the copy has fewer files than the source), FAKE_LDD_MISSING (a library
 # the binary needs is missing), FAKE_FEED (JSON text served for a vendor update feed), FAKE_VERSION (dpkg version).
 echo "$*" >> "$FAKE_DIR/calls.log"
+# FAKE_ETAG_FAILS=<n>: the first n `config device` calls fail like a concurrent edit does; FAKE_SERIALIZE_CHECK: two
+# `config device` calls at the same time conflict (and leave a note in $FAKE_DIR/conflicts)
+if [ "$1" = config ] && [ "$2" = device ]; then
+  if [ -n "$FAKE_ETAG_FAILS" ]; then
+    n=$(cat "$FAKE_DIR/etag.count" 2>/dev/null || echo 0)
+    if [ "$n" -lt "$FAKE_ETAG_FAILS" ]; then echo $((n+1)) > "$FAKE_DIR/etag.count"; echo "Error: Failed to update device: ETag doesn't match" >&2; exit 1; fi
+  fi
+  if [ -n "$FAKE_SERIALIZE_CHECK" ]; then
+    if mkdir "$FAKE_DIR/busy" 2>/dev/null; then sleep 0.5; rmdir "$FAKE_DIR/busy"
+    else echo conflict >> "$FAKE_DIR/conflicts"; echo "Error: Failed to update device: ETag doesn't match" >&2; exit 1; fi
+  fi
+fi
 case "$1" in
   list) cat "$FAKE_DIR/list.json" ;;
+  file)
+    # `incus file pull <ct>/<path> <local>`: a PNG-looking file (the icon pulled out of the container)
+    if [ "$2" = pull ]; then printf '\211PNG\r\n\032\nfake-%s' "$3" > "$4"; fi ;;
   init)
     # a created container shows up in the next `list`, owned by the caller ($FAKE_OWNER)
     name="$3"; grp="${name#appgroup-}"; [ "$name" = user-apps ] && grp=default
@@ -23,6 +38,7 @@ case "$1" in
       *"-- find "*"-mindepth 1"*"-quit"*) echo "find: '/home/taos/apps/x': No such file or directory" ;;
       *"-mindepth 1"*"-quit"*) [ -n "$FAKE_TARGET_HAS_DATA" ] && echo "x" ;;
       *apt-cache*policy*) printf '  Installed: %s\n  Candidate: %s\n' "${FAKE_VERSION:-1.0.0}" "${FAKE_CANDIDATE:-${FAKE_VERSION:-1.0.0}}" ;;
+      *"Icon="*) [ -z "$FAKE_NO_ICON" ] && echo "/usr/share/icons/hicolor/256x256/apps/found.png" ;;
       *dpkg-query*) echo "${FAKE_VERSION_AFTER:-${FAKE_VERSION:-1.0.0}}" ;;
       *ldd*) [ -n "$FAKE_LDD_MISSING" ] && echo "libfoo.so.1 => not found" ;;
       *"curl -fsSL"*latest.json*) printf '%s' "$FAKE_FEED" ;;

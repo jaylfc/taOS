@@ -203,6 +203,10 @@ bool parseManifest(const QByteArray &json, Manifest *out, QString *error)
     m.iconGlyph = o.value(u"icon"_s).toObject().value(u"glyph"_s).toString(u"app"_s);
     if (m.iconGlyph != u"code"_s && m.iconGlyph != u"browser"_s && m.iconGlyph != u"app"_s)
         return fail(error, u"icon glyph must be code, browser or app"_s);
+    m.iconContainerPath = o.value(u"icon"_s).toObject().value(u"container_path"_s).toString();
+    if (!m.iconContainerPath.isEmpty()
+        && (!QRegularExpression(u"^/[A-Za-z0-9._/+-]+\\.(png|svg)$"_s).match(m.iconContainerPath).hasMatch() || m.iconContainerPath.contains(u".."_s)))
+        return fail(error, u"icon.container_path must be an absolute .png or .svg path inside the container"_s);
     m.categories = strList(o.value(u"categories"_s));
     m.arch = strList(o.value(u"arch"_s));
     if (m.arch.isEmpty())

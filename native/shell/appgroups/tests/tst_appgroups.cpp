@@ -598,6 +598,127 @@ private slots:
         QCOMPARE(indexRec(u"claude-desktop"_s).value(u"installed_version"_s).toString(), u"2.0.0"_s);
         QCOMPARE(cli({u"update"_s, u"claude-desktop"_s}, {{u"FAKE_RUNNING"_s, u"1"_s}}).code, 7);
     }
+
+    // ---------------------------------------------------------------- icons: the package's own, never reverted
+
+    QString iconLine(const QString &id)
+    {
+        for (const QString &l : QString::fromUtf8(readAll(xdgData + u"/applications/taos-appgroups-"_s + id + u".desktop"_s)).split(u'\n'))
+            if (l.startsWith(u"Icon="_s))
+                return l.mid(5);
+        return {};
+    }
+    QString iconsDir() { return dataDir + u"/icons"_s; }
+
+    void installTakesTheIconFromThePackage()
+    {
+        QCOMPARE(cli({u"install"_s, u"kilo-desktop"_s, u"--accept-licence"_s, u"kilo-desktop"_s}, kiloEnv()).code, 0);
+        QCOMPARE(iconLine(u"kilo-desktop"_s), iconsDir() + u"/kilo-desktop.pkg.png"_s);
+        QVERIFY(readAll(iconsDir() + u"/kilo-desktop.pkg.png"_s).startsWith("\x89PNG"));
+        QVERIFY(callsLog().contains(u"file pull user-apps/usr/share/icons/hicolor/256x256/apps/found.png"_s));
+        // a manifest can name the file inside the container (a tarball has no .desktop file)
+        QCOMPARE(cli({u"install"_s, u"antigravity"_s}).code, 0);
+        QVERIFY2(callsLog().contains(u"file pull user-apps/opt/antigravity/resources/app/resources/linux/code.png"_s), qPrintable(callsLog()));
+        QCOMPARE(iconLine(u"antigravity"_s), iconsDir() + u"/antigravity.pkg.png"_s);
+    }
+    void aPackageWithoutAnIconKeepsTheGenericOne()
+    {
+        QCOMPARE(cli({u"install"_s, u"claude-desktop"_s, u"--accept-licence"_s, u"claude-desktop"_s}, {{u"FAKE_NO_ICON"_s, u"1"_s}, {u"FAKE_FPR"_s, u"31DDDE24DDFAB679F42D7BD2BAA929FF1A7ECACE"_s}}).code, 0);
+        QCOMPARE(iconLine(u"claude-desktop"_s), iconsDir() + u"/claude-desktop.svg"_s);
+        QVERIFY(QFileInfo::exists(iconsDir() + u"/claude-desktop.svg"_s));
+    }
+    void aHandSetIconSurvivesInstallMoveUpdateAndSync()
+    {
+        // the state a person left: icons/<id>.png, and a launcher that points at a differently named file
+        writeFile(iconsDir() + u"/kilo-desktop.png"_s, "\x89PNG-by-hand");
+        writeFile(iconsDir() + u"/antigravity-nobg.png"_s, "\x89PNG-nobg");
+        const QString old = u"[Desktop Entry]\nType=Application\nName=Antigravity\nExec=/stable/bin/taos-appgroups run antigravity %U\nIcon=%1/antigravity-nobg.png\n"_s.arg(iconsDir());
+        writeFile(xdgData + u"/applications/taos-appgroups-antigravity.desktop"_s, old.toUtf8());
+        const QString hand = iconsDir() + u"/kilo-desktop.png"_s, nobg = iconsDir() + u"/antigravity-nobg.png"_s;
+        QCOMPARE(cli({u"install"_s, u"kilo-desktop"_s, u"--accept-licence"_s, u"kilo-desktop"_s}, kiloEnv()).code, 0);
+        QCOMPARE(iconLine(u"kilo-desktop"_s), hand);                       // install did not replace it
+        QCOMPARE(cli({u"install"_s, u"antigravity"_s}).code, 0);
+        QCOMPARE(readAll(iconLine(u"antigravity"_s)), QByteArray("\x89PNG-nobg"));   // the launcher's own icon was adopted
+        QCOMPARE(cli({u"move"_s, u"kilo-desktop"_s, u"--to"_s, u"group:dev-apps"_s}, kiloEnv()).code, 0);
+        QCOMPARE(iconLine(u"kilo-desktop"_s), hand);
+        QCOMPARE(cli({u"move"_s, u"antigravity"_s, u"--to"_s, u"group:dev-apps"_s}).code, 0);
+        QCOMPARE(readAll(iconLine(u"antigravity"_s)), QByteArray("\x89PNG-nobg"));
+        QCOMPARE(cli({u"launchers"_s, u"sync"_s}).code, 0);
+        QCOMPARE(iconLine(u"kilo-desktop"_s), hand);
+        QCOMPARE(readAll(iconLine(u"antigravity"_s)), QByteArray("\x89PNG-nobg"));
+        const QString newSha = u"aa"_s.repeated(32);
+        const Run u = cli({u"update"_s, u"kilo-desktop"_s, u"--json"_s}, {{u"FAKE_FEED"_s, feed(u"1.1.0"_s, newSha)}, {u"FAKE_SHA"_s, newSha}});
+        QVERIFY2(u.code == 0, qPrintable(u.raw + u.err));
+        QCOMPARE(iconLine(u"kilo-desktop"_s), hand);                       // and the bytes are untouched
+        QCOMPARE(readAll(hand), QByteArray("\x89PNG-by-hand"));
+        QCOMPARE(readAll(nobg), QByteArray("\x89PNG-nobg"));
+        // removing the app keeps what a person made
+        QCOMPARE(cli({u"remove"_s, u"kilo-desktop"_s}).code, 0);
+        QVERIFY(QFileInfo::exists(hand));
+    }
+    void anOverrideAlwaysWinsAndCanBeCleared()
+    {
+        QCOMPARE(cli({u"install"_s, u"kilo-desktop"_s, u"--accept-licence"_s, u"kilo-desktop"_s}, kiloEnv()).code, 0);
+        const QString mine = m_tmp.path() + u"/mine.png"_s;
+        writeFile(mine, "\x89PNG-mine");
+        QCOMPARE(cli({u"icon"_s, u"set"_s, u"kilo-desktop"_s, mine}).code, 0);
+        QCOMPARE(iconLine(u"kilo-desktop"_s), iconsDir() + u"/kilo-desktop.override.png"_s);
+        QCOMPARE(cli({u"move"_s, u"kilo-desktop"_s, u"--to"_s, u"group:dev-apps"_s}, kiloEnv()).code, 0);
+        QCOMPARE(readAll(iconLine(u"kilo-desktop"_s)), QByteArray("\x89PNG-mine"));
+        QCOMPARE(cli({u"icon"_s, u"set"_s, u"kilo-desktop"_s, m_tmp.path() + u"/missing.png"_s}).code, 2);
+        QCOMPARE(cli({u"icon"_s, u"clear"_s, u"kilo-desktop"_s}).code, 0);
+        QCOMPARE(iconLine(u"kilo-desktop"_s), iconsDir() + u"/kilo-desktop.pkg.png"_s);
+        const Run l = cli({u"list"_s, u"--json"_s});
+        QCOMPARE(l.last.value(u"apps"_s).toArray()[0].toObject().value(u"icon_path"_s).toString(), iconsDir() + u"/kilo-desktop.pkg.png"_s);
+    }
+
+    // ---------------------------------------------------------------- two launches at once
+
+    QMap<QString, QString> sessionEnv()
+    {
+        const QString rt = m_tmp.path() + u"/rt"_s;
+        QDir().mkpath(rt);
+        writeFile(rt + u"/wayland-test"_s, "x");
+        return {{u"XDG_RUNTIME_DIR"_s, rt}, {u"WAYLAND_DISPLAY"_s, u"wayland-test"_s}};
+    }
+    void aDeviceEditThatLosesTheRaceIsRetried()
+    {
+        QCOMPARE(cli({u"install"_s, u"antigravity"_s}).code, 0);
+        QMap<QString, QString> env = sessionEnv();
+        env.insert(u"FAKE_ETAG_FAILS"_s, u"2"_s);
+        QFile::remove(fakeDir + u"/etag.count"_s);
+        const Run r = cli({u"run"_s, u"antigravity"_s}, env);
+        QVERIFY2(r.code == 0, qPrintable(r.raw + r.err));
+        QCOMPARE(readAll(fakeDir + u"/etag.count"_s).trimmed(), QByteArray("2"));
+    }
+    void twoLaunchesOfOneGroupDoNotEditItsDevicesAtTheSameTime()
+    {
+        QCOMPARE(cli({u"install"_s, u"antigravity"_s}).code, 0);
+        QCOMPARE(cli({u"install"_s, u"chromium"_s}).code, 0);
+        QDir(fakeDir + u"/busy"_s).removeRecursively();
+        QFile::remove(fakeDir + u"/conflicts"_s);
+        QMap<QString, QString> env = sessionEnv();
+        env.insert(u"FAKE_SERIALIZE_CHECK"_s, u"1"_s);
+        QProcessEnvironment e = QProcessEnvironment::systemEnvironment();
+        e.insert(u"TAOS_APPGROUPS_INCUS"_s, QStringLiteral(FAKE_INCUS));
+        e.insert(u"FAKE_DIR"_s, fakeDir);
+        e.insert(u"TAOS_APPGROUPS_DATA"_s, dataDir);
+        e.insert(u"XDG_DATA_HOME"_s, xdgData);
+        e.insert(u"HOME"_s, m_tmp.path() + u"/home"_s);
+        e.insert(u"INCUS_SOCKET"_s, u"/nonexistent"_s);
+        e.insert(u"TAOS_APPGROUPS_DRI_DIR"_s, m_tmp.path() + u"/dri"_s);
+        e.insert(u"FAKE_OWNER"_s, QString::number(::getuid()));
+        for (auto it = env.begin(); it != env.end(); ++it)
+            e.insert(it.key(), it.value());
+        QProcess a, b;
+        a.setProcessEnvironment(e);
+        b.setProcessEnvironment(e);
+        a.start(QStringLiteral(APPGROUPS_CLI), {u"run"_s, u"antigravity"_s});
+        b.start(QStringLiteral(APPGROUPS_CLI), {u"run"_s, u"chromium"_s});
+        QVERIFY(a.waitForFinished(60000) && b.waitForFinished(60000));
+        QVERIFY2(a.exitCode() == 0 && b.exitCode() == 0, qPrintable(QString::fromUtf8(a.readAllStandardError() + b.readAllStandardError())));
+        QVERIFY2(!QFileInfo::exists(fakeDir + u"/conflicts"_s), "the two launches edited the group's devices at the same time");
+    }
     void usageAndRunWithoutSession()
     {
         QCOMPARE(cli({u"bogus"_s}).code, 2);

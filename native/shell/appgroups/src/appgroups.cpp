@@ -18,6 +18,8 @@
 #include <QTextStream>
 #include <QThread>
 
+#include <memory>
+
 #include <unistd.h>
 
 using namespace Qt::StringLiterals;
@@ -63,6 +65,9 @@ QString oneLine(const QString &s)
         o += (c.unicode() < 0x20 || c.unicode() == 0x7f || c.category() == QChar::Other_Control || c == QChar(0x2028) || c == QChar(0x2029)) ? QChar(u' ') : c;
     return o.simplified();
 }
+
+QString resolveIcon(const QString &id);   // defined with the launcher code below
+QString genericIcon(const QString &id);
 
 } // namespace
 
@@ -353,6 +358,7 @@ Result Engine::list(bool available)
         o[u"group"_s] = rec.value(u"group"_s);
         o[u"installed_at"_s] = rec.value(u"installed_at"_s);
         o[u"installed_version"_s] = rec.value(u"installed_version"_s);
+        o[u"icon_path"_s] = resolveIcon(it.key()) == genericIcon(it.key()) ? QString() : resolveIcon(it.key());
         o[u"licence_accepted"_s] = rec.value(u"licence_accepted"_s);
         o[u"installed"_s] = true;
         a.append(o);
@@ -465,9 +471,24 @@ bool hasDevice(const QJsonObject &c, const QString &name)
     return c.value(u"devices"_s).toObject().contains(name);
 }
 
+// Incus refuses a device edit with "ETag doesn't match" when the container's config changed between its read and its
+// write (two launches at once). The edits of one container are taken one at a time (deviceLock), and a lost race is
+// retried, so neither a person nor an agent sees that error.
+Proc deviceEdit(const Engine::Impl *d, const QStringList &args)
+{
+    Proc r;
+    for (int attempt = 0; attempt < 8; ++attempt) {
+        r = d->incusRun(args);
+        if (r.ok() || !r.err.contains(u"ETag"_s))
+            return r;
+        QThread::msleep(150 * (attempt + 1));
+    }
+    return r;
+}
+
 bool addDevice(const Engine::Impl *d, const QString &ct, const QString &name, const QStringList &args, QString *err)
 {
-    const Proc r = d->incusRun(QStringList{u"config"_s, u"device"_s, u"add"_s, ct, name} + args);
+    const Proc r = deviceEdit(d, QStringList{u"config"_s, u"device"_s, u"add"_s, ct, name} + args);
     if (!r.ok())
         *err = r.err.trimmed();
     return r.ok();
@@ -475,11 +496,23 @@ bool addDevice(const Engine::Impl *d, const QString &ct, const QString &name, co
 
 bool removeDevice(const Engine::Impl *d, const QString &ct, const QString &name, QString *err)
 {
-    const Proc r = d->incusRun({u"config"_s, u"device"_s, u"remove"_s, ct, name});
+    const Proc r = deviceEdit(d, {u"config"_s, u"device"_s, u"remove"_s, ct, name});
     if (!r.ok())
         *err = r.err.trimmed();
     return r.ok();
 }
+
+// One lock per container, for as long as a caller reads the devices and changes them.
+struct DeviceLock {
+    QLockFile f;
+    bool held = false;
+    explicit DeviceLock(const QString &ct) : f(Engine::dataRoot() + u"/locks/"_s + ct + u".lock"_s)
+    {
+        QDir().mkpath(Engine::dataRoot() + u"/locks"_s);
+        f.setStaleLockTime(60000);
+        held = f.tryLock(90000);
+    }
+};
 
 Grants unionGrants(const QString &group, const QString &withApp = {}, const Grants *extra = nullptr)
 {
@@ -509,6 +542,9 @@ QString downloadsHost() { return hostHome() + u"/Downloads for apps"_s; }
 // Make the container's devices match the grants. forceNetwork keeps the NIC while an install needs to download.
 Result applyGrants(const Engine::Impl *d, const QString &ct, const Grants &g, bool forceNetwork)
 {
+    DeviceLock lock(ct);
+    if (!lock.held)
+        return Result::fail(ExitConflict, u"another taos-appgroups is changing %1; try again in a moment"_s.arg(ct));
     bool ok = false, exists = false;
     QJsonObject c = d->containerInfo(ct, &exists, &ok);
     if (!ok || !exists)
@@ -768,7 +804,55 @@ Result runStep(Engine::Impl *d, const QString &ct, const Manifest &m, const Step
 }
 
 QString desktopPath(const QString &id) { return Engine::applicationsDir() + u"/taos-appgroups-"_s + id + u".desktop"_s; }
-QString iconPath(const QString &id) { return Engine::dataRoot() + u"/icons/"_s + id + u".svg"_s; }
+// Icons, in the order the launcher uses them: a person's override, an icon a person put at icons/<id>.png, the icon
+// taken from the app's own package (<id>.pkg.png|svg), and last the generic taOS glyph (<id>.svg). Only the last two
+// are ever written by this program, and an existing better one is never replaced by a worse one.
+QString iconsDir() { return Engine::dataRoot() + u"/icons"_s; }
+QString genericIcon(const QString &id) { return iconsDir() + u"/"_s + id + u".svg"_s; }
+QString firstExisting(const QStringList &l)
+{
+    for (const QString &p : l)
+        if (QFileInfo::exists(p))
+            return p;
+    return {};
+}
+QString overrideIcon(const QString &id) { return firstExisting({iconsDir() + u"/"_s + id + u".override.png"_s, iconsDir() + u"/"_s + id + u".override.svg"_s}); }
+QString pkgIcon(const QString &id) { return firstExisting({iconsDir() + u"/"_s + id + u".pkg.png"_s, iconsDir() + u"/"_s + id + u".pkg.svg"_s}); }
+QString resolveIcon(const QString &id)
+{
+    const QString f = firstExisting({overrideIcon(id), iconsDir() + u"/"_s + id + u".png"_s, pkgIcon(id)});
+    return f.isEmpty() ? genericIcon(id) : f;
+}
+QString iconPath(const QString &id) { return resolveIcon(id); }
+
+bool imageLooksRight(const QByteArray &b, const QString &suffix)
+{
+    if (b.size() < 8 || b.size() > 4 * 1024 * 1024)
+        return false;
+    return suffix == u"png"_s ? b.startsWith("\x89PNG") : (b.contains("<svg") && b.left(512).contains("<"));
+}
+
+// An icon a person gave the launcher by hand (the launcher's Icon= names a file of ours that this program did not
+// write) becomes that app's override, so nothing the program does later can take it back.
+void adoptLauncherIcon(const QString &id)
+{
+    QFile f(Engine::applicationsDir() + u"/taos-appgroups-"_s + id + u".desktop"_s);
+    if (!f.open(QIODevice::ReadOnly))
+        return;
+    QString cur;
+    for (const QString &l : QString::fromUtf8(f.readAll()).split(u'\n'))
+        if (l.startsWith(u"Icon="_s))
+            cur = l.mid(5);
+    f.close();
+    const QFileInfo fi(cur);
+    const QString suffix = fi.suffix().toLower();
+    if (cur.isEmpty() || !fi.exists() || (suffix != u"png"_s && suffix != u"svg"_s) || fi.absolutePath() != QDir(iconsDir()).absolutePath())
+        return;
+    const QString name = fi.fileName();
+    if (name == id + u".svg"_s || name == id + u".png"_s || name.startsWith(id + u".pkg."_s) || name.startsWith(id + u".override."_s) || !overrideIcon(id).isEmpty())
+        return;
+    QFile::copy(cur, iconsDir() + u"/"_s + id + u".override."_s + suffix);
+}
 
 QString selfExec()
 {
@@ -785,16 +869,57 @@ QString desktopQuote(const QString &s)
     return u'"' + q + u'"';
 }
 
+// Takes the app's own icon out of the container: the file the manifest names, else the Icon= of the package's
+// .desktop file resolved through hicolor (largest size) and pixmaps. Best effort: an app without one keeps the glyph.
+bool extractIcon(const Engine::Impl *d, const QString &ct, const Manifest &m)
+{
+    QString src = m.iconContainerPath;
+    if (src.isEmpty()) {
+        const QString script = u"bn=$(basename \"$(readlink -f \"$1\")\"); name=; "
+                               u"for f in /usr/share/applications/*.desktop; do if grep -q \"^Exec=.*$bn\" \"$f\" 2>/dev/null; then name=$(sed -n 's/^Icon=//p' \"$f\" | head -1); break; fi; done; "
+                               u"[ -n \"$name\" ] || exit 0; "
+                               u"case \"$name\" in /*) [ -f \"$name\" ] && echo \"$name\"; exit 0;; esac; "
+                               u"best=$(ls -d /usr/share/icons/hicolor/*/apps/$name.png 2>/dev/null | sed 's/.*hicolor\\/\\([0-9]*\\)x.*/\\1 &/' | sort -n | tail -1 | cut -d' ' -f2); "
+                               u"[ -n \"$best\" ] && { echo \"$best\"; exit 0; }; "
+                               u"for p in /usr/share/pixmaps/$name.png /usr/share/icons/hicolor/scalable/apps/$name.svg /usr/share/pixmaps/$name.svg; do [ -f \"$p\" ] && { echo \"$p\"; exit 0; }; done; true"_s;
+        const Proc r = d->exec(ct, {u"sh"_s, u"-c"_s, script, u"sh"_s, m.binary});
+        if (!r.ok())
+            return false;
+        src = r.out.trimmed().split(u'\n').last().trimmed();
+    }
+    const QString suffix = QFileInfo(src).suffix().toLower();
+    if (!src.startsWith(u'/') || (suffix != u"png"_s && suffix != u"svg"_s))
+        return false;
+    QDir().mkpath(iconsDir());
+    const QString dest = iconsDir() + u"/"_s + m.id + u".pkg."_s + suffix, tmp = dest + u".part"_s;
+    QFile::remove(tmp);
+    if (!d->incusRun({u"file"_s, u"pull"_s, ct + src, tmp}).ok()) {
+        QFile::remove(tmp);
+        return false;
+    }
+    QFile f(tmp);
+    if (!f.open(QIODevice::ReadOnly) || !imageLooksRight(f.readAll(), suffix)) {
+        f.close();
+        QFile::remove(tmp);
+        return false;
+    }
+    f.close();
+    QFile::remove(iconsDir() + u"/"_s + m.id + u".pkg.png"_s);
+    QFile::remove(iconsDir() + u"/"_s + m.id + u".pkg.svg"_s);
+    return QFile::rename(tmp, dest);
+}
+
 bool writeLauncher(const Manifest &m, const QString &group, QString *err)
 {
-    QDir().mkpath(QFileInfo(iconPath(m.id)).absolutePath());
+    QDir().mkpath(iconsDir());
+    adoptLauncherIcon(m.id);
     QFile src(u":/appgroups/icons/"_s + m.iconGlyph + u".svg"_s);
-    QFile::remove(iconPath(m.id));
-    if (!src.open(QIODevice::ReadOnly) || !QFile::copy(src.fileName(), iconPath(m.id))) {
+    QFile::remove(genericIcon(m.id));
+    if (!src.open(QIODevice::ReadOnly) || !QFile::copy(src.fileName(), genericIcon(m.id))) {
         *err = u"cannot write the icon"_s;
         return false;
     }
-    QFile::setPermissions(iconPath(m.id), QFile::ReadOwner | QFile::WriteOwner | QFile::ReadGroup | QFile::ReadOther);
+    QFile::setPermissions(genericIcon(m.id), QFile::ReadOwner | QFile::WriteOwner | QFile::ReadGroup | QFile::ReadOther);
     QDir().mkpath(Engine::applicationsDir());
     QString t = u"[Desktop Entry]\nType=Application\nVersion=1.5\n"_s;
     t += u"Name=%1\nComment=%2\n"_s.arg(oneLine(m.name), oneLine(m.description).left(120));
@@ -999,6 +1124,7 @@ Result Engine::install(const QString &appId, const QString &group, const Progres
         return r;
     const QString ct = containerFor(group);
     d->step(u"Adding %1 to the launcher"_s.arg(m.name));
+    extractIcon(d, ct, m);
     if (!writeLauncher(m, group, &err))
         return Result::fail(ExitFailed, err);
     QJsonObject rec{{u"group"_s, group},
@@ -1062,7 +1188,9 @@ Result Engine::remove(const QString &appId, bool purgeData, const Progress &p)
     }
     d->step(u"Removing the launcher entry"_s);
     QFile::remove(desktopPath(appId));
-    QFile::remove(iconPath(appId));
+    QFile::remove(genericIcon(appId));          // what a person made (an override, icons/<id>.png) stays
+    QFile::remove(iconsDir() + u"/"_s + appId + u".pkg.png"_s);
+    QFile::remove(iconsDir() + u"/"_s + appId + u".pkg.svg"_s);
     apps.remove(appId);
     idx[u"apps"_s] = apps;
     if (!writeIndex(idx, &err))
@@ -1199,6 +1327,7 @@ Result Engine::move(const QString &appId, const QString &toGroup, const Progress
     }
     // 4. switch: index and launcher
     d->step(u"Switching %1 to %2"_s.arg(m.name, toGroup));
+    extractIcon(d, dstCt, m);
     QJsonObject newRec = rec;
     newRec[u"group"_s] = toGroup;
     newRec[u"target"_s] = QJsonObject{{u"kind"_s, u"group"_s}, {u"id"_s, toGroup}};
@@ -1261,6 +1390,46 @@ Result Engine::move(const QString &appId, const QString &toGroup, const Progress
         return r;
     }
     applyGrants(d, srcCt, unionGrants(from), false);
+    return r;
+}
+
+Result Engine::iconSet(const QString &appId, const QString &file)
+{
+    const QJsonObject rec = readIndex().value(u"apps"_s).toObject().value(appId).toObject();
+    if (rec.isEmpty())
+        return Result::fail(ExitNotFound, u"%1 is not installed"_s.arg(appId));
+    const QString suffix = QFileInfo(file).suffix().toLower();
+    QFile f(file);
+    if ((suffix != u"png"_s && suffix != u"svg"_s) || !f.open(QIODevice::ReadOnly) || !imageLooksRight(f.readAll(), suffix))
+        return Result::fail(ExitUsage, u"the icon must be a PNG or SVG file (at most 4 MB)"_s);
+    f.close();
+    QDir().mkpath(iconsDir());
+    QFile::remove(iconsDir() + u"/"_s + appId + u".override.png"_s);
+    QFile::remove(iconsDir() + u"/"_s + appId + u".override.svg"_s);
+    if (!QFile::copy(file, iconsDir() + u"/"_s + appId + u".override."_s + suffix))
+        return Result::fail(ExitFailed, u"cannot save the icon"_s);
+    Manifest m;
+    QString err;
+    if (!parseManifest(QJsonDocument(rec.value(u"manifest"_s).toObject()).toJson(), &m, &err) || !writeLauncher(m, rec.value(u"group"_s).toString(), &err))
+        return Result::fail(ExitFailed, err);
+    Result r;
+    r.data[u"icon_path"_s] = resolveIcon(appId);
+    return r;
+}
+
+Result Engine::iconClear(const QString &appId)
+{
+    const QJsonObject rec = readIndex().value(u"apps"_s).toObject().value(appId).toObject();
+    if (rec.isEmpty())
+        return Result::fail(ExitNotFound, u"%1 is not installed"_s.arg(appId));
+    QFile::remove(iconsDir() + u"/"_s + appId + u".override.png"_s);
+    QFile::remove(iconsDir() + u"/"_s + appId + u".override.svg"_s);
+    Manifest m;
+    QString err;
+    if (!parseManifest(QJsonDocument(rec.value(u"manifest"_s).toObject()).toJson(), &m, &err) || !writeLauncher(m, rec.value(u"group"_s).toString(), &err))
+        return Result::fail(ExitFailed, err);
+    Result r;
+    r.data[u"icon_path"_s] = resolveIcon(appId);
     return r;
 }
 
@@ -1413,6 +1582,10 @@ Result Engine::update(const QString &appId, bool checkOnly, const Progress &p)
     const QString ver = packageVersion(d, ct, m.package);
     if (!ver.isEmpty())
         rec[u"installed_version"_s] = ver;
+    if (extractIcon(d, ct, m)) {
+        QString e2;
+        writeLauncher(m, rec.value(u"group"_s).toString(), &e2);
+    }
     rec[u"updated_at"_s] = QDateTime::currentDateTimeUtc().toString(Qt::ISODate);
     apps[appId] = rec;
     idx[u"apps"_s] = apps;
@@ -1469,6 +1642,10 @@ Result Engine::run(const QString &appId, const QStringList &extra)
             return Result::fail(ExitIncus, u"cannot start %1"_s.arg(ct));
         c = d->containerInfo(ct, &exists, &ok);
     }
+    auto lock = std::make_unique<DeviceLock>(ct);   // released before the app starts: it must not be held for as long as the app runs
+    if (!lock->held)
+        return Result::fail(ExitConflict, u"another taos-appgroups is changing %1; try again in a moment"_s.arg(ct));
+    c = d->containerInfo(ct, &exists, &ok);   // read again inside the lock: a launch that was ahead may have added the socket
     // Per-session sockets: the Wayland socket always, the pulse socket for apps with the audio grant. Devices of
     // sessions that no longer exist are removed first.
     const QJsonObject devs = c.value(u"devices"_s).toObject();
@@ -1508,6 +1685,7 @@ Result Engine::run(const QString &appId, const QStringList &extra)
     for (auto it = m.launchEnv.begin(); it != m.launchEnv.end(); ++it)
         a << u"--env"_s << it.key() + u"="_s + it.value().toString();
     a << u"--"_s << m.launchArgv << extra;
+    lock.reset();
     QProcess p;
     p.setProcessEnvironment(d->penv);
     p.setProcessChannelMode(QProcess::ForwardedChannels);
@@ -1536,6 +1714,14 @@ Result Engine::syncLaunchers()
         QString err;
         if (!parseManifest(QJsonDocument(it.value().toObject().value(u"manifest"_s).toObject()).toJson(), &m, &err))
             return Result::fail(ExitRefused, err);
+        // an app with no icon but the glyph gets the package's, when its group is running (no group is started for this)
+        if (resolveIcon(m.id) == genericIcon(m.id)) {
+            bool ok = false, exists = false;
+            const QString ct = containerFor(it.value().toObject().value(u"group"_s).toString());
+            const QJsonObject c = d->containerInfo(ct, &exists, &ok);
+            if (ok && exists && c.value(u"status"_s).toString() == u"Running"_s)
+                extractIcon(d, ct, m);
+        }
         if (!writeLauncher(m, it.value().toObject().value(u"group"_s).toString(), &err))
             return Result::fail(ExitFailed, err);
         done.append(desktopPath(m.id));
