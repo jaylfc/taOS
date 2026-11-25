@@ -1,8 +1,5 @@
-# LoRa mesh radios over USB serial: tag them with uaccess so the person at the
-# seat can open them as the logged-in user, without the dialout group.
-# taos-mesh opens the radio as that person; Connect used to fail with
-# "permission denied" until an administrator added them to dialout (which needs
-# a new login). Sorts before 73-seat-late.
+# taOS: give the person at the seat access to common LoRa mesh radio boards over USB serial
+# (Meshtastic, MeshCore, RNode), without membership of the dialout group. Removable.
 # Espressif native USB
 SUBSYSTEM=="tty", ATTRS{idVendor}=="303a", TAG+="uaccess"
 # Silicon Labs CP210x

@@ -62,7 +62,7 @@ while [ $# -gt 0 ]; do
         --uninstall) uninstall=1; shift ;;
         --with-notifyd) with_notifyd=1; shift ;;
         --without-notifyd) with_notifyd=-1; shift ;;
-        -h|--help) sed -n '2,37p' "$0"; exit 0 ;;
+        -h|--help) sed -n '2,42p' "$0"; exit 0 ;;
         *) echo "install-desktop: unknown option $1" >&2; exit 2 ;;
     esac
 done
@@ -75,7 +75,8 @@ if [ "$uninstall" -eq 1 ]; then
     if [ -e "$rule" ]; then rm -f "$rule"; echo "removed $rule"; else echo "absent $rule"; fi
     if [ -z "$root" ] && command -v udevadm >/dev/null 2>&1; then
         udevadm control --reload-rules 2>/dev/null || true
-        echo "udev rules reloaded"
+        udevadm trigger --subsystem-match=tty 2>/dev/null || true
+        echo "udev rules reloaded and triggered"
     fi
     exit 0
 fi
@@ -321,7 +322,9 @@ rule_src=$here/udev/71-taos-mesh-radios.rules
 [ -r "$rule_src" ] || die "missing udev rule $rule_src"
 put "$rule_src" "$R/etc/udev/rules.d/71-taos-mesh-radios.rules" 0644
 if [ -z "$root" ] && command -v udevadm >/dev/null 2>&1; then
-    udevadm control --reload-rules 2>/dev/null && echo "udev rules reloaded" || true
+    udevadm control --reload-rules 2>/dev/null || true
+    udevadm trigger --subsystem-match=tty 2>/dev/null || true
+    echo "udev rules reloaded and triggered"
 fi
 
 # ---------------------------------------------------------------- 3b. what applies how
