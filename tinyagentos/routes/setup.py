@@ -146,12 +146,13 @@ async def _default_backend_running(accel: str) -> bool:
 
 
 async def _npu_backend_running() -> bool:
-    """True if the default NPU LLM backend (rk-llama.cpp) is live.
+    """True if either NPU LLM backend (rkllama or rk-llama.cpp) is live.
 
-    Since #328 (PR-B) rk-llama.cpp is the default backend on Pi-NPU and
-    the checklist step keys on it alone. rkllama is lazy now — a live
-    rkllama without rk-llama.cpp (e.g. an older install) does NOT
-    complete the step; the one-tap below installs rk-llama.cpp.
+    Since #328 (PR-B) rk-llama.cpp is the default backend for NEW
+    installs and the one-tap below installs it alone — but detection
+    accepts either backend: they are alternatives for the same NPU, and
+    a live rkllama on an existing install satisfies the step (the issue
+    keeps existing installs as they are; jaylfc's #4503 review).
     """
     global _npu_probe_cache
     now = time.monotonic()
@@ -159,16 +160,21 @@ async def _npu_backend_running() -> bool:
     if cached_at and now - cached_at < _NPU_PROBE_TTL_S:
         return cached
 
+    from tinyagentos.installers.rkllama_installer import rkllama_is_running
     from tinyagentos.installers.rkllamacpp_installer import rkllamacpp_is_running
 
-    try:
-        # The probe never raises, but it blocks on socket I/O; keep it
-        # off the event loop and cap how long it can hang.
-        running = await asyncio.wait_for(
-            asyncio.to_thread(rkllamacpp_is_running), _NPU_PROBE_TIMEOUT_S,
-        )
-    except asyncio.TimeoutError:
-        running = False
+    async def _probe(fn) -> bool:
+        try:
+            # Neither probe raises, but both block on socket I/O; keep them
+            # off the event loop and cap how long one can hang.
+            return await asyncio.wait_for(asyncio.to_thread(fn), _NPU_PROBE_TIMEOUT_S)
+        except asyncio.TimeoutError:
+            return False
+
+    rkllama_up, rkllamacpp_up = await asyncio.gather(
+        _probe(rkllama_is_running), _probe(rkllamacpp_is_running),
+    )
+    running = rkllama_up or rkllamacpp_up
     _npu_probe_cache = (now, running)
     return running
 
@@ -228,9 +234,9 @@ async def setup_status(request: Request):
 
     # NPU-conditional step (#1535): on a Rockchip board the checklist offers
     # the rk-llama.cpp backend install (via the Store), complete once a
-    # live rk-llama.cpp answers (#328 — it is the default NPU backend;
-    # rkllama is lazy and no longer completes this step). Boards without
-    # an NPU never see the step.
+    # live NPU backend answers — rk-llama.cpp (the #328 default for new
+    # installs) or rkllama (kept on existing installs; #4503). Boards
+    # without an NPU never see the step.
     profile = getattr(request.app.state, "hardware_profile", None)
     npu = getattr(profile, "npu", None)
     npu_present = bool(npu is not None and getattr(npu, "type", "none") == "rknpu")
@@ -294,9 +300,11 @@ async def install_npu_backend(request: Request):
     the sibling install-rknpu.sh --runtime-only before installing), so
     this endpoint inherits the pin without a separate privileged step. Deliberately scoped to just this one permissively-licensed
     (MIT) LLM-runtime server — this is the user's one explicit tap of
-    consent for exactly that install, nothing more. No models are pulled
-    here (those go through the existing per-model Store flow with their
-    own license acceptance) and the AGPL RK NPU image-gen stack is never
+    consent for exactly that install, nothing more. No chat models are
+    pulled here (those go through the existing per-model Store flow with
+    their own license acceptance); the chained runtime step does fetch
+    the three shared memory preloads, which are part of the NPU runtime
+    install itself (#4503 Q1). The AGPL RK NPU image-gen stack is never
     touched by this endpoint. Only meaningful on a Rockchip NPU board —
     400 otherwise.
     """

@@ -237,8 +237,10 @@ class TestSetupStatus:
 
     async def test_npu_present_and_backend_state(self, client, app, monkeypatch):
         """A Rockchip profile surfaces the step; completion mirrors a live
-        rk-llama.cpp probe (#1535, keying flipped to the default backend
-        by #328 — rkllama alone no longer completes the step)."""
+        rkllama probe (#1535). Since #328 rk-llama.cpp is the default
+        backend for new installs, but a live rkllama on an existing
+        install still completes the step (jaylfc's #4503 review: existing
+        installs stay as they are)."""
         from types import SimpleNamespace
 
         app.state.hardware_profile = SimpleNamespace(
@@ -255,9 +257,9 @@ class TestSetupStatus:
         resp = await client.get("/api/setup/status")
         data = resp.json()
         assert data["npu_present"] is True
-        # #328: rkllama is the lazy backend now; a live rkllama without
-        # rk-llama.cpp does NOT complete the step.
-        assert data["npu_backend_running"] is False
+        # A live rkllama satisfies the step on its own — existing installs
+        # are not re-prompted for the new default backend (#4503).
+        assert data["npu_backend_running"] is True
 
     async def test_npu_present_backend_not_running(self, client, app, monkeypatch):
         from types import SimpleNamespace
@@ -279,7 +281,8 @@ class TestSetupStatus:
 
     async def test_npu_backend_running_true_via_rkllamacpp_alone(self, client, app, monkeypatch):
         """rk-llama.cpp running satisfies the step on its own — since
-        #328 it is the default NPU backend the step keys on."""
+        #328 it is the default NPU backend for new installs; the step
+        keys on either backend being live."""
         from types import SimpleNamespace
 
         app.state.hardware_profile = SimpleNamespace(
