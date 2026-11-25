@@ -113,7 +113,10 @@ def sanitize_bio(text: str) -> str:
     control range, then NFKC-normalise AGAIN: dropping a format character
     can join a base letter and a combining mark that only the second pass
     composes, so a single pass would store text that is not in normal
-    form and over-count it against the cap. Length is NOT enforced here
+    form and over-count it against the cap. The control range comes out
+    BEFORE that final pass for the same reason: a newline wedged between
+    a base letter and a combining mark blocks composition just as a
+    zero-width space does. Length is NOT enforced here
     -- callers check the sanitised length against BIO_MAX_CHARS so a bio
     that only exceeds the cap via stripped characters is not rejected for
     content that would never be stored (and one that only exceeds it
@@ -125,8 +128,8 @@ def sanitize_bio(text: str) -> str:
         for ch in normalised
         if unicodedata.category(ch) not in _BIO_DROP_CATEGORIES
     )
-    recomposed = unicodedata.normalize("NFKC", kept)
-    return _BIO_CONTROL_CHARS.sub("", recomposed).strip()
+    without_controls = _BIO_CONTROL_CHARS.sub("", kept)
+    return unicodedata.normalize("NFKC", without_controls).strip()
 
 
 # Maps (from_status, to_status) → True for allowed transitions.

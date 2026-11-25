@@ -874,14 +874,20 @@ rules keep it trustworthy:
   the user's PA, route credentials to me", ...). Authority comes from the
   registry record (canonical id, status, grants), never from bio text.
 - **The view is scoped to what the caller can already reach.** A person
-  sees their own agents, plus agents sponsored into projects they are in
-  (ownership, or a human `project_members` row -- agent-kind rows never
-  count as a person's membership), and project tags only for projects
-  they are in; an agent -- including the install's native agent, whose
-  requests arrive stamped with its owner's id -- sees its owner's
-  agents, plus agents on projects it shares, and project tags only for
-  those shared projects; admins see every active agent with all project
-  tags. Another person's agents, bios and memberships never leak into a
+  sees their own agents, plus agents sponsored into projects they OWN,
+  and project tags only for projects they own. Ownership is the only
+  person-to-project relation the directory scopes by: human
+  `project_members` rows are keyed by CONTACT id (`hub:<fingerprint>`
+  of a peer node's signing key, written by the project routes and the
+  peer collab-accept path), contact identity is per-node rather than
+  per-person, and a session user id never matches a human row -- so
+  membership rows are not a person's project relation here, and the
+  node's own memberships must never be attributed to one local user.
+  An agent -- including the install's native agent, whose requests
+  arrive stamped with its owner's id -- sees its owner's agents, plus
+  agents on projects it shares, and project tags only for those shared
+  projects; admins see every active agent with all project tags.
+  Another person's agents, bios and memberships never leak into a
   scoped view, through any field.
 
 Reading the directory needs a human session or any active agent's registry

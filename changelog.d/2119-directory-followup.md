@@ -1,0 +1,3 @@
+### Fixed
+
+- **Agent directory: person scoping is ownership-only (#2119 follow-up)** -- human `project_members` rows are keyed by per-node contact id (`hub:<fingerprint>`), never by session user id, so the membership half of the directory's person scoping could never match; a person's directory project set is now exactly the projects they own, and the dead member lookup is removed. Also: bio sanitising removes C0/C1 control characters before the final NFKC pass (a control wedged between a base letter and a combining mark no longer blocks composition or inflates the length cap), and the Assistant Studio no longer syncs its PA pick to the preference store when the agent lookup fails, so a transient error cannot wipe a valid per-person PA preference.

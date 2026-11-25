@@ -694,8 +694,19 @@ async def _pa_canonical_id(request: Request, user_id: str) -> str:
 
 
 async def _person_project_ids(request: Request, user_id: str) -> set[str]:
-    """Project ids *user_id* is in: projects they own plus projects where
-    they hold a ``project_members`` row.
+    """Project ids *user_id* is in, for directory scoping: the projects
+    they OWN.
+
+    Ownership is the only person->project relation keyed by session user
+    id. ``project_members`` human rows are keyed by CONTACT id
+    (``hub:<fingerprint>`` of a peer node's signing key -- written by
+    routes/projects.py and by the peer collab-accept path), and contact
+    identity is per-NODE: the only local contact identity is the node's
+    own (``tinyagentos.peer.local_contact_id``), shared by every local
+    user. A session user id therefore never matches a human row, and
+    attributing the node's memberships to one person would leak them to
+    every other local user -- so membership rows are not a person's
+    project relation here at all.
 
     Empty when the project store is not wired on the app (the caller then
     sees only their own agents in the directory).
@@ -704,9 +715,7 @@ async def _person_project_ids(request: Request, user_id: str) -> set[str]:
     if pstore is None or not user_id:
         return set()
     owned = await pstore.list_for_user(user_id, status=None)
-    ids = {proj["id"] for proj in owned}
-    ids.update(await pstore.list_project_ids_for_member(user_id))
-    return ids
+    return {proj["id"] for proj in owned}
 
 
 @router.get("/api/agents/directory")
@@ -726,7 +735,7 @@ async def get_agent_directory(request: Request):
 
     - an admin sees every active agent, with all project tags;
     - a person sees their own agents, plus agents sponsored into projects
-      they are in, and project tags only for projects they are in;
+      they own, and project tags only for projects they own;
     - an agent (its own registry JWT, identity only) sees its owner's
       agents, plus agents on projects it shares, and project tags only
       for those shared projects.
