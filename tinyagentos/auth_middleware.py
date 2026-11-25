@@ -784,6 +784,15 @@ _INVITE_INFO_PREFIX = "/i/"
 _AGENT_MODEL_MODELS = "/v1/models"
 _AGENT_MODEL_CHAT = "/v1/chat/completions"
 
+# Ollama-compatible surface (routes/ollama_compat.py, #130): the same
+# consent key as the agent-model surface IS the credential and the ROUTE
+# enforces it (401 in Ollama's {"error": ...} envelope otherwise). The
+# middleware exempts EXACTLY the three mounted routes, method-sensitive;
+# every other method on those paths stays session-gated.
+_OLLAMA_TAGS = "/api/tags"
+_OLLAMA_GENERATE = "/api/generate"
+_OLLAMA_CHAT = "/api/chat"
+
 # In-process LLM gateway (tinyagentos/llm_gateway). Exactly five method+path
 # pairs are EXEMPT (models, chat completions, embeddings, audio transcriptions, audio speech), like the Agent-as-a-Model pair above: a scoped gateway key
 # (or the host local token, or a signed-in session) IS the credential and the
@@ -991,6 +1000,14 @@ def _is_exempt(method: str, path: str) -> bool:
     if method == "GET" and path == _AGENT_MODEL_MODELS:
         return True
     if method == "POST" and path == _AGENT_MODEL_CHAT:
+        return True
+    # Ollama-compatible surface -- consent-key auth lives in the route
+    # (see the constants block above). Exact paths only.
+    if method == "GET" and path == _OLLAMA_TAGS:
+        return True
+    if method == "POST" and path == _OLLAMA_GENERATE:
+        return True
+    if method == "POST" and path == _OLLAMA_CHAT:
         return True
     # LLM gateway -- scoped-key auth lives in the route dependency (see the
     # constants block above). Exact paths only.
