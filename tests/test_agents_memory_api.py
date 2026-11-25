@@ -67,3 +67,20 @@ class TestPatchAgentMemory:
         })
         resp = await client.patch("/api/agents/atlas/memory", json={"memory_plugin": "taosmd", "memory_mode": "invalid"})
         assert resp.status_code == 400
+
+    async def test_patch_memory_does_not_return_llm_key(self, client, app):
+        app.state.config.agents.append({
+            "name": "atlas",
+            "display_name": "Atlas",
+            "host": "",
+            "color": "#888888",
+            "soul_md": "",
+            "agent_md": "",
+            "memory_plugin": "taosmd",
+            "llm_key": "sk-test-secret-key",
+        })
+        resp = await client.patch("/api/agents/atlas/memory", json={"memory_plugin": "none"})
+        assert resp.status_code == 200
+        data = resp.json()
+        assert "llm_key" not in data["agent"]
+        assert "sk-test-secret-key" not in resp.text
