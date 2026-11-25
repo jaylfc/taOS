@@ -95,7 +95,7 @@ async def _capture_user_memory(
     collection: str,
     metadata: dict,
     setting_key: str,
-    user_id: str = "user",
+    user_id: str,
     session_fields: dict | None = None,
 ) -> None:
     """Fire-and-forget user memory capture. Never raises.

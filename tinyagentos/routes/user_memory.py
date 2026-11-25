@@ -3,20 +3,31 @@ from __future__ import annotations
 import logging
 
 import httpx
-from fastapi import APIRouter, Depends, Request
+from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse
 
 from tinyagentos.auth_context import require_admin
 from tinyagentos.session_turns import stamp_event
+from tinyagentos.user_memory import LEGACY_USER_ID
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
-USER_ID = "user"  # Single-user for now
+# Pre per-user partition; only the install owner still reads it (see
+# UserMemoryStore).  Used here only for agent search when no owner exists.
+USER_ID = LEGACY_USER_ID
 
 # Fixed agent namespace for user memory in taosmd.
 _TAOSMD_AGENT = "user-memory"
+
+
+def _uid(request: Request) -> str:
+    """The signed-in user's id; chunks are per person, never pooled."""
+    uid = getattr(request.state, "user_id", None)
+    if not uid:
+        raise HTTPException(status_code=401, detail="authentication required")
+    return str(uid)
 
 
 def _store(request: Request):
@@ -63,20 +74,20 @@ def _hit_to_chunk(hit: dict) -> dict:
 
 @router.get("/api/user-memory/stats")
 async def get_stats(request: Request):
-    stats = await _store(request).get_stats(USER_ID)
+    stats = await _store(request).get_stats(_uid(request))
     return JSONResponse(stats)
 
 
 @router.get("/api/user-memory/settings")
 async def get_settings(request: Request):
-    settings = await _store(request).get_settings(USER_ID)
+    settings = await _store(request).get_settings(_uid(request))
     return JSONResponse(settings)
 
 
 @router.put("/api/user-memory/settings", dependencies=[Depends(require_admin)])
 async def update_settings(request: Request):
     body = await request.json()
-    await _store(request).update_settings(USER_ID, body)
+    await _store(request).update_settings(_uid(request), body)
     return JSONResponse({"ok": True})
 
 
@@ -102,7 +113,7 @@ async def search(request: Request, q: str, collection: str | None = None, limit:
     except Exception:
         logger.debug("taosmd search unavailable, falling back to SQLite")
 
-    results = await _store(request).search(USER_ID, q, collection, limit)
+    results = await _store(request).search(_uid(request), q, collection, limit)
     return JSONResponse({"results": results, "query": q, "backend": "sqlite"})
 
 
@@ -120,13 +131,15 @@ async def agent_search(request: Request, q: str, agent_name: str, limit: int = 1
             {"error": "Agent does not have user memory access"},
             status_code=403,
         )
-    results = await _store(request).search(USER_ID, q, limit=limit)
+    primary = request.app.state.auth.get_primary_user()
+    owner_id = primary["id"] if primary else USER_ID
+    results = await _store(request).search(owner_id, q, limit=limit)
     return JSONResponse({"results": results, "query": q, "agent": agent_name})
 
 
 @router.get("/api/user-memory/browse")
 async def browse(request: Request, collection: str | None = None, limit: int = 50):
-    chunks = await _store(request).browse(USER_ID, collection, limit)
+    chunks = await _store(request).browse(_uid(request), collection, limit)
     return JSONResponse({"chunks": chunks})
 
 
@@ -155,7 +168,7 @@ async def save(request: Request):
     )}
 
     # Always write to SQLite for browse/stats/delete compatibility.
-    h = await _store(request).save_chunk(USER_ID, content, title, collection, metadata)
+    h = await _store(request).save_chunk(_uid(request), content, title, collection, metadata)
 
     # Also ingest to taosmd when available (best-effort, non-fatal).
     base = _taosmd_base(request)
@@ -186,13 +199,13 @@ async def save(request: Request):
 
 @router.delete("/api/user-memory/chunk/{chunk_hash}")
 async def delete_chunk(request: Request, chunk_hash: str):
-    deleted = await _store(request).delete_chunk(USER_ID, chunk_hash)
+    deleted = await _store(request).delete_chunk(_uid(request), chunk_hash)
     return JSONResponse({"ok": deleted})
 
 
 @router.get("/api/user-memory/collections")
 async def list_collections(request: Request):
-    stats = await _store(request).get_stats(USER_ID)
+    stats = await _store(request).get_stats(_uid(request))
     return JSONResponse({"collections": list(stats["collections"].keys())})
 
 
@@ -220,7 +233,7 @@ async def migrate_to_taosmd(request: Request):
     page_size = 1000
     offset = 0
     while True:
-        page = await _store(request).browse(USER_ID, limit=page_size, offset=offset)
+        page = await _store(request).browse(_uid(request), limit=page_size, offset=offset)
         chunks.extend(page)
         if len(page) < page_size:
             break

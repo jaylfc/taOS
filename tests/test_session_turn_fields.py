@@ -504,3 +504,46 @@ async def test_manual_save_session_fields(archive_app, client):
     assert none_["session_id"] == UNKNOWN and none_["turn_index"] == UNKNOWN
     assert none_["turn_owner"] == _admin_id(app)  # not the metadata spoof
     assert named["session_id"] == ch and named["turn_index"] == 0
+
+
+# ------------------------------------------- per-user partitions, legacy rows
+
+@pytest.mark.asyncio
+async def test_owner_browses_legacy_and_new_member_sees_only_own(client):
+    from taos_test_csrf import csrf_event_hooks
+    app = client._transport.app
+    store = app.state.user_memory
+    if store._db is None:
+        await store.init()
+    admin = _admin_id(app)
+    bob = _add_user(app, "bob")
+    # data written before this change: the shared "user" partition
+    await store.save_chunk("user", "legacy note", "legacy", "conversations", {})
+    await store.save_chunk(bob, "bob note", "bobs", "conversations", {})
+
+    r = await client.post("/api/user-memory/save", json={"content": "new owner note", "title": "new"})
+    assert r.status_code == 200, r.text
+    r = await client.post("/api/workspace/files/upload", files={"file": ("f.txt", b"d")})
+    assert r.status_code == 200
+    for _ in range(200):
+        if (await store.get_stats(admin))["collections"].get("files"):
+            break
+        await asyncio.sleep(0.01)
+
+    owner_titles = {c["title"] for c in (await client.get("/api/user-memory/browse")).json()["chunks"]}
+    assert {"legacy", "new", "f.txt"} <= owner_titles
+    assert "bobs" not in owner_titles
+
+    # the legacy rows were not copied or rewritten
+    cur = await store._db.execute("SELECT COUNT(*) FROM user_memory_chunks WHERE user_id='user'")
+    assert (await cur.fetchone())[0] == 1
+
+    token = app.state.auth.create_session(user_id=bob, long_lived=True)
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test",
+                           cookies={"taos_session": token},
+                           event_hooks=csrf_event_hooks()) as c:
+        member = (await c.get("/api/user-memory/browse")).json()["chunks"]
+        stats = (await c.get("/api/user-memory/stats")).json()
+    assert {x["title"] for x in member} == {"bobs"}
+    assert stats["total"] == 1
+    await store.close()

@@ -33,7 +33,7 @@ async def _capture_file_activity(
     path: str,
     size: int,
     action: str,
-    user_id: str = "user",
+    user_id: str | None = None,
     session_turns=None,
     actor_id: str | None = None,
 ) -> None:
@@ -41,10 +41,14 @@ async def _capture_file_activity(
 
     File activity is one session per acting user (``files:<actor_id>``); each
     capture is a turn in it.  ``actor_id`` is the authenticated caller, passed
-    by the route; when it is not known the session fields are written as
-    unknown (never defaulted to the single-user memory partition id).
+    by the route; with no authenticated user the capture is skipped and logged,
+    never filed under a shared partition.
     """
     if not user_memory:
+        return
+    user_id = user_id or actor_id
+    if not user_id:
+        logger.warning("file activity capture skipped: no authenticated user")
         return
     try:
         settings = await user_memory.get_settings(user_id)

@@ -546,6 +546,7 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
     from tinyagentos.push.unifiedpush import NullUnifiedPushSender
     unifiedpush_sender = NullUnifiedPushSender()
     user_memory = UserMemoryStore(data_dir / "user_memory.db")
+    user_memory.set_owner_lookup(lambda: (auth_manager.get_primary_user() or {}).get("id"))
     user_personas = UserPersonaStore(data_dir / "user_personas.db")
     installed_apps = InstalledAppsStore(data_dir / "installed_apps.db")
     feedback_store = FeedbackStore(data_dir / "feedback.db")
