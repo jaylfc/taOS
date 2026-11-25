@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import datetime, timezone
 import logging
 from typing import TYPE_CHECKING
 
@@ -304,7 +305,7 @@ async def archive_smoke_check(request: Request, unique_slug: str, framework: str
                     "framework": framework,
                     "session_id": unique_slug,
                     "turn_index": 0,
-                    "session_date": "",
+                    "session_date": datetime.now(tz=timezone.utc).isoformat(),
                 },
                 agent_name=unique_slug,
                 summary=f"deployed {unique_slug}",

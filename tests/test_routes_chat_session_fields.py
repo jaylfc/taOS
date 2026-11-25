@@ -14,10 +14,8 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from tinyagentos.routes.chat import (
-    _session_date_iso,
-    replay_conversation_into_archive,
-)
+from tinyagentos.routes import chat as chat_module
+from tinyagentos.routes.chat import _session_date_iso
 
 
 def _host_token_client(app):
@@ -141,7 +139,16 @@ async def test_chat_replay_keeps_turn_index_and_date(client):
     # and turn_index must be re-derived from the stored conversation.
     app.state.archive = AsyncMock()
 
-    await replay_conversation_into_archive(app, channel_id)
+    # Resolve the replay path lazily so the module still imports on older code
+    # that lacks `replay_conversation_into_archive`. The red run must be an
+    # assertion failure (missing replay path), not an ImportError.
+    replay = getattr(chat_module, "replay_conversation_into_archive", None)
+    assert replay is not None, (
+        "replay_conversation_into_archive is not implemented: "
+        "re-ingest cannot preserve original indexes and dates"
+    )
+
+    await replay(app, channel_id)
 
     calls = app.state.archive.record.call_args_list
     assert len(calls) == len(original)

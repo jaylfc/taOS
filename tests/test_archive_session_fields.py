@@ -186,7 +186,7 @@ async def test_agent_deploy_smoke_archive_carries_session_fields():
     assert kwargs["event_type"] == "agent_deployed"
     assert kwargs["data"]["session_id"] == "test-agent"
     assert kwargs["data"]["turn_index"] == 0
-    assert kwargs["data"]["session_date"] == ""
+    assert kwargs["data"]["session_date"] != ""
 
 
 # ---------------------------------------------------------------------------
