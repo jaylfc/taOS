@@ -1,21 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 #include "iconprovider.h"
 
-#include <QFileInfo>
+#include "iconresolve.h"
 
-QIcon IconProvider::resolve(const AppInfo *apps, const QString &appId) {
-    if (appId.isEmpty()) return {};
-    QString name = apps ? apps->lookup(appId).icon : QString();
-    if (name.isEmpty()) name = appId;
-    QIcon ic;
-    if (name.startsWith(QLatin1Char('/'))) {
-        if (QFileInfo::exists(name)) ic = QIcon(name);
-    } else {
-        ic = QIcon::fromTheme(name);
-        if (ic.isNull()) ic = QIcon::fromTheme(name.toLower());
-    }
-    return ic;
-}
+QIcon IconProvider::resolve(const AppInfo *apps, const QString &appId) { return Icons::resolve(apps, appId); }
 
 QPixmap IconProvider::requestPixmap(const QString &id, QSize *size, const QSize &requested) {
     const QIcon ic = resolve(m_apps, id);

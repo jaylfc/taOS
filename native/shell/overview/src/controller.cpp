@@ -16,7 +16,13 @@
 #include "iconprovider.h"
 #include "packing.h"
 
-Controller::Controller(AppInfo *apps, QObject *parent) : QObject(parent), m_apps(apps), m_model(apps) {
+Controller::Controller(AppInfo *apps, QObject *parent)
+    : QObject(parent), m_spaces(&m_spaceStore, &m_sink), m_apps(apps), m_model(apps) {
+    m_sink.ipc = &m_cmd;
+    {
+        QString err;
+        if (!m_spaceStore.load(&err)) { fprintf(stderr, "taos-overview: %s\n", qPrintable(err)); m_notice = err; }
+    }
     m_model.setIconResolver([this](const QString &id) { return iconFor(id); });
     m_refreshTimer.setSingleShot(true);
     m_refreshTimer.setInterval(20);
@@ -95,6 +101,10 @@ void Controller::applySnapshot(const Snapshot &s) {
         emit outputNameChanged();
     }
     for (const OutInfo &o : s.outputs) if (o.name == m_output) m_curWs = o.currentWorkspace;
+    if (!m_output.isEmpty()) {
+        m_spaces.sync(s, m_output);
+        if (!m_spaces.lastError().isEmpty() && m_notice != m_spaces.lastError()) { m_notice = m_spaces.lastError(); emit noticeChanged(); }
+    }
     QHash<QString, QRect> wr;
     for (const WsInfo &w : s.workspaces) wr.insert(w.output + QLatin1Char('\n') + w.name, w.rect);
     m_model.setWorkspaceRects(wr);
@@ -188,8 +198,13 @@ QString Controller::handleCommand(const QStringList &w) {
         || v == QLatin1String("up") || v == QLatin1String("down")) { move(v); return QStringLiteral("ok"); }
     if (v == QLatin1String("close-selected")) { closeSelected(); return QStringLiteral("ok"); }
     if (v == QLatin1String("type") && w.size() > 1) { typeText(w.mid(1).join(QLatin1Char(' '))); return QStringLiteral("ok"); }
+    if (v == QLatin1String("space")) {
+        const QString r = m_spaces.handle(w);
+        if (r.startsWith(QLatin1String("ok")) && w.value(1) != QLatin1String("list")) afterSpaceChange();
+        return r;
+    }
     if (v == QLatin1String("status")) return QStringLiteral("ok ") + statusJson();
-    return QStringLiteral("error: unknown command '%1' (switcher, overview, hide, commit, next, prev, status)").arg(v);
+    return QStringLiteral("error: unknown command '%1' (switcher, overview, space, hide, commit, next, prev, status)").arg(v);
 }
 
 void Controller::setMode(const QString &m) {
@@ -291,6 +306,44 @@ void Controller::goToWorkspace(const QString &name, int num) {
     if (num >= 0) m_cmd.command(QStringLiteral("workspace number %1").arg(num));
     else m_cmd.command(QStringLiteral("workspace \"%1\"").arg(QString(name).replace(QLatin1Char('"'), QStringLiteral("\\\""))));
 }
+
+void Controller::afterSpaceChange() {
+    rebuildWorkspaces();
+    emit workspacesChanged();
+    scheduleRefresh();   // sway answers the commands we just sent; the strip then shows what really happened
+}
+
+void Controller::goToSpace(const QString &key) {
+    startClose();
+    m_spaces.go(key);
+    afterSpaceChange();
+}
+
+void Controller::stepSpace(int delta) {
+    const QVector<Spaces::View> v = m_spaces.views();
+    if (v.size() < 2) return;
+    int cur = 0;
+    for (int i = 0; i < v.size(); ++i) if (v[i].current) cur = i;
+    m_spaces.go(v[(cur + delta + v.size()) % v.size()].key);
+    afterSpaceChange();
+}
+
+void Controller::jumpToSpace(int position) {
+    const QVector<Spaces::View> v = m_spaces.views();
+    if (position < 1 || position > v.size()) return;
+    goToSpace(v[position - 1].key);
+}
+
+QString Controller::addSpace() {
+    QString key;
+    const QString e = m_spaces.add(QString(), &key);
+    afterSpaceChange();
+    return e.isEmpty() ? key : QString();
+}
+QString Controller::renameSpace(const QString &key, const QString &name) { const QString e = m_spaces.rename(key, name); afterSpaceChange(); return e; }
+QString Controller::moveSpace(const QString &key, int to) { const QString e = m_spaces.move(key, to); afterSpaceChange(); return e; }
+QString Controller::removeSpace(const QString &key) { const QString e = m_spaces.remove(key); afterSpaceChange(); return e; }
+QString Controller::moveWindowToSpace(int conId, const QString &key) { const QString e = m_spaces.moveWindow(conId, key); afterSpaceChange(); return e; }
 
 void Controller::windowActivated(bool altHeld) {
     if (m_mode == QLatin1String("switcher") && !m_sticky && !altHeld) commit();
@@ -431,9 +484,10 @@ void Controller::recomputeLayout() {
             items.push_back({ w.conId, QRectF(w.rect).translated(-ws.topLeft()) });
         }
         Packing::Options o;
-        o.gap = std::max<qreal>(24, m_area.width() / 70);
+        o.gap = std::max<qreal>(52, m_area.width() / 70);   // room for the icon and title under each window
         o.minDim = std::min<qreal>(260, m_area.height() / 3);
         o.maxScale = 1.0;
+        o.maxItem = QSizeF(m_area.width() * 0.5, m_area.height() * 0.72);
         const QVector<QRectF> rects = Packing::pack(items, m_area, o);
         QVector<QPair<QRectF, int>> order;
         for (int i = 0; i < items.size(); ++i) {
@@ -455,37 +509,39 @@ void Controller::recomputeLayout() {
 
 void Controller::rebuildWorkspaces() {
     QVariantList list;
-    QVector<WsInfo> wss = m_snap.workspaces;
-    std::stable_sort(wss.begin(), wss.end(), [](const WsInfo &a, const WsInfo &b) {
-        const int na = a.num < 0 ? 1 << 20 : a.num, nb = b.num < 0 ? 1 << 20 : b.num;
-        return na < nb;
-    });
-    int maxNum = 0;
-    for (const WsInfo &ws : wss) {
-        maxNum = std::max(maxNum, ws.num);
-        QVariantList wins;
-        // windows in the workspace's stacking order: tiled first, floating last, so floating ones paint on top
-        QVector<WinInfo> inWs;
-        for (const WinInfo &w : m_snap.windows) if (!w.minimised && w.workspace == ws.name && w.output == ws.output) inWs.push_back(w);
-        std::stable_sort(inWs.begin(), inWs.end(), [](const WinInfo &a, const WinInfo &b) { return !a.floating && b.floating; });
-        for (const WinInfo &w : inWs) {
-            wins << QVariantMap { { QStringLiteral("conId"), w.conId }, { QStringLiteral("identifier"), w.identifier },
-                                  { QStringLiteral("rect"), QRectF(w.rect).translated(-ws.rect.topLeft()) },
-                                  { QStringLiteral("focused"), w.focused } };
-        }
-        list << QVariantMap { { QStringLiteral("name"), ws.name }, { QStringLiteral("num"), ws.num },
-                              { QStringLiteral("output"), ws.output },
-                              { QStringLiteral("current"), ws.name == m_curWs && ws.output == m_output },
-                              { QStringLiteral("size"), QSizeF(ws.rect.size()) }, { QStringLiteral("windows"), wins },
-                              { QStringLiteral("isNew"), false }, { QStringLiteral("urgent"), ws.urgent },
-                              { QStringLiteral("count"), int(wins.size()) } };
-    }
     QSizeF ref(1920, 1080);
     for (const OutInfo &o : m_snap.outputs) if (o.name == m_output) ref = QSizeF(o.rect.size());
-    list << QVariantMap { { QStringLiteral("name"), QString::number(maxNum + 1) }, { QStringLiteral("num"), maxNum + 1 },
+    const QVector<Spaces::View> views = m_spaces.views();
+    for (const Spaces::View &sp : views) {
+        const WsInfo *ws = nullptr;
+        for (const WsInfo &w : m_snap.workspaces) if (w.name == sp.key && w.output == m_output) ws = &w;
+        QVariantList wins;
+        if (ws) {
+            // windows in the workspace's stacking order: tiled first, floating last, so floating ones paint on top
+            QVector<WinInfo> inWs;
+            for (const WinInfo &w : m_snap.windows) if (!w.minimised && w.workspace == ws->name && w.output == ws->output) inWs.push_back(w);
+            std::stable_sort(inWs.begin(), inWs.end(), [](const WinInfo &a, const WinInfo &b) { return !a.floating && b.floating; });
+            for (const WinInfo &w : inWs) {
+                wins << QVariantMap { { QStringLiteral("conId"), w.conId }, { QStringLiteral("identifier"), w.identifier },
+                                      { QStringLiteral("rect"), QRectF(w.rect).translated(-ws->rect.topLeft()) },
+                                      { QStringLiteral("focused"), w.focused },
+                                      { QStringLiteral("appId"), w.appId },
+                                      { QStringLiteral("iconSource"), iconFor(w.appId) } };
+            }
+        }
+        list << QVariantMap { { QStringLiteral("name"), sp.key }, { QStringLiteral("key"), sp.key }, { QStringLiteral("label"), sp.label },
+                              { QStringLiteral("num"), sp.position }, { QStringLiteral("custom"), sp.custom },
+                              { QStringLiteral("output"), m_output }, { QStringLiteral("current"), sp.current },
+                              { QStringLiteral("size"), ws ? QSizeF(ws->rect.size()) : ref }, { QStringLiteral("windows"), wins },
+                              { QStringLiteral("isNew"), false }, { QStringLiteral("urgent"), sp.urgent },
+                              { QStringLiteral("count"), sp.windows }, { QStringLiteral("removable"), views.size() > 1 } };
+    }
+    list << QVariantMap { { QStringLiteral("name"), QString() }, { QStringLiteral("key"), QString() }, { QStringLiteral("label"), QStringLiteral("New") },
+                          { QStringLiteral("num"), int(views.size()) + 1 }, { QStringLiteral("custom"), false },
                           { QStringLiteral("output"), m_output }, { QStringLiteral("current"), false },
                           { QStringLiteral("size"), ref }, { QStringLiteral("windows"), QVariantList() },
-                          { QStringLiteral("isNew"), true }, { QStringLiteral("urgent"), false }, { QStringLiteral("count"), 0 } };
+                          { QStringLiteral("isNew"), true }, { QStringLiteral("urgent"), false }, { QStringLiteral("count"), 0 },
+                          { QStringLiteral("removable"), false } };
     m_wsList = list;
 }
 
@@ -522,6 +578,7 @@ QString Controller::statusJson() {
     o.insert(QStringLiteral("filter"), m_filter);
     o.insert(QStringLiteral("layout"), int(m_layoutIds.size()));
     o.insert(QStringLiteral("workspace"), m_curWs);
+    o.insert(QStringLiteral("spaces"), int(m_spaces.views().size()));
     o.insert(QStringLiteral("last_show_ms"), double(m_lastShowMs));
     o.insert(QStringLiteral("capture"), m_cap && m_cap->available());
     const qint64 now = QDateTime::currentMSecsSinceEpoch();

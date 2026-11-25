@@ -243,6 +243,24 @@ Hover lifts a thumbnail and shows its title; click focuses; Escape, or a second 
 typing filters by title, app or workspace across ALL workspaces; arrows and Tab move the selection and
 Return focuses it.
 
+**Desktops (spaces).** sway drops an empty workspace the moment it is left, so the strip is not read from sway.
+The person's ordered list of desktops is kept in `~/.config/taos/overview-spaces.json` (per output, written
+atomically; a damaged file is moved aside, never overwritten). A desktop only has a sway workspace while it holds a
+window or is being looked at; entering an empty one creates it again; nothing is placed in sway to hold one open. The
+sway workspace name of a desktop (its key) never changes, so desktop modes and the home of minimised windows keep
+working across renames and reorders. What the person sees is the label: their own name, else "Desktop <position>".
+A workspace sway has that is not in the list and holds windows is adopted at the end; a bare one sway starts on is
+not (the person is taken back to their saved desktop). The same engine serves the strip's buttons and the command
+socket, so an agent does what a person does: `taos-overview space list | add [name] | rename <n> [name] |
+move <n> <to> | remove <n> | go <n> | move-window <window id> <n>` (positions are 1-based; removing moves the windows
+to the next desktop, or the previous one, and the last desktop cannot be removed). In the overview: click a desktop to go
+there, double-click its name (or F2) to rename, drag it to reorder, drag a window onto one to move it, the x on a
+desktop removes it, the plus tile adds one. Digits 1 to 9 jump to a desktop while the search is empty (once there is
+text, digits are text), Ctrl+arrows switch desktop and keep the overview open, Ctrl+N adds one. On a narrow or tall
+screen the strip becomes a row of chips and a window closes with a swipe up. Icons and names are resolved with the
+dock's matcher (`dock/src/desktopentry.cpp`: id, StartupWMClass, `X-taOS-AppId`, Exec, then the entry's name).
+`tests/e2e-spaces.sh` drives all of it under a private headless sway (including a restart of sway and the daemon).
+
 **Window model.** Sway IPC over `$SWAYSOCK` directly: one `get_tree` at start, then the `window` and
 `workspace` events patch the model (a title change patches one string; only structural events refetch,
 after a 20 ms debounce). Most recently used order is kept from the focus events (one seat: sway has one

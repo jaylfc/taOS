@@ -13,7 +13,7 @@ Item {
     readonly property real inset: 8          // room around a card for the selection highlight
     readonly property real pad: 18
     readonly property real gap: 6
-    readonly property string font: "Inter"
+    readonly property string font: Style.fontStack
 
     function cardWidth(aspect) { return Math.round(Math.max(thumbH * 0.95, Math.min(maxCardW, thumbH * aspect))); }
     readonly property real rowWidth: {

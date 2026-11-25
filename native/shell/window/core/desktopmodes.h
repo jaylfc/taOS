@@ -36,9 +36,28 @@ QMap<int, QRect> modeSwitchTargets(const Tree &t, const QString &workspace);
 // Empty when nothing is to be done (already floating, minimised, fullscreen, or the workspace is tiling).
 // The rectangle newWindowCommands aims for (invalid: nothing to do).
 QRect newWindowGeometry(const Tree &t, const Window &w, const DesktopModes &modes);
+// What each app's window looked like when it was last closed, per output, so the next one opens there again:
+//   {"HDMI-A-1": {"my.taos.studio": {"x": 100, "y": 80, "w": 1200, "h": 800}}}
+// in ~/.config/taos/window-geometry.json ($TAOS_WINDOW_GEOMETRY overrides). A remembered rectangle is only used while it
+// still fits the usable area of the output (and is within 90 % of it).
+struct PlacementMemory {
+    QMap<QString, QMap<QString, QRect>> byOutput;
+    static QString path();
+    bool read(const QString &file = path(), QString *error = nullptr);
+    bool write(const QString &file = path(), QString *error = nullptr) const;   // atomic
+    QRect recall(const QString &output, const QString &appId) const { return byOutput.value(output).value(appId); }
+    // Remembers a closed window's rectangle; false (nothing stored) for windows that are not worth remembering.
+    bool remember(const Window &w);
+};
 // The same placement for a window that already floats, at the size its application asked for (`preferred`, kept
 // unless it does not fit the free area). Invalid `preferred`: the default 60 % x 70 %.
-QRect placeNewWindow(const Tree &t, const Window &w, const DesktopModes &modes, const QSize &preferred);
+//
+// Rules, for every new floating window (or a tiled one that is being floated): never more than 90 % of the usable area
+// (bar and dock excluded) in either direction; always fully inside it; the app's remembered rectangle for this output when
+// it still fits; else centred, cascaded 32 px from the last window of the same app; a dialog (a smaller window of an app
+// that already has one open on this workspace) is centred on that window.
+QRect placeNewWindow(const Tree &t, const Window &w, const DesktopModes &modes, const QSize &preferred,
+                     const PlacementMemory *memory = nullptr);
 QStringList newWindowCommands(const Tree &t, const Window &w, const DesktopModes &modes);
 
 }  // namespace TaosWin
