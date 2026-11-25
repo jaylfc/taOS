@@ -15,13 +15,14 @@ def register(subparsers) -> None:
     dp.add_argument("--json", action="store_true", help="Machine-readable JSON output")
     dp.set_defaults(func=_disks)
 
-    # add --disk <by-id> --confirm "<model> <serial>" --name <area> [--encrypt system-unlock|none]
+    # add --disk <by-id> --confirm "<model> <serial>" --name <area> [--encrypt system-unlock|none] [--json]
     ap = verbs.add_parser("add", help="Add a disk as a storage area")
     ap.add_argument("--disk", required=True, help="Block device by-id path (e.g., /dev/disk/by-id/ata-...)")
     ap.add_argument("--confirm", required=True, help='Exact confirmation string: "<model> <serial>"')
     ap.add_argument("--name", required=True, help="Storage area name (alphanumeric, hyphens, underscores)")
     ap.add_argument("--encrypt", choices=["system-unlock", "none"], default="system-unlock",
                     help="Encryption mode (default: system-unlock)")
+    ap.add_argument("--json", action="store_true", help="Machine-readable JSON output")
     ap.set_defaults(func=_add)
 
     # set-primary --person <id> --area <area>

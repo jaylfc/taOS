@@ -106,12 +106,17 @@ class StorageArea:
 class DiskSafetyClassifier:
     """Classifies block devices as available or protected with reasons."""
 
-    def __init__(self, system_disk_paths: set[str] | None = None):
+    def __init__(self, system_disk_paths: set[str] | None = None, system_disks_success: bool = True):
         self._system_disk_paths = system_disk_paths or set()
+        self._system_disks_success = system_disks_success
 
     def classify(self, disk: DiskInfo) -> DiskInfo:
         """Return a new DiskInfo with safety_class and safety_reason set."""
         reasons: list[str] = []
+
+        # Uncertainty: if system disk detection failed, classify as PROTECTED unknown
+        if not self._system_disks_success:
+            reasons.append(PROTECTED_UNKNOWN)
 
         # 1. System disk (running OS)
         is_system = False
@@ -243,13 +248,20 @@ async def _run_cmd(cmd: list[str], timeout: int = 30) -> tuple[int, str]:
         return 1, str(exc)
 
 
-async def _get_system_disk_paths() -> set[str]:
-    """Get the block device paths that hold the running system (root, boot)."""
+async def _get_system_disk_paths() -> tuple[set[str], bool]:
+    """Get the block device paths that hold the running system (root, boot).
+    
+    Returns (paths, success) where success=False indicates findmnt failed
+    and callers should classify disks as PROTECTED unknown.
+    """
     paths: set[str] = set()
+    success = True
     try:
         # Get root device
         rc, out = await _run_cmd(["findmnt", "-n", "-o", "SOURCE", "/"])
-        if rc == 0 and out.strip():
+        if rc != 0:
+            success = False
+        elif out.strip():
             source = out.strip()
             # Resolve to actual block device
             if source.startswith("/dev/"):
@@ -261,7 +273,9 @@ async def _get_system_disk_paths() -> set[str]:
 
         # Get boot device(s)
         rc, out = await _run_cmd(["findmnt", "-n", "-o", "SOURCE", "/boot"])
-        if rc == 0 and out.strip():
+        if rc != 0:
+            success = False
+        elif out.strip():
             for line in out.strip().splitlines():
                 source = line.strip()
                 if source.startswith("/dev/"):
@@ -271,9 +285,10 @@ async def _get_system_disk_paths() -> set[str]:
                         paths.add(match.group(1))
     except Exception:
         logger.warning("storage_engine: failed to detect system disk paths", exc_info=True)
+        success = False
 
-    logger.debug("storage_engine: system disk paths: %s", paths)
-    return paths
+    logger.debug("storage_engine: system disk paths: %s (success=%s)", paths, success)
+    return paths, success
 
 
 async def _read_sysfs_block(device_name: str, attr: str) -> str | None:
@@ -285,6 +300,37 @@ async def _read_sysfs_block(device_name: str, attr: str) -> str | None:
         return None
 
 
+async def _enhance_fstype_with_signatures(device_path: str, fstype: str | None) -> str | None:
+    """Enhance fstype detection using blkid -p and wipefs -n.
+    
+    Runs both commands on the device to detect filesystem/RAID/LVM/crypto signatures
+    that lsblk might miss. Returns the most specific fstype found.
+    """
+    # Try blkid -p (probing mode, doesn't require cache)
+    rc, out = await _run_cmd(["blkid", "-p", "-o", "value", "-s", "TYPE", device_path])
+    if rc == 0 and out.strip():
+        blkid_type = out.strip()
+        if blkid_type:
+            return blkid_type
+
+    # Try wipefs -n (dry-run, shows what signatures would be wiped)
+    rc, out = await _run_cmd(["wipefs", "-n", device_path])
+    if rc == 0 and out.strip():
+        # wipefs output format: offset type uuid label
+        # Parse for known types
+        for line in out.strip().splitlines():
+            parts = line.split()
+            if len(parts) >= 2:
+                wipefs_type = parts[1]
+                # Map wipefs types to our fstype constants
+                if wipefs_type in ("ext4", "xfs", "btrfs", "zfs", "vfat", "ntfs", "f2fs",
+                                   "crypto_LUKS", "crypto_LUKS1", "crypto_LUKS2", "BitLocker",
+                                   "linux_raid_member", "LVM2_member", "zfs_member", "zfs_pool"):
+                    return wipefs_type
+
+    return fstype
+
+
 async def discover_disks() -> list[DiskInfo]:
     """Discover all block disks with full metadata and safety classification.
 
@@ -292,12 +338,12 @@ async def discover_disks() -> list[DiskInfo]:
     Uses lsblk, blkid, wipefs, and sysfs for accurate detection.
     """
     # Get system disk paths first
-    system_disks = await _get_system_disk_paths()
+    system_disks, system_disks_success = await _get_system_disk_paths()
 
-    # Run lsblk for disk topology
+    # Run lsblk for disk topology (WITHOUT -d to include children, WITH PTTYPE)
     rc, out = await _run_cmd([
-        "lsblk", "-d", "-J", "-o",
-        "NAME,SIZE,ROTA,TRAN,RO,MODEL,VENDOR,SERIAL,TYPE,MOUNTPOINTS,FSTYPE,UUID,LABEL,PARTTYPE,PARTLABEL"
+        "lsblk", "-J", "-o",
+        "NAME,SIZE,ROTA,TRAN,RO,MODEL,VENDOR,SERIAL,TYPE,MOUNTPOINTS,FSTYPE,UUID,LABEL,PARTTYPE,PARTLABEL,PTTYPE"
     ])
     if rc != 0:
         logger.error("storage_engine: lsblk failed: %s", out)
@@ -360,6 +406,13 @@ async def discover_disks() -> list[DiskInfo]:
         uuid = block.get("uuid")
         label = block.get("label")
 
+        # Get partition table type from lsblk JSON (no separate call needed)
+        parttable = block.get("pttype")
+        if parttable and parttable in ("gpt", "dos", "msdos"):
+            pass  # keep as-is
+        else:
+            parttable = None
+
         # Get partitions
         partitions = []
         for part in block.get("children", []):
@@ -381,6 +434,9 @@ async def discover_disks() -> list[DiskInfo]:
             part_parttype = part.get("parttype")
             part_partlabel = part.get("partlabel")
 
+            # Enhance partition with blkid/wipefs signatures
+            part_fstype = await _enhance_fstype_with_signatures(f"/dev/{part_name}", part_fstype)
+
             partitions.append(PartitionInfo(
                 path=f"/dev/{part_name}",
                 name=part_name,
@@ -393,14 +449,8 @@ async def discover_disks() -> list[DiskInfo]:
                 partlabel=part_partlabel,
             ))
 
-        # Determine partition table type
-        parttable = None
-        # Check for GPT/MSDOS via parted or fdisk
-        rc2, out2 = await _run_cmd(["lsblk", "-n", "-o", "PTTYPE", path])
-        if rc2 == 0:
-            pttype = out2.strip()
-            if pttype in ("gpt", "dos", "msdos"):
-                parttable = pttype
+        # Enhance disk fstype with blkid/wipefs signatures
+        fstype = await _enhance_fstype_with_signatures(path, fstype)
 
         disk = DiskInfo(
             path=path,
@@ -420,8 +470,8 @@ async def discover_disks() -> list[DiskInfo]:
             ro=ro,
         )
 
-        # Classify safety
-        classifier = DiskSafetyClassifier(system_disks)
+        # Classify safety - pass system_disks_success to handle uncertainty
+        classifier = DiskSafetyClassifier(system_disks, system_disks_success)
         disk = classifier.classify(disk)
 
         disks.append(disk)
@@ -654,7 +704,7 @@ async def add_storage_area(
     # 2. Create GPT partition table with single partition
     logger.info("storage_engine: Creating GPT partition on %s", disk_by_id_path)
     result = await _run_storage_helper([
-        "partition-disk", disk_by_id_path
+        "partition-disk", disk_by_id_path, expected_confirm
     ])
     if not result["ok"]:
         return {"ok": False, "error": f"Partition failed: {result['output']}", "step": "partition"}
@@ -877,13 +927,14 @@ async def _path_exists(path: str) -> bool:
 # CLI Helpers
 # ============================================================================
 
-def disks_to_json(disks: list[DiskInfo]) -> list[dict]:
+def disks_to_json(disks: list[DiskInfo], by_id_paths: dict[str, str] | None = None) -> list[dict]:
     """Convert DiskInfo list to JSON-serializable dicts."""
+    by_id_paths = by_id_paths or {}
     result = []
     for disk in disks:
         result.append({
             "path": disk.path,
-            "by_id_path": disk.path,  # Will be resolved by caller
+            "by_id_path": by_id_paths.get(disk.path, disk.path),
             "name": disk.name,
             "make": disk.make,
             "model": disk.model,

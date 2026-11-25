@@ -495,15 +495,25 @@ class TestDiscoverDisks:
         }
 
         with patch("tinyagentos.storage_engine._run_cmd") as mock_run_cmd, \
-             patch("tinyagentos.storage_engine._get_system_disk_paths", return_value={"/dev/sda", "/dev/sda2"}), \
+             patch("tinyagentos.storage_engine._get_system_disk_paths", return_value=({"/dev/sda", "/dev/sda2"}, True)), \
              patch("tinyagentos.storage_engine._read_sysfs_block", return_value=None):
 
             # First call returns lsblk JSON
-            # Second call for PTTYPE
+            # Then blkid/wipefs for each disk and partition:
+            # sda: blkid, wipefs
+            # sda1: blkid, wipefs
+            # sda2: blkid, wipefs
+            # sdb: blkid, wipefs
             mock_run_cmd.side_effect = [
-                (0, json.dumps(lsblk_output)),
-                (0, "gpt"),  # PTTYPE for sda
-                (0, ""),     # PTTYPE for sdb
+                (0, json.dumps(lsblk_output)),  # lsblk
+                (0, "ext4"),   # blkid -p /dev/sda
+                (0, "0 ext4 ..."),  # wipefs -n /dev/sda
+                (0, "vfat"),     # blkid -p /dev/sda1
+                (0, "0 vfat ..."),  # wipefs -n /dev/sda1
+                (0, "ext4"),     # blkid -p /dev/sda2
+                (0, "0 ext4 ..."),  # wipefs -n /dev/sda2
+                (0, ""),         # blkid -p /dev/sdb (no fstype)
+                (0, ""),         # wipefs -n /dev/sdb
             ]
 
             disks = await discover_disks()

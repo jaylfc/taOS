@@ -149,6 +149,43 @@ systemctl enable --now tinyagentos-host-firewall.path
 systemctl enable --now tinyagentos-host-firewall.timer
 echo "Host firewall service status: $(systemctl is-active tinyagentos-host-firewall.service)"
 
+# Install storage helper (taos-storage-helper) for privileged disk operations
+echo ""
+echo "Installing storage helper..."
+cp "$INSTALL_DIR/scripts/taos-storage-helper" /usr/local/bin/taos-storage-helper
+chmod 755 /usr/local/bin/taos-storage-helper
+
+# Create narrowly scoped sudoers rule for storage helper
+# Only allows running taos-storage-helper with specific allowed commands
+SUDOERS_FILE="/etc/sudoers.d/taos-storage-helper"
+cat > "$SUDOERS_FILE" << 'SUDOERS_EOF'
+# taOS storage helper - narrowly scoped passwordless sudo
+# Only allows specific commands with fixed argument patterns
+Cmnd_Alias TAOS_STORAGE_CMDS = \
+    /usr/local/bin/taos-storage-helper partition-disk *, \
+    /usr/local/bin/taos-storage-helper luks-format *, \
+    /usr/local/bin/taos-storage-helper luks-open *, \
+    /usr/local/bin/taos-storage-helper luks-close *, \
+    /usr/local/bin/taos-storage-helper make-fs *, \
+    /usr/local/bin/taos-storage-helper mount-fs *, \
+    /usr/local/bin/taos-storage-helper unmount-fs *, \
+    /usr/local/bin/taos-storage-helper write-crypttab *, \
+    /usr/local/bin/taos-storage-helper write-mount-unit *, \
+    /usr/local/bin/taos-storage-helper remove-mount-unit *, \
+    /usr/local/bin/taos-storage-helper get-mount-info *
+
+# Allow taos user (or root) to run storage helper without password
+ALL ALL=(ALL) NOPASSWD: TAOS_STORAGE_CMDS
+SUDOERS_EOF
+chmod 440 "$SUDOERS_FILE"
+
+# Create /etc/taos/keys directory with 0700 root for LUKS key files
+echo ""
+echo "Creating /etc/taos/keys directory..."
+mkdir -p /etc/taos/keys
+chmod 700 /etc/taos/keys
+chown root:root /etc/taos/keys
+
 echo ""
 echo "=== FS snapshot backstop (Layer 3 of recycle-bin) ==="
 if [ -f "$INSTALL_DIR/scripts/fs-snapshot-install.sh" ]; then

@@ -69,11 +69,12 @@ async def list_disks(request: Request):
 
     disks = await discover_disks()
 
-    # Resolve by-id paths
+    # Resolve by-id paths (don't mutate frozen DiskInfo)
+    by_id_paths = {}
     for disk in disks:
-        disk.by_id_path = await _get_disk_by_id_path(disk.path)
+        by_id_paths[disk.path] = await _get_disk_by_id_path(disk.path)
 
-    return disks_to_json(disks)
+    return disks_to_json(disks, by_id_paths)
 
 
 @router.post("/api/storage/add")

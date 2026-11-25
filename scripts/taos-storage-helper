@@ -5,21 +5,22 @@ This script runs via passwordless sudo from the taOS controller.
 Allowed commands are strictly allowlisted to prevent arbitrary command execution.
 
 Commands:
-  partition-disk <by-id-path>          - Create GPT with single partition on disk
-  luks-format <part-path> <name> <key> - Format partition as LUKS2 with key file
-  luks-open <part-path> <name> <key>   - Open LUKS device
-  luks-close <name>                    - Close LUKS device
-  make-fs <device> <label>             - Create ext4 filesystem with label
-  mount-fs <mountpoint>                - Mount filesystem at mountpoint
-  unmount-fs <mountpoint>              - Unmount filesystem
-  write-crypttab <name> <dev> <key>    - Write /etc/crypttab entry
+  partition-disk <by-id-path> <confirm>  - Create GPT with single partition on disk (re-validates disk)
+  luks-format <part-path> <name> <key>   - Format partition as LUKS2 with key file
+  luks-open <part-path> <name> <key>     - Open LUKS device
+  luks-close <name>                      - Close LUKS device
+  make-fs <device> <label>               - Create ext4 filesystem with label
+  mount-fs <mountpoint>                  - Mount filesystem at mountpoint
+  unmount-fs <mountpoint>                - Unmount filesystem
+  write-crypttab <name> <dev> <key>      - Write /etc/crypttab entry
   write-mount-unit <name> <dev> <mp> <encrypted> - Write systemd mount unit
-  remove-mount-unit <name>             - Remove systemd mount unit
-  get-mount-info <mountpoint>          - Get mount info
+  remove-mount-unit <name>               - Remove systemd mount unit
+  get-mount-info <mountpoint>            - Get mount info
 """
 from __future__ import annotations
 
 import argparse
+import json
 import logging
 import os
 import secrets
@@ -62,21 +63,185 @@ def run_cmd(cmd: list[str], check: bool = True, capture: bool = True, input_data
     return result
 
 
-def cmd_partition_disk(disk_path: str) -> int:
-    """Create GPT partition table with single partition covering whole disk."""
-    # Wipe any existing partition table
-    run_cmd(["wipefs", "-a", disk_path], check=False)
+def _resolve_by_id_path(device_path: str) -> str:
+    """Resolve a device path to its real path."""
+    if device_path.startswith("/dev/disk/by-id/"):
+        try:
+            return os.path.realpath(device_path)
+        except OSError:
+            pass
+    return device_path
 
+
+def _get_disk_model_serial(device_path: str) -> tuple[str, str]:
+    """Get model and serial from sysfs for a disk device."""
+    # Extract device name (e.g., sda from /dev/sda)
+    real_path = os.path.realpath(device_path)
+    device_name = os.path.basename(real_path)
+    # Remove partition suffix if present (sda1 -> sda)
+    if device_name[-1].isdigit():
+        # Handle both sda1 and nvme0n1p1 formats
+        import re
+        match = re.match(r"(\D+)(\d+)(?:p\d+)?", device_name)
+        if match:
+            device_name = match.group(1) + match.group(2)
+    
+    model = "Unknown"
+    serial = "Unknown"
+    
+    try:
+        model_path = Path(f"/sys/block/{device_name}/device/model")
+        if model_path.exists():
+            model = model_path.read_text().strip()
+    except OSError:
+        pass
+    
+    try:
+        serial_path = Path(f"/sys/block/{device_name}/device/serial")
+        if serial_path.exists():
+            serial = serial_path.read_text().strip()
+    except OSError:
+        pass
+    
+    return model, serial
+
+
+def _classify_disk_safety(device_path: str) -> tuple[str, str | None]:
+    """Classify disk safety using same logic as storage engine.
+    
+    Returns (safety_class, safety_reason).
+    """
+    # This is a simplified version of the classifier that runs in the helper context
+    # It checks: mounted, has filesystem, encrypted, RAID, LVM, ZFS, read-only
+    
+    reasons: list[str] = []
+    
+    # Check if mounted (whole disk or any partition)
+    rc, out = run_cmd(["findmnt", "-n", "-o", "SOURCE", "--source", device_path], check=False)
+    if rc == 0 and out.strip():
+        reasons.append("mounted")
+    
+    # Check read-only
+    rc, out = run_cmd(["lsblk", "-n", "-o", "RO", device_path], check=False)
+    if rc == 0 and out.strip() == "1":
+        reasons.append("read-only")
+    
+    # Check filesystem on disk
+    rc, out = run_cmd(["blkid", "-p", "-o", "value", "-s", "TYPE", device_path], check=False)
+    fstype = out.strip() if rc == 0 else ""
+    if not fstype:
+        rc, out = run_cmd(["wipefs", "-n", device_path], check=False)
+        if rc == 0 and out.strip():
+            for line in out.strip().splitlines():
+                parts = line.split()
+                if len(parts) >= 2:
+                    fstype = parts[1]
+                    break
+    
+    DATA_FS_TYPES = {"ext2", "ext3", "ext4", "xfs", "btrfs", "zfs", "jfs", "reiserfs",
+                     "vfat", "ntfs", "exfat", "f2fs", "hfs", "hfs+", "apfs",
+                     "iso9660", "udf", "squashfs", "erofs"}
+    ENCRYPTED_TYPES = {"crypto_LUKS", "crypto_LUKS1", "crypto_LUKS2", "BitLocker"}
+    
+    if fstype in DATA_FS_TYPES:
+        reasons.append("has-data")
+    elif fstype in ENCRYPTED_TYPES:
+        reasons.append("encrypted-foreign")
+    elif fstype == "linux_raid_member":
+        reasons.append("raid-member")
+    elif fstype == "LVM2_member":
+        reasons.append("lvm-member")
+    elif fstype and fstype.startswith("zfs_"):
+        reasons.append("zfs-member")
+    
+    # Check partitions
+    rc, out = run_cmd(["lsblk", "-J", "-o", "NAME,FSTYPE,MOUNTPOINTS", device_path], check=False)
+    if rc == 0:
+        try:
+            data = json.loads(out)
+            for block in data.get("blockdevices", []):
+                for part in block.get("children", []):
+                    part_name = part.get("name", "")
+                    if not part_name:
+                        continue
+                    part_path = f"/dev/{part_name}"
+                    part_fstype = part.get("fstype")
+                    part_mount = part.get("mountpoints")
+                    
+                    if part_mount:
+                        reasons.append("mounted")
+                    
+                    if part_fstype:
+                        if part_fstype in DATA_FS_TYPES:
+                            reasons.append("has-data")
+                        elif part_fstype in ENCRYPTED_TYPES:
+                            reasons.append("encrypted-foreign")
+                        elif part_fstype == "linux_raid_member":
+                            reasons.append("raid-member")
+                        elif part_fstype == "LVM2_member":
+                            reasons.append("lvm-member")
+                        elif part_fstype.startswith("zfs_"):
+                            reasons.append("zfs-member")
+        except json.JSONDecodeError:
+            pass
+    
+    if reasons:
+        return "protected", ",".join(reasons)
+    return "available", None
+
+
+def _validate_disk_for_format(device_path: str, confirm: str) -> tuple[bool, str | None]:
+    """Validate disk is available and confirm string matches.
+    
+    Returns (is_valid, error_message).
+    """
+    # Resolve by-id path
+    real_path = _resolve_by_id_path(device_path)
+    if not os.path.exists(real_path):
+        return False, f"Device not found: {device_path}"
+    
+    # Check it's a block device
+    if not os.path.isblock(real_path):
+        return False, f"Not a block device: {real_path}"
+    
+    # Get model and serial for confirm check
+    model, serial = _get_disk_model_serial(real_path)
+    expected_confirm = f"{model} {serial}".strip()
+    if confirm != expected_confirm:
+        return False, f"Confirm string mismatch: expected '{expected_confirm}', got '{confirm}'"
+    
+    # Classify safety
+    safety_class, safety_reason = _classify_disk_safety(real_path)
+    if safety_class != "available":
+        return False, f"Disk not available: {safety_reason}"
+    
+    return True, None
+
+
+def cmd_partition_disk(disk_path: str, confirm: str) -> int:
+    """Create GPT partition table with single partition covering whole disk.
+    
+    Re-validates disk safety and confirm string before any write operation.
+    """
+    # TOCTOU fix: re-validate immediately before write
+    valid, error = _validate_disk_for_format(disk_path, confirm)
+    if not valid:
+        logger.error("Validation failed: %s", error)
+        return 1
+    
+    # Wipe any existing partition table (with check=True for safety)
+    run_cmd(["wipefs", "-a", disk_path], check=True)
+    
     # Create GPT with single partition
     run_cmd(["parted", "-s", disk_path, "mklabel", "gpt"])
     run_cmd(["parted", "-s", disk_path, "mkpart", "primary", "0%", "100%"])
     run_cmd(["parted", "-s", disk_path, "set", "1", "legacy_boot", "on"])
-
+    
     # Trigger udev to create partition symlinks
     run_cmd(["udevadm", "settle"], check=False)
     run_cmd(["partprobe", disk_path], check=False)
     run_cmd(["udevadm", "settle"], check=False)
-
+    
     return 0
 
 
@@ -85,11 +250,16 @@ def cmd_luks_format(part_path: str, name: str, key_file: str) -> int:
     # Generate random key
     key = secrets.token_bytes(64)
 
-    # Write key file (root-only, 0400)
+    # Write key file (root-only, 0400) using O_CREAT|O_EXCL
     key_dir = Path(key_file).parent
     key_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
-    Path(key_file).write_bytes(key)
-    os.chmod(key_file, 0o400)
+    
+    # Use os.open with O_CREAT|O_EXCL to avoid TOCTOU
+    fd = os.open(key_file, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o400)
+    try:
+        os.write(fd, key)
+    finally:
+        os.close(fd)
 
     # Format LUKS2 with key file
     run_cmd([
@@ -97,7 +267,6 @@ def cmd_luks_format(part_path: str, name: str, key_file: str) -> int:
         "--key-file", "-", part_path
     ], capture=False, check=True, input_data=key)
 
-    # Add key to LUKS (it's already the primary key)
     logger.info("LUKS2 formatted: %s", part_path)
     return 0
 
@@ -245,7 +414,6 @@ def cmd_remove_mount_unit(name: str) -> int:
 
 def cmd_get_mount_info(mountpoint: str) -> int:
     """Get mount info as JSON."""
-    import json
     result = run_cmd(["findmnt", "-J", "-o", "TARGET,SOURCE,FSTYPE,SIZE,AVAIL,USED", mountpoint])
     if result.returncode == 0:
         print(result.stdout)
@@ -266,10 +434,10 @@ def main() -> int:
 
     try:
         if args.command == "partition-disk":
-            if len(args.args) != 1:
-                logger.error("partition-disk requires <disk-path>")
+            if len(args.args) != 2:
+                logger.error("partition-disk requires <disk-path> <confirm>")
                 return 1
-            return cmd_partition_disk(args.args[0])
+            return cmd_partition_disk(args.args[0], args.args[1])
 
         elif args.command == "luks-format":
             if len(args.args) != 3:

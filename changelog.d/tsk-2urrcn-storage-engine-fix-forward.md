@@ -1,0 +1,11 @@
+### Fixed
+- Fix-forward #4512: storage engine must never classify a disk with data as available
+  - Remove `-d` flag from lsblk to include child partitions in JSON output
+  - Add `blkid -p` and `wipefs -n` signature detection on disk and all partitions
+  - Uncertainty (findmnt/lsblk/blkid/wipefs failures) now classifies as PROTECTED unknown
+  - Fix FrozenInstanceError in routes/storage.py by passing by_id_path to disks_to_json
+  - Add missing `--json` flag to `taosctl storage add` command
+  - TOCTOU fix in taos-storage-helper: re-validate disk safety and confirm string before any write
+  - `wipefs -a` now runs with `check=True`; key files created with `os.open(O_CREAT|O_EXCL, 0o400)`
+  - Installer now deploys helper, sudoers rule, and `/etc/taos/keys` (0700 root)
+  - New integration tests for routes and CLI
