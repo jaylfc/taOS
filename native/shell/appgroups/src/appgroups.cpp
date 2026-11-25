@@ -1191,7 +1191,8 @@ Result Engine::move(const QString &appId, const QString &toGroup, const Progress
     }
     // 3. it can start there: the program is in place and every library it needs is found
     d->step(u"Checking %1 can start in %2"_s.arg(m.name, toGroup));
-    const Proc ldd = d->exec(dstCt, {u"ldd"_s, m.binary});
+    // The real file, not the /usr/bin symlink: Electron apps find libffmpeg through $ORIGIN, which the symlink hides.
+    const Proc ldd = d->exec(dstCt, {u"sh"_s, u"-c"_s, u"ldd \"$(readlink -f \"$1\")\" 2>&1"_s, u"sh"_s, m.binary});
     if (!d->exec(dstCt, {u"test"_s, u"-x"_s, m.binary}).ok() || ldd.out.contains(u"not found"_s)) {
         cleanTargetHome(d, dstCt, home);
         return Result::fail(ExitStep, u"%1 would not start in %2 (a program or library is missing); nothing was changed. %3"_s.arg(m.name, toGroup, ldd.out.trimmed().left(200)));

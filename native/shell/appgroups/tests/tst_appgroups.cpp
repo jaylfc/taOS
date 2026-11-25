@@ -441,7 +441,7 @@ private slots:
         QVERIFY2(in < bk && out < bk, "copied before the backup");
         QVERIFY2(in < bk && bk < rm, "data is backed up, then the source app is removed");
         QVERIFY2(!c.contains(u"rm -rf /home/taos/apps/antigravity"_s), "the source data is never deleted, only renamed");
-        QVERIFY(c.contains(u"ldd /opt/antigravity/antigravity-ide"_s));
+        QVERIFY(c.contains(u"ldd \"$(readlink -f"_s) && c.contains(u"sh /opt/antigravity/antigravity-ide"_s));
         QCOMPARE(cli({u"groups"_s, u"--json"_s}).last.value(u"groups"_s).toArray()[1].toObject().value(u"apps"_s).toArray().size(), 1);
         // moving it back is refused when it is already there
         QCOMPARE(cli({u"move"_s, u"antigravity"_s, u"--to"_s, u"group:dev-apps"_s}).code, 7);
