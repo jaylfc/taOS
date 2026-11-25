@@ -71,7 +71,6 @@ async def _skill_memory_search(args: dict, request: Request) -> dict:
     agent's query, respecting token budget and returning dropped counts.
     """
     query = args.get("query", "")
-    args.get("limit", 10)
     agent_name = getattr(request.state, "agent_name", None)
     if not agent_name:
         return {"status": "error", "error": "agent identity not found in credentials"}

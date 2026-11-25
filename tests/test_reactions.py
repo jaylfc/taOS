@@ -557,8 +557,10 @@ async def test_thumbs_down_registry_none_defaults_budget():
 
 @pytest.mark.asyncio
 async def test_thumbs_down_real_model_budget_is_computed():
-    """A manifest with a large context window yields the non-floored history
-    budget: 16384 - 10000 system - 1024 response = 5360 (> 512 floor)."""
+    """A manifest with a large context window yields the memory budget:
+    default_budget_tokens(16384, SYSTEM_PROMPT_RESERVE=10000, reasoning_reserve=0) = 6384.
+    This differs from history_token_budget which also subtracts RESPONSE_RESERVE.
+    """
     bridge = MagicMock()
     bridge.enqueue_user_message = AsyncMock()
     msg_store = MagicMock()
@@ -592,8 +594,9 @@ async def test_thumbs_down_real_model_budget_is_computed():
 
     mock_taosmd.answer_context.assert_awaited_once()
     call_args = mock_taosmd.answer_context.call_args
-    assert call_args[1]["budget_tokens"] == 5360
-    # Anchor the literal against the real pure helper so it is not a magic number.
+    # Memory budget uses default_budget_tokens (no RESPONSE_RESERVE deduction)
+    assert call_args[1]["budget_tokens"] == 6384
+    # History budget subtracts RESPONSE_RESERVE as well
     from tinyagentos.chat.context_window import history_token_budget
     assert history_token_budget(16384) == 5360
 

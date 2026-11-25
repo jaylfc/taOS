@@ -232,10 +232,12 @@ class AgentChatRouter:
         # answer_context assembles dated session blocks (oldest first, original turn
         # order), respects token budget, never cuts mid-item, and reports dropped counts.
         agent_contexts: dict[str, AnswerContextResult] = {}
+        # Also fetch chat history for each recipient to preserve conversation context.
+        agent_histories: dict[str, list[dict]] = {}
         if hasattr(self._state, "chat_messages"):
             try:
                 from tinyagentos.agent_manual import build_manual
-                from tinyagentos.chat.context_window import estimate_tokens
+                from tinyagentos.chat.context_window import build_context_window, estimate_tokens, history_token_budget
                 from tinyagentos.chat.guest_agents import resolve_guest
                 registry = getattr(self._state, "registry", None)
 
@@ -250,12 +252,31 @@ class AgentChatRouter:
                             continue
                     if not is_guest:
                         # Calculate budget from agent's model context window (share, not whole window)
-                        # Estimate used_tokens from manual (system prompt) for this agent/channel
+                        # Measure used_tokens from manual (system prompt + tools) + conversation history
                         manual_text = build_manual(channel, agent_name, list((settings.get("leads") or [])))
-                        used_tokens = estimate_tokens(manual_text)
+
+                        # Fetch recent conversation history for this channel
+                        messages = await self._state.chat_messages.get_messages(channel["id"], limit=100)
+                        # Build context window to get the messages that will be sent (respects token budget)
+                        manifest = None
+                        if registry:
+                            from tinyagentos.cluster.model_resolver import _find_model_manifest
+                            manifest = _find_model_manifest(registry, agent.get("model", ""))
+                        ctx_window = int(getattr(manifest, "context_window", 0) or 0) if manifest else 0
+                        history_budget = history_token_budget(ctx_window) if ctx_window else 4000
+                        history_messages = build_context_window(messages, limit=20, max_tokens=history_budget)
+
+                        # Measure used_tokens: manual (system prompt) + conversation history
+                        history_tokens = sum(estimate_tokens(m.get("content", "")) for m in history_messages)
+                        used_tokens = estimate_tokens(manual_text) + history_tokens
+
                         budget_tokens = calculate_agent_budget(agent, registry, used_tokens) if registry else 4000
+
+                        # Store history for later use when building the agent context
+                        agent_histories[agent_name] = history_messages
                     else:
                         budget_tokens = 4000
+                        agent_histories[agent_name] = []
 
                     # The query is the current user message content
                     query = message.get("content", "")
@@ -283,6 +304,7 @@ class AgentChatRouter:
             except Exception:
                 logger.warning("taOSmd answer_context failed for channel %s", channel.get("id"), exc_info=True)
                 agent_contexts = {}
+                agent_histories = {}
 
         leads = list((settings.get("leads") or []))  # post-PR #291
 
@@ -335,11 +357,23 @@ class AgentChatRouter:
                 # Use taOSmd answer_context result for memory context
                 ac_result = agent_contexts.get(agent_name)
                 memory_context = ac_result.context if ac_result else ""
-                # Combine manual + memory context as system message
+                # Get preserved chat history for this agent
+                history_messages = agent_histories.get(agent_name, [])
+
+                # Build the full context: chat history + system message with manual + memory
+                agent_context = []
+                # Add conversation history (user/assistant messages)
+                for msg in history_messages:
+                    agent_context.append({
+                        "role": "assistant" if msg.get("author_type") == "agent" else "user",
+                        "content": msg.get("content", ""),
+                    })
+                # Add system message with manual + memory context
                 combined_content = manual_text
                 if memory_context:
                     combined_content = f"{manual_text}\n\n---\n\n{memory_context}"
-                agent_context = [{"role": "system", "content": combined_content}]
+                agent_context.append({"role": "system", "content": combined_content})
+
                 await bridge.enqueue_user_message(
                     agent_name,
                     {

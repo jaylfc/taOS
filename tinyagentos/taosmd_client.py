@@ -33,8 +33,22 @@ class AnswerContextResult:
     """Time taken to assemble context in milliseconds."""
 
 
+# Try to import the real taosmd API functions (available in taosmd >= 0.5.0 / master 6ae23ee6)
+try:
+    from taosmd import answer_context as _taosmd_answer_context
+    from taosmd import default_budget_tokens as _taosmd_default_budget_tokens
+    _TAOSMD_HAS_REAL_API = True
+except ImportError:
+    _TAOSMD_HAS_REAL_API = False
+    _taosmd_answer_context = None
+    _taosmd_default_budget_tokens = None
+
+
 def default_budget_tokens(window: int, used_tokens: int, reasoning_reserve: int = 0) -> int:
     """Calculate the token budget for memory context.
+
+    Uses taosmd.default_budget_tokens when available (taosmd >= 0.5.0),
+    otherwise falls back to local implementation.
 
     Args:
         window: The model's total context window size.
@@ -44,6 +58,10 @@ def default_budget_tokens(window: int, used_tokens: int, reasoning_reserve: int 
     Returns:
         Token budget for memory context, floored at 512.
     """
+    if _TAOSMD_HAS_REAL_API and _taosmd_default_budget_tokens is not None:
+        return _taosmd_default_budget_tokens(window, used_tokens, reasoning_reserve=reasoning_reserve)
+
+    # Local fallback implementation (matches taosmd.default_budget_tokens behavior)
     if window <= 0:
         return 4000  # Default when window unknown
     budget = window - used_tokens - reasoning_reserve
@@ -193,10 +211,37 @@ class TaOSmdClient:
         reasoning_reserve: int,
         data_dir: Path | str | None = None,
     ) -> AnswerContextResult:
-        """Call taOSmd answer_context in-process using agent-isolated stores."""
+        """Call taOSmd answer_context in-process using agent-isolated stores.
+
+        Uses the real taosmd.answer_context API when available (taosmd >= 0.5.0).
+        Falls back to ContextAssembler.assemble for older versions.
+        """
         start = time.time()
 
-        # Use shared assembler if available (for backward compat / tests)
+        # Use the real taosmd.answer_context API if available
+        if _TAOSMD_HAS_REAL_API and _taosmd_answer_context is not None:
+            try:
+                result = await _taosmd_answer_context(
+                    question=query,
+                    budget_tokens=budget_tokens,
+                    agent=agent,
+                    data_dir=data_dir,
+                    now=now,
+                )
+                latency_ms = (time.time() - start) * 1000
+
+                return AnswerContextResult(
+                    context=result.get("context", ""),
+                    dropped=result.get("dropped", 0),
+                    layers=result.get("layers", {}),
+                    total_tokens=result.get("total_tokens", 0),
+                    intent=result.get("intent", "general"),
+                    latency_ms=latency_ms,
+                )
+            except Exception as e:
+                logger.warning("taosmd.answer_context failed, falling back to ContextAssembler: %s", e)
+
+        # Fallback: Use shared assembler if available (for backward compat / tests)
         # Otherwise create agent-isolated stores
         if self._context_assembler and not data_dir:
             assembler = self._context_assembler
@@ -328,8 +373,13 @@ class TaOSmdClient:
 
 def _get_app_state(obj) -> Any:
     """Extract app.state from a Request or return the object if it's already app.state."""
+    # Handle FastAPI Request objects (have .app.state)
     if hasattr(obj, "app") and hasattr(obj.app, "state"):
         return obj.app.state
+    # Handle objects that are already app.state or have .state directly
+    if hasattr(obj, "state"):
+        return obj.state
+    # Assume it's already the state object
     return obj
 
 
@@ -337,13 +387,13 @@ def get_taosmd_client(request) -> TaOSmdClient:
     """Get a TaOSmdClient configured for the current request context.
 
     Uses the request's http_client and taOSmd URL configuration.
-    Accepts either a FastAPI Request or app.state directly.
+    Accepts either a FastAPI Request, app.state, or an object with .state.
     """
     from tinyagentos.routes.user_memory import _taosmd_base
 
     state = _get_app_state(request)
     http_client = getattr(state, "http_client", None)
-    base_url = _taosmd_base(request)
+    base_url = _taosmd_base(state)  # Pass state directly, _taosmd_base handles it
 
     # Get data_dir from state if available
     data_dir = getattr(state, "data_dir", None)

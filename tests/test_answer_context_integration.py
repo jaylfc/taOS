@@ -799,5 +799,174 @@ class TestIdentityIsolation:
                             assert call[1]["query"] == "Hello agents"
 
 
+class TestRealRouterPathWithFakeTaosmd:
+    """Tests that drive the real router path with a fake taosmd HTTP server,
+    without patching get_taosmd_client. This verifies the full integration
+    from agent_chat_router -> get_taosmd_client -> TaOSmdClient -> HTTP API.
+    """
+
+    @pytest.mark.asyncio
+    async def test_agent_chat_router_uses_real_get_taosmd_client_with_fake_http(self):
+        """Test that agent_chat_router works with real get_taosmd_client using a fake HTTP client."""
+        from unittest.mock import AsyncMock, MagicMock, patch
+        from tinyagentos.agent_chat_router import AgentChatRouter
+
+        # Create a fake HTTP client that responds to /answer_context
+        # Use MagicMock for the client, AsyncMock for the post method
+        mock_http = MagicMock()
+        mock_resp = MagicMock()
+        mock_resp.json = MagicMock(return_value={
+            "context": "Fake taosmd context",
+            "dropped": 2,
+            "layers": {"l0": 100, "l1": 200},
+            "total_tokens": 300,
+            "intent": "question",
+        })
+        mock_resp.raise_for_status = MagicMock()
+        mock_http.post = AsyncMock(return_value=mock_resp)
+
+        # Mock app state with the fake HTTP client
+        # Use plain objects to avoid MagicMock auto-wrapping attributes
+        class MockConfig:
+            def __init__(self):
+                self.agents = [
+                    {"name": "test-agent", "model": "test-model", "status": "running"},
+                ]
+                self.memory_url = None
+        class MockState:
+            def __init__(self):
+                self.config = MockConfig()
+                self.chat_messages = AsyncMock()
+                self.chat_messages.get_messages = AsyncMock(return_value=[
+                    {"author_id": "user", "author_type": "user", "content": "hello"},
+                ])
+                self.registry = MagicMock()
+                self.bridge_sessions = AsyncMock()
+                self.bridge_sessions.enqueue_user_message = AsyncMock()
+                self.group_policy = None
+                self.trace_registry = MagicMock()
+                self.trace_registry.get = AsyncMock(return_value=AsyncMock())
+                self.http_client = mock_http  # Real get_taosmd_client reads this
+
+        mock_state = MockState()
+
+        # Skip in-process path so we test the HTTP fallback
+        with patch("tinyagentos.taosmd_client.TaOSmdClient._ensure_in_process", return_value=False):
+            # Mock find_agent to return the agent
+            with patch("tinyagentos.agent_db.find_agent") as mock_find:
+                mock_find.return_value = {"name": "test-agent", "model": "test-model", "status": "running"}
+
+                # Mock resolve_guest
+                with patch("tinyagentos.chat.guest_agents.resolve_guest", return_value=None):
+                    # Mock _find_model_manifest
+                    with patch("tinyagentos.cluster.model_resolver._find_model_manifest") as mock_manifest:
+                        mock_manifest.return_value = MagicMock(context_window=8192)
+
+                        router = AgentChatRouter(mock_state)
+
+                        message = {
+                            "id": "msg-1",
+                            "content": "Hello agent",
+                            "channel_id": "chan-1",
+                            "author_id": "user",
+                            "created_at": datetime.now(timezone.utc).timestamp(),
+                            "metadata": {"hops_since_user": 0},
+                        }
+                        channel = {
+                            "id": "chan-1",
+                            "type": "dm",
+                            "members": ["user", "test-agent"],
+                            "settings": {},
+                        }
+
+                        await router._route_inner(message, channel)
+
+                        # Verify the real get_taosmd_client was used (no patch on it)
+                        # The fake HTTP client should have been called
+                        mock_http.post.assert_awaited_once()
+                        call_args = mock_http.post.call_args
+                        assert call_args[0][0] == "http://localhost:7900/answer_context"
+                        payload = call_args[1]["json"]
+                        assert payload["query"] == "Hello agent"
+                        assert payload["agent"] == "test-agent"
+                        assert "reasoning_reserve" not in payload
+
+                        # Verify bridge.enqueue_user_message was called with context from answer_context
+                        mock_state.bridge_sessions.enqueue_user_message.assert_awaited_once()
+                        enqueue_args = mock_state.bridge_sessions.enqueue_user_message.call_args
+                        enqueued_msg = enqueue_args[0][1]
+                        assert "context" in enqueued_msg
+                        context = enqueued_msg["context"]
+                        # Should have history message + system message
+                        assert len(context) >= 2
+                        # Last message should be system with manual + memory context
+                        assert context[-1]["role"] == "system"
+                        assert "Fake taosmd context" in context[-1]["content"]
+
+    @pytest.mark.asyncio
+    async def test_user_memory_agent_search_uses_real_get_taosmd_client(self):
+        """Test that user_memory agent_search works with real get_taosmd_client using fake HTTP."""
+        from unittest.mock import AsyncMock, MagicMock, patch
+        from tinyagentos.routes.user_memory import agent_search
+
+        # Create a fake HTTP client
+        mock_http = MagicMock()
+        mock_resp = MagicMock()
+        mock_resp.json = MagicMock(return_value={
+            "context": "User memory from fake taosmd",
+            "dropped": 1,
+            "layers": {"l0": 50},
+            "total_tokens": 50,
+            "intent": "question",
+        })
+        mock_resp.raise_for_status = MagicMock()
+        mock_http.post = AsyncMock(return_value=mock_resp)
+
+        # Mock request with fake HTTP client on app.state
+        # Use plain objects to avoid MagicMock auto-wrapping
+        class MockConfig:
+            def __init__(self):
+                self.agents = [
+                    {"name": "test-agent", "model": "test-model", "can_read_user_memory": True},
+                ]
+                self.memory_url = None
+        class MockAppState:
+            def __init__(self):
+                self.config = MockConfig()
+                self.registry = MagicMock()
+                self.http_client = mock_http
+
+        class MockRequest:
+            def __init__(self):
+                self.app = MagicMock()
+                self.app.state = MockAppState()
+
+        mock_request = MockRequest()
+
+        # Skip in-process path so we test the HTTP fallback
+        with patch("tinyagentos.taosmd_client.TaOSmdClient._ensure_in_process", return_value=False):
+            response = await agent_search(
+                mock_request,
+                q="test query",
+                agent_name="test-agent",
+                limit=10,
+            )
+
+            assert response.status_code == 200
+            import json
+            body = json.loads(response.body.decode())
+            assert body["context"] == "User memory from fake taosmd"
+            assert body["dropped"] == 1
+
+            # Verify the real get_taosmd_client was used (no patch)
+            mock_http.post.assert_awaited_once()
+            call_args = mock_http.post.call_args
+            assert call_args[0][0] == "http://localhost:7900/answer_context"
+            payload = call_args[1]["json"]
+            assert payload["query"] == "test query"
+            assert payload["agent"] == "user-memory"  # User memory namespace
+            assert "reasoning_reserve" not in payload
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
