@@ -324,6 +324,59 @@ class ChatMessageStore(BaseStore):
             }
         return result
 
+    async def first_user_previews(self, channel_ids: list[str]) -> dict[str, dict]:
+        """Return the first user-authored message per channel, in one query.
+
+        Used to title agent conversation sessions (#2123) from the
+        first user message, per the issue's design notes (no extra
+        model call just to name a conversation). A window function
+        ranks each channel's user messages by created_at and keeps
+        rank 1, so the cost is one indexed scan regardless of how
+        many channels are asked about (an earlier version ran one
+        query per channel).
+
+        Returns {channel_id: {"text": <collapsed content, max 120 chars>,
+                              "author_id": ..., "author_type": ...,
+                              "created_at": ...}}.
+        Empty input returns {} without querying.
+        """
+        if not channel_ids:
+            return {}
+
+        placeholders = ", ".join("?" for _ in channel_ids)
+        sql = f"""
+            SELECT channel_id, content, author_id, author_type, created_at
+            FROM (
+                SELECT channel_id, content, author_id, author_type, created_at,
+                       ROW_NUMBER() OVER (
+                           PARTITION BY channel_id ORDER BY created_at ASC
+                       ) AS rn
+                FROM chat_messages
+                WHERE channel_id IN ({placeholders})
+                  AND deleted_at IS NULL
+                  AND thread_id IS NULL
+                  AND ephemeral = 0
+                  AND author_type = 'user'
+            )
+            WHERE rn = 1
+        """
+        result: dict[str, dict] = {}
+        async with self._db.execute(sql, tuple(channel_ids)) as cursor:
+            rows = await cursor.fetchall()
+            desc = cursor.description
+        for row in rows:
+            parsed = _parse(row, desc)
+            text = " ".join(parsed["content"].split())
+            if len(text) > 120:
+                text = text[:120]
+            result[parsed["channel_id"]] = {
+                "text": text,
+                "author_id": parsed["author_id"],
+                "author_type": parsed["author_type"],
+                "created_at": parsed["created_at"],
+            }
+        return result
+
     async def edit_message(self, message_id: str, content: str) -> None:
         now = time.time()
         await self._db.execute(
