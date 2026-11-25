@@ -223,6 +223,10 @@ C.ScrollView {
                 TaosText { objectName: "switchError"; Layout.fillWidth: true; wrapMode: Text.Wrap; font.pixelSize: Look.body; color: Look.danger; text: root.sw.error }
                 TakLabel { text: qsTr("Getting the radio back") }
                 TaosText { objectName: "recoveryText"; Layout.fillWidth: true; wrapMode: Text.Wrap; font.pixelSize: Look.body; text: root.sw.recovery }
+                TaosText { Layout.fillWidth: true; wrapMode: Text.Wrap; font.pixelSize: Look.small; color: Look.textSecondary
+                           text: qsTr("If the flash was refused before anything was written, the radio still has its old firmware. The mesh engine let go of its port, so connect it again:") }
+                PillButton { objectName: "reconnectRadio"; compact: true; glyph: "plug"; text: qsTr("Connect the radio again"); enabled: root.tak.connecting === "" && !!root.row.port
+                             onClicked: root.tak.connectDevice(root.row.port) }
                 PillButton { objectName: "putPreviousBack"; visible: root.sw.previous !== ""; compact: true; text: qsTr("Put the previous firmware back"); glyph: "refresh"
                              onClicked: { const id = root.sw.previous; root.sw.reset(); root.entryId = id; root.fw.planFlash(root.row.fwDeviceId, id); root.chosen = "review" } }
             }

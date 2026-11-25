@@ -83,6 +83,10 @@ int main(int argc, char **argv)
         eng.radiosJson.append(radio("a1b2c3d4e5f6", "Trail Node", "meshcore", "v1.9.1 (26 Nov 2026)", "Heltec V3", "/dev/ttyUSB0", -1));
         eng.cfgByRadio.insert("a1b2c3d4e5f6", mcCfg());
     };
+    // once the app lets go of the port the board is just a plugged-in device again, listed by the port scan
+    eng.onRelease = [&eng](const QString &port) {
+        eng.serialDevices = QJsonArray{QJsonObject{{"path", port}, {"vid", 0x10c4}, {"pid", 0xea60}, {"product", "Heltec V3"}}};
+    };
     QDir().mkpath(run);
     if (!eng.listen(run + QStringLiteral("/taos-mesh.sock")))
         return 3;

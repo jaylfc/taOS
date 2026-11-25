@@ -75,7 +75,8 @@ public:
     QJsonArray radiosJson;
     QJsonObject cfgByRadio;                 // radio id -> the engine's device.config `values`
     QJsonArray serialDevices;               // what `discover` lists when scripted
-    std::function<void(const QString &)> onConnect;   // called with the port when radios.connect arrives
+    std::function<void(const QString &)> onConnect;
+    std::function<void(const QString &)> onRelease;   // called with the port when radios.release arrives   // called with the port when radios.connect arrives
     QStringList released;
     QJsonArray textMessages, identitiesJson;   // when scripted and not empty, answer these (full engine records / app identities)
     int delayMs = 0;
@@ -161,6 +162,8 @@ private:
             return ok(QJsonObject{{QStringLiteral("applied"), QJsonArray::fromStringList(p.value(QStringLiteral("changes")).toObject().keys())}});
         if (m == QLatin1String("radios.release")) {
             released << p.value(QStringLiteral("device")).toString();
+            if (onRelease)
+                onRelease(released.last());
             if (scripted)
                 radiosJson = QJsonArray();
             return ok(QJsonObject{{QStringLiteral("released"), true}, {QStringLiteral("was_open"), true}});
