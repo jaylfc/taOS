@@ -7,8 +7,8 @@ from datetime import datetime, timezone
 from typing import Any
 
 from tinyagentos.agent_loop import AgentLoop, LoopAction
+from tinyagentos.taosmd_client import AnswerContextResult, calculate_agent_budget, get_taosmd_client
 from tinyagentos.task_utils import _create_supervised_task
-from tinyagentos.taosmd_client import AnswerContextResult, TaOSmdClient, calculate_agent_budget, get_taosmd_client
 
 logger = logging.getLogger(__name__)
 
@@ -233,34 +233,33 @@ class AgentChatRouter:
         # order), respects token budget, never cuts mid-item, and reports dropped counts.
         agent_contexts: dict[str, AnswerContextResult] = {}
         if hasattr(self._state, "chat_messages"):
-            try:
-                from tinyagentos.chat.guest_agents import resolve_guest
-                registry = getattr(self._state, "registry", None)
+            from tinyagentos.chat.guest_agents import resolve_guest
+            registry = getattr(self._state, "registry", None)
 
-                for agent_name in recipients:
-                    agent = find_agent(config, agent_name)
-                    is_guest = False
-                    if agent is None:
-                        # A registry guest has no model: use default budget.
-                        if await resolve_guest(self._state, agent_name):
-                            is_guest = True
-                        else:
-                            continue
-                    if not is_guest:
-                        # Calculate budget from agent's model context window (share, not whole window)
-                        budget_tokens = calculate_agent_budget(agent, registry) if registry else 4000
+            for agent_name in recipients:
+                agent = find_agent(config, agent_name)
+                is_guest = False
+                if agent is None:
+                    # A registry guest has no model: use default budget.
+                    if await resolve_guest(self._state, agent_name):
+                        is_guest = True
                     else:
-                        budget_tokens = 4000
+                        continue
+                if not is_guest:
+                    # Calculate budget from agent's model context window (share, not whole window)
+                    budget_tokens = calculate_agent_budget(agent, registry) if registry else 4000
+                else:
+                    budget_tokens = 4000
 
-                    # The query is the current user message content
-                    query = message.get("content", "")
-                    taosmd_client = get_taosmd_client(self._state)
+                # The query is the current user message content
+                query = message.get("content", "")
+                taosmd_client = get_taosmd_client(self._state)
+                try:
                     result = await taosmd_client.answer_context(
                         query=query,
                         agent=agent_name,
                         budget_tokens=budget_tokens,
                         now=datetime.now(timezone.utc),
-                        reasoning_reserve=1024,
                     )
                     agent_contexts[agent_name] = result
 
@@ -276,9 +275,23 @@ class AgentChatRouter:
                             )
                         except Exception:
                             logger.debug("Failed to record memory_truncated trace for %s", agent_name)
-            except Exception:
-                logger.warning("taOSmd answer_context failed for channel %s", channel.get("id"), exc_info=True)
-                agent_contexts = {}
+                except Exception:
+                    # A failure must surface (log + trace), never silently empty.
+                    logger.warning(
+                        "taOSmd answer_context failed for agent %s on channel %s",
+                        agent_name, channel.get("id"), exc_info=True,
+                    )
+                    if self._state.trace_registry:
+                        try:
+                            store = await self._state.trace_registry.get(agent_name)
+                            await store.record(
+                                "memory_unavailable",
+                                trace_id=message.get("id"),
+                                channel_id=channel.get("id"),
+                                payload={"agent": agent_name, "budget_tokens": budget_tokens},
+                            )
+                        except Exception:
+                            logger.debug("Failed to record memory_unavailable trace for %s", agent_name)
 
         leads = list((settings.get("leads") or []))  # post-PR #291
         from tinyagentos.agent_manual import build_manual

@@ -45,7 +45,7 @@ from tinyagentos.auth_context import (
 from tinyagentos.otel.trace_context import build_trace_context_headers
 from tinyagentos.qmd_service import make_index_dir, qmd_honours_dbpath
 from tinyagentos.routes.delegation import _resolve_agent_name
-from tinyagentos.taosmd_client import AnswerContextResult, TaOSmdClient, calculate_agent_budget, get_taosmd_client
+from tinyagentos.taosmd_client import AnswerContextResult, calculate_agent_budget, get_taosmd_client
 
 logger = logging.getLogger(__name__)
 
@@ -375,7 +375,6 @@ async def memory_search(request: Request, body: SearchRequest):
             agent=agent_name,
             budget_tokens=budget_tokens,
             now=datetime.now(UTC),
-            reasoning_reserve=1024,
         )
 
         return {

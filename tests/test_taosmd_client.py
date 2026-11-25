@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 from datetime import datetime, timezone
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -32,7 +31,10 @@ class TestTaOSmdClient:
 
     @pytest.mark.asyncio
     async def test_answer_context_http_success(self, taosmd_client, mock_http_client):
-        """Test successful answer_context call via HTTP."""
+        """Test successful answer_context call via HTTP.
+
+        reasoning_reserve must NOT be sent over HTTP (the server rejects it).
+        """
         mock_resp = MagicMock()
         mock_resp.json.return_value = {
             "context": "Assembled context for agent",
@@ -42,7 +44,6 @@ class TestTaOSmdClient:
             "intent": "question",
         }
         mock_resp.raise_for_status = MagicMock()
-        # post returns an awaitable that resolves to the response
         mock_http_client.post = AsyncMock(return_value=mock_resp)
 
         result = await taosmd_client.answer_context(
@@ -50,7 +51,6 @@ class TestTaOSmdClient:
             agent="test-agent",
             budget_tokens=1000,
             now=datetime.now(timezone.utc),
-            reasoning_reserve=1024,
         )
 
         assert isinstance(result, AnswerContextResult)
@@ -65,14 +65,15 @@ class TestTaOSmdClient:
         call_args = mock_http_client.post.call_args
         assert call_args[0][0] == "http://localhost:7900/answer_context"
         payload = call_args[1]["json"]
-        assert payload["query"] == "What is the weather?"
+        assert payload["question"] == "What is the weather?"
         assert payload["agent"] == "test-agent"
         assert payload["budget_tokens"] == 1000
-        assert payload["reasoning_reserve"] == 1024
+        # reasoning_reserve must not be sent to the server
+        assert "reasoning_reserve" not in payload
 
     @pytest.mark.asyncio
     async def test_answer_context_http_failure_fallback(self, taosmd_client, mock_http_client):
-        """Test answer_context falls back to empty context on HTTP failure."""
+        """Test answer_context degrades to empty context on total failure (logged, not silent)."""
         mock_http_client.post = AsyncMock(side_effect=Exception("Connection refused"))
 
         result = await taosmd_client.answer_context(
@@ -80,7 +81,6 @@ class TestTaOSmdClient:
             agent="test-agent",
             budget_tokens=1000,
             now=datetime.now(timezone.utc),
-            reasoning_reserve=1024,
         )
 
         assert isinstance(result, AnswerContextResult)

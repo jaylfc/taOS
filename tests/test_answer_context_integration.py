@@ -14,35 +14,49 @@ After the fix, these tests PASS because all paths route through answer_context.
 
 from __future__ import annotations
 
-import asyncio
+import sys
 from datetime import datetime, timezone
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 
+@pytest.fixture
+def fake_taosmd(monkeypatch):
+    """Install a fake taOSmd module providing answer_context (module scope)."""
+    import types
+
+    fake = types.ModuleType("taosmd")
+    fake.answer_context = AsyncMock(return_value={
+        "context": "Assembled memory context",
+        "dropped": 7,
+        "layers": {"l0": 500, "l1": 1000},
+        "total_tokens": 1500,
+        "intent": "question",
+    })
+    fake.default_budget_tokens = lambda window, used_tokens, reasoning_reserve=0: max(
+        1, window - used_tokens - reasoning_reserve
+    )
+    fake.get_recipe = lambda model_id: None
+    monkeypatch.setitem(sys.modules, "taosmd", fake)
+    return fake
+
+
 class TestTaOSmdClientInProcess:
-    """Tests for the in-process taOSmd client logic."""
+    """Tests for the in-process taOSmd client logic.
+
+    These drive the real ``TaOSmdClient._answer_context_in_process`` against a
+    *fake* taOSmd module injected into ``sys.modules`` (no patching of
+    ``get_taosmd_client`` or of ``ContextAssembler``).
+    """
 
     @pytest.mark.asyncio
-    async def test_in_process_uses_dropped_from_context_assembler(self):
-        """Test that in-process path uses dropped count from ContextAssembler result."""
-        from tinyagentos.taosmd_client import TaOSmdClient, AnswerContextResult
+    async def test_in_process_uses_dropped_from_answer_context(self, fake_taosmd):
+        """Test that in-process path uses dropped count from taosmd.answer_context."""
+        from tinyagentos.taosmd_client import TaOSmdClient
 
         client = TaOSmdClient(use_in_process=True, http_client=None)
-
-        # Mock the ContextAssembler
-        mock_assembler = AsyncMock()
-        mock_assembler.assemble = AsyncMock(return_value={
-            "context": "Assembled memory context",
-            "dropped": 7,  # Actual dropped count from ContextAssembler
-            "layers": {"l0": 500, "l1": 1000},
-            "total_tokens": 1500,
-            "intent": "question",
-        })
-
-        # Inject the mock assembler
-        client._context_assembler = mock_assembler
+        client._taosmd = fake_taosmd
         client._in_process_available = True
 
         result = await client._answer_context_in_process(
@@ -50,31 +64,33 @@ class TestTaOSmdClientInProcess:
             agent="test-agent",
             budget_tokens=4000,
             now=datetime.now(timezone.utc),
-            reasoning_reserve=1024,
+            data_dir=None,
         )
 
-        # Verify the dropped count comes from ContextAssembler, not heuristic
+        # Verify the dropped count comes from taosmd.answer_context, not a heuristic
         assert result.dropped == 7
         assert result.context == "Assembled memory context"
         assert result.layers == {"l0": 500, "l1": 1000}
         assert result.total_tokens == 1500
         assert result.intent == "question"
 
-        # Verify assemble was called with full budget (not reduced by reasoning_reserve)
-        mock_assembler.assemble.assert_awaited_once()
-        call_args = mock_assembler.assemble.call_args
-        assert call_args[1]["max_total_tokens"] == 4000
-        assert call_args[1]["reasoning_reserve"] == 1024
+        # Verify taosmd.answer_context was called with the real API (question, not query;
+        # no reasoning_reserve -- that belongs to default_budget_tokens only).
+        fake_taosmd.answer_context.assert_awaited_once()
+        call_args = fake_taosmd.answer_context.call_args
+        assert call_args.kwargs["question"] == "test query"
+        assert call_args.kwargs["agent"] == "test-agent"
+        assert call_args.kwargs["budget_tokens"] == 4000
+        assert call_args.kwargs["data_dir"] is None
+        assert "now" in call_args.kwargs
+        assert "reasoning_reserve" not in call_args.kwargs
 
     @pytest.mark.asyncio
-    async def test_in_process_handles_missing_dropped_field(self):
+    async def test_in_process_handles_missing_dropped_field(self, fake_taosmd):
         """Test that in-process path handles missing dropped field gracefully (defaults to 0)."""
         from tinyagentos.taosmd_client import TaOSmdClient
 
-        client = TaOSmdClient(use_in_process=True, http_client=None)
-
-        mock_assembler = AsyncMock()
-        mock_assembler.assemble = AsyncMock(return_value={
+        fake_taosmd.answer_context = AsyncMock(return_value={
             "context": "Assembled memory context",
             # No "dropped" field - should default to 0
             "layers": {"l0": 500},
@@ -82,7 +98,8 @@ class TestTaOSmdClientInProcess:
             "intent": "question",
         })
 
-        client._context_assembler = mock_assembler
+        client = TaOSmdClient(use_in_process=True, http_client=None)
+        client._taosmd = fake_taosmd
         client._in_process_available = True
 
         result = await client._answer_context_in_process(
@@ -90,50 +107,18 @@ class TestTaOSmdClientInProcess:
             agent="test-agent",
             budget_tokens=4000,
             now=datetime.now(timezone.utc),
-            reasoning_reserve=1024,
+            data_dir=None,
         )
 
         assert result.dropped == 0
-
-    @pytest.mark.asyncio
-    async def test_in_process_passes_reasoning_reserve_to_assembler(self):
-        """Test that reasoning_reserve is passed to ContextAssembler, not subtracted client-side."""
-        from tinyagentos.taosmd_client import TaOSmdClient
-
-        client = TaOSmdClient(use_in_process=True, http_client=None)
-
-        mock_assembler = AsyncMock()
-        mock_assembler.assemble = AsyncMock(return_value={
-            "context": "Context",
-            "dropped": 0,
-            "layers": {},
-            "total_tokens": 100,
-            "intent": "general",
-        })
-
-        client._context_assembler = mock_assembler
-        client._in_process_available = True
-
-        await client._answer_context_in_process(
-            query="test",
-            agent="test-agent",
-            budget_tokens=8000,
-            now=datetime.now(timezone.utc),
-            reasoning_reserve=2048,  # Custom reserve
-        )
-
-        call_args = mock_assembler.assemble.call_args
-        # Budget should be full 8000, reasoning_reserve passed separately
-        assert call_args[1]["max_total_tokens"] == 8000
-        assert call_args[1]["reasoning_reserve"] == 2048
 
 
 class TestTaOSmdClientHTTP:
     """Tests for the HTTP taOSmd client path."""
 
     @pytest.mark.asyncio
-    async def test_http_passes_reasoning_reserve_to_server(self):
-        """Test that HTTP path sends reasoning_reserve to server."""
+    async def test_http_omits_reasoning_reserve(self):
+        """Test that HTTP path does NOT send reasoning_reserve (server rejects it)."""
         from tinyagentos.taosmd_client import TaOSmdClient
 
         mock_http = AsyncMock()
@@ -155,16 +140,19 @@ class TestTaOSmdClientHTTP:
             agent="test-agent",
             budget_tokens=4000,
             now=datetime.now(timezone.utc),
-            reasoning_reserve=1024,
         )
 
         assert result.dropped == 3
-        # Verify HTTP payload includes reasoning_reserve
+        # Verify HTTP payload omits reasoning_reserve and uses "question"
         mock_http.post.assert_awaited_once()
         call_args = mock_http.post.call_args
         payload = call_args[1]["json"]
-        assert payload["reasoning_reserve"] == 1024
+        assert payload["question"] == "test query"
+        assert payload["agent"] == "test-agent"
         assert payload["budget_tokens"] == 4000
+        assert "reasoning_reserve" not in payload
+        assert "data_dir" not in payload
+        assert "now" in payload
 
 
 class TestAgentChatRouterAnswerContext:
@@ -430,6 +418,12 @@ class TestUserMemoryAgentSearchAnswerContext:
                 assert body["agent"] == "test-agent"
 
                 mock_taosmd.answer_context.assert_awaited_once()
+                # user_memory agent-search queries the PERSON's memory namespace,
+                # not the requesting agent's own memory (see #4525 point 5).
+                call_kwargs = mock_taosmd.answer_context.call_args.kwargs
+                assert call_kwargs["agent"] == "user-memory"
+                assert call_kwargs["query"] == "test query"
+                assert "reasoning_reserve" not in call_kwargs
 
 
 class TestRoutesMemorySearchAnswerContext:
@@ -438,8 +432,7 @@ class TestRoutesMemorySearchAnswerContext:
     @pytest.mark.asyncio
     async def test_memory_search_uses_answer_context_for_agent_caller(self):
         """Test that memory_search uses answer_context when called by agent."""
-        from tinyagentos.routes.memory import memory_search
-        from tinyagentos.routes.memory import SearchRequest
+        from tinyagentos.routes.memory import SearchRequest, memory_search
 
         mock_request = MagicMock()
         # Simulate bound agent local token
@@ -561,8 +554,7 @@ class TestIdentityIsolation:
     @pytest.mark.asyncio
     async def test_agent_only_receives_own_memory_not_others(self):
         """Test that agent A's answer_context call only returns agent A's memory, not agent B's."""
-        from tinyagentos.routes.memory import memory_search
-        from tinyagentos.routes.memory import SearchRequest
+        from tinyagentos.routes.memory import SearchRequest, memory_search
 
         mock_request = MagicMock()
         # Simulate bound agent local token for agent-a
@@ -605,9 +597,9 @@ class TestIdentityIsolation:
     @pytest.mark.asyncio
     async def test_agent_cannot_search_another_agents_memory(self):
         """Test that agent-a cannot search agent-b's memory via the memory search endpoint."""
-        from tinyagentos.routes.memory import memory_search
-        from tinyagentos.routes.memory import SearchRequest
         from fastapi import HTTPException
+
+        from tinyagentos.routes.memory import SearchRequest, memory_search
 
         mock_request = MagicMock()
         # Simulate bound agent local token for agent-a
@@ -791,6 +783,87 @@ class TestIdentityIsolation:
                             agent_name = call[1]["agent"]
                             assert call[1]["agent"] == agent_name
                             assert call[1]["query"] == "Hello agents"
+
+
+class TestAgentChatRouterRealPathFakeTaosmd:
+    """End-to-end test driving the real router path with a fake taOSmd.
+
+    This test does NOT patch ``get_taosmd_client``. Instead it injects a fake
+    ``taosmd`` module (providing ``answer_context`` and ``default_budget_tokens``)
+    into ``sys.modules`` and lets ``AgentChatRouter`` resolve the client through
+    the real ``get_taosmd_client(self._state)`` lookup (which must work on a bare
+    app-state object with no ``.app`` attribute).
+    """
+
+    @pytest.mark.asyncio
+    async def test_route_inner_calls_answer_context_via_real_lookup(self, fake_taosmd):
+        from tinyagentos.agent_chat_router import AgentChatRouter
+
+        mock_state = MagicMock()
+        mock_state.config = MagicMock()
+        mock_state.config.agents = [
+            {"name": "agent1", "model": "test-model", "status": "running", "framework": "other"},
+            {"name": "agent2", "model": "test-model", "status": "running", "framework": "other"},
+        ]
+        mock_state.chat_messages = AsyncMock()
+        mock_state.chat_messages.get_messages = AsyncMock(return_value=[])
+        mock_state.chat_messages.get_thread_messages = AsyncMock(return_value=[])
+        mock_state.registry = MagicMock()
+        mock_state.bridge_sessions = AsyncMock()
+        mock_state.bridge_sessions.enqueue_user_message = AsyncMock()
+        mock_state.group_policy = None
+        mock_state.trace_registry = MagicMock()
+        mock_state.trace_registry.get = AsyncMock(return_value=AsyncMock())
+
+        with patch("tinyagentos.agent_db.find_agent") as mock_find:
+            mock_find.side_effect = lambda cfg, name: next(
+                (a for a in cfg.agents if a["name"] == name), None
+            )
+            with patch("tinyagentos.chat.guest_agents.resolve_guest", return_value=None):
+                with patch("tinyagentos.cluster.model_resolver._find_model_manifest") as mock_manifest:
+                    mock_manifest.return_value = MagicMock(context_window=8192)
+                    with patch("tinyagentos.agent_chat_router._openclaw_transport", return_value="bridge"):
+                        with patch("tinyagentos.agent_manual.build_manual", return_value="Manual text"):
+                            router = AgentChatRouter(mock_state)
+
+                            message = {
+                                "id": "msg-1",
+                                "content": "Hello agents",
+                                "channel_id": "chan-1",
+                                "author_id": "user",
+                                "created_at": datetime.now(timezone.utc).timestamp(),
+                                "metadata": {"hops_since_user": 0},
+                            }
+                            channel = {
+                                "id": "chan-1",
+                                "type": "dm",
+                                "members": ["user", "agent1", "agent2"],
+                                "settings": {},
+                            }
+
+                            await router._route_inner(message, channel)
+
+                            # get_taosmd_client was NOT patched: the real lookup ran on
+                            # the bare state object and reached in-process taosmd.
+                            calls = fake_taosmd.answer_context.call_args_list
+                            assert len(calls) == 2
+                            agents_called = {c.kwargs["agent"] for c in calls}
+                            assert agents_called == {"agent1", "agent2"}
+                            for c in calls:
+                                assert c.kwargs["question"] == "Hello agents"
+                                assert c.kwargs["budget_tokens"] == 8192
+                                assert "reasoning_reserve" not in c.kwargs
+                                assert "data_dir" in c.kwargs
+                                assert "now" in c.kwargs
+
+                            # Memory context is added to the bridge message (not replacing history).
+                            mock_state.bridge_sessions.enqueue_user_message.assert_awaited()
+                            enqueued = mock_state.bridge_sessions.enqueue_user_message.call_args_list[-1][0][1]
+                            context = enqueued["context"]
+                            assert any(
+                                m["role"] == "system" and "Assembled memory context" in m["content"]
+                                for m in context
+                            )
 
 
 if __name__ == "__main__":

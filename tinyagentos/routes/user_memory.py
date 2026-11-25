@@ -8,7 +8,7 @@ from fastapi import APIRouter, Depends, Request
 from fastapi.responses import JSONResponse
 
 from tinyagentos.auth_context import require_admin
-from tinyagentos.taosmd_client import AnswerContextResult, TaOSmdClient, calculate_agent_budget, get_taosmd_client
+from tinyagentos.taosmd_client import AnswerContextResult, calculate_agent_budget, get_taosmd_client
 
 logger = logging.getLogger(__name__)
 
@@ -133,13 +133,13 @@ async def agent_search(request: Request, q: str, agent_name: str, limit: int = 1
     registry = getattr(request.app.state, "registry", None)
     budget_tokens = calculate_agent_budget(agent, registry) if registry else 4000
 
-    # Call answer_context
+    # Call answer_context against the person's (user-memory) namespace, not the
+    # requesting agent's own memory (see #4525 point 5).
     result: AnswerContextResult = await taosmd_client.answer_context(
         query=q,
-        agent=agent_name,
+        agent=_TAOSMD_AGENT,
         budget_tokens=budget_tokens,
         now=datetime.now(timezone.utc),
-        reasoning_reserve=1024,
     )
 
     return JSONResponse({
