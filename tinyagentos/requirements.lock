@@ -62,6 +62,7 @@ cryptography==50.0.1
     #   http-ece
     #   py-vapid
     #   pywebpush
+    #   taosmd
 cssselect==1.4.0
     # via readability-lxml
 diff-match-patch==20241021
@@ -101,6 +102,7 @@ httpx==0.28.1
     # via
     #   tinyagentos (pyproject.toml)
     #   huggingface-hub
+    #   taosmd
 huggingface-hub==1.12.0
     # via
     #   tokenizers
@@ -180,8 +182,7 @@ pydantic-core==2.46.3
 pygments==2.20.0
     # via rich
 pypdf==6.19.0
-    # via
-    #   tinyagentos (pyproject.toml)
+    # via tinyagentos (pyproject.toml)
 python-dateutil==2.9.0.post0
     # via croniter
 python-dotenv==1.2.2
@@ -189,8 +190,7 @@ python-dotenv==1.2.2
 python-multipart==0.0.27
     # via tinyagentos (pyproject.toml)
 python-slugify==8.0.4
-    # via
-    #   tinyagentos (pyproject.toml)
+    # via tinyagentos (pyproject.toml)
 python-socks==2.8.2
     # via aiohttp-socks
 pywebpush==2.3.0
@@ -232,8 +232,7 @@ sympy==1.14.0
 taosmd==0.5.24
     # via tinyagentos (pyproject.toml)
 tenacity==9.1.4
-    # via
-    #   tinyagentos (pyproject.toml)
+    # via tinyagentos (pyproject.toml)
 text-unidecode==1.3
     # via python-slugify
 tokenizers==0.22.2
@@ -281,7 +280,6 @@ websockets==16.0
 yarl==1.25.1
     # via aiohttp
 yt-dlp==2026.8.19
-    # via
-    #   tinyagentos (pyproject.toml)
+    # via tinyagentos (pyproject.toml)
 zeroconf==0.150.0
     # via tinyagentos (pyproject.toml)

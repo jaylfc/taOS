@@ -137,3 +137,22 @@ async def test_taos_stores_open_a_040_store_and_keep_every_row(store_040: Path):
     assert code == 10, report
     stamped = [d for d in report["databases"] if d["state"] != "absent"]
     assert stamped and all(d["user_version"] == d["latest"] for d in stamped), stamped
+
+
+@pytest.mark.asyncio
+async def test_taos_boots_on_a_040_store_and_keeps_the_rows(store_040: Path):
+    """The real application lifespan over a data dir a 0.4.0 wrote."""
+    import yaml
+
+    from tinyagentos.app import create_app
+
+    (store_040 / "config.yaml").write_text(yaml.dump({
+        "server": {"host": "127.0.0.1", "port": 6969}, "backends": [], "qmd": {"url": "http://localhost:7832"},
+        "agents": [], "metrics": {"poll_interval": 30, "retention_days": 30},
+    }))
+    (store_040 / ".setup_complete").touch()
+    app = create_app(data_dir=store_040)
+    async with app.router.lifespan_context(app):
+        assert await app.state.archive.count() == 1
+    code, report = _probe(store_040)
+    assert code == 10, report  # still a supported old store: vectors are JSON until the owner converts them
