@@ -1,0 +1,230 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+#pragma once
+// Stand-ins for the two engines, for the tests: a unix-socket server speaking the taos-mesh protocol and a loopback HTTP
+// server speaking the taos-firmware API. Their answers are the real engines' JSON, captured by the engines' own tests
+// (tests/fixtures/mesh and tests/fixtures/firmware). They record every request so a test can prove what was NOT sent:
+// no send, no settings write, no flash, no radio connect.
+#include <QFile>
+#include <QJsonArray>
+#include <QJsonDocument>
+#include <QJsonObject>
+#include <QLocalServer>
+#include <QLocalSocket>
+#include <QTcpServer>
+#include <QTcpSocket>
+#include <QTimer>
+#include <QtTest>
+
+namespace FakeEngines {
+
+inline QJsonValue fixture(const QString &dir, const QString &name, bool envelope = true)
+{
+    QFile f(dir + QLatin1Char('/') + name + QStringLiteral(".json"));
+    if (!f.open(QIODevice::ReadOnly))
+        qFatal("missing fixture %s", qPrintable(f.fileName()));
+    const QJsonObject o = QJsonDocument::fromJson(f.readAll()).object();
+    return envelope && o.contains(QStringLiteral("result")) ? o.value(QStringLiteral("result")) : QJsonValue(o);
+}
+
+class FakeMeshEngine : public QObject
+{
+    Q_OBJECT
+public:
+    explicit FakeMeshEngine(QString fixtures, QObject *parent = nullptr) : QObject(parent), m_fx(std::move(fixtures))
+    {
+        connect(&m_server, &QLocalServer::newConnection, this, [this] {
+            while (QLocalSocket *c = m_server.nextPendingConnection()) {
+                connect(c, &QLocalSocket::readyRead, this, [this, c] { read(c); });
+                connect(c, &QLocalSocket::disconnected, this, [this, c] { m_subs.removeAll(c); m_conns.removeAll(c); m_buf.remove(c); c->deleteLater(); });
+            }
+        });
+    }
+    ~FakeMeshEngine() override
+    {
+        for (QLocalSocket *c : findChildren<QLocalSocket *>(QString(), Qt::FindChildrenRecursively)) {
+            c->disconnect();
+            delete c;
+        }
+        m_conns.clear();
+        m_subs.clear();
+    }
+    bool listen(const QString &path)
+    {
+        m_path = path;
+        QLocalServer::removeServer(path);
+        return m_server.listen(path);
+    }
+    void close()
+    {
+        const auto conns = m_conns;
+        for (QLocalSocket *s : conns)
+            s->abort();
+        m_server.close();
+        QFile::remove(m_path);
+    }
+    QString path() const { return m_path; }
+    bool receiveOnly = true;
+    bool configReadable = false;
+    int delayMs = 0;
+    QList<QJsonObject> requests;
+    int count(const QString &method) const { int n = 0; for (const auto &r : requests) n += r.value(QStringLiteral("method")).toString() == method; return n; }
+    QJsonObject last(const QString &method) const { for (int i = requests.size() - 1; i >= 0; --i) if (requests[i].value(QStringLiteral("method")).toString() == method) return requests[i]; return {}; }
+    /// None of the methods that write to a radio or open one. Only the ones named by `allowed` may have been called.
+    QStringList forbiddenSeen(const QStringList &allowed = {}) const
+    {
+        QStringList bad;
+        for (const auto &r : requests) {
+            const QString m = r.value(QStringLiteral("method")).toString();
+            if ((m == QLatin1String("app.send") || m == QLatin1String("send") || m == QLatin1String("device.apply") || m == QLatin1String("connect")
+                 || m == QLatin1String("discover")) && !allowed.contains(m))
+                bad << m;
+        }
+        return bad;
+    }
+    void pushRecord()
+    {
+        const QByteArray line = QJsonDocument(QJsonObject{{QStringLiteral("event"), QStringLiteral("record")}, {QStringLiteral("record"), QJsonObject{{QStringLiteral("id"), QStringLiteral("x")}}}}).toJson(QJsonDocument::Compact) + '\n';
+        for (QLocalSocket *s : m_subs)
+            s->write(line);
+    }
+
+private:
+    void read(QLocalSocket *c)
+    {
+        if (!m_conns.contains(c))
+            m_conns << c;
+        m_buf[c] += c->readAll();
+        int nl;
+        while ((nl = m_buf[c].indexOf('\n')) >= 0) {
+            const QJsonObject req = QJsonDocument::fromJson(m_buf[c].left(nl)).object();
+            m_buf[c].remove(0, nl + 1);
+            requests << req;
+            if (req.value(QStringLiteral("method")).toString() == QLatin1String("subscribe")) {
+                m_subs << c;
+                c->write(QJsonDocument(QJsonObject{{QStringLiteral("id"), req.value(QStringLiteral("id"))}, {QStringLiteral("ok"), true}, {QStringLiteral("result"), QJsonObject{{QStringLiteral("subscribed"), true}}}}).toJson(QJsonDocument::Compact) + '\n');
+                continue;
+            }
+            const QJsonObject resp = answer(req);
+            auto send = [c, resp] { if (c->state() == QLocalSocket::ConnectedState) c->write(QJsonDocument(resp).toJson(QJsonDocument::Compact) + '\n'); };
+            if (delayMs > 0)
+                QTimer::singleShot(delayMs, c, send);
+            else
+                send();
+        }
+    }
+    QJsonObject answer(const QJsonObject &req)
+    {
+        const QString m = req.value(QStringLiteral("method")).toString();
+        const QJsonObject p = req.value(QStringLiteral("params")).toObject();
+        auto ok = [&](const QJsonValue &v) { return QJsonObject{{QStringLiteral("id"), req.value(QStringLiteral("id"))}, {QStringLiteral("ok"), true}, {QStringLiteral("result"), v}}; };
+        auto err = [&](const QString &code, const QString &msg) { return QJsonObject{{QStringLiteral("id"), req.value(QStringLiteral("id"))}, {QStringLiteral("ok"), false}, {QStringLiteral("error"), QJsonObject{{QStringLiteral("code"), code}, {QStringLiteral("message"), msg}}}}; };
+        if (m == QLatin1String("health")) {
+            QJsonObject h = fixture(m_fx, QStringLiteral("health")).toObject();
+            h.insert(QStringLiteral("receive_only"), receiveOnly);
+            h.insert(QStringLiteral("device_config"), configReadable);
+            return ok(h);
+        }
+        if (m == QLatin1String("messages"))
+            return ok(fixture(m_fx, p.value(QStringLiteral("filter")).toObject().value(QStringLiteral("kind")).toString() == QLatin1String("position") ? QStringLiteral("messages.position") : QStringLiteral("messages.text")));
+        if (m == QLatin1String("contacts.create"))
+            return ok(QJsonObject{{QStringLiteral("contact"), QStringLiteral("c9")}});
+        if (m == QLatin1String("device.config")) {
+            if (!configReadable)
+                return err(QStringLiteral("unknown_method"), QStringLiteral("no method device.config"));
+            return ok(QJsonObject{{QStringLiteral("network"), QStringLiteral("meshtastic")}, {QStringLiteral("owner"), QJsonObject{{QStringLiteral("long_name"), QStringLiteral("Fixture radio")}, {QStringLiteral("short_name"), QStringLiteral("FX")}}},
+                                  {QStringLiteral("channels"), QJsonArray{QJsonObject{{QStringLiteral("index"), 0}, {QStringLiteral("name"), QStringLiteral("Primary")}, {QStringLiteral("role"), QStringLiteral("PRIMARY")},
+                                                                         {QStringLiteral("psk_b64"), QStringLiteral("AQ==")}, {QStringLiteral("share_url"), QStringLiteral("https://example.invalid/e/#abc")}}}}});
+        }
+        if (m == QLatin1String("app.send"))
+            return ok(QJsonObject{{QStringLiteral("accepted"), true}, {QStringLiteral("messageId"), QStringLiteral("m1")}, {QStringLiteral("error"), QString()}});
+        for (const char *name : {"app.radios", "app.identities", "last_positions", "identities.list"})
+            if (m == QLatin1String(name))
+                return ok(fixture(m_fx, m));
+        if (m == QLatin1String("identities.assign") || m == QLatin1String("contacts.told") || m == QLatin1String("link"))
+            return ok(QJsonObject());
+        return err(QStringLiteral("unknown_method"), QStringLiteral("no method ") + m);
+    }
+    QString m_fx, m_path;
+    QList<QLocalSocket *> m_conns, m_subs;
+    QHash<QLocalSocket *, QByteArray> m_buf;
+    QLocalServer m_server;   // last: its connections are destroyed before the lists their slots use
+};
+
+/// A loopback HTTP server that answers like taos-firmware's API, from the engine's own captured replies. It cannot touch
+/// a device. Requests are recorded (method, path, body).
+class FakeFirmware : public QObject
+{
+    Q_OBJECT
+public:
+    struct Req { QString method, path; QJsonObject body; QByteArray auth; };
+    FakeFirmware(QString fixtures, QString dataDir, QObject *parent = nullptr) : QObject(parent), m_fx(std::move(fixtures))
+    {
+        QDir().mkpath(dataDir);
+        QFile t(dataDir + QStringLiteral("/api-token"));
+        if (t.open(QIODevice::WriteOnly)) t.write("test-token");
+        connect(&m_srv, &QTcpServer::newConnection, this, [this] {
+            while (QTcpSocket *s = m_srv.nextPendingConnection())
+                connect(s, &QTcpSocket::readyRead, this, [this, s] { read(s); });
+        });
+        m_srv.listen(QHostAddress::LocalHost, 0);
+    }
+    int port() const { return m_srv.serverPort(); }
+    QList<Req> requests;
+    QString mode = QStringLiteral("ready");   // ready | pending
+    int count(const QString &method, const QString &path) const { int n = 0; for (const auto &r : requests) n += r.method == method && r.path == path; return n; }
+    Req last(const QString &path) const { for (int i = requests.size() - 1; i >= 0; --i) if (requests[i].path == path) return requests[i]; return {}; }
+
+private:
+    void read(QTcpSocket *s)
+    {
+        m_buf[s] += s->readAll();
+        const int he = m_buf[s].indexOf("\r\n\r\n");
+        if (he < 0)
+            return;
+        const QByteArray head = m_buf[s].left(he);
+        int cl = 0;
+        for (const QByteArray &l : head.split('\n'))
+            if (l.toLower().startsWith("content-length:"))
+                cl = l.mid(15).trimmed().toInt();
+        if (m_buf[s].size() < he + 4 + cl)
+            return;
+        const QByteArray body = m_buf[s].mid(he + 4, cl);
+        m_buf.remove(s);
+        const QList<QByteArray> first = head.split('\n').first().trimmed().split(' ');
+        Req r;
+        r.method = QString::fromLatin1(first.value(0));
+        r.path = QString::fromLatin1(first.value(1)).section(QLatin1Char('?'), 0, 0);
+        r.body = QJsonDocument::fromJson(body).object();
+        for (const QByteArray &l : head.split('\n'))
+            if (l.toLower().startsWith("authorization:"))
+                r.auth = l.mid(14).trimmed();
+        requests << r;
+        QJsonValue out;
+        int code = 200;
+        if (r.auth != "Bearer test-token") { out = QJsonObject{{QStringLiteral("ok"), false}, {QStringLiteral("error"), QStringLiteral("unauthorized")}}; code = 401; }
+        else out = route(r);
+        const QByteArray payload = QJsonDocument(out.toObject()).toJson(QJsonDocument::Compact);
+        s->write("HTTP/1.1 " + QByteArray::number(code) + " OK\r\nContent-Type: application/json\r\nContent-Length: " + QByteArray::number(payload.size()) + "\r\nConnection: close\r\n\r\n" + payload);
+        s->disconnectFromHost();
+    }
+    QJsonValue route(const Req &r)
+    {
+        auto fx = [this](const QString &n) { return fixture(m_fx, n, false); };
+        if (r.path == QLatin1String("/v1/boards")) return fx(QStringLiteral("boards"));
+        if (r.path == QLatin1String("/v1/library")) return mode == QLatin1String("pending") ? QJsonValue(QJsonObject{{QStringLiteral("ok"), true}, {QStringLiteral("entries"), QJsonArray()}}) : fx(QStringLiteral("library"));
+        if (r.path == QLatin1String("/v1/licences")) return fx(mode == QLatin1String("pending") ? QStringLiteral("licences_pending") : QStringLiteral("licences_accepted"));
+        if (r.path == QLatin1String("/v1/licences/accept")) return QJsonObject{{QStringLiteral("ok"), true}};
+        if (r.path == QLatin1String("/v1/library/refresh")) return fx(QStringLiteral("refresh_ok"));
+        if (r.path == QLatin1String("/v1/devices")) return fx(QStringLiteral("devices"));
+        if (r.path.endsWith(QLatin1String("/firmware"))) return fx(QStringLiteral("device_firmware"));
+        if (r.path == QLatin1String("/v1/flash/plan")) return fx(QStringLiteral("plan"));
+        if (r.path == QLatin1String("/v1/flash/run"))
+            return r.body.value(QStringLiteral("confirm")).toString() == QLatin1String("Heltec V3") ? fx(QStringLiteral("run_done")) : fx(QStringLiteral("run_unconfirmed"));
+        return QJsonObject{{QStringLiteral("ok"), false}, {QStringLiteral("error"), QStringLiteral("no route")}};
+    }
+    QString m_fx;
+    QTcpServer m_srv;
+    QHash<QTcpSocket *, QByteArray> m_buf;
+};
+
+} // namespace FakeEngines

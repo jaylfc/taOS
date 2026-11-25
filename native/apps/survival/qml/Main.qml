@@ -52,6 +52,12 @@ TaosWindow {
             else if (section === "map") mapPage.tab = tab
             else if (section === "taostak") takPage.tab = tab
         }
+        // taOStak scripting flags (used by the screenshot and test scripts): --tak-view person:!node | thread:id | settings:radio | firmware,
+        // and --demo key=value;key=value to open a sub-state (qr, showkey, assign, fwstep, typed)
+        const tv = argValue(args, "--tak-view")
+        if (tv !== "") { section = "taostak"; const i = tv.indexOf(":"); Qt.callLater(() => takPage.open(i < 0 ? tv : tv.substring(0, i), i < 0 ? "" : tv.substring(i + 1))) }
+        const dm = argValue(args, "--demo")
+        if (dm !== "") { const o = {}; for (const kv of dm.split(";")) { const j = kv.indexOf("="); if (j > 0) o[kv.substring(0, j)] = kv.substring(j + 1) } takPage.demo = o }
         const art = argValue(args, "--article")
         if (art !== "") { section = "library"; if (Survival.library.packId === "" && libraryPage.installed.length > 0) Survival.library.open(libraryPage.installed[0].id); Survival.library.openArticle(art); libraryPage.mode = "read"; libraryPage.reading = true }
         const pk = argValue(args, "--open-pack")

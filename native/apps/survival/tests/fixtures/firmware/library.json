@@ -1,0 +1,1611 @@
+{
+  "entries": [
+    {
+      "board": "tbeam",
+      "chip": "esp32",
+      "fetched_at": "2026-11-25T04:54:16Z",
+      "files": [
+        {
+          "offset": "0x0",
+          "path": "meshtastic/2.7.26.54e0d8d/firmware-tbeam-2.7.26.54e0d8d.factory.bin",
+          "role": "factory",
+          "sha256": "2d7fc852e30a3e6b82a50a36e14a1fe04b6faf033565093dfdad041996a6652b",
+          "size": 50
+        },
+        {
+          "offset": "0x340000",
+          "path": "meshtastic/2.7.26.54e0d8d/mt-esp32-ota.bin",
+          "role": "ota",
+          "sha256": "e350a3e4585f4b3d40fa4b659d728b293df5944bb3266024ec7ce16d4dadfd85",
+          "size": 31
+        },
+        {
+          "offset": "0x670000",
+          "path": "meshtastic/2.7.26.54e0d8d/littlefs-tbeam-2.7.26.54e0d8d.bin",
+          "role": "littlefs",
+          "sha256": "c42e4b342d0c0409a1a03b0531fac7db4955f34cb601349fd409ae333e415aa6",
+          "size": 51
+        }
+      ],
+      "id": "meshtastic:tbeam:2.7.26.54e0d8d",
+      "licence_id": "GPL-3.0-only",
+      "licence_url": "https://github.com/meshtastic/firmware/blob/master/LICENSE",
+      "method": "esptool",
+      "network": "meshtastic",
+      "source": "http://127.0.0.1:35221/dl/x/firmware-esp32-2.7.26.54e0d8d.zip",
+      "source_sha256": "ec5817a59dc468e4d6be4d13e59e0b0f405da8ee57addcf42e21222ff2a8d29a",
+      "unsigned_by_publisher": true,
+      "variant": "",
+      "verification": "release-host-digest",
+      "version": "2.7.26.54e0d8d"
+    },
+    {
+      "board": "heltec-v3",
+      "chip": "esp32s3",
+      "fetched_at": "2026-11-25T04:54:16Z",
+      "files": [
+        {
+          "offset": "0x0",
+          "path": "meshtastic/2.7.26.54e0d8d/firmware-heltec-v3-2.7.26.54e0d8d.factory.bin",
+          "role": "factory",
+          "sha256": "94c18e67465715b8428622b0115cd053348457516b74785a1095edfb70f46ac7",
+          "size": 54
+        },
+        {
+          "offset": "0x340000",
+          "path": "meshtastic/2.7.26.54e0d8d/mt-esp32s3-ota.bin",
+          "role": "ota",
+          "sha256": "ab4ca5f919992eb6b4a244d527f187d47306d8c499961f44e271f123e08746f0",
+          "size": 28
+        },
+        {
+          "offset": "0x670000",
+          "path": "meshtastic/2.7.26.54e0d8d/littlefs-heltec-v3-2.7.26.54e0d8d.bin",
+          "role": "littlefs",
+          "sha256": "17ac543ab36017de26e8de6a94edc71730a07a5cf94301b9e2a5e4d917a4c500",
+          "size": 55
+        }
+      ],
+      "id": "meshtastic:heltec-v3:2.7.26.54e0d8d",
+      "licence_id": "GPL-3.0-only",
+      "licence_url": "https://github.com/meshtastic/firmware/blob/master/LICENSE",
+      "method": "esptool",
+      "network": "meshtastic",
+      "source": "http://127.0.0.1:35221/dl/x/firmware-esp32s3-2.7.26.54e0d8d.zip",
+      "source_sha256": "0d8fd0895c485071b0df4d7e69799d6fbb25a0b5457373603fe34e4bf127e67a",
+      "unsigned_by_publisher": true,
+      "variant": "",
+      "verification": "release-host-digest",
+      "version": "2.7.26.54e0d8d"
+    },
+    {
+      "board": "heltec-v4",
+      "chip": "esp32s3",
+      "fetched_at": "2026-11-25T04:54:16Z",
+      "files": [
+        {
+          "offset": "0x0",
+          "path": "meshtastic/2.7.26.54e0d8d/firmware-heltec-v4-2.7.26.54e0d8d.factory.bin",
+          "role": "factory",
+          "sha256": "fdad8e774f7b80a7c81a4054cc16033ef288af1627ca05f4b893d6e781f79e83",
+          "size": 54
+        },
+        {
+          "offset": "0x340000",
+          "path": "meshtastic/2.7.26.54e0d8d/mt-esp32s3-ota.bin",
+          "role": "ota",
+          "sha256": "ab4ca5f919992eb6b4a244d527f187d47306d8c499961f44e271f123e08746f0",
+          "size": 28
+        },
+        {
+          "offset": "0x670000",
+          "path": "meshtastic/2.7.26.54e0d8d/littlefs-heltec-v4-2.7.26.54e0d8d.bin",
+          "role": "littlefs",
+          "sha256": "36890ed96f5b6c9ea8482f5d3b67d790711387f4b40455f6c9f386d219ef7309",
+          "size": 55
+        }
+      ],
+      "id": "meshtastic:heltec-v4:2.7.26.54e0d8d",
+      "licence_id": "GPL-3.0-only",
+      "licence_url": "https://github.com/meshtastic/firmware/blob/master/LICENSE",
+      "method": "esptool",
+      "network": "meshtastic",
+      "source": "http://127.0.0.1:35221/dl/x/firmware-esp32s3-2.7.26.54e0d8d.zip",
+      "source_sha256": "0d8fd0895c485071b0df4d7e69799d6fbb25a0b5457373603fe34e4bf127e67a",
+      "unsigned_by_publisher": true,
+      "variant": "",
+      "verification": "release-host-digest",
+      "version": "2.7.26.54e0d8d"
+    },
+    {
+      "board": "tbeam-s3",
+      "chip": "esp32s3",
+      "fetched_at": "2026-11-25T04:54:16Z",
+      "files": [
+        {
+          "offset": "0x0",
+          "path": "meshtastic/2.7.26.54e0d8d/firmware-tbeam-s3-core-2.7.26.54e0d8d.factory.bin",
+          "role": "factory",
+          "sha256": "9a16054cd77d3db8bca9a1099ca9fcbba5904449d3aa61ea1438a173549854a6",
+          "size": 58
+        },
+        {
+          "offset": "0x340000",
+          "path": "meshtastic/2.7.26.54e0d8d/mt-esp32s3-ota.bin",
+          "role": "ota",
+          "sha256": "ab4ca5f919992eb6b4a244d527f187d47306d8c499961f44e271f123e08746f0",
+          "size": 28
+        },
+        {
+          "offset": "0x670000",
+          "path": "meshtastic/2.7.26.54e0d8d/littlefs-tbeam-s3-core-2.7.26.54e0d8d.bin",
+          "role": "littlefs",
+          "sha256": "806631d171bc5bf12811e7ad1e8756b8919a6185834f68d6a4b2714678891ae5",
+          "size": 59
+        }
+      ],
+      "id": "meshtastic:tbeam-s3:2.7.26.54e0d8d",
+      "licence_id": "GPL-3.0-only",
+      "licence_url": "https://github.com/meshtastic/firmware/blob/master/LICENSE",
+      "method": "esptool",
+      "network": "meshtastic",
+      "source": "http://127.0.0.1:35221/dl/x/firmware-esp32s3-2.7.26.54e0d8d.zip",
+      "source_sha256": "0d8fd0895c485071b0df4d7e69799d6fbb25a0b5457373603fe34e4bf127e67a",
+      "unsigned_by_publisher": true,
+      "variant": "",
+      "verification": "release-host-digest",
+      "version": "2.7.26.54e0d8d"
+    },
+    {
+      "board": "rak4631",
+      "chip": "nrf52840",
+      "fetched_at": "2026-11-25T04:54:16Z",
+      "files": [
+        {
+          "offset": null,
+          "path": "meshtastic/2.7.26.54e0d8d/firmware-rak4631-2.7.26.54e0d8d.uf2",
+          "role": "uf2",
+          "sha256": "1fbfb2c00cda628398e27eaf5ae0b05bcfd7d6d42dbc44f1607eeb4f6d44c26a",
+          "size": 48
+        },
+        {
+          "offset": null,
+          "path": "meshtastic/2.7.26.54e0d8d/firmware-rak4631-2.7.26.54e0d8d-ota.zip",
+          "role": "dfu-package",
+          "sha256": "21b1304c2a2c1a25f2889f3806c26a404278e9e7461f3b28f0e9db422073db2a",
+          "size": 48
+        }
+      ],
+      "id": "meshtastic:rak4631:2.7.26.54e0d8d",
+      "licence_id": "GPL-3.0-only",
+      "licence_url": "https://github.com/meshtastic/firmware/blob/master/LICENSE",
+      "method": "uf2",
+      "network": "meshtastic",
+      "source": "http://127.0.0.1:35221/dl/x/firmware-nrf52840-2.7.26.54e0d8d.zip",
+      "source_sha256": "4c0be879b00bca2157c9a735c0b1436555bf217ac3e978d917fc26b220ada4d9",
+      "unsigned_by_publisher": true,
+      "variant": "",
+      "verification": "release-host-digest",
+      "version": "2.7.26.54e0d8d"
+    },
+    {
+      "board": "t1000e",
+      "chip": "nrf52840",
+      "fetched_at": "2026-11-25T04:54:16Z",
+      "files": [
+        {
+          "offset": null,
+          "path": "meshtastic/2.7.26.54e0d8d/firmware-tracker-t1000-e-2.7.26.54e0d8d.uf2",
+          "role": "uf2",
+          "sha256": "eb61d24db9de34f0c4ab94b3c2835cf58a6dde84b5ffe22d5bb3ed1fada1a2c9",
+          "size": 56
+        },
+        {
+          "offset": null,
+          "path": "meshtastic/2.7.26.54e0d8d/firmware-tracker-t1000-e-2.7.26.54e0d8d-ota.zip",
+          "role": "dfu-package",
+          "sha256": "54f65392bde249ee3b140ab593e694ff6baddb60776641ad2757a12f0a342f0c",
+          "size": 56
+        }
+      ],
+      "id": "meshtastic:t1000e:2.7.26.54e0d8d",
+      "licence_id": "GPL-3.0-only",
+      "licence_url": "https://github.com/meshtastic/firmware/blob/master/LICENSE",
+      "method": "uf2",
+      "network": "meshtastic",
+      "source": "http://127.0.0.1:35221/dl/x/firmware-nrf52840-2.7.26.54e0d8d.zip",
+      "source_sha256": "4c0be879b00bca2157c9a735c0b1436555bf217ac3e978d917fc26b220ada4d9",
+      "unsigned_by_publisher": true,
+      "variant": "",
+      "verification": "release-host-digest",
+      "version": "2.7.26.54e0d8d"
+    },
+    {
+      "board": "xiao-nrf52840",
+      "chip": "nrf52840",
+      "fetched_at": "2026-11-25T04:54:16Z",
+      "files": [
+        {
+          "offset": null,
+          "path": "meshtastic/2.7.26.54e0d8d/firmware-seeed_xiao_nrf52840_kit-2.7.26.54e0d8d.uf2",
+          "role": "uf2",
+          "sha256": "64957f536e62e21753f15f428e5bdeac9fd67967a2ae846de2f4cb0c61ac7bf6",
+          "size": 64
+        },
+        {
+          "offset": null,
+          "path": "meshtastic/2.7.26.54e0d8d/firmware-seeed_xiao_nrf52840_kit-2.7.26.54e0d8d-ota.zip",
+          "role": "dfu-package",
+          "sha256": "c0535a811dec2cd44d0f068b961c56a2c2f94cf3fd9d906d1f238f86fcd0529b",
+          "size": 64
+        }
+      ],
+      "id": "meshtastic:xiao-nrf52840:2.7.26.54e0d8d",
+      "licence_id": "GPL-3.0-only",
+      "licence_url": "https://github.com/meshtastic/firmware/blob/master/LICENSE",
+      "method": "uf2",
+      "network": "meshtastic",
+      "source": "http://127.0.0.1:35221/dl/x/firmware-nrf52840-2.7.26.54e0d8d.zip",
+      "source_sha256": "4c0be879b00bca2157c9a735c0b1436555bf217ac3e978d917fc26b220ada4d9",
+      "unsigned_by_publisher": true,
+      "variant": "",
+      "verification": "release-host-digest",
+      "version": "2.7.26.54e0d8d"
+    },
+    {
+      "board": "rak4631",
+      "chip": "nrf52840",
+      "fetched_at": "2026-11-25T04:54:16Z",
+      "files": [
+        {
+          "offset": null,
+          "path": "meshtastic/2.7.25.104df5f/firmware-rak4631-2.7.25.104df5f.uf2",
+          "role": "uf2",
+          "sha256": "0711bd41c6aa73a28bbce7c0a9e5c51456e8654ad3c231e2144fb120c83afb7a",
+          "size": 48
+        },
+        {
+          "offset": null,
+          "path": "meshtastic/2.7.25.104df5f/firmware-rak4631-2.7.25.104df5f-ota.zip",
+          "role": "dfu-package",
+          "sha256": "1858e55cafa3ddb4bab196169703bf3d522e93ee9f3c72aac34a3c189def65c0",
+          "size": 48
+        }
+      ],
+      "id": "meshtastic:rak4631:2.7.25.104df5f",
+      "licence_id": "GPL-3.0-only",
+      "licence_url": "https://github.com/meshtastic/firmware/blob/master/LICENSE",
+      "method": "uf2",
+      "network": "meshtastic",
+      "source": "http://127.0.0.1:35221/dl/x/firmware-nrf52840-2.7.25.104df5f.zip",
+      "source_sha256": "8332f8cd4fb92ad09714f475454965001559a6780fb5851c851a85efb91187ec",
+      "unsigned_by_publisher": true,
+      "variant": "",
+      "verification": "release-host-digest",
+      "version": "2.7.25.104df5f"
+    },
+    {
+      "board": "t1000e",
+      "chip": "nrf52840",
+      "fetched_at": "2026-11-25T04:54:16Z",
+      "files": [
+        {
+          "offset": null,
+          "path": "meshtastic/2.7.25.104df5f/firmware-tracker-t1000-e-2.7.25.104df5f.uf2",
+          "role": "uf2",
+          "sha256": "432b23f80ec5385af4cc4fe1c169d87cb0f7e694b1931b3bfd5ca2fff42360f7",
+          "size": 56
+        },
+        {
+          "offset": null,
+          "path": "meshtastic/2.7.25.104df5f/firmware-tracker-t1000-e-2.7.25.104df5f-ota.zip",
+          "role": "dfu-package",
+          "sha256": "e6ec79645807636ae1df6b7ea0e516a0f62204715cdd081a6428fadb0ab009b1",
+          "size": 56
+        }
+      ],
+      "id": "meshtastic:t1000e:2.7.25.104df5f",
+      "licence_id": "GPL-3.0-only",
+      "licence_url": "https://github.com/meshtastic/firmware/blob/master/LICENSE",
+      "method": "uf2",
+      "network": "meshtastic",
+      "source": "http://127.0.0.1:35221/dl/x/firmware-nrf52840-2.7.25.104df5f.zip",
+      "source_sha256": "8332f8cd4fb92ad09714f475454965001559a6780fb5851c851a85efb91187ec",
+      "unsigned_by_publisher": true,
+      "variant": "",
+      "verification": "release-host-digest",
+      "version": "2.7.25.104df5f"
+    },
+    {
+      "board": "xiao-nrf52840",
+      "chip": "nrf52840",
+      "fetched_at": "2026-11-25T04:54:16Z",
+      "files": [
+        {
+          "offset": null,
+          "path": "meshtastic/2.7.25.104df5f/firmware-seeed_xiao_nrf52840_kit-2.7.25.104df5f.uf2",
+          "role": "uf2",
+          "sha256": "858e27af0fcc7ca62dfab551b81ebbdba7148aaf05edc5372a35fdafd6817fba",
+          "size": 64
+        },
+        {
+          "offset": null,
+          "path": "meshtastic/2.7.25.104df5f/firmware-seeed_xiao_nrf52840_kit-2.7.25.104df5f-ota.zip",
+          "role": "dfu-package",
+          "sha256": "fd614dc3da9093ada63040917a6c93b64e7f3ecd3abaef1e992d82ae3dbf208b",
+          "size": 64
+        }
+      ],
+      "id": "meshtastic:xiao-nrf52840:2.7.25.104df5f",
+      "licence_id": "GPL-3.0-only",
+      "licence_url": "https://github.com/meshtastic/firmware/blob/master/LICENSE",
+      "method": "uf2",
+      "network": "meshtastic",
+      "source": "http://127.0.0.1:35221/dl/x/firmware-nrf52840-2.7.25.104df5f.zip",
+      "source_sha256": "8332f8cd4fb92ad09714f475454965001559a6780fb5851c851a85efb91187ec",
+      "unsigned_by_publisher": true,
+      "variant": "",
+      "verification": "release-host-digest",
+      "version": "2.7.25.104df5f"
+    },
+    {
+      "board": "heltec-v3",
+      "chip": "esp32s3",
+      "fetched_at": "2026-11-25T04:54:16Z",
+      "files": [
+        {
+          "offset": "0x0",
+          "path": "meshcore/1.18.0/Heltec_v3_companion_radio_ble-v1.18.0-81dbae5-merged.bin",
+          "role": "factory",
+          "sha256": "b16bc61a6fcdc27899b27bf568dc888740fcd5e13818a106f1db0026dd8d1cad",
+          "size": 74
+        }
+      ],
+      "id": "meshcore:heltec-v3:1.18.0:ble",
+      "licence_id": "MIT",
+      "licence_url": "https://github.com/meshcore-dev/MeshCore/blob/main/license.txt",
+      "method": "esptool",
+      "network": "meshcore",
+      "source": "http://127.0.0.1:35221/dl/x/Heltec_v3_companion_radio_ble-v1.18.0-81dbae5-merged.bin",
+      "source_sha256": "b16bc61a6fcdc27899b27bf568dc888740fcd5e13818a106f1db0026dd8d1cad",
+      "unsigned_by_publisher": true,
+      "variant": "ble",
+      "verification": "release-host-digest",
+      "version": "1.18.0"
+    },
+    {
+      "board": "heltec-v3",
+      "chip": "esp32s3",
+      "fetched_at": "2026-11-25T04:54:16Z",
+      "files": [
+        {
+          "offset": "0x0",
+          "path": "meshcore/1.18.0/Heltec_v3_companion_radio_usb-v1.18.0-81dbae5-merged.bin",
+          "role": "factory",
+          "sha256": "41bd2393f7a0fb10c242a6d4f8721a93371459b8369b842c222b797cbebf4e5a",
+          "size": 74
+        }
+      ],
+      "id": "meshcore:heltec-v3:1.18.0:usb",
+      "licence_id": "MIT",
+      "licence_url": "https://github.com/meshcore-dev/MeshCore/blob/main/license.txt",
+      "method": "esptool",
+      "network": "meshcore",
+      "source": "http://127.0.0.1:35221/dl/x/Heltec_v3_companion_radio_usb-v1.18.0-81dbae5-merged.bin",
+      "source_sha256": "41bd2393f7a0fb10c242a6d4f8721a93371459b8369b842c222b797cbebf4e5a",
+      "unsigned_by_publisher": true,
+      "variant": "usb",
+      "verification": "release-host-digest",
+      "version": "1.18.0"
+    },
+    {
+      "board": "heltec-v4",
+      "chip": "esp32s3",
+      "fetched_at": "2026-11-25T04:54:16Z",
+      "files": [
+        {
+          "offset": "0x0",
+          "path": "meshcore/1.18.0/heltec_v4_companion_radio_ble-v1.18.0-81dbae5-merged.bin",
+          "role": "factory",
+          "sha256": "4dc1c227daa72b5ae23b3ad8ab7f6ae0ec51f7e071478403b49d9c3f67126e62",
+          "size": 74
+        }
+      ],
+      "id": "meshcore:heltec-v4:1.18.0:ble",
+      "licence_id": "MIT",
+      "licence_url": "https://github.com/meshcore-dev/MeshCore/blob/main/license.txt",
+      "method": "esptool",
+      "network": "meshcore",
+      "source": "http://127.0.0.1:35221/dl/x/heltec_v4_companion_radio_ble-v1.18.0-81dbae5-merged.bin",
+      "source_sha256": "4dc1c227daa72b5ae23b3ad8ab7f6ae0ec51f7e071478403b49d9c3f67126e62",
+      "unsigned_by_publisher": true,
+      "variant": "ble",
+      "verification": "release-host-digest",
+      "version": "1.18.0"
+    },
+    {
+      "board": "heltec-v4",
+      "chip": "esp32s3",
+      "fetched_at": "2026-11-25T04:54:16Z",
+      "files": [
+        {
+          "offset": "0x0",
+          "path": "meshcore/1.18.0/heltec_v4_companion_radio_usb-v1.18.0-81dbae5-merged.bin",
+          "role": "factory",
+          "sha256": "abb47ab4e5b6fa070d34f37543e95822035556c8106a5c965a9235a1e93ad386",
+          "size": 74
+        }
+      ],
+      "id": "meshcore:heltec-v4:1.18.0:usb",
+      "licence_id": "MIT",
+      "licence_url": "https://github.com/meshcore-dev/MeshCore/blob/main/license.txt",
+      "method": "esptool",
+      "network": "meshcore",
+      "source": "http://127.0.0.1:35221/dl/x/heltec_v4_companion_radio_usb-v1.18.0-81dbae5-merged.bin",
+      "source_sha256": "abb47ab4e5b6fa070d34f37543e95822035556c8106a5c965a9235a1e93ad386",
+      "unsigned_by_publisher": true,
+      "variant": "usb",
+      "verification": "release-host-digest",
+      "version": "1.18.0"
+    },
+    {
+      "board": "tbeam",
+      "chip": "esp32",
+      "fetched_at": "2026-11-25T04:54:16Z",
+      "files": [
+        {
+          "offset": "0x0",
+          "path": "meshcore/1.18.0/Tbeam_SX1262_companion_radio_ble-v1.18.0-81dbae5-merged.bin",
+          "role": "factory",
+          "sha256": "19a4d3beec5cd04f00100f19eeabbab9e86fb264fc87ddc3841d394a6d283546",
+          "size": 77
+        }
+      ],
+      "id": "meshcore:tbeam:1.18.0:ble",
+      "licence_id": "MIT",
+      "licence_url": "https://github.com/meshcore-dev/MeshCore/blob/main/license.txt",
+      "method": "esptool",
+      "network": "meshcore",
+      "source": "http://127.0.0.1:35221/dl/x/Tbeam_SX1262_companion_radio_ble-v1.18.0-81dbae5-merged.bin",
+      "source_sha256": "19a4d3beec5cd04f00100f19eeabbab9e86fb264fc87ddc3841d394a6d283546",
+      "unsigned_by_publisher": true,
+      "variant": "ble",
+      "verification": "release-host-digest",
+      "version": "1.18.0"
+    },
+    {
+      "board": "tbeam",
+      "chip": "esp32",
+      "fetched_at": "2026-11-25T04:54:16Z",
+      "files": [
+        {
+          "offset": "0x0",
+          "path": "meshcore/1.18.0/Tbeam_SX1262_companion_radio_usb-v1.18.0-81dbae5-merged.bin",
+          "role": "factory",
+          "sha256": "7c872a186b26a3cb1f03459f0f1faf7af4825ef25ea925a8dec30434ecfae52a",
+          "size": 77
+        }
+      ],
+      "id": "meshcore:tbeam:1.18.0:usb",
+      "licence_id": "MIT",
+      "licence_url": "https://github.com/meshcore-dev/MeshCore/blob/main/license.txt",
+      "method": "esptool",
+      "network": "meshcore",
+      "source": "http://127.0.0.1:35221/dl/x/Tbeam_SX1262_companion_radio_usb-v1.18.0-81dbae5-merged.bin",
+      "source_sha256": "7c872a186b26a3cb1f03459f0f1faf7af4825ef25ea925a8dec30434ecfae52a",
+      "unsigned_by_publisher": true,
+      "variant": "usb",
+      "verification": "release-host-digest",
+      "version": "1.18.0"
+    },
+    {
+      "board": "tbeam-s3",
+      "chip": "esp32s3",
+      "fetched_at": "2026-11-25T04:54:16Z",
+      "files": [
+        {
+          "offset": "0x0",
+          "path": "meshcore/1.18.0/T_Beam_S3_Supreme_SX1262_companion_radio_ble-v1.18.0-81dbae5-merged.bin",
+          "role": "factory",
+          "sha256": "317cf1539b964971a41c385949a6f48a201e617d4b74f2a9b14f08c385d3d23e",
+          "size": 89
+        }
+      ],
+      "id": "meshcore:tbeam-s3:1.18.0:ble",
+      "licence_id": "MIT",
+      "licence_url": "https://github.com/meshcore-dev/MeshCore/blob/main/license.txt",
+      "method": "esptool",
+      "network": "meshcore",
+      "source": "http://127.0.0.1:35221/dl/x/T_Beam_S3_Supreme_SX1262_companion_radio_ble-v1.18.0-81dbae5-merged.bin",
+      "source_sha256": "317cf1539b964971a41c385949a6f48a201e617d4b74f2a9b14f08c385d3d23e",
+      "unsigned_by_publisher": true,
+      "variant": "ble",
+      "verification": "release-host-digest",
+      "version": "1.18.0"
+    },
+    {
+      "board": "tbeam-s3",
+      "chip": "esp32s3",
+      "fetched_at": "2026-11-25T04:54:16Z",
+      "files": [
+        {
+          "offset": "0x0",
+          "path": "meshcore/1.18.0/T_Beam_S3_Supreme_SX1262_companion_radio_usb-v1.18.0-81dbae5-merged.bin",
+          "role": "factory",
+          "sha256": "c0b9d9eda95110745ce3321572c6b793121f71374262d4c17fc92f1e73ebf5c0",
+          "size": 89
+        }
+      ],
+      "id": "meshcore:tbeam-s3:1.18.0:usb",
+      "licence_id": "MIT",
+      "licence_url": "https://github.com/meshcore-dev/MeshCore/blob/main/license.txt",
+      "method": "esptool",
+      "network": "meshcore",
+      "source": "http://127.0.0.1:35221/dl/x/T_Beam_S3_Supreme_SX1262_companion_radio_usb-v1.18.0-81dbae5-merged.bin",
+      "source_sha256": "c0b9d9eda95110745ce3321572c6b793121f71374262d4c17fc92f1e73ebf5c0",
+      "unsigned_by_publisher": true,
+      "variant": "usb",
+      "verification": "release-host-digest",
+      "version": "1.18.0"
+    },
+    {
+      "board": "rak4631",
+      "chip": "nrf52840",
+      "fetched_at": "2026-11-25T04:54:16Z",
+      "files": [
+        {
+          "offset": null,
+          "path": "meshcore/1.18.0/RAK_4631_companion_radio_ble-v1.18.0-81dbae5.uf2",
+          "role": "uf2",
+          "sha256": "c5de10bee7c73d84259c99d799ccf9ad021cffd31f8f49227233a53714ea82f6",
+          "size": 70
+        },
+        {
+          "offset": null,
+          "path": "meshcore/1.18.0/RAK_4631_companion_radio_ble-v1.18.0-81dbae5.zip",
+          "role": "dfu-package",
+          "sha256": "c336fdd16d88b5e42435e45aa2e12bf740cd0960f9b9b455c51d2561c26d437d",
+          "size": 70
+        }
+      ],
+      "id": "meshcore:rak4631:1.18.0:ble",
+      "licence_id": "MIT",
+      "licence_url": "https://github.com/meshcore-dev/MeshCore/blob/main/license.txt",
+      "method": "uf2",
+      "network": "meshcore",
+      "source": "http://127.0.0.1:35221/dl/x/RAK_4631_companion_radio_ble-v1.18.0-81dbae5.uf2",
+      "source_sha256": "c5de10bee7c73d84259c99d799ccf9ad021cffd31f8f49227233a53714ea82f6",
+      "unsigned_by_publisher": true,
+      "variant": "ble",
+      "verification": "release-host-digest",
+      "version": "1.18.0"
+    },
+    {
+      "board": "rak4631",
+      "chip": "nrf52840",
+      "fetched_at": "2026-11-25T04:54:16Z",
+      "files": [
+        {
+          "offset": null,
+          "path": "meshcore/1.18.0/RAK_4631_companion_radio_usb-v1.18.0-81dbae5.uf2",
+          "role": "uf2",
+          "sha256": "be8b6ed34345a7d2bbd6e8a6991a3e89e7f204c26d651e1802bc6858b2adbf39",
+          "size": 70
+        },
+        {
+          "offset": null,
+          "path": "meshcore/1.18.0/RAK_4631_companion_radio_usb-v1.18.0-81dbae5.zip",
+          "role": "dfu-package",
+          "sha256": "eadef1261dce355344349a972eeb2b8f74f9a0333efba89589f57194d0c80ab9",
+          "size": 70
+        }
+      ],
+      "id": "meshcore:rak4631:1.18.0:usb",
+      "licence_id": "MIT",
+      "licence_url": "https://github.com/meshcore-dev/MeshCore/blob/main/license.txt",
+      "method": "uf2",
+      "network": "meshcore",
+      "source": "http://127.0.0.1:35221/dl/x/RAK_4631_companion_radio_usb-v1.18.0-81dbae5.uf2",
+      "source_sha256": "be8b6ed34345a7d2bbd6e8a6991a3e89e7f204c26d651e1802bc6858b2adbf39",
+      "unsigned_by_publisher": true,
+      "variant": "usb",
+      "verification": "release-host-digest",
+      "version": "1.18.0"
+    },
+    {
+      "board": "t1000e",
+      "chip": "nrf52840",
+      "fetched_at": "2026-11-25T04:54:16Z",
+      "files": [
+        {
+          "offset": null,
+          "path": "meshcore/1.18.0/t1000e_companion_radio_ble-v1.18.0-81dbae5.uf2",
+          "role": "uf2",
+          "sha256": "40b371aeba4223fc328473cc63edb816969cd0cd47bab860f6f4d28c7b176b11",
+          "size": 68
+        },
+        {
+          "offset": null,
+          "path": "meshcore/1.18.0/t1000e_companion_radio_ble-v1.18.0-81dbae5.zip",
+          "role": "dfu-package",
+          "sha256": "ffa9db02e35e1cb17492d93b045e6fddbd43462087b16e040e950d0c5f22d35d",
+          "size": 68
+        }
+      ],
+      "id": "meshcore:t1000e:1.18.0:ble",
+      "licence_id": "MIT",
+      "licence_url": "https://github.com/meshcore-dev/MeshCore/blob/main/license.txt",
+      "method": "uf2",
+      "network": "meshcore",
+      "source": "http://127.0.0.1:35221/dl/x/t1000e_companion_radio_ble-v1.18.0-81dbae5.uf2",
+      "source_sha256": "40b371aeba4223fc328473cc63edb816969cd0cd47bab860f6f4d28c7b176b11",
+      "unsigned_by_publisher": true,
+      "variant": "ble",
+      "verification": "release-host-digest",
+      "version": "1.18.0"
+    },
+    {
+      "board": "t1000e",
+      "chip": "nrf52840",
+      "fetched_at": "2026-11-25T04:54:16Z",
+      "files": [
+        {
+          "offset": null,
+          "path": "meshcore/1.18.0/t1000e_companion_radio_usb-v1.18.0-81dbae5.uf2",
+          "role": "uf2",
+          "sha256": "e09d06a0e7881cff381234871574459ea7e4b1acc13ce1df515f7032924c1826",
+          "size": 68
+        },
+        {
+          "offset": null,
+          "path": "meshcore/1.18.0/t1000e_companion_radio_usb-v1.18.0-81dbae5.zip",
+          "role": "dfu-package",
+          "sha256": "977c189fba6c55e1b966922e8872178b4d7f6780557364a631eb5f9828a09d10",
+          "size": 68
+        }
+      ],
+      "id": "meshcore:t1000e:1.18.0:usb",
+      "licence_id": "MIT",
+      "licence_url": "https://github.com/meshcore-dev/MeshCore/blob/main/license.txt",
+      "method": "uf2",
+      "network": "meshcore",
+      "source": "http://127.0.0.1:35221/dl/x/t1000e_companion_radio_usb-v1.18.0-81dbae5.uf2",
+      "source_sha256": "e09d06a0e7881cff381234871574459ea7e4b1acc13ce1df515f7032924c1826",
+      "unsigned_by_publisher": true,
+      "variant": "usb",
+      "verification": "release-host-digest",
+      "version": "1.18.0"
+    },
+    {
+      "board": "xiao-nrf52840",
+      "chip": "nrf52840",
+      "fetched_at": "2026-11-25T04:54:16Z",
+      "files": [
+        {
+          "offset": null,
+          "path": "meshcore/1.18.0/Xiao_nrf52_companion_radio_ble-v1.18.0-81dbae5.uf2",
+          "role": "uf2",
+          "sha256": "72b54a0cedd7b63f3f5db59c206d5dbaff4dbc372902136c8c2a0ce21f506726",
+          "size": 72
+        },
+        {
+          "offset": null,
+          "path": "meshcore/1.18.0/Xiao_nrf52_companion_radio_ble-v1.18.0-81dbae5.zip",
+          "role": "dfu-package",
+          "sha256": "cf6fe0dfe9baf45770c61c5766fe9f937f75b151b9e4784aa14199bef16ba662",
+          "size": 72
+        }
+      ],
+      "id": "meshcore:xiao-nrf52840:1.18.0:ble",
+      "licence_id": "MIT",
+      "licence_url": "https://github.com/meshcore-dev/MeshCore/blob/main/license.txt",
+      "method": "uf2",
+      "network": "meshcore",
+      "source": "http://127.0.0.1:35221/dl/x/Xiao_nrf52_companion_radio_ble-v1.18.0-81dbae5.uf2",
+      "source_sha256": "72b54a0cedd7b63f3f5db59c206d5dbaff4dbc372902136c8c2a0ce21f506726",
+      "unsigned_by_publisher": true,
+      "variant": "ble",
+      "verification": "release-host-digest",
+      "version": "1.18.0"
+    },
+    {
+      "board": "xiao-nrf52840",
+      "chip": "nrf52840",
+      "fetched_at": "2026-11-25T04:54:16Z",
+      "files": [
+        {
+          "offset": null,
+          "path": "meshcore/1.18.0/Xiao_nrf52_companion_radio_usb-v1.18.0-81dbae5.uf2",
+          "role": "uf2",
+          "sha256": "78c351ffb1295cddf415625920cdc6c27ecdb809677db5e978205f82e0436e67",
+          "size": 72
+        },
+        {
+          "offset": null,
+          "path": "meshcore/1.18.0/Xiao_nrf52_companion_radio_usb-v1.18.0-81dbae5.zip",
+          "role": "dfu-package",
+          "sha256": "c18c999d8042f0c16a687cbef085afdcb14ce8b67fd7ce13833339ceffc49245",
+          "size": 72
+        }
+      ],
+      "id": "meshcore:xiao-nrf52840:1.18.0:usb",
+      "licence_id": "MIT",
+      "licence_url": "https://github.com/meshcore-dev/MeshCore/blob/main/license.txt",
+      "method": "uf2",
+      "network": "meshcore",
+      "source": "http://127.0.0.1:35221/dl/x/Xiao_nrf52_companion_radio_usb-v1.18.0-81dbae5.uf2",
+      "source_sha256": "78c351ffb1295cddf415625920cdc6c27ecdb809677db5e978205f82e0436e67",
+      "unsigned_by_publisher": true,
+      "variant": "usb",
+      "verification": "release-host-digest",
+      "version": "1.18.0"
+    },
+    {
+      "board": "heltec-v3",
+      "chip": "esp32s3",
+      "fetched_at": "2026-11-25T04:54:16Z",
+      "files": [
+        {
+          "offset": "0x0",
+          "path": "meshcore/1.17.1/Heltec_v3_companion_radio_ble-v1.17.1-81dbae5-merged.bin",
+          "role": "factory",
+          "sha256": "ff38412f4b1659aceccb2df474a2b4a09f51f3fe8b21bbdfddaf7d5b3f4a0770",
+          "size": 74
+        }
+      ],
+      "id": "meshcore:heltec-v3:1.17.1:ble",
+      "licence_id": "MIT",
+      "licence_url": "https://github.com/meshcore-dev/MeshCore/blob/main/license.txt",
+      "method": "esptool",
+      "network": "meshcore",
+      "source": "http://127.0.0.1:35221/dl/x/Heltec_v3_companion_radio_ble-v1.17.1-81dbae5-merged.bin",
+      "source_sha256": "ff38412f4b1659aceccb2df474a2b4a09f51f3fe8b21bbdfddaf7d5b3f4a0770",
+      "unsigned_by_publisher": true,
+      "variant": "ble",
+      "verification": "release-host-digest",
+      "version": "1.17.1"
+    },
+    {
+      "board": "heltec-v3",
+      "chip": "esp32s3",
+      "fetched_at": "2026-11-25T04:54:16Z",
+      "files": [
+        {
+          "offset": "0x0",
+          "path": "meshcore/1.17.1/Heltec_v3_companion_radio_usb-v1.17.1-81dbae5-merged.bin",
+          "role": "factory",
+          "sha256": "0fbffb262603381bd3930fab7e4022f40e3dbd8b079b6f8415b3574682e8079c",
+          "size": 74
+        }
+      ],
+      "id": "meshcore:heltec-v3:1.17.1:usb",
+      "licence_id": "MIT",
+      "licence_url": "https://github.com/meshcore-dev/MeshCore/blob/main/license.txt",
+      "method": "esptool",
+      "network": "meshcore",
+      "source": "http://127.0.0.1:35221/dl/x/Heltec_v3_companion_radio_usb-v1.17.1-81dbae5-merged.bin",
+      "source_sha256": "0fbffb262603381bd3930fab7e4022f40e3dbd8b079b6f8415b3574682e8079c",
+      "unsigned_by_publisher": true,
+      "variant": "usb",
+      "verification": "release-host-digest",
+      "version": "1.17.1"
+    },
+    {
+      "board": "heltec-v4",
+      "chip": "esp32s3",
+      "fetched_at": "2026-11-25T04:54:16Z",
+      "files": [
+        {
+          "offset": "0x0",
+          "path": "meshcore/1.17.1/heltec_v4_companion_radio_ble-v1.17.1-81dbae5-merged.bin",
+          "role": "factory",
+          "sha256": "8cf39a1ed4f67e7c318cadee920bbaab5ecae5832dda6a2dc345a3d007f06b47",
+          "size": 74
+        }
+      ],
+      "id": "meshcore:heltec-v4:1.17.1:ble",
+      "licence_id": "MIT",
+      "licence_url": "https://github.com/meshcore-dev/MeshCore/blob/main/license.txt",
+      "method": "esptool",
+      "network": "meshcore",
+      "source": "http://127.0.0.1:35221/dl/x/heltec_v4_companion_radio_ble-v1.17.1-81dbae5-merged.bin",
+      "source_sha256": "8cf39a1ed4f67e7c318cadee920bbaab5ecae5832dda6a2dc345a3d007f06b47",
+      "unsigned_by_publisher": true,
+      "variant": "ble",
+      "verification": "release-host-digest",
+      "version": "1.17.1"
+    },
+    {
+      "board": "heltec-v4",
+      "chip": "esp32s3",
+      "fetched_at": "2026-11-25T04:54:16Z",
+      "files": [
+        {
+          "offset": "0x0",
+          "path": "meshcore/1.17.1/heltec_v4_companion_radio_usb-v1.17.1-81dbae5-merged.bin",
+          "role": "factory",
+          "sha256": "d0106147c4182d6285b0afa0c6f05cf10f5ffe06225d4760430f6172e0fb472d",
+          "size": 74
+        }
+      ],
+      "id": "meshcore:heltec-v4:1.17.1:usb",
+      "licence_id": "MIT",
+      "licence_url": "https://github.com/meshcore-dev/MeshCore/blob/main/license.txt",
+      "method": "esptool",
+      "network": "meshcore",
+      "source": "http://127.0.0.1:35221/dl/x/heltec_v4_companion_radio_usb-v1.17.1-81dbae5-merged.bin",
+      "source_sha256": "d0106147c4182d6285b0afa0c6f05cf10f5ffe06225d4760430f6172e0fb472d",
+      "unsigned_by_publisher": true,
+      "variant": "usb",
+      "verification": "release-host-digest",
+      "version": "1.17.1"
+    },
+    {
+      "board": "tbeam",
+      "chip": "esp32",
+      "fetched_at": "2026-11-25T04:54:16Z",
+      "files": [
+        {
+          "offset": "0x0",
+          "path": "meshcore/1.17.1/Tbeam_SX1262_companion_radio_ble-v1.17.1-81dbae5-merged.bin",
+          "role": "factory",
+          "sha256": "5097bc98cf15004d45bf6593101c88387e76a86dc7c96775d67f23a878dd9800",
+          "size": 77
+        }
+      ],
+      "id": "meshcore:tbeam:1.17.1:ble",
+      "licence_id": "MIT",
+      "licence_url": "https://github.com/meshcore-dev/MeshCore/blob/main/license.txt",
+      "method": "esptool",
+      "network": "meshcore",
+      "source": "http://127.0.0.1:35221/dl/x/Tbeam_SX1262_companion_radio_ble-v1.17.1-81dbae5-merged.bin",
+      "source_sha256": "5097bc98cf15004d45bf6593101c88387e76a86dc7c96775d67f23a878dd9800",
+      "unsigned_by_publisher": true,
+      "variant": "ble",
+      "verification": "release-host-digest",
+      "version": "1.17.1"
+    },
+    {
+      "board": "tbeam",
+      "chip": "esp32",
+      "fetched_at": "2026-11-25T04:54:16Z",
+      "files": [
+        {
+          "offset": "0x0",
+          "path": "meshcore/1.17.1/Tbeam_SX1262_companion_radio_usb-v1.17.1-81dbae5-merged.bin",
+          "role": "factory",
+          "sha256": "56dd9514ee84827f962e7c055ec9b083b5aaf3414aad4cc1e309603495c4d9e2",
+          "size": 77
+        }
+      ],
+      "id": "meshcore:tbeam:1.17.1:usb",
+      "licence_id": "MIT",
+      "licence_url": "https://github.com/meshcore-dev/MeshCore/blob/main/license.txt",
+      "method": "esptool",
+      "network": "meshcore",
+      "source": "http://127.0.0.1:35221/dl/x/Tbeam_SX1262_companion_radio_usb-v1.17.1-81dbae5-merged.bin",
+      "source_sha256": "56dd9514ee84827f962e7c055ec9b083b5aaf3414aad4cc1e309603495c4d9e2",
+      "unsigned_by_publisher": true,
+      "variant": "usb",
+      "verification": "release-host-digest",
+      "version": "1.17.1"
+    },
+    {
+      "board": "tbeam-s3",
+      "chip": "esp32s3",
+      "fetched_at": "2026-11-25T04:54:16Z",
+      "files": [
+        {
+          "offset": "0x0",
+          "path": "meshcore/1.17.1/T_Beam_S3_Supreme_SX1262_companion_radio_ble-v1.17.1-81dbae5-merged.bin",
+          "role": "factory",
+          "sha256": "a57e0ad5b5b47fb54e15d19509a26b3f6aaeae11f7e4a84d46d4d1751c05eaba",
+          "size": 89
+        }
+      ],
+      "id": "meshcore:tbeam-s3:1.17.1:ble",
+      "licence_id": "MIT",
+      "licence_url": "https://github.com/meshcore-dev/MeshCore/blob/main/license.txt",
+      "method": "esptool",
+      "network": "meshcore",
+      "source": "http://127.0.0.1:35221/dl/x/T_Beam_S3_Supreme_SX1262_companion_radio_ble-v1.17.1-81dbae5-merged.bin",
+      "source_sha256": "a57e0ad5b5b47fb54e15d19509a26b3f6aaeae11f7e4a84d46d4d1751c05eaba",
+      "unsigned_by_publisher": true,
+      "variant": "ble",
+      "verification": "release-host-digest",
+      "version": "1.17.1"
+    },
+    {
+      "board": "tbeam-s3",
+      "chip": "esp32s3",
+      "fetched_at": "2026-11-25T04:54:16Z",
+      "files": [
+        {
+          "offset": "0x0",
+          "path": "meshcore/1.17.1/T_Beam_S3_Supreme_SX1262_companion_radio_usb-v1.17.1-81dbae5-merged.bin",
+          "role": "factory",
+          "sha256": "45480635d264dd4d512587b96fb90e97c548bc4e61f715c2503647046874167f",
+          "size": 89
+        }
+      ],
+      "id": "meshcore:tbeam-s3:1.17.1:usb",
+      "licence_id": "MIT",
+      "licence_url": "https://github.com/meshcore-dev/MeshCore/blob/main/license.txt",
+      "method": "esptool",
+      "network": "meshcore",
+      "source": "http://127.0.0.1:35221/dl/x/T_Beam_S3_Supreme_SX1262_companion_radio_usb-v1.17.1-81dbae5-merged.bin",
+      "source_sha256": "45480635d264dd4d512587b96fb90e97c548bc4e61f715c2503647046874167f",
+      "unsigned_by_publisher": true,
+      "variant": "usb",
+      "verification": "release-host-digest",
+      "version": "1.17.1"
+    },
+    {
+      "board": "rak4631",
+      "chip": "nrf52840",
+      "fetched_at": "2026-11-25T04:54:16Z",
+      "files": [
+        {
+          "offset": null,
+          "path": "meshcore/1.17.1/RAK_4631_companion_radio_ble-v1.17.1-81dbae5.uf2",
+          "role": "uf2",
+          "sha256": "fc5521ee0b98ff4695c2c68e74bac354e7b97211c13fb3491736bcbe47ca6069",
+          "size": 70
+        },
+        {
+          "offset": null,
+          "path": "meshcore/1.17.1/RAK_4631_companion_radio_ble-v1.17.1-81dbae5.zip",
+          "role": "dfu-package",
+          "sha256": "83f8f8829ad2a74ae590c4614922edb7dafe68c8c5f133fa85ac34919962446e",
+          "size": 70
+        }
+      ],
+      "id": "meshcore:rak4631:1.17.1:ble",
+      "licence_id": "MIT",
+      "licence_url": "https://github.com/meshcore-dev/MeshCore/blob/main/license.txt",
+      "method": "uf2",
+      "network": "meshcore",
+      "source": "http://127.0.0.1:35221/dl/x/RAK_4631_companion_radio_ble-v1.17.1-81dbae5.uf2",
+      "source_sha256": "fc5521ee0b98ff4695c2c68e74bac354e7b97211c13fb3491736bcbe47ca6069",
+      "unsigned_by_publisher": true,
+      "variant": "ble",
+      "verification": "release-host-digest",
+      "version": "1.17.1"
+    },
+    {
+      "board": "rak4631",
+      "chip": "nrf52840",
+      "fetched_at": "2026-11-25T04:54:16Z",
+      "files": [
+        {
+          "offset": null,
+          "path": "meshcore/1.17.1/RAK_4631_companion_radio_usb-v1.17.1-81dbae5.uf2",
+          "role": "uf2",
+          "sha256": "cf70cdb0e014acc1acd485f174a28dba4332ce8ee427e3ab28afb68ee53c44dc",
+          "size": 70
+        },
+        {
+          "offset": null,
+          "path": "meshcore/1.17.1/RAK_4631_companion_radio_usb-v1.17.1-81dbae5.zip",
+          "role": "dfu-package",
+          "sha256": "ee97d00efbdabeb88838bf0cd6a64c52857b3759b9b1905249fa953344691b46",
+          "size": 70
+        }
+      ],
+      "id": "meshcore:rak4631:1.17.1:usb",
+      "licence_id": "MIT",
+      "licence_url": "https://github.com/meshcore-dev/MeshCore/blob/main/license.txt",
+      "method": "uf2",
+      "network": "meshcore",
+      "source": "http://127.0.0.1:35221/dl/x/RAK_4631_companion_radio_usb-v1.17.1-81dbae5.uf2",
+      "source_sha256": "cf70cdb0e014acc1acd485f174a28dba4332ce8ee427e3ab28afb68ee53c44dc",
+      "unsigned_by_publisher": true,
+      "variant": "usb",
+      "verification": "release-host-digest",
+      "version": "1.17.1"
+    },
+    {
+      "board": "t1000e",
+      "chip": "nrf52840",
+      "fetched_at": "2026-11-25T04:54:16Z",
+      "files": [
+        {
+          "offset": null,
+          "path": "meshcore/1.17.1/t1000e_companion_radio_ble-v1.17.1-81dbae5.uf2",
+          "role": "uf2",
+          "sha256": "6434cb4f6c5f60c9fc9cd421dea32d292e67ccdd14bab082ec038a57dcaec1da",
+          "size": 68
+        },
+        {
+          "offset": null,
+          "path": "meshcore/1.17.1/t1000e_companion_radio_ble-v1.17.1-81dbae5.zip",
+          "role": "dfu-package",
+          "sha256": "dd0ca50677e6f2a9d67dc1bcd6aa6ef34ccefa65f6a86192ff3e5e18fdd3f52e",
+          "size": 68
+        }
+      ],
+      "id": "meshcore:t1000e:1.17.1:ble",
+      "licence_id": "MIT",
+      "licence_url": "https://github.com/meshcore-dev/MeshCore/blob/main/license.txt",
+      "method": "uf2",
+      "network": "meshcore",
+      "source": "http://127.0.0.1:35221/dl/x/t1000e_companion_radio_ble-v1.17.1-81dbae5.uf2",
+      "source_sha256": "6434cb4f6c5f60c9fc9cd421dea32d292e67ccdd14bab082ec038a57dcaec1da",
+      "unsigned_by_publisher": true,
+      "variant": "ble",
+      "verification": "release-host-digest",
+      "version": "1.17.1"
+    },
+    {
+      "board": "t1000e",
+      "chip": "nrf52840",
+      "fetched_at": "2026-11-25T04:54:16Z",
+      "files": [
+        {
+          "offset": null,
+          "path": "meshcore/1.17.1/t1000e_companion_radio_usb-v1.17.1-81dbae5.uf2",
+          "role": "uf2",
+          "sha256": "41a20324d64696ac76a99c9b6944c7e89318adfc631c0a98776b37f0f7952d78",
+          "size": 68
+        },
+        {
+          "offset": null,
+          "path": "meshcore/1.17.1/t1000e_companion_radio_usb-v1.17.1-81dbae5.zip",
+          "role": "dfu-package",
+          "sha256": "daf500aaf22d48ac776a781555a4ef3aabd245b3ca74cc684cb31fca09e6a6b6",
+          "size": 68
+        }
+      ],
+      "id": "meshcore:t1000e:1.17.1:usb",
+      "licence_id": "MIT",
+      "licence_url": "https://github.com/meshcore-dev/MeshCore/blob/main/license.txt",
+      "method": "uf2",
+      "network": "meshcore",
+      "source": "http://127.0.0.1:35221/dl/x/t1000e_companion_radio_usb-v1.17.1-81dbae5.uf2",
+      "source_sha256": "41a20324d64696ac76a99c9b6944c7e89318adfc631c0a98776b37f0f7952d78",
+      "unsigned_by_publisher": true,
+      "variant": "usb",
+      "verification": "release-host-digest",
+      "version": "1.17.1"
+    },
+    {
+      "board": "xiao-nrf52840",
+      "chip": "nrf52840",
+      "fetched_at": "2026-11-25T04:54:16Z",
+      "files": [
+        {
+          "offset": null,
+          "path": "meshcore/1.17.1/Xiao_nrf52_companion_radio_ble-v1.17.1-81dbae5.uf2",
+          "role": "uf2",
+          "sha256": "7ed262939d0a0e34db04711547f58b2538963816dc017d2386025ee596263723",
+          "size": 72
+        },
+        {
+          "offset": null,
+          "path": "meshcore/1.17.1/Xiao_nrf52_companion_radio_ble-v1.17.1-81dbae5.zip",
+          "role": "dfu-package",
+          "sha256": "183c3c96664bc0bb75dda4bc745428ba1ddd23868acced0bd300aa0bd81841b0",
+          "size": 72
+        }
+      ],
+      "id": "meshcore:xiao-nrf52840:1.17.1:ble",
+      "licence_id": "MIT",
+      "licence_url": "https://github.com/meshcore-dev/MeshCore/blob/main/license.txt",
+      "method": "uf2",
+      "network": "meshcore",
+      "source": "http://127.0.0.1:35221/dl/x/Xiao_nrf52_companion_radio_ble-v1.17.1-81dbae5.uf2",
+      "source_sha256": "7ed262939d0a0e34db04711547f58b2538963816dc017d2386025ee596263723",
+      "unsigned_by_publisher": true,
+      "variant": "ble",
+      "verification": "release-host-digest",
+      "version": "1.17.1"
+    },
+    {
+      "board": "xiao-nrf52840",
+      "chip": "nrf52840",
+      "fetched_at": "2026-11-25T04:54:17Z",
+      "files": [
+        {
+          "offset": null,
+          "path": "meshcore/1.17.1/Xiao_nrf52_companion_radio_usb-v1.17.1-81dbae5.uf2",
+          "role": "uf2",
+          "sha256": "6df9942a1ef03161a399210c5e98a2abfb325513ed9d30062cbf60c036a1163a",
+          "size": 72
+        },
+        {
+          "offset": null,
+          "path": "meshcore/1.17.1/Xiao_nrf52_companion_radio_usb-v1.17.1-81dbae5.zip",
+          "role": "dfu-package",
+          "sha256": "b3b485e1478b4b33df47f223336cd1bd74fe194a0a37a22ebffff603f0633387",
+          "size": 72
+        }
+      ],
+      "id": "meshcore:xiao-nrf52840:1.17.1:usb",
+      "licence_id": "MIT",
+      "licence_url": "https://github.com/meshcore-dev/MeshCore/blob/main/license.txt",
+      "method": "uf2",
+      "network": "meshcore",
+      "source": "http://127.0.0.1:35221/dl/x/Xiao_nrf52_companion_radio_usb-v1.17.1-81dbae5.uf2",
+      "source_sha256": "6df9942a1ef03161a399210c5e98a2abfb325513ed9d30062cbf60c036a1163a",
+      "unsigned_by_publisher": true,
+      "variant": "usb",
+      "verification": "release-host-digest",
+      "version": "1.17.1"
+    },
+    {
+      "board": "heltec-v3",
+      "chip": "esp32s3",
+      "fetched_at": "2026-11-25T04:54:17Z",
+      "files": [
+        {
+          "offset": "0xe000",
+          "path": "rnode/1.86/rnode_firmware_heltec32v3.boot_app0",
+          "role": "boot_app0",
+          "sha256": "fc49fb03929378b99ec443fbb70af61e54ac3d6b863313415334bcf1711fd207",
+          "size": 47
+        },
+        {
+          "offset": "0x0",
+          "path": "rnode/1.86/rnode_firmware_heltec32v3.bootloader",
+          "role": "bootloader",
+          "sha256": "cb7c7b9e559e92882a17e3c6a5573a768ac44adb2c4b026ad34e90ecdbe935af",
+          "size": 40
+        },
+        {
+          "offset": "0x8000",
+          "path": "rnode/1.86/rnode_firmware_heltec32v3.partitions",
+          "role": "partitions",
+          "sha256": "ba2dc57b884abb72f062037df5be8221d50afdf2868108023f8cc866874b21c6",
+          "size": 43
+        },
+        {
+          "offset": "0x10000",
+          "path": "rnode/1.86/rnode_firmware_heltec32v3.bin",
+          "role": "firmware",
+          "sha256": "43bb65840068b1038f62c9089c6a95f719a5eff8c13e7de5364735cdf73d5d0d",
+          "size": 41
+        },
+        {
+          "offset": "0x210000",
+          "path": "rnode/1.86/rnode_heltec32v3_console_image.bin",
+          "role": "console",
+          "sha256": "37c06ec25479de65670dbf54f61d2ca6e659ee4e7eab6c542f7bbb8b7f518046",
+          "size": 29
+        }
+      ],
+      "id": "rnode:heltec-v3:1.86",
+      "licence_id": "GPL-3.0-only",
+      "licence_url": "https://github.com/markqvist/RNode_Firmware/blob/master/LICENSE",
+      "method": "esptool",
+      "network": "rnode",
+      "source": "http://127.0.0.1:35221/dl/1.86/rnode_firmware_heltec32v3.zip",
+      "source_sha256": "be472e7b5633f3c4ed10ca7eee18c02a3dc47d7194dab60b9bc4e14c2befaeac",
+      "unsigned_by_publisher": false,
+      "variant": "",
+      "verification": "publisher-checksum",
+      "version": "1.86"
+    },
+    {
+      "board": "heltec-v4",
+      "chip": "esp32s3",
+      "fetched_at": "2026-11-25T04:54:17Z",
+      "files": [
+        {
+          "offset": "0xe000",
+          "path": "rnode/1.86/rnode_firmware_heltec32v4pa.boot_app0",
+          "role": "boot_app0",
+          "sha256": "29cab1e1925f3f88b786014c42fb1b9df92926ebee583c7dd65c95c9f17352f8",
+          "size": 49
+        },
+        {
+          "offset": "0x0",
+          "path": "rnode/1.86/rnode_firmware_heltec32v4pa.bootloader",
+          "role": "bootloader",
+          "sha256": "c5ae3a59974649fa7f8f0966a46640efd275f01596b991e78e803e385a43464a",
+          "size": 42
+        },
+        {
+          "offset": "0x8000",
+          "path": "rnode/1.86/rnode_firmware_heltec32v4pa.partitions",
+          "role": "partitions",
+          "sha256": "71bbd3356badc22d940a470b5f6c425973ffccb81eda493af7039fa65adcdb9c",
+          "size": 45
+        },
+        {
+          "offset": "0x10000",
+          "path": "rnode/1.86/rnode_firmware_heltec32v4pa.bin",
+          "role": "firmware",
+          "sha256": "bb402a4956e1ac318bdf99e98d04351b80a82d0e858bdf85eaaeefd886d338c2",
+          "size": 43
+        },
+        {
+          "offset": "0x210000",
+          "path": "rnode/1.86/rnode_heltec32v4pa_console_image.bin",
+          "role": "console",
+          "sha256": "37c06ec25479de65670dbf54f61d2ca6e659ee4e7eab6c542f7bbb8b7f518046",
+          "size": 29
+        }
+      ],
+      "id": "rnode:heltec-v4:1.86",
+      "licence_id": "GPL-3.0-only",
+      "licence_url": "https://github.com/markqvist/RNode_Firmware/blob/master/LICENSE",
+      "method": "esptool",
+      "network": "rnode",
+      "source": "http://127.0.0.1:35221/dl/1.86/rnode_firmware_heltec32v4pa.zip",
+      "source_sha256": "d30f960d46593c09142775ff710648a670419ab5b73d9e2823775da6acfee315",
+      "unsigned_by_publisher": false,
+      "variant": "",
+      "verification": "publisher-checksum",
+      "version": "1.86"
+    },
+    {
+      "board": "tbeam",
+      "chip": "esp32",
+      "fetched_at": "2026-11-25T04:54:17Z",
+      "files": [
+        {
+          "offset": "0xe000",
+          "path": "rnode/1.86/rnode_firmware_tbeam_sx1262.boot_app0",
+          "role": "boot_app0",
+          "sha256": "7052c2b5484e1fc36220db68c662236f24bb2bd5e9626f98be7eda0a7e789b01",
+          "size": 49
+        },
+        {
+          "offset": "0x1000",
+          "path": "rnode/1.86/rnode_firmware_tbeam_sx1262.bootloader",
+          "role": "bootloader",
+          "sha256": "7a38bf7248c893298428f2d6d9da2b66081f1aedda745436f62a570267364beb",
+          "size": 42
+        },
+        {
+          "offset": "0x8000",
+          "path": "rnode/1.86/rnode_firmware_tbeam_sx1262.partitions",
+          "role": "partitions",
+          "sha256": "774a9fca0aa04eba6e523df75f6c6f2ce8c0637e264b512e95946d77d848f99b",
+          "size": 45
+        },
+        {
+          "offset": "0x10000",
+          "path": "rnode/1.86/rnode_firmware_tbeam_sx1262.bin",
+          "role": "firmware",
+          "sha256": "7e5268f824e7666e9f840544de06af3d7203e6478c64c1c86cf657f5e89ade61",
+          "size": 43
+        },
+        {
+          "offset": "0x210000",
+          "path": "rnode/1.86/rnode_tbeam_sx1262_console_image.bin",
+          "role": "console",
+          "sha256": "37c06ec25479de65670dbf54f61d2ca6e659ee4e7eab6c542f7bbb8b7f518046",
+          "size": 29
+        }
+      ],
+      "id": "rnode:tbeam:1.86",
+      "licence_id": "GPL-3.0-only",
+      "licence_url": "https://github.com/markqvist/RNode_Firmware/blob/master/LICENSE",
+      "method": "esptool",
+      "network": "rnode",
+      "source": "http://127.0.0.1:35221/dl/1.86/rnode_firmware_tbeam_sx1262.zip",
+      "source_sha256": "ef825770037dd738aa2f68eb45cc6c72b19da65500cce381ee41ac3724f74eb3",
+      "unsigned_by_publisher": false,
+      "variant": "",
+      "verification": "publisher-checksum",
+      "version": "1.86"
+    },
+    {
+      "board": "tbeam-s3",
+      "chip": "esp32s3",
+      "fetched_at": "2026-11-25T04:54:17Z",
+      "files": [
+        {
+          "offset": "0xe000",
+          "path": "rnode/1.86/rnode_firmware_tbeam_supreme.boot_app0",
+          "role": "boot_app0",
+          "sha256": "5cb465003ef603aa716b426829a5805a29092856c3ca62e59bd72a3f010518fe",
+          "size": 50
+        },
+        {
+          "offset": "0x0",
+          "path": "rnode/1.86/rnode_firmware_tbeam_supreme.bootloader",
+          "role": "bootloader",
+          "sha256": "a33a3362ac9108e4cc868e0185bf920a24bb101cd647593bde42b42ec3af3b3c",
+          "size": 43
+        },
+        {
+          "offset": "0x8000",
+          "path": "rnode/1.86/rnode_firmware_tbeam_supreme.partitions",
+          "role": "partitions",
+          "sha256": "3b2f2e512bb19c26f13c45f3e9ebf176ae19ba2f1fc81b9bd6f07f72f4a0bccf",
+          "size": 46
+        },
+        {
+          "offset": "0x10000",
+          "path": "rnode/1.86/rnode_firmware_tbeam_supreme.bin",
+          "role": "firmware",
+          "sha256": "356b2f49d15657f8ebfc3d1fdcddc57b99b8a9f5181e39700e0aed1cefbadbe2",
+          "size": 44
+        },
+        {
+          "offset": "0x210000",
+          "path": "rnode/1.86/rnode_tbeam_supreme_console_image.bin",
+          "role": "console",
+          "sha256": "37c06ec25479de65670dbf54f61d2ca6e659ee4e7eab6c542f7bbb8b7f518046",
+          "size": 29
+        }
+      ],
+      "id": "rnode:tbeam-s3:1.86",
+      "licence_id": "GPL-3.0-only",
+      "licence_url": "https://github.com/markqvist/RNode_Firmware/blob/master/LICENSE",
+      "method": "esptool",
+      "network": "rnode",
+      "source": "http://127.0.0.1:35221/dl/1.86/rnode_firmware_tbeam_supreme.zip",
+      "source_sha256": "ba4d5562f8379adfcaa3a18158f9c810412eb63f1fa00e90ee62362e9d398384",
+      "unsigned_by_publisher": false,
+      "variant": "",
+      "verification": "publisher-checksum",
+      "version": "1.86"
+    },
+    {
+      "board": "rak4631",
+      "chip": "nrf52840",
+      "fetched_at": "2026-11-25T04:54:17Z",
+      "files": [
+        {
+          "offset": null,
+          "path": "rnode/1.86/rnode_firmware_rak4631.zip",
+          "role": "dfu-package",
+          "sha256": "fc595d5419cd67810998f8338ac939e35d7c4b1e0d2008fb14a17753c875180b",
+          "size": 279
+        }
+      ],
+      "id": "rnode:rak4631:1.86",
+      "licence_id": "GPL-3.0-only",
+      "licence_url": "https://github.com/markqvist/RNode_Firmware/blob/master/LICENSE",
+      "method": "nrfutil",
+      "network": "rnode",
+      "source": "http://127.0.0.1:35221/dl/1.86/rnode_firmware_rak4631.zip",
+      "source_sha256": "fc595d5419cd67810998f8338ac939e35d7c4b1e0d2008fb14a17753c875180b",
+      "unsigned_by_publisher": false,
+      "variant": "",
+      "verification": "publisher-checksum",
+      "version": "1.86"
+    },
+    {
+      "board": "heltec-v3",
+      "chip": "esp32s3",
+      "fetched_at": "2026-11-25T04:54:17Z",
+      "files": [
+        {
+          "offset": "0xe000",
+          "path": "rnode/1.85/rnode_firmware_heltec32v3.boot_app0",
+          "role": "boot_app0",
+          "sha256": "c3cf203e422de3e301fe5a8d1e4da9163573f2cee6d6434d1dd402f39c7f7630",
+          "size": 47
+        },
+        {
+          "offset": "0x0",
+          "path": "rnode/1.85/rnode_firmware_heltec32v3.bootloader",
+          "role": "bootloader",
+          "sha256": "3d1509886bf2f8d3f8197b94f1f89cca502075d61d9cb10e262a8793670eaef2",
+          "size": 40
+        },
+        {
+          "offset": "0x8000",
+          "path": "rnode/1.85/rnode_firmware_heltec32v3.partitions",
+          "role": "partitions",
+          "sha256": "42e145281f8edc736de40f36fd9cf679eb02c7321f4c3f6be20f08682a78dfeb",
+          "size": 43
+        },
+        {
+          "offset": "0x10000",
+          "path": "rnode/1.85/rnode_firmware_heltec32v3.bin",
+          "role": "firmware",
+          "sha256": "1b923f8d18fa08cff10935ff6ec0eb8ec0bff97a3c5c483bd377d0880150f3a7",
+          "size": 41
+        },
+        {
+          "offset": "0x210000",
+          "path": "rnode/1.85/rnode_heltec32v3_console_image.bin",
+          "role": "console",
+          "sha256": "37c06ec25479de65670dbf54f61d2ca6e659ee4e7eab6c542f7bbb8b7f518046",
+          "size": 29
+        }
+      ],
+      "id": "rnode:heltec-v3:1.85",
+      "licence_id": "GPL-3.0-only",
+      "licence_url": "https://github.com/markqvist/RNode_Firmware/blob/master/LICENSE",
+      "method": "esptool",
+      "network": "rnode",
+      "source": "http://127.0.0.1:35221/dl/1.85/rnode_firmware_heltec32v3.zip",
+      "source_sha256": "111b6a16fbbe1fe0315063694de0c8f9f7a26999a030dbbe68ead36066855c04",
+      "unsigned_by_publisher": false,
+      "variant": "",
+      "verification": "publisher-checksum",
+      "version": "1.85"
+    },
+    {
+      "board": "heltec-v4",
+      "chip": "esp32s3",
+      "fetched_at": "2026-11-25T04:54:17Z",
+      "files": [
+        {
+          "offset": "0xe000",
+          "path": "rnode/1.85/rnode_firmware_heltec32v4pa.boot_app0",
+          "role": "boot_app0",
+          "sha256": "3bf43ff50d38d27badc57132f0796251bb78554f9a5a5ceabf4293445202d214",
+          "size": 49
+        },
+        {
+          "offset": "0x0",
+          "path": "rnode/1.85/rnode_firmware_heltec32v4pa.bootloader",
+          "role": "bootloader",
+          "sha256": "914432b98cd82a8199cd419357cc0a8e1a49eee211b1b42f9f18d63a5f1c7ee6",
+          "size": 42
+        },
+        {
+          "offset": "0x8000",
+          "path": "rnode/1.85/rnode_firmware_heltec32v4pa.partitions",
+          "role": "partitions",
+          "sha256": "eb0466512989a841e740892c2ae74e2c00677e2d33d8763fc89ed99fd77f7867",
+          "size": 45
+        },
+        {
+          "offset": "0x10000",
+          "path": "rnode/1.85/rnode_firmware_heltec32v4pa.bin",
+          "role": "firmware",
+          "sha256": "91b2b7c244f5f3c81258e40a810763f4e04d990fafb251e8af16d0ddd6ebbde9",
+          "size": 43
+        },
+        {
+          "offset": "0x210000",
+          "path": "rnode/1.85/rnode_heltec32v4pa_console_image.bin",
+          "role": "console",
+          "sha256": "37c06ec25479de65670dbf54f61d2ca6e659ee4e7eab6c542f7bbb8b7f518046",
+          "size": 29
+        }
+      ],
+      "id": "rnode:heltec-v4:1.85",
+      "licence_id": "GPL-3.0-only",
+      "licence_url": "https://github.com/markqvist/RNode_Firmware/blob/master/LICENSE",
+      "method": "esptool",
+      "network": "rnode",
+      "source": "http://127.0.0.1:35221/dl/1.85/rnode_firmware_heltec32v4pa.zip",
+      "source_sha256": "9736614e084a7515475e04fcc1dc59c524a2ec4dc3da65254dcc6090f391c909",
+      "unsigned_by_publisher": false,
+      "variant": "",
+      "verification": "publisher-checksum",
+      "version": "1.85"
+    },
+    {
+      "board": "tbeam",
+      "chip": "esp32",
+      "fetched_at": "2026-11-25T04:54:17Z",
+      "files": [
+        {
+          "offset": "0xe000",
+          "path": "rnode/1.85/rnode_firmware_tbeam_sx1262.boot_app0",
+          "role": "boot_app0",
+          "sha256": "d31ef3b851860fe3d82579c8c52442fd93b54958f04f41a3154b6da20bf575f2",
+          "size": 49
+        },
+        {
+          "offset": "0x1000",
+          "path": "rnode/1.85/rnode_firmware_tbeam_sx1262.bootloader",
+          "role": "bootloader",
+          "sha256": "26f965bcd04629d9be988d62ebad7e4173e46d047d7104ffc96330e773fda871",
+          "size": 42
+        },
+        {
+          "offset": "0x8000",
+          "path": "rnode/1.85/rnode_firmware_tbeam_sx1262.partitions",
+          "role": "partitions",
+          "sha256": "2b503bb479069e5bd9c91a70c835e5d64e19f1f3ab0af54d75ddffb2a9850bc3",
+          "size": 45
+        },
+        {
+          "offset": "0x10000",
+          "path": "rnode/1.85/rnode_firmware_tbeam_sx1262.bin",
+          "role": "firmware",
+          "sha256": "3a18f404bd6b758532fa704e7966c100377c2b15a9f9c379de8c45a06cc43218",
+          "size": 43
+        },
+        {
+          "offset": "0x210000",
+          "path": "rnode/1.85/rnode_tbeam_sx1262_console_image.bin",
+          "role": "console",
+          "sha256": "37c06ec25479de65670dbf54f61d2ca6e659ee4e7eab6c542f7bbb8b7f518046",
+          "size": 29
+        }
+      ],
+      "id": "rnode:tbeam:1.85",
+      "licence_id": "GPL-3.0-only",
+      "licence_url": "https://github.com/markqvist/RNode_Firmware/blob/master/LICENSE",
+      "method": "esptool",
+      "network": "rnode",
+      "source": "http://127.0.0.1:35221/dl/1.85/rnode_firmware_tbeam_sx1262.zip",
+      "source_sha256": "e612151326fd2fa0f27e25ea6a90bdca6c10a326956be7dce427566c8d9ae3b8",
+      "unsigned_by_publisher": false,
+      "variant": "",
+      "verification": "publisher-checksum",
+      "version": "1.85"
+    },
+    {
+      "board": "tbeam-s3",
+      "chip": "esp32s3",
+      "fetched_at": "2026-11-25T04:54:17Z",
+      "files": [
+        {
+          "offset": "0xe000",
+          "path": "rnode/1.85/rnode_firmware_tbeam_supreme.boot_app0",
+          "role": "boot_app0",
+          "sha256": "6a45354aba4e85f92abd87b6578d97139015ef1272c8e2fbe00034aec9b8749e",
+          "size": 50
+        },
+        {
+          "offset": "0x0",
+          "path": "rnode/1.85/rnode_firmware_tbeam_supreme.bootloader",
+          "role": "bootloader",
+          "sha256": "fc29290d771ca63a040d3ed881e6369203d2f5ee78022c9052c96e98068f49f4",
+          "size": 43
+        },
+        {
+          "offset": "0x8000",
+          "path": "rnode/1.85/rnode_firmware_tbeam_supreme.partitions",
+          "role": "partitions",
+          "sha256": "264772d82401381cec45e09cdc5c9de185d0e3a9ed0705ffb3febe9b3b98d83c",
+          "size": 46
+        },
+        {
+          "offset": "0x10000",
+          "path": "rnode/1.85/rnode_firmware_tbeam_supreme.bin",
+          "role": "firmware",
+          "sha256": "550909a3c12b4d692af87ba681bac1caec97ef1dff4ccb22139ee05626c143e1",
+          "size": 44
+        },
+        {
+          "offset": "0x210000",
+          "path": "rnode/1.85/rnode_tbeam_supreme_console_image.bin",
+          "role": "console",
+          "sha256": "37c06ec25479de65670dbf54f61d2ca6e659ee4e7eab6c542f7bbb8b7f518046",
+          "size": 29
+        }
+      ],
+      "id": "rnode:tbeam-s3:1.85",
+      "licence_id": "GPL-3.0-only",
+      "licence_url": "https://github.com/markqvist/RNode_Firmware/blob/master/LICENSE",
+      "method": "esptool",
+      "network": "rnode",
+      "source": "http://127.0.0.1:35221/dl/1.85/rnode_firmware_tbeam_supreme.zip",
+      "source_sha256": "7f774c37857c854a208d7c6b6bc39fe644177a5de35620a782434715747ae1b3",
+      "unsigned_by_publisher": false,
+      "variant": "",
+      "verification": "publisher-checksum",
+      "version": "1.85"
+    },
+    {
+      "board": "rak4631",
+      "chip": "nrf52840",
+      "fetched_at": "2026-11-25T04:54:17Z",
+      "files": [
+        {
+          "offset": null,
+          "path": "rnode/1.85/rnode_firmware_rak4631.zip",
+          "role": "dfu-package",
+          "sha256": "fc595d5419cd67810998f8338ac939e35d7c4b1e0d2008fb14a17753c875180b",
+          "size": 279
+        }
+      ],
+      "id": "rnode:rak4631:1.85",
+      "licence_id": "GPL-3.0-only",
+      "licence_url": "https://github.com/markqvist/RNode_Firmware/blob/master/LICENSE",
+      "method": "nrfutil",
+      "network": "rnode",
+      "source": "http://127.0.0.1:35221/dl/1.85/rnode_firmware_rak4631.zip",
+      "source_sha256": "fc595d5419cd67810998f8338ac939e35d7c4b1e0d2008fb14a17753c875180b",
+      "unsigned_by_publisher": false,
+      "variant": "",
+      "verification": "publisher-checksum",
+      "version": "1.85"
+    }
+  ],
+  "ok": true
+}

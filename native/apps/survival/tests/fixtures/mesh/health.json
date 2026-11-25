@@ -1,0 +1,15 @@
+{
+  "id": 1,
+  "ok": true,
+  "result": {
+    "device_config": false,
+    "device_config_write": false,
+    "ok": true,
+    "pending_unwritten": 0,
+    "receive_only": true,
+    "store": "/run/user/1000/taos-mesh/records.jsonl",
+    "store_error": null,
+    "stored_this_run": 4,
+    "torn_tail_preserved": null
+  }
+}

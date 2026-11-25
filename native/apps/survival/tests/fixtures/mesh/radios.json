@@ -1,0 +1,24 @@
+{
+  "id": 1,
+  "ok": true,
+  "result": [
+    {
+      "connected": true,
+      "console_bytes": 0,
+      "decode_errors": 0,
+      "frames_in": 4,
+      "frames_out": 0,
+      "id": "!28af67cc",
+      "identity": {
+        "identity": "contact:ce5ba23796e",
+        "name": "Sam"
+      },
+      "last_error": null,
+      "link": "fake-e2e",
+      "link_kind": "usb",
+      "network": "meshtastic",
+      "queued": 0,
+      "ready": false
+    }
+  ]
+}

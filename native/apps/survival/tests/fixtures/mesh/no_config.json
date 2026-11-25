@@ -1,0 +1,8 @@
+{
+  "error": {
+    "code": "unknown_method",
+    "message": "no method device.config"
+  },
+  "id": 1,
+  "ok": false
+}

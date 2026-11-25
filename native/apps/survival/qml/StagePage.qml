@@ -17,6 +17,8 @@ Item {
     property Component sidePanel
     property alias stage: stageItem
     property bool sheetOpen: true
+    property int panelWidth: 340
+    property bool tall: false
     readonly property var map: Survival.map
     function focusSearch() { stageItem.focusSearch() }
 
@@ -67,8 +69,9 @@ Item {
         anchors.bottom: parent.bottom
         anchors.top: sp.narrow ? undefined : parent.top
         anchors.left: sp.narrow ? parent.left : undefined
-        width: sp.narrow ? parent.width : 340
-        height: sp.narrow ? (sp.sheetOpen ? Math.round(sp.height * 0.48) : 52) : sp.height
+        width: sp.narrow ? parent.width : sp.panelWidth
+        height: sp.narrow ? (sp.sheetOpen ? Math.round(sp.height * (sp.tall ? 0.9 : 0.48)) : 52) : sp.height
+        Behavior on width { NumberAnimation { duration: Look.base; easing.type: Look.ease } }
         Behavior on height { NumberAnimation { duration: Look.base; easing.type: Look.ease } }
         Rectangle { width: sp.narrow ? parent.width : 1; height: sp.narrow ? 1 : parent.height; color: Look.hairline }
         // the handle of the phone sheet

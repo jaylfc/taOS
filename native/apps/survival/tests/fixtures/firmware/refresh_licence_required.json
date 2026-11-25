@@ -1,0 +1,15 @@
+{
+  "ok": true,
+  "reports": [
+    {
+      "detail": "the Meshtastic licence (GPL-3.0-only) has not been accepted yet: https://github.com/meshtastic/firmware/blob/master/LICENSE",
+      "errors": [],
+      "fetched": [],
+      "network": "meshtastic",
+      "notes": [],
+      "retry_after_epoch": null,
+      "skipped": 0,
+      "status": "licence_required"
+    }
+  ]
+}

@@ -1,0 +1,26 @@
+{
+  "id": 1,
+  "ok": true,
+  "result": [
+    {
+      "callsign": "Sam",
+      "hasPosition": false,
+      "id": "!28af67cc",
+      "isSelf": true,
+      "lastHeardMs": 1795581844099,
+      "lat": 0.0,
+      "lon": 0.0,
+      "owner": ""
+    },
+    {
+      "callsign": "",
+      "hasPosition": true,
+      "id": "!7ed23c00",
+      "isSelf": false,
+      "lastHeardMs": 1795581844099,
+      "lat": 51.45,
+      "lon": -1.23,
+      "owner": ""
+    }
+  ]
+}

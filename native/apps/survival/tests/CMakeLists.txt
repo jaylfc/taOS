@@ -38,3 +38,14 @@ if(PYTHON3)
            QT_QPA_PLATFORM=offscreen QT_QUICK_BACKEND=software $<TARGET_FILE:tst_survival_ui>)
   set_tests_properties(apps_tst_survival_ui PROPERTIES TIMEOUT 300)
 endif()
+
+# taOStak: the mesh and firmware engines' faces, against stand-in engines that answer with the real engines' captured JSON.
+add_executable(tst_survival_mesh tst_survival_mesh.cpp fakemesh.h)
+target_link_libraries(tst_survival_mesh PRIVATE taos_survival_faces Qt6::Test)
+target_include_directories(tst_survival_mesh PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+target_compile_definitions(tst_survival_mesh PRIVATE MESH_FIXTURES_DIR="${CMAKE_CURRENT_SOURCE_DIR}/fixtures")
+taos_survival_rpath(tst_survival_mesh)
+add_test(NAME apps_tst_survival_mesh COMMAND ${CMAKE_COMMAND} -E env QT_QPA_PLATFORM=offscreen TAOS_SURVIVAL_NO_SYSTEMCTL=1
+         XDG_RUNTIME_DIR=${CMAKE_CURRENT_BINARY_DIR}/rt_mesh HOME=${CMAKE_CURRENT_BINARY_DIR}/home_mesh TMPDIR=${CMAKE_CURRENT_BINARY_DIR}
+         $<TARGET_FILE:tst_survival_mesh>)
+set_tests_properties(apps_tst_survival_mesh PROPERTIES TIMEOUT 300)

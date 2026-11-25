@@ -1,0 +1,87 @@
+{
+  "boards": [
+    {
+      "chip": "esp32s3",
+      "family": "esp32",
+      "id": "heltec-v3",
+      "name": "Heltec V3",
+      "networks": [
+        "meshtastic",
+        "meshcore",
+        "rnode"
+      ],
+      "recovery": "Hold the PRG (BOOT) button, tap RST, then release PRG to enter the ROM bootloader. Unplug and replug the USB cable, then run the flash again. If the port does not appear, try another cable (many are charge-only)."
+    },
+    {
+      "chip": "esp32s3",
+      "family": "esp32",
+      "id": "heltec-v4",
+      "name": "Heltec V4",
+      "networks": [
+        "meshtastic",
+        "meshcore",
+        "rnode"
+      ],
+      "recovery": "Hold the PRG (BOOT) button, tap RST, then release PRG to enter the ROM bootloader. Unplug and replug the USB cable, then run the flash again."
+    },
+    {
+      "chip": "esp32",
+      "family": "esp32",
+      "id": "tbeam",
+      "name": "LilyGO T-Beam",
+      "networks": [
+        "meshtastic",
+        "meshcore",
+        "rnode"
+      ],
+      "recovery": "Switch the board off, hold the BOOT (IO0) button, switch it on or plug USB in, then release BOOT. Run the flash again. Check the radio variant (SX1262 or SX1276) printed on the board."
+    },
+    {
+      "chip": "esp32s3",
+      "family": "esp32",
+      "id": "tbeam-s3",
+      "name": "LilyGO T-Beam Supreme",
+      "networks": [
+        "meshtastic",
+        "meshcore",
+        "rnode"
+      ],
+      "recovery": "Hold the BOOT button, tap RST (or plug in USB while holding BOOT), then release BOOT. Unplug and replug USB, then run the flash again."
+    },
+    {
+      "chip": "nrf52840",
+      "family": "nrf52",
+      "id": "rak4631",
+      "name": "RAK4631",
+      "networks": [
+        "meshtastic",
+        "meshcore",
+        "rnode"
+      ],
+      "recovery": "Double-tap the RESET button on the WisBlock core quickly. A drive named WISBOOT (or similar) appears and the green LED pulses. Copy the .uf2 file onto it. If the drive never appears the bootloader is damaged and needs a SWD programmer."
+    },
+    {
+      "chip": "nrf52840",
+      "family": "nrf52",
+      "id": "t1000e",
+      "name": "Seeed T1000-E",
+      "networks": [
+        "meshtastic",
+        "meshcore"
+      ],
+      "recovery": "Plug in USB, then double-press the button quickly (or press the button while plugging in). A drive named T1000-E appears. Copy the .uf2 file onto it."
+    },
+    {
+      "chip": "nrf52840",
+      "family": "nrf52",
+      "id": "xiao-nrf52840",
+      "name": "Seeed XIAO nRF52840",
+      "networks": [
+        "meshtastic",
+        "meshcore"
+      ],
+      "recovery": "Double-tap the small RESET button on the XIAO quickly. A drive named XIAO-SENSE (or XIAO-BOOT) appears. Copy the .uf2 file onto it."
+    }
+  ],
+  "ok": true
+}

@@ -281,3 +281,54 @@ fn a_probe_never_runs_while_a_flash_is_writing() {
     let (_, run) = t.join().unwrap();
     assert_eq!(run["ok"], true, "{run}");
 }
+
+/// Writes the real API's answers (against the test fakes: fake release server, fake USB tree, fake tools), so the app's
+/// fixtures are captured, not typed. Runs only when TAOS_FW_DUMP_FIXTURES names a directory. Nothing touches a device.
+#[test]
+fn dump_app_fixtures_when_asked() {
+    let Ok(dir) = std::env::var("TAOS_FW_DUMP_FIXTURES") else {
+        return;
+    };
+    let put = |name: &str, v: &Value| {
+        std::fs::write(
+            format!("{dir}/{name}.json"),
+            serde_json::to_string_pretty(v).unwrap(),
+        )
+        .unwrap()
+    };
+    let srv = Server::start();
+    publish_all(&srv, None);
+    let env = Env::new(&srv.base);
+    env.add_usb("1-1", "10c4", "ea60", "SN1", "ttyUSB0");
+    let a = start(&env);
+    let c = |m: &str, p: &str, b: Option<Value>| call(&a, m, p, b, true, "", None).1;
+    put("boards", &c("GET", "/v1/boards", None));
+    put("licences_pending", &c("GET", "/v1/licences", None));
+    put(
+        "refresh_licence_required",
+        &c("POST", "/v1/library/refresh", Some(json!({"network":"meshtastic"}))),
+    );
+    for n in ["meshtastic", "meshcore", "rnode"] {
+        c(
+            "POST",
+            "/v1/licences/accept",
+            Some(json!({"network":n,"by":"Test Owner"})),
+        );
+    }
+    put("licences_accepted", &c("GET", "/v1/licences", None));
+    put("refresh_ok", &c("POST", "/v1/library/refresh", Some(json!({}))));
+    put("library", &c("GET", "/v1/library", None));
+    put("devices", &c("GET", "/v1/devices", None));
+    put("devices_probed", &c("GET", "/v1/devices?probe=1", None));
+    put(
+        "device_firmware",
+        &c("GET", "/v1/devices/usb-10c4-ea60-SN1-1-1/firmware?probe=1", None),
+    );
+    let body =
+        json!({"device":"usb-10c4-ea60-SN1-1-1","entry":"meshtastic:heltec-v3:2.7.26.54e0d8d"});
+    put("plan", &c("POST", "/v1/flash/plan", Some(body.clone())));
+    put("run_unconfirmed", &c("POST", "/v1/flash/run", Some(body.clone())));
+    let mut run = body;
+    run["confirm"] = "Heltec V3".into();
+    put("run_done", &c("POST", "/v1/flash/run", Some(run)));
+}

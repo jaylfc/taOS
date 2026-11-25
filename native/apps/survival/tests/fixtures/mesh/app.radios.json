@@ -1,0 +1,15 @@
+{
+  "id": 1,
+  "ok": true,
+  "result": [
+    {
+      "batteryPercent": -1,
+      "firmware": "",
+      "id": "!28af67cc",
+      "link": "usb",
+      "name": "Unknown 67cc",
+      "state": "connecting",
+      "transport": "meshtastic"
+    }
+  ]
+}
