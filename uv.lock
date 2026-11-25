@@ -2839,16 +2839,22 @@ wheels = [
 
 [[package]]
 name = "taosmd"
-version = "0.4.0"
+version = "0.5.24"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
+    { name = "cryptography" },
+    { name = "httpx" },
     { name = "numpy" },
-    { name = "onnxruntime" },
     { name = "transformers" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/78/1c/e1a6d682d93401b04795f7c3e5fc763450c510bb6481077495c4bb782a59/taosmd-0.4.0.tar.gz", hash = "sha256:06d825963b1f3c65bb3b45a66506b52d2f5b51ef3d4b0074f55e97af8e024743", size = 512415, upload-time = "2026-06-22T23:13:50.07Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/d2/69/32165f5a9a3c17e1d84f485748f4ac110f31329fbcc80b74346f24080daa/taosmd-0.5.24.tar.gz", hash = "sha256:69777002a541ce118da7ab2a2d64fd28bd71b839a6ccd513af47cd701eb9fa45", size = 1058270, upload-time = "2026-11-25T13:30:32.214Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/7a/b8/3f79484a1d4da236857861471c01c48ffcca55ce0b5eddf3943b984d1e38/taosmd-0.4.0-py3-none-any.whl", hash = "sha256:d990ece82bdc301fcb2602d55538aa6e4194a9e0e81b904b150544c8246d9a81", size = 381301, upload-time = "2026-06-22T23:13:48.354Z" },
+    { url = "https://files.pythonhosted.org/packages/f2/f7/b95fa39bdc15d7769de1beb5749c7fb8195f1b803a7aab48ffc7a6422306/taosmd-0.5.24-py3-none-any.whl", hash = "sha256:95adb698fd9c58b04ece32929835e3660e71bb25deee0ab9508212c4248062ff", size = 566647, upload-time = "2026-11-25T13:30:30.571Z" },
+]
+
+[package.optional-dependencies]
+onnx = [
+    { name = "onnxruntime" },
 ]
 
 [[package]]
@@ -2896,7 +2902,7 @@ dependencies = [
     { name = "pyyaml" },
     { name = "readability-lxml" },
     { name = "sqlcipher3" },
-    { name = "taosmd" },
+    { name = "taosmd", extra = ["onnx"] },
     { name = "tenacity" },
     { name = "uvicorn", extra = ["standard"] },
     { name = "websockets" },
@@ -2979,7 +2985,7 @@ requires-dist = [
     { name = "pyyaml", specifier = ">=6.0" },
     { name = "readability-lxml", specifier = ">=0.8.1" },
     { name = "sqlcipher3", specifier = ">=0.6.2" },
-    { name = "taosmd", specifier = "==0.4.0" },
+    { name = "taosmd", extras = ["onnx"], specifier = "==0.5.24" },
     { name = "tenacity", specifier = ">=9.1.4" },
     { name = "uvicorn", extras = ["standard"], specifier = ">=0.52.1" },
     { name = "websockets", specifier = ">=12.0" },
