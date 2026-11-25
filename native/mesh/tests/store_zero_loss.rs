@@ -10,13 +10,20 @@ use taos_mesh::store::Store;
 fn text_frame(n: u32) -> Inbound {
     Inbound {
         raw: vec![n as u8; 40],
-        event: Event::Text { text: format!("m{n}") },
+        event: Event::Text {
+            text: format!("m{n}"),
+        },
         from: Some("!00000001".into()),
         to: Some("!ffffffff".into()),
         channel: Some(0),
         packet_id: Some(n),
         radio_ts: None,
-        signal: Signal { rssi: Some(-90), snr: Some(5.0), hops: Some(1), ..Default::default() },
+        signal: Signal {
+            rssi: Some(-90),
+            snr: Some(5.0),
+            hops: Some(1),
+            ..Default::default()
+        },
         position: None,
         broadcast: true,
         trust: None,
@@ -29,10 +36,18 @@ fn every_record_is_replayable_with_the_same_ids() {
     let e = Engine::open(t.path(), "owner").unwrap();
     let mut ids = vec![];
     for n in 0..50 {
-        ids.push(e.ingest("meshtastic", "!0000aaaa", text_frame(n)).unwrap().id);
+        ids.push(
+            e.ingest("meshtastic", "!0000aaaa", text_frame(n))
+                .unwrap()
+                .id,
+        );
     }
     drop(e);
-    let again: Vec<String> = Store::read_all(t.path()).unwrap().into_iter().map(|r| r.id).collect();
+    let again: Vec<String> = Store::read_all(t.path())
+        .unwrap()
+        .into_iter()
+        .map(|r| r.id)
+        .collect();
     assert_eq!(again, ids);
     // 50 distinct stable ids
     let mut s = ids.clone();
@@ -52,7 +67,19 @@ fn a_record_carries_everything_the_spec_asks_for() {
     let r = e.ingest("meshtastic", "!0000aaaa", text_frame(1)).unwrap();
     let line = std::fs::read_to_string(t.path().join("records.jsonl")).unwrap();
     let v: serde_json::Value = serde_json::from_str(line.trim()).unwrap();
-    for k in ["id", "network", "radio", "channel", "host_ts_ms", "signal", "raw_hex", "dir", "kind", "from", "to"] {
+    for k in [
+        "id",
+        "network",
+        "radio",
+        "channel",
+        "host_ts_ms",
+        "signal",
+        "raw_hex",
+        "dir",
+        "kind",
+        "from",
+        "to",
+    ] {
         assert!(v.get(k).is_some(), "missing {k}");
     }
     assert_eq!(v["signal"]["rssi"], -90);
@@ -76,11 +103,20 @@ fn a_torn_last_line_is_preserved_on_the_side_and_appending_continues() {
     std::fs::write(&p, &data).unwrap();
     let e = Engine::open(t.path(), "owner").unwrap();
     let h = e.health();
-    let side = h["torn_tail_preserved"].as_str().expect("the torn bytes are reported");
-    assert_eq!(std::fs::read(side).unwrap(), br#"{"v":1,"id":"deadbeef","dir":"in","net"#);
+    let side = h["torn_tail_preserved"]
+        .as_str()
+        .expect("the torn bytes are reported");
+    assert_eq!(
+        std::fs::read(side).unwrap(),
+        br#"{"v":1,"id":"deadbeef","dir":"in","net"#
+    );
     e.ingest("meshtastic", "!0000aaaa", text_frame(3)).unwrap();
     let all = Store::read_all(t.path()).unwrap();
-    assert_eq!(all.len(), 3, "the two complete records and the new one; the torn line did not poison the file");
+    assert_eq!(
+        all.len(),
+        3,
+        "the two complete records and the new one; the torn line did not poison the file"
+    );
 }
 
 #[test]
@@ -115,9 +151,16 @@ fn sigkill_mid_write_loses_no_acknowledged_record() {
     }
     assert!(acked.len() >= 300);
     let e = Engine::open(t.path(), "owner").unwrap(); // repairs a torn tail if the kill landed mid-line
-    let stored: std::collections::HashSet<String> = Store::read_all(t.path()).unwrap().into_iter().map(|r| r.id).collect();
+    let stored: std::collections::HashSet<String> = Store::read_all(t.path())
+        .unwrap()
+        .into_iter()
+        .map(|r| r.id)
+        .collect();
     for id in &acked {
-        assert!(stored.contains(id), "acknowledged record {id} is missing after SIGKILL");
+        assert!(
+            stored.contains(id),
+            "acknowledged record {id} is missing after SIGKILL"
+        );
     }
     // and the store is writable again
     e.ingest("meshtastic", "!0000aaaa", text_frame(1)).unwrap();
@@ -132,12 +175,20 @@ fn a_failed_write_is_surfaced_kept_pending_and_retried_in_order() {
     let t = TmpDir::new("full");
     let store = Store::open_file(std::path::Path::new("/dev/full")).unwrap();
     let e = Engine::open_with_store(t.path(), "owner", store).unwrap();
-    let err = e.ingest("meshtastic", "!0000aaaa", text_frame(1)).unwrap_err();
-    assert!(err.to_string().to_lowercase().contains("space") || err.to_string().contains("28"), "{err}");
+    let err = e
+        .ingest("meshtastic", "!0000aaaa", text_frame(1))
+        .unwrap_err();
+    assert!(
+        err.to_string().to_lowercase().contains("space") || err.to_string().contains("28"),
+        "{err}"
+    );
     assert!(e.ingest("meshtastic", "!0000aaaa", text_frame(2)).is_err());
     let h = e.health();
     assert_eq!(h["ok"], false);
-    assert_eq!(h["pending_unwritten"], 2, "both frames are still held, not dropped");
+    assert_eq!(
+        h["pending_unwritten"], 2,
+        "both frames are still held, not dropped"
+    );
     assert!(h["store_error"].is_string());
 }
 
@@ -167,7 +218,9 @@ fn an_old_record_without_newer_fields_still_loads() {
     let old = r#"{"v":1,"id":"00112233445566778899aabbccddeeff","dir":"in","network":"meshtastic","radio":"!0000aaaa","kind":"text","host_ts_ms":1764000000000,"broadcast":true,"text":"old","raw_hex":"00"}"#;
     std::fs::write(t.path().join("records.jsonl"), format!("{old}\n")).unwrap();
     let e = Engine::open(t.path(), "owner").unwrap();
-    let got = e.messages("owner", &taos_mesh::engine::Filter::default()).unwrap();
+    let got = e
+        .messages("owner", &taos_mesh::engine::Filter::default())
+        .unwrap();
     assert_eq!(got.len(), 1);
     assert_eq!(got[0].text.as_deref(), Some("old"));
     assert_eq!(got[0].signal.rssi, None);
@@ -177,6 +230,8 @@ fn an_old_record_without_newer_fields_still_loads() {
 fn a_corrupt_middle_line_stops_the_start_up_loudly() {
     let t = TmpDir::new("corrupt");
     std::fs::write(t.path().join("records.jsonl"), "not json\n").unwrap();
-    let err = Engine::open(t.path(), "owner").err().expect("must refuse to start");
+    let err = Engine::open(t.path(), "owner")
+        .err()
+        .expect("must refuse to start");
     assert!(err.to_string().contains("line 1"), "{err}");
 }

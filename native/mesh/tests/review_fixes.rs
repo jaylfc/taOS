@@ -26,7 +26,13 @@ fn rig_net(net: &str, hello: &[u8]) -> (TmpDir, Arc<Engine>, FakeLink, Session) 
 }
 
 fn mt() -> (TmpDir, Arc<Engine>, FakeLink, Session) {
-    rig_net(NET, &frame(&frame_named(&fixture("meshtastic.json"), "my_info_heltec_v2_1")))
+    rig_net(
+        NET,
+        &frame(&frame_named(
+            &fixture("meshtastic.json"),
+            "my_info_heltec_v2_1",
+        )),
+    )
 }
 
 fn mc() -> (TmpDir, Arc<Engine>, FakeLink, Session) {
@@ -38,11 +44,34 @@ fn mc() -> (TmpDir, Arc<Engine>, FakeLink, Session) {
 }
 
 fn grant(kind: &str, agent: &str, ch: Option<u32>) -> Grant {
-    Grant { id: String::new(), kind: kind.into(), agent: agent.into(), network: NET.into(), channel: ch, max_msgs_per_hour: None, max_bytes_per_hour: None, expires_ms: None, created_ms: 0, created_by: String::new() }
+    Grant {
+        id: String::new(),
+        kind: kind.into(),
+        agent: agent.into(),
+        network: NET.into(),
+        channel: ch,
+        max_msgs_per_hour: None,
+        max_bytes_per_hour: None,
+        expires_ms: None,
+        created_ms: 0,
+        created_by: String::new(),
+    }
 }
 
 fn inbound_text(from: &str, to: &str, ch: u32, body: &str) -> Inbound {
-    Inbound { raw: vec![1], event: Event::Text { text: body.into() }, from: Some(from.into()), to: Some(to.into()), channel: Some(ch), packet_id: None, radio_ts: None, signal: Signal::default(), position: None, broadcast: to == "!ffffffff", trust: None }
+    Inbound {
+        raw: vec![1],
+        event: Event::Text { text: body.into() },
+        from: Some(from.into()),
+        to: Some(to.into()),
+        channel: Some(ch),
+        packet_id: None,
+        radio_ts: None,
+        signal: Signal::default(),
+        position: None,
+        broadcast: to == "!ffffffff",
+        trust: None,
+    }
 }
 
 #[test]
@@ -50,13 +79,43 @@ fn a_channel_read_grant_does_not_expose_direct_messages() {
     let (_t, e, _l, s) = mt();
     let me = s.radio_id().to_string();
     // Meshtastic direct messages carry a channel index too (here 0)
-    e.ingest(NET, &me, inbound_text("!00000b0b", &me, 0, "private note")).unwrap();
-    e.ingest(NET, &me, inbound_text("!00000b0b", "!ffffffff", 0, "public note")).unwrap();
-    e.grant_add("owner", grant("read", "agent:scout", Some(0))).unwrap();
-    let got: Vec<_> = e.messages("agent:scout", &Filter { kind: Some("text".into()), ..Default::default() }).unwrap().into_iter().map(|r| r.text.unwrap()).collect();
+    e.ingest(NET, &me, inbound_text("!00000b0b", &me, 0, "private note"))
+        .unwrap();
+    e.ingest(
+        NET,
+        &me,
+        inbound_text("!00000b0b", "!ffffffff", 0, "public note"),
+    )
+    .unwrap();
+    e.grant_add("owner", grant("read", "agent:scout", Some(0)))
+        .unwrap();
+    let got: Vec<_> = e
+        .messages(
+            "agent:scout",
+            &Filter {
+                kind: Some("text".into()),
+                ..Default::default()
+            },
+        )
+        .unwrap()
+        .into_iter()
+        .map(|r| r.text.unwrap())
+        .collect();
     assert_eq!(got, vec!["public note"]);
-    e.grant_add("owner", grant("read", "agent:scout", None)).unwrap();
-    assert_eq!(e.messages("agent:scout", &Filter { kind: Some("text".into()), ..Default::default() }).unwrap().len(), 2);
+    e.grant_add("owner", grant("read", "agent:scout", None))
+        .unwrap();
+    assert_eq!(
+        e.messages(
+            "agent:scout",
+            &Filter {
+                kind: Some("text".into()),
+                ..Default::default()
+            }
+        )
+        .unwrap()
+        .len(),
+        2
+    );
 }
 
 #[test]
@@ -67,11 +126,22 @@ fn a_send_that_fails_after_the_grant_check_does_not_use_budget() {
     g.max_msgs_per_hour = Some(1);
     e.grant_add("owner", g).unwrap();
     // no radio is connected: the send fails after authorisation
-    assert_eq!(e.send_text("agent:scout", NET, None, None, Some(0), "x").unwrap_err().code(), "no_radio");
+    assert_eq!(
+        e.send_text("agent:scout", NET, None, None, Some(0), "x")
+            .unwrap_err()
+            .code(),
+        "no_radio"
+    );
     let link = FakeLink::new("fake0");
     let _s = Session::new(e.clone(), Box::new(link), NET).unwrap();
-    assert!(e.send_text("agent:scout", NET, None, None, Some(0), "x").is_ok(), "the failed attempt did not consume the one allowed message");
-    assert!(e.send_text("agent:scout", NET, None, None, Some(0), "y").is_err());
+    assert!(
+        e.send_text("agent:scout", NET, None, None, Some(0), "x")
+            .is_ok(),
+        "the failed attempt did not consume the one allowed message"
+    );
+    assert!(e
+        .send_text("agent:scout", NET, None, None, Some(0), "y")
+        .is_err());
 }
 
 #[test]
@@ -102,7 +172,10 @@ impl Link for FailAfter {
     fn write_all(&mut self, d: &[u8]) -> std::io::Result<()> {
         self.writes += 1;
         if self.writes > self.ok_writes {
-            return Err(std::io::Error::new(std::io::ErrorKind::BrokenPipe, "unplugged"));
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::BrokenPipe,
+                "unplugged",
+            ));
         }
         self.inner.write_all(d)
     }
@@ -113,28 +186,65 @@ fn when_the_link_dies_mid_batch_every_queued_send_ends_failed_not_queued_forever
     let t = TmpDir::new("batch");
     let e = Engine::open(t.path(), "person:jay").unwrap();
     let inner = FakeLink::new("fake0");
-    inner.reply_on_write(&frame(&frame_named(&fixture("meshtastic.json"), "my_info_heltec_v2_1")));
-    let mut s = Session::new(e.clone(), Box::new(FailAfter { inner, writes: 0, ok_writes: 1 }), NET).unwrap();
+    inner.reply_on_write(&frame(&frame_named(
+        &fixture("meshtastic.json"),
+        "my_info_heltec_v2_1",
+    )));
+    let mut s = Session::new(
+        e.clone(),
+        Box::new(FailAfter {
+            inner,
+            writes: 0,
+            ok_writes: 1,
+        }),
+        NET,
+    )
+    .unwrap();
     s.pump().unwrap(); // handshake is the one allowed write
-    let ids: Vec<String> = ["a", "b", "c"].iter().map(|t| e.send_text("owner", NET, None, None, Some(0), t).unwrap().id).collect();
+    let ids: Vec<String> = ["a", "b", "c"]
+        .iter()
+        .map(|t| {
+            e.send_text("owner", NET, None, None, Some(0), t)
+                .unwrap()
+                .id
+        })
+        .collect();
     assert!(s.pump().is_err());
-    let msgs = e.messages("owner", &Filter { kind: Some("text".into()), dir: Some("out".into()), ..Default::default() }).unwrap();
+    let msgs = e
+        .messages(
+            "owner",
+            &Filter {
+                kind: Some("text".into()),
+                dir: Some("out".into()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
     assert_eq!(msgs.len(), 3);
     for m in &msgs {
         assert!(ids.contains(&m.id));
-        assert_eq!(m.delivery.as_deref(), Some("failed"), "{}", m.text.clone().unwrap());
+        assert_eq!(
+            m.delivery.as_deref(),
+            Some("failed"),
+            "{}",
+            m.text.clone().unwrap()
+        );
     }
 }
 
 #[test]
 fn every_row_carries_the_owner() {
     let (t, e, _l, mut s) = mt();
-    e.send_text("owner", NET, None, None, Some(0), "hi").unwrap();
+    e.send_text("owner", NET, None, None, Some(0), "hi")
+        .unwrap();
     let _ = e.send_text("agent:x", NET, None, None, Some(0), "refused");
     s.pump().unwrap();
     let rows = taos_mesh::store::Store::read_all(t.path()).unwrap();
     assert!(rows.len() >= 4);
-    assert!(rows.iter().all(|r| r.owner == "person:jay"), "queued, sent, refused and inbound rows all have an owner");
+    assert!(
+        rows.iter().all(|r| r.owner == "person:jay"),
+        "queued, sent, refused and inbound rows all have an owner"
+    );
     let line = std::fs::read_to_string(t.path().join("records.jsonl")).unwrap();
     assert!(line.lines().all(|l| l.contains("\"owner\":\"person:jay\"")));
 }
@@ -184,26 +294,42 @@ fn trust_comes_only_from_flags_in_the_frame() {
         data_text(w, "s");
         w.varint(22, 1);
     });
-    assert_eq!(MeshtasticDriver::new().decode_frame(signed).trust.as_deref(), Some("signed"));
+    assert_eq!(
+        MeshtasticDriver::new()
+            .decode_frame(signed)
+            .trust
+            .as_deref(),
+        Some("signed")
+    );
     let pki = packet_bytes(|w| {
         w.fixed32(1, 5);
         w.fixed32(2, 7);
         data_text(w, "p");
         w.varint(17, 1);
     });
-    assert_eq!(MeshtasticDriver::new().decode_frame(pki).trust.as_deref(), Some("encrypted"));
+    assert_eq!(
+        MeshtasticDriver::new().decode_frame(pki).trust.as_deref(),
+        Some("encrypted")
+    );
     let bc = packet_bytes(|w| {
         w.fixed32(1, 5);
         w.fixed32(2, 0xffff_ffff);
         data_text(w, "b");
     });
-    assert_eq!(MeshtasticDriver::new().decode_frame(bc).trust.as_deref(), Some("claimed"));
+    assert_eq!(
+        MeshtasticDriver::new().decode_frame(bc).trust.as_deref(),
+        Some("claimed")
+    );
     let dm = packet_bytes(|w| {
         w.fixed32(1, 5);
         w.fixed32(2, 7);
         data_text(w, "d");
     });
-    assert_eq!(MeshtasticDriver::new().decode_frame(dm).trust, None, "a direct message without a flag: the frame does not say, so we do not either");
+    assert_eq!(
+        MeshtasticDriver::new().decode_frame(dm).trust,
+        None,
+        "a direct message without a flag: the frame does not say, so we do not either"
+    );
 }
 
 fn routing_ack(from: u32, to: u32, request_id: u32, error: u32) -> Vec<u8> {
@@ -227,11 +353,36 @@ fn routing_ack(from: u32, to: u32, request_id: u32, error: u32) -> Vec<u8> {
 fn delivery_follows_the_acks_the_network_sends_back() {
     let (_t, e, link, mut s) = mt();
     let me = s.radio_id().to_string();
-    let sent = e.send_text("owner", NET, None, Some("!00000b0b"), Some(0), "are you there").unwrap();
+    let sent = e
+        .send_text(
+            "owner",
+            NET,
+            None,
+            Some("!00000b0b"),
+            Some(0),
+            "are you there",
+        )
+        .unwrap();
     s.pump().unwrap();
-    let delivery = |e: &Arc<Engine>, id: &str| e.messages("owner", &Filter { dir: Some("out".into()), ..Default::default() }).unwrap().into_iter().find(|r| r.id == id).unwrap().delivery.unwrap();
+    let delivery = |e: &Arc<Engine>, id: &str| {
+        e.messages(
+            "owner",
+            &Filter {
+                dir: Some("out".into()),
+                ..Default::default()
+            },
+        )
+        .unwrap()
+        .into_iter()
+        .find(|r| r.id == id)
+        .unwrap()
+        .delivery
+        .unwrap()
+    };
     assert_eq!(delivery(&e, &sent.id), "sent");
-    let pid = sent.packet_id.expect("outbound records carry the packet id the acks refer to");
+    let pid = sent
+        .packet_id
+        .expect("outbound records carry the packet id the acks refer to");
     // an implicit ack from a neighbour that relayed it
     link.push(&frame(&routing_ack(0x77, 0x28af_67cc, pid, 0)));
     s.pump().unwrap();
@@ -246,9 +397,16 @@ fn delivery_follows_the_acks_the_network_sends_back() {
     assert_eq!(delivery(&e, &sent.id), "acknowledged");
     let _ = me;
     // a NAK on a fresh send
-    let s2 = e.send_text("owner", NET, None, Some("!00000b0b"), Some(0), "second").unwrap();
+    let s2 = e
+        .send_text("owner", NET, None, Some("!00000b0b"), Some(0), "second")
+        .unwrap();
     s.pump().unwrap();
-    link.push(&frame(&routing_ack(0x0b0b, 0x28af_67cc, s2.packet_id.unwrap(), 1)));
+    link.push(&frame(&routing_ack(
+        0x0b0b,
+        0x28af_67cc,
+        s2.packet_id.unwrap(),
+        1,
+    )));
     s.pump().unwrap();
     assert_eq!(delivery(&e, &s2.id), "failed");
 }
@@ -256,7 +414,16 @@ fn delivery_follows_the_acks_the_network_sends_back() {
 #[test]
 fn meshcore_delivery_uses_the_expected_ack_code() {
     let (_t, e, link, mut s) = mc();
-    let sent = e.send_text("owner", "meshcore", None, Some("646566676869"), None, "ping").unwrap();
+    let sent = e
+        .send_text(
+            "owner",
+            "meshcore",
+            None,
+            Some("646566676869"),
+            None,
+            "ping",
+        )
+        .unwrap();
     s.pump().unwrap();
     // radio answers the send: RESP_SENT 06 | route flag | expected_ack | timeout
     let mut sent_resp = vec![6u8, 1];
@@ -266,7 +433,19 @@ fn meshcore_delivery_uses_the_expected_ack_code() {
     b.extend(&sent_resp);
     link.push(&b);
     s.pump().unwrap();
-    let d = |e: &Arc<Engine>| e.messages("owner", &Filter { dir: Some("out".into()), ..Default::default() }).unwrap()[0].delivery.clone().unwrap();
+    let d = |e: &Arc<Engine>| {
+        e.messages(
+            "owner",
+            &Filter {
+                dir: Some("out".into()),
+                ..Default::default()
+            },
+        )
+        .unwrap()[0]
+            .delivery
+            .clone()
+            .unwrap()
+    };
     assert_eq!(d(&e), "sent");
     let mut ack = vec![0x82u8];
     ack.extend_from_slice(&0x0bad_f00du32.to_le_bytes());
@@ -284,10 +463,17 @@ fn meshcore_delivery_uses_the_expected_ack_code() {
 fn receive_only_failure_is_visible_through_the_api_with_its_reason() {
     let (_t, e, _l, mut s) = mt();
     s.transmit_enabled = false;
-    e.send_text("owner", NET, None, None, Some(0), "stays home").unwrap();
+    e.send_text("owner", NET, None, None, Some(0), "stays home")
+        .unwrap();
     s.pump().unwrap();
-    let d = Arc::new(Daemon { engine: e.clone(), receive_only: true, stop: Default::default() });
-    let r: Value = d.handle(&json!({"id": 1, "method": "messages", "params": {"filter": {"dir": "state"}}}).to_string());
+    let d = Arc::new(Daemon {
+        engine: e.clone(),
+        receive_only: true,
+        stop: Default::default(),
+    });
+    let r: Value = d.handle(
+        &json!({"id": 1, "method": "messages", "params": {"filter": {"dir": "state"}}}).to_string(),
+    );
     let rows = r["result"].as_array().unwrap();
     assert!(rows.iter().any(|x| x["state"] == "failed" && x["note"].as_str().unwrap().contains("receive-only")), "{r}");
     // an agent never sees send progress
@@ -299,24 +485,74 @@ fn receive_only_failure_is_visible_through_the_api_with_its_reason() {
 fn app_view_matches_the_survival_studio_interface() {
     let (_t, e, _l, mut s) = mt();
     let me = s.radio_id().to_string();
-    let d = Arc::new(Daemon { engine: e.clone(), receive_only: false, stop: Default::default() });
-    let call = |m: &str, p: Value, who: &str| -> Value { d.handle(&json!({"id": 1, "method": m, "principal": who, "params": p}).to_string()) };
+    let d = Arc::new(Daemon {
+        engine: e.clone(),
+        receive_only: false,
+        stop: Default::default(),
+    });
+    let call = |m: &str, p: Value, who: &str| -> Value {
+        d.handle(&json!({"id": 1, "method": m, "principal": who, "params": p}).to_string())
+    };
     // a neighbour, a stranger and a position
-    let sam = e.with_ids("owner", |i| i.create_contact("Sam", None, "owner")).unwrap();
-    e.with_ids("owner", |i| i.assign("!00000b0b", Some(&format!("contact:{sam}")), None, "owner")).unwrap();
-    e.with_ids("owner", |i| i.assign("!00000c0c", Some("agent:scout"), Some("Scout"), "owner")).unwrap();
-    e.ingest(NET, &me, inbound_text("!00000b0b", "!ffffffff", 0, "hello team")).unwrap();
-    e.ingest(NET, &me, inbound_text("!00000b0b", &me, 0, "just you")).unwrap();
-    e.ingest(NET, &me, inbound_text("!00000c0c", "!ffffffff", 1, "scout here")).unwrap();
-    let pos = Position { lat: Some(51.5), lon: Some(-0.12), source: Some("packet".into()), ..Default::default() };
-    e.ingest(NET, &me, Inbound { raw: vec![3], event: Event::Position(pos.clone()), from: Some("!00000b0b".into()), to: Some("!ffffffff".into()), channel: Some(0), packet_id: None, radio_ts: None, signal: Signal::default(), position: Some(pos), broadcast: true, trust: None }).unwrap();
+    let sam = e
+        .with_ids("owner", |i| i.create_contact("Sam", None, "owner"))
+        .unwrap();
+    e.with_ids("owner", |i| {
+        i.assign("!00000b0b", Some(&format!("contact:{sam}")), None, "owner")
+    })
+    .unwrap();
+    e.with_ids("owner", |i| {
+        i.assign("!00000c0c", Some("agent:scout"), Some("Scout"), "owner")
+    })
+    .unwrap();
+    e.ingest(
+        NET,
+        &me,
+        inbound_text("!00000b0b", "!ffffffff", 0, "hello team"),
+    )
+    .unwrap();
+    e.ingest(NET, &me, inbound_text("!00000b0b", &me, 0, "just you"))
+        .unwrap();
+    e.ingest(
+        NET,
+        &me,
+        inbound_text("!00000c0c", "!ffffffff", 1, "scout here"),
+    )
+    .unwrap();
+    let pos = Position {
+        lat: Some(51.5),
+        lon: Some(-0.12),
+        source: Some("packet".into()),
+        ..Default::default()
+    };
+    e.ingest(
+        NET,
+        &me,
+        Inbound {
+            raw: vec![3],
+            event: Event::Position(pos.clone()),
+            from: Some("!00000b0b".into()),
+            to: Some("!ffffffff".into()),
+            channel: Some(0),
+            packet_id: None,
+            radio_ts: None,
+            signal: Signal::default(),
+            position: Some(pos),
+            broadcast: true,
+            trust: None,
+        },
+    )
+    .unwrap();
     // radios
     let r = call("app.radios", json!({}), "owner");
     let radio = &r["result"][0];
     assert_eq!(radio["id"], me.as_str());
     assert_eq!(radio["transport"], "meshtastic");
     assert_eq!(radio["link"], "usb");
-    assert_eq!(radio["state"], "connecting", "config not complete yet: not claimed as connected");
+    assert_eq!(
+        radio["state"], "connecting",
+        "config not complete yet: not claimed as connected"
+    );
     assert_eq!(radio["batteryPercent"], -1, "unknown, not 0");
     // identities
     let r = call("app.identities", json!({}), "owner");
@@ -330,7 +566,9 @@ fn app_view_matches_the_survival_studio_interface() {
     let scout = ids.iter().find(|x| x["id"] == "!00000c0c").unwrap();
     assert_eq!(scout["owner"], "agent:scout");
     assert_eq!(scout["hasPosition"], false);
-    assert!(ids.iter().any(|x| x["id"] == me.as_str() && x["isSelf"] == true));
+    assert!(ids
+        .iter()
+        .any(|x| x["id"] == me.as_str() && x["isSelf"] == true));
     // messages and threads
     let r = call("app.messages", json!({}), "owner");
     let m = r["result"].as_array().unwrap();
@@ -342,16 +580,31 @@ fn app_view_matches_the_survival_studio_interface() {
     let r = call("app.messages", json!({"thread": "!00000b0b"}), "owner");
     assert_eq!(r["result"].as_array().unwrap().len(), 1);
     // send over the interface, then it shows up outgoing with a delivery
-    let r = call("app.send", json!({"thread": "!00000b0b", "text": "on my way"}), "owner");
+    let r = call(
+        "app.send",
+        json!({"thread": "!00000b0b", "text": "on my way"}),
+        "owner",
+    );
     assert_eq!(r["result"]["accepted"], true);
     s.pump().unwrap();
     let r = call("app.messages", json!({"thread": "!00000b0b"}), "owner");
     let last = r["result"].as_array().unwrap().last().unwrap().clone();
-    assert_eq!((last["outgoing"].clone(), last["delivery"].clone()), (json!(true), json!("sent")));
-    let r = call("app.send", json!({"thread": "ch:meshtastic:2", "text": "to the team"}), "owner");
+    assert_eq!(
+        (last["outgoing"].clone(), last["delivery"].clone()),
+        (json!(true), json!("sent"))
+    );
+    let r = call(
+        "app.send",
+        json!({"thread": "ch:meshtastic:2", "text": "to the team"}),
+        "owner",
+    );
     assert_eq!(r["result"]["accepted"], true);
     // an agent without a grant is refused in plain words
-    let r = call("app.send", json!({"thread": "ch:meshtastic:2", "text": "x"}), "agent:scout");
+    let r = call(
+        "app.send",
+        json!({"thread": "ch:meshtastic:2", "text": "x"}),
+        "agent:scout",
+    );
     assert_eq!(r["result"]["accepted"], false);
     assert!(r["result"]["error"].as_str().unwrap().contains("no grant"));
     // once the radio reports its configuration the state is connected
@@ -362,7 +615,11 @@ fn app_view_matches_the_survival_studio_interface() {
     let (_t2, e2, l2, mut s2) = mt();
     l2.push(&link_cfg);
     s2.pump().unwrap();
-    let d2 = Arc::new(Daemon { engine: e2, receive_only: false, stop: Default::default() });
+    let d2 = Arc::new(Daemon {
+        engine: e2,
+        receive_only: false,
+        stop: Default::default(),
+    });
     let r: Value = d2.handle(&json!({"id": 1, "method": "app.radios", "params": {}}).to_string());
     assert_eq!(r["result"][0]["state"], "connected");
 }
@@ -371,8 +628,32 @@ fn app_view_matches_the_survival_studio_interface() {
 fn battery_comes_from_the_radios_own_device_telemetry() {
     let (_t, e, _l, s) = mt();
     let me = s.radio_id().to_string();
-    e.ingest(NET, &me, Inbound { raw: vec![4], event: Event::Telemetry { kind: "device".into(), values: json!({"battery_level": 87}) }, from: Some(me.clone()), to: Some("!ffffffff".into()), channel: Some(0), packet_id: None, radio_ts: None, signal: Signal::default(), position: None, broadcast: true, trust: None }).unwrap();
-    let d = Arc::new(Daemon { engine: e, receive_only: false, stop: Default::default() });
+    e.ingest(
+        NET,
+        &me,
+        Inbound {
+            raw: vec![4],
+            event: Event::Telemetry {
+                kind: "device".into(),
+                values: json!({"battery_level": 87}),
+            },
+            from: Some(me.clone()),
+            to: Some("!ffffffff".into()),
+            channel: Some(0),
+            packet_id: None,
+            radio_ts: None,
+            signal: Signal::default(),
+            position: None,
+            broadcast: true,
+            trust: None,
+        },
+    )
+    .unwrap();
+    let d = Arc::new(Daemon {
+        engine: e,
+        receive_only: false,
+        stop: Default::default(),
+    });
     let r: Value = d.handle(&json!({"id": 1, "method": "app.radios", "params": {}}).to_string());
     assert_eq!(r["result"][0]["batteryPercent"], 87);
 }

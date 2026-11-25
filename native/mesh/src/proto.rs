@@ -68,14 +68,21 @@ pub struct Fields<'a> {
 
 impl<'a> Fields<'a> {
     pub fn new(buf: &'a [u8]) -> Self {
-        Fields { buf, pos: 0, failed: false }
+        Fields {
+            buf,
+            pos: 0,
+            failed: false,
+        }
     }
 
     fn varint(&mut self) -> Result<u64, DecodeError> {
         let mut v: u64 = 0;
         let mut shift = 0;
         loop {
-            let b = *self.buf.get(self.pos).ok_or_else(|| DecodeError("truncated varint".into()))?;
+            let b = *self
+                .buf
+                .get(self.pos)
+                .ok_or_else(|| DecodeError("truncated varint".into()))?;
             self.pos += 1;
             if shift >= 64 {
                 return Err(DecodeError("varint too long".into()));

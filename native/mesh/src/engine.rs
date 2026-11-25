@@ -36,7 +36,9 @@ impl std::fmt::Display for EngineError {
         match self {
             EngineError::Store(e) => write!(f, "{e}"),
             EngineError::Denied(d) => write!(f, "{d}"),
-            EngineError::Invalid(s) | EngineError::NoRadio(s) | EngineError::Forbidden(s) => write!(f, "{s}"),
+            EngineError::Invalid(s) | EngineError::NoRadio(s) | EngineError::Forbidden(s) => {
+                write!(f, "{s}")
+            }
         }
     }
 }
@@ -93,6 +95,12 @@ pub struct RadioStatus {
     /// identified itself (MeshCore).
     pub ready: bool,
     pub connected: bool,
+    /// `connected` (ready), `connecting`, `reconnecting` (link dropped, retrying with back-off) or `offline`.
+    pub state: String,
+    /// Consecutive failed (re)connects; 0 when connected.
+    pub attempt: u32,
+    /// When the next reconnect is tried, ms since 1970, while `reconnecting`.
+    pub next_retry_ms: Option<u64>,
     pub identity: Option<Attribution>,
     pub frames_in: u64,
     pub frames_out: u64,
@@ -115,6 +123,7 @@ struct RadioState {
     outbox: VecDeque<(String, Vec<u8>)>,
     link_kind: String,
     ready: bool,
+    reconnect: Option<(u32, u64)>,
 }
 
 struct Inner {
@@ -182,9 +191,20 @@ impl Inner {
         }
     }
 
-    fn next_id(&mut self, dir: &str, network: &str, radio: &str, host_ts: u64, raw_hex: &str, ref_id: Option<&str>, state: Option<&str>) -> String {
+    fn next_id(
+        &mut self,
+        dir: &str,
+        network: &str,
+        radio: &str,
+        host_ts: u64,
+        raw_hex: &str,
+        ref_id: Option<&str>,
+        state: Option<&str>,
+    ) -> String {
         self.seq += 1;
-        Record::compute_id(dir, network, radio, host_ts, self.seq, raw_hex, ref_id, state)
+        Record::compute_id(
+            dir, network, radio, host_ts, self.seq, raw_hex, ref_id, state,
+        )
     }
 }
 
@@ -228,7 +248,11 @@ impl Engine {
 
     /// Open with an already opened record store (tests use this to put the
     /// store on a device that fails writes).
-    pub fn open_with_store(dir: &Path, owner: &str, store: Store) -> Result<Arc<Engine>, StoreError> {
+    pub fn open_with_store(
+        dir: &Path,
+        owner: &str,
+        store: Store,
+    ) -> Result<Arc<Engine>, StoreError> {
         std::fs::create_dir_all(dir)?;
         let ids = IdentityStore::open(dir)?;
         let mut grants = Grants::open(dir)?;
@@ -240,7 +264,13 @@ impl Engine {
             if rec.dir == "out" && rec.kind == "text" {
                 if let Some(p) = &rec.principal {
                     if now.saturating_sub(rec.host_ts_ms) < 3_600_000 {
-                        grants.note_sent(p, &rec.network, rec.channel, rec.host_ts_ms, rec.text.as_ref().map(|t| t.len() as u32).unwrap_or(0));
+                        grants.note_sent(
+                            p,
+                            &rec.network,
+                            rec.channel,
+                            rec.host_ts_ms,
+                            rec.text.as_ref().map(|t| t.len() as u32).unwrap_or(0),
+                        );
                     }
                 }
             }
@@ -298,15 +328,30 @@ impl Engine {
         match &inb.event {
             Event::Text { text } => rec.text = Some(text.clone()),
             Event::Position(p) => rec.position = Some(p.clone()),
-            Event::NodeInfo { long_name, short_name, hw_model, position } => {
-                rec.detail = Some(serde_json::json!({"long_name": long_name, "short_name": short_name, "hw_model": hw_model}));
+            Event::NodeInfo {
+                long_name,
+                short_name,
+                hw_model,
+                position,
+            } => {
+                rec.detail = Some(
+                    serde_json::json!({"long_name": long_name, "short_name": short_name, "hw_model": hw_model}),
+                );
                 rec.position = position.clone();
             }
-            Event::Telemetry { kind, values } => rec.detail = Some(serde_json::json!({"telemetry": kind, "values": values})),
-            Event::Ack { request_id, error } => rec.detail = Some(serde_json::json!({"request_id": request_id, "error": error})),
+            Event::Telemetry { kind, values } => {
+                rec.detail = Some(serde_json::json!({"telemetry": kind, "values": values}))
+            }
+            Event::Ack { request_id, error } => {
+                rec.detail = Some(serde_json::json!({"request_id": request_id, "error": error}))
+            }
             Event::Control { what } => rec.detail = Some(serde_json::json!({"control": what})),
-            Event::Opaque { port, note } => rec.detail = Some(serde_json::json!({"port": port, "note": note})),
-            Event::Sent { expected_ack } => rec.detail = Some(serde_json::json!({"expected_ack": expected_ack})),
+            Event::Opaque { port, note } => {
+                rec.detail = Some(serde_json::json!({"port": port, "note": note}))
+            }
+            Event::Sent { expected_ack } => {
+                rec.detail = Some(serde_json::json!({"expected_ack": expected_ack}))
+            }
         }
         // position cache: a position in the frame updates it; a message
         // without one carries the sender's last known position, labelled.
@@ -325,7 +370,11 @@ impl Engine {
             }
         }
         rec.sender = rec.from.as_ref().and_then(|f| g.ids.reg.attribute(f));
-        rec.recipient = if rec.broadcast { None } else { rec.to.as_ref().and_then(|t| g.ids.reg.attribute(t)) };
+        rec.recipient = if rec.broadcast {
+            None
+        } else {
+            rec.to.as_ref().and_then(|t| g.ids.reg.attribute(t))
+        };
         rec.observer = g.ids.reg.attribute(radio).map(|a| a.identity);
         rec.id = g.next_id("in", network, radio, host_ts, &rec.raw_hex, None, None);
         g.commit(rec)
@@ -333,25 +382,52 @@ impl Engine {
 
     // ---- radios ------------------------------------------------------
 
-    fn register_radio(&self, id: &str, network: &str, link: &str, link_kind: &str) {
+    pub fn register_radio(&self, id: &str, network: &str, link: &str, link_kind: &str) {
         let mut g = self.lock();
-        let e = g.radios.entry(id.to_string()).or_insert_with(|| RadioState {
-            id: id.into(),
-            network: network.into(),
-            link: link.into(),
-            connected: true,
-            frames_in: 0,
-            frames_out: 0,
-            console_bytes: 0,
-            decode_errors: 0,
-            last_error: None,
-            outbox: VecDeque::new(),
-            link_kind: link_kind.into(),
-            ready: false,
-        });
+        let e = g
+            .radios
+            .entry(id.to_string())
+            .or_insert_with(|| RadioState {
+                id: id.into(),
+                network: network.into(),
+                link: link.into(),
+                connected: true,
+                frames_in: 0,
+                frames_out: 0,
+                console_bytes: 0,
+                decode_errors: 0,
+                last_error: None,
+                outbox: VecDeque::new(),
+                link_kind: link_kind.into(),
+                ready: false,
+                reconnect: None,
+            });
         e.connected = true;
+        e.ready = false;
+        e.reconnect = None;
         e.link = link.into();
         e.last_error = None;
+    }
+
+    /// The supervisor's view of a dropped link: retrying, attempt number,
+    /// when, and why the last attempt failed.
+    pub fn radio_reconnecting(&self, id: &str, attempt: u32, next_ms: u64, why: &str) {
+        self.radio_note(id, |r| {
+            r.connected = false;
+            r.ready = false;
+            r.reconnect = Some((attempt, next_ms));
+            r.last_error = Some(why.to_string());
+        });
+    }
+
+    /// The supervisor gave up or was stopped.
+    pub fn radio_offline(&self, id: &str, why: &str) {
+        self.radio_note(id, |r| {
+            r.connected = false;
+            r.ready = false;
+            r.reconnect = None;
+            r.last_error = Some(why.to_string());
+        });
     }
 
     fn radio_note(&self, id: &str, f: impl FnOnce(&mut RadioState)) {
@@ -378,6 +454,16 @@ impl Engine {
                 console_bytes: r.console_bytes,
                 decode_errors: r.decode_errors,
                 last_error: r.last_error.clone(),
+                state: if r.connected {
+                    if r.ready { "connected" } else { "connecting" }
+                } else if r.reconnect.is_some() {
+                    "reconnecting"
+                } else {
+                    "offline"
+                }
+                .into(),
+                attempt: r.reconnect.map(|x| x.0).unwrap_or(0),
+                next_retry_ms: r.reconnect.map(|x| x.1),
                 queued: r.outbox.len(),
             })
             .collect()
@@ -399,18 +485,40 @@ impl Engine {
 
     /// Queue a text for a radio. The outbound record is written (state
     /// "queued") before anything is handed to the radio link.
-    pub fn send_text(&self, principal: &str, network: &str, radio: Option<&str>, to: Option<&str>, channel: Option<u32>, text: &str) -> Result<Record, EngineError> {
+    pub fn send_text(
+        &self,
+        principal: &str,
+        network: &str,
+        radio: Option<&str>,
+        to: Option<&str>,
+        channel: Option<u32>,
+        text: &str,
+    ) -> Result<Record, EngineError> {
         if text.is_empty() {
             return Err(EngineError::Invalid("empty text".into()));
         }
-        let limit = if network == NETWORK_MESHTASTIC { 200 } else { 160 };
+        let limit = if network == NETWORK_MESHTASTIC {
+            200
+        } else {
+            160
+        };
         if text.len() > limit {
-            return Err(EngineError::Invalid(format!("text is {} bytes; the conservative limit for {network} is {limit}", text.len())));
+            return Err(EngineError::Invalid(format!(
+                "text is {} bytes; the conservative limit for {network} is {limit}",
+                text.len()
+            )));
         }
         let mut g = self.lock();
         let now = now_ms();
-        let grant_channel = if to.is_some() { None } else { channel.or(Some(0)) };
-        if let Err(d) = g.grants.authorize_send(principal, network, grant_channel, text.len() as u32, now) {
+        let grant_channel = if to.is_some() {
+            None
+        } else {
+            channel.or(Some(0))
+        };
+        if let Err(d) =
+            g.grants
+                .authorize_send(principal, network, grant_channel, text.len() as u32, now)
+        {
             // audit the refusal; it is a record too
             let mut r = base_record("state", network, radio.unwrap_or(""), "send_refused");
             r.host_ts_ms = now;
@@ -420,45 +528,88 @@ impl Engine {
             r.text = Some(text.into());
             r.channel = channel;
             r.to = to.map(String::from);
-            r.id = g.next_id("state", network, radio.unwrap_or(""), now, "", None, Some("refused"));
+            r.id = g.next_id(
+                "state",
+                network,
+                radio.unwrap_or(""),
+                now,
+                "",
+                None,
+                Some("refused"),
+            );
             g.commit(r)?;
             return Err(EngineError::Denied(d));
         }
         let rid = match radio {
             Some(r) => r.to_string(),
             None => {
-                let c: Vec<&RadioState> = g.radios.values().filter(|r| r.network == network && r.connected).collect();
+                let c: Vec<&RadioState> = g
+                    .radios
+                    .values()
+                    .filter(|r| r.network == network && r.connected)
+                    .collect();
                 match c.len() {
                     1 => c[0].id.clone(),
-                    0 => return Err(EngineError::NoRadio(format!("no connected {network} radio"))),
-                    _ => return Err(EngineError::Invalid("more than one radio is connected: name one with `radio`".into())),
+                    0 => {
+                        return Err(EngineError::NoRadio(format!(
+                            "no connected {network} radio"
+                        )))
+                    }
+                    _ => {
+                        return Err(EngineError::Invalid(
+                            "more than one radio is connected: name one with `radio`".into(),
+                        ))
+                    }
                 }
             }
         };
         match g.radios.get(&rid) {
             Some(r) if r.connected && r.network == network => {}
-            Some(_) => return Err(EngineError::NoRadio(format!("radio {rid} is not connected on {network}"))),
+            Some(_) => {
+                return Err(EngineError::NoRadio(format!(
+                    "radio {rid} is not connected on {network}"
+                )))
+            }
             None => return Err(EngineError::NoRadio(format!("no radio {rid}"))),
         }
         // encode
         let mut packet_id: Option<u32> = None;
         let (bytes, raw, broadcast, to_name, chan) = if network == NETWORK_MESHTASTIC {
             let dest = match to {
-                Some(t) => meshtastic::parse_node(t).ok_or_else(|| EngineError::Invalid(format!("bad node id {t:?}; expected !xxxxxxxx")))?,
+                Some(t) => meshtastic::parse_node(t).ok_or_else(|| {
+                    EngineError::Invalid(format!("bad node id {t:?}; expected !xxxxxxxx"))
+                })?,
                 None => meshtastic::BROADCAST,
             };
             let ch = channel.unwrap_or(0);
             let id = meshtastic::fresh_packet_id();
             packet_id = Some(id);
-            let payload = meshtastic::encode_text(dest, ch, text, id, dest != meshtastic::BROADCAST);
-            (meshtastic::frame(&payload), payload, dest == meshtastic::BROADCAST, meshtastic::node_name(dest), Some(ch))
+            let payload =
+                meshtastic::encode_text(dest, ch, text, id, dest != meshtastic::BROADCAST);
+            (
+                meshtastic::frame(&payload),
+                payload,
+                dest == meshtastic::BROADCAST,
+                meshtastic::node_name(dest),
+                Some(ch),
+            )
         } else if network == NETWORK_MESHCORE {
             let ts = (now / 1000) as u32;
             match to {
                 Some(t) => {
-                    let p = meshcore::parse_prefix(t).ok_or_else(|| EngineError::Invalid(format!("bad MeshCore node id {t:?}; expected 12+ hex chars")))?;
+                    let p = meshcore::parse_prefix(t).ok_or_else(|| {
+                        EngineError::Invalid(format!(
+                            "bad MeshCore node id {t:?}; expected 12+ hex chars"
+                        ))
+                    })?;
                     let payload = meshcore::send_direct(&p, ts, text);
-                    (meshcore::frame_to_radio(&payload), payload, false, t.to_string(), None)
+                    (
+                        meshcore::frame_to_radio(&payload),
+                        payload,
+                        false,
+                        t.to_string(),
+                        None,
+                    )
                 }
                 None => {
                     let ch = channel.unwrap_or(0);
@@ -466,7 +617,13 @@ impl Engine {
                         return Err(EngineError::Invalid("channel index out of range".into()));
                     }
                     let payload = meshcore::send_channel(ch as u8, ts, text);
-                    (meshcore::frame_to_radio(&payload), payload, true, "channel".into(), Some(ch))
+                    (
+                        meshcore::frame_to_radio(&payload),
+                        payload,
+                        true,
+                        "channel".into(),
+                        Some(ch),
+                    )
                 }
             }
         } else {
@@ -484,22 +641,46 @@ impl Engine {
         rec.packet_id = packet_id;
         rec.principal = Some(principal.into());
         rec.sender = g.ids.reg.attribute(&rid);
-        rec.recipient = if broadcast { None } else { rec.to.as_ref().and_then(|t| g.ids.reg.attribute(t)) };
+        rec.recipient = if broadcast {
+            None
+        } else {
+            rec.to.as_ref().and_then(|t| g.ids.reg.attribute(t))
+        };
         rec.observer = rec.sender.as_ref().map(|s| s.identity.clone());
-        rec.position = g.positions.get(&(network.to_string(), rid.clone())).cloned().map(|mut p| {
-            p.source = Some("last_known".into());
-            p
-        });
-        rec.id = g.next_id("out", network, &rid, now, &rec.raw_hex, None, Some("queued"));
+        rec.position = g
+            .positions
+            .get(&(network.to_string(), rid.clone()))
+            .cloned()
+            .map(|mut p| {
+                p.source = Some("last_known".into());
+                p
+            });
+        rec.id = g.next_id(
+            "out",
+            network,
+            &rid,
+            now,
+            &rec.raw_hex,
+            None,
+            Some("queued"),
+        );
         let stored = g.commit_strict(rec)?;
-        g.grants.charge(principal, network, stored.channel, text.len() as u32, now);
+        g.grants
+            .charge(principal, network, stored.channel, text.len() as u32, now);
         if let Some(r) = g.radios.get_mut(&rid) {
             r.outbox.push_back((stored.id.clone(), bytes));
         }
         Ok(stored)
     }
 
-    fn mark_state(&self, ref_id: &str, network: &str, radio: &str, state: &str, note: Option<String>) -> Result<(), StoreError> {
+    fn mark_state(
+        &self,
+        ref_id: &str,
+        network: &str,
+        radio: &str,
+        state: &str,
+        note: Option<String>,
+    ) -> Result<(), StoreError> {
         let mut g = self.lock();
         let now = now_ms();
         let mut r = base_record("state", network, radio, "send_state");
@@ -534,7 +715,11 @@ impl Engine {
         let g = self.lock();
         let all = Store::read_all(&self.dir)?;
         let now = now_ms();
-        let viewer_id: String = if viewer == OWNER { self.owner.clone() } else { viewer.to_string() };
+        let viewer_id: String = if viewer == OWNER {
+            self.owner.clone()
+        } else {
+            viewer.to_string()
+        };
         let is_agent = viewer.starts_with("agent:");
         let delivery = fold_delivery(&all);
         let want_state = f.dir.as_deref() == Some("state") && viewer == OWNER;
@@ -577,7 +762,9 @@ impl Engine {
             if f.dir.as_deref().is_some_and(|d| d != rec.dir) {
                 continue;
             }
-            if f.since_ms.is_some_and(|t| rec.host_ts_ms < t) || f.until_ms.is_some_and(|t| rec.host_ts_ms > t) {
+            if f.since_ms.is_some_and(|t| rec.host_ts_ms < t)
+                || f.until_ms.is_some_and(|t| rec.host_ts_ms > t)
+            {
                 continue;
             }
             if let Some(n) = &f.node {
@@ -590,7 +777,10 @@ impl Engine {
                 let hit = rec.sender.as_ref().is_some_and(|s| &s.identity == i)
                     || rec.recipient.as_ref().is_some_and(|s| &s.identity == i)
                     || rec.from.as_ref().is_some_and(|n| nodes.contains(n))
-                    || rec.to.as_ref().is_some_and(|n| nodes.contains(n) && !rec.broadcast);
+                    || rec
+                        .to
+                        .as_ref()
+                        .is_some_and(|n| nodes.contains(n) && !rec.broadcast);
                 if !hit {
                     continue;
                 }
@@ -609,7 +799,13 @@ impl Engine {
     /// The last known position of every identity (or unattributed node) the
     /// viewer may see: "where was everyone, and when".
     pub fn last_positions(&self, viewer: &str) -> Result<Vec<serde_json::Value>, EngineError> {
-        let recs = self.messages(viewer, &Filter { kind: None, ..Default::default() })?;
+        let recs = self.messages(
+            viewer,
+            &Filter {
+                kind: None,
+                ..Default::default()
+            },
+        )?;
         let g = self.lock();
         let mut best: BTreeMap<String, (u64, serde_json::Value)> = BTreeMap::new();
         for r in recs {
@@ -618,7 +814,11 @@ impl Engine {
                 continue;
             }
             let Some(node) = &r.from else { continue };
-            let key = r.sender.as_ref().map(|s| s.identity.clone()).unwrap_or_else(|| format!("node:{node}"));
+            let key = r
+                .sender
+                .as_ref()
+                .map(|s| s.identity.clone())
+                .unwrap_or_else(|| format!("node:{node}"));
             let when = p.time.map(|t| t * 1000).unwrap_or(r.host_ts_ms);
             let v = serde_json::json!({
                 "identity": r.sender.as_ref().map(|s| s.identity.clone()),
@@ -644,9 +844,15 @@ impl Engine {
 
     // ---- identities and grants (owner operations) ------------------------
 
-    pub fn with_ids<T>(&self, by: &str, f: impl FnOnce(&mut IdentityStore) -> Result<T, StoreError>) -> Result<T, EngineError> {
+    pub fn with_ids<T>(
+        &self,
+        by: &str,
+        f: impl FnOnce(&mut IdentityStore) -> Result<T, StoreError>,
+    ) -> Result<T, EngineError> {
         if by != OWNER {
-            return Err(EngineError::Forbidden("only the owner changes identities".into()));
+            return Err(EngineError::Forbidden(
+                "only the owner changes identities".into(),
+            ));
         }
         let mut g = self.lock();
         Ok(f(&mut g.ids)?)
@@ -668,14 +874,21 @@ impl Engine {
 
     pub fn grant_add(&self, by: &str, grant: Grant) -> Result<Grant, EngineError> {
         if by != OWNER {
-            return Err(EngineError::Forbidden("only the owner grants access".into()));
+            return Err(EngineError::Forbidden(
+                "only the owner grants access".into(),
+            ));
         }
-        Ok(self.lock().grants.add(Grant { created_by: by.into(), ..grant })?)
+        Ok(self.lock().grants.add(Grant {
+            created_by: by.into(),
+            ..grant
+        })?)
     }
 
     pub fn grant_revoke(&self, by: &str, id: &str) -> Result<(), EngineError> {
         if by != OWNER {
-            return Err(EngineError::Forbidden("only the owner revokes grants".into()));
+            return Err(EngineError::Forbidden(
+                "only the owner revokes grants".into(),
+            ));
         }
         Ok(self.lock().grants.revoke(id, by)?)
     }
@@ -689,7 +902,10 @@ impl Engine {
     /// Take the queued outbound payloads of a radio.
     fn take_outbox(&self, id: &str) -> Vec<(String, Vec<u8>)> {
         let mut g = self.lock();
-        g.radios.get_mut(id).map(|r| r.outbox.drain(..).collect()).unwrap_or_default()
+        g.radios
+            .get_mut(id)
+            .map(|r| r.outbox.drain(..).collect())
+            .unwrap_or_default()
     }
 }
 
@@ -709,9 +925,15 @@ pub fn fold_delivery(all: &[Record]) -> HashMap<String, String> {
     for r in all {
         match r.dir.as_str() {
             "out" if r.kind == "text" => {
-                d.insert(r.id.clone(), r.state.clone().unwrap_or_else(|| "queued".into()));
+                d.insert(
+                    r.id.clone(),
+                    r.state.clone().unwrap_or_else(|| "queued".into()),
+                );
                 if let Some(p) = r.packet_id {
-                    by_packet.insert((r.radio.clone(), p), (r.id.clone(), if r.broadcast { None } else { r.to.clone() }));
+                    by_packet.insert(
+                        (r.radio.clone(), p),
+                        (r.id.clone(), if r.broadcast { None } else { r.to.clone() }),
+                    );
                 }
                 last_out.insert(r.radio.clone(), r.id.clone());
             }
@@ -742,7 +964,15 @@ pub fn fold_delivery(all: &[Record]) -> HashMap<String, String> {
                         d.insert(t.clone(), st.to_string());
                     }
                 } else if let Some(t) = by_ack.get(&key) {
-                    d.insert(t.clone(), if det["error"].is_null() { "acknowledged" } else { "failed" }.to_string());
+                    d.insert(
+                        t.clone(),
+                        if det["error"].is_null() {
+                            "acknowledged"
+                        } else {
+                            "failed"
+                        }
+                        .to_string(),
+                    );
                 }
             }
             "in" if r.kind == "send_info" => {
@@ -780,15 +1010,39 @@ pub struct Session {
 }
 
 impl Session {
-    pub fn new(engine: Arc<Engine>, link: Box<dyn Link>, network: &str) -> Result<Self, EngineError> {
+    pub fn new(
+        engine: Arc<Engine>,
+        link: Box<dyn Link>,
+        network: &str,
+    ) -> Result<Self, EngineError> {
+        Self::new_as(engine, link, network, None)
+    }
+
+    /// Start under a radio id already known (a reconnect), so frames read
+    /// before the radio introduces itself are stored under the right id.
+    pub fn new_as(
+        engine: Arc<Engine>,
+        link: Box<dyn Link>,
+        network: &str,
+        known_id: Option<&str>,
+    ) -> Result<Self, EngineError> {
         let driver = match network {
             NETWORK_MESHTASTIC => DriverKind::Meshtastic(MeshtasticDriver::new()),
             NETWORK_MESHCORE => DriverKind::Meshcore(MeshcoreDriver::new("taos-mesh")),
             other => return Err(EngineError::Invalid(format!("unknown network {other}"))),
         };
-        let id = link.name();
+        let id = known_id.map(String::from).unwrap_or_else(|| link.name());
         engine.register_radio(&id, network, &link.name(), kind_name(link.kind()));
-        Ok(Session { engine, link, driver, network: network.into(), id, started: false, transmit_enabled: true, prefeed: vec![] })
+        Ok(Session {
+            engine,
+            link,
+            driver,
+            network: network.into(),
+            id,
+            started: false,
+            transmit_enabled: true,
+            prefeed: vec![],
+        })
     }
 
     /// Bytes the radio already sent (during a probe); they are decoded and
@@ -831,7 +1085,12 @@ impl Session {
                 // already stored under the link name keep that name (their
                 // raw bytes are intact); new frames use the node id.
                 let old = std::mem::replace(&mut self.id, n.clone());
-                self.engine.register_radio(&n, &self.network, &self.link.name(), kind_name(self.link.kind()));
+                self.engine.register_radio(
+                    &n,
+                    &self.network,
+                    &self.link.name(),
+                    kind_name(self.link.kind()),
+                );
                 let mut g = self.engine.lock();
                 if let Some(o) = g.radios.remove(&old) {
                     if let Some(r) = g.radios.get_mut(&n) {
@@ -865,7 +1124,12 @@ impl Session {
             let frames: Vec<Inbound> = match &mut self.driver {
                 DriverKind::Meshtastic(d) => {
                     let f = d.feed(&chunk);
-                    let (rid, c, de, ready) = (d.radio_id(), d.console_bytes(), d.decode_errors, d.config_complete);
+                    let (rid, c, de, ready) = (
+                        d.radio_id(),
+                        d.console_bytes(),
+                        d.decode_errors,
+                        d.config_complete,
+                    );
                     self.adopt_pre(rid, c, de, ready);
                     f
                 }
@@ -902,18 +1166,36 @@ impl Session {
         let mut link_err: Option<EngineError> = None;
         while let Some((rec_id, bytes)) = out.pop_front() {
             if let Some(e) = &link_err {
-                let _ = self.engine.mark_state(&rec_id, &self.network, &self.id, "failed", Some(e.to_string()));
+                let _ = self.engine.mark_state(
+                    &rec_id,
+                    &self.network,
+                    &self.id,
+                    "failed",
+                    Some(e.to_string()),
+                );
                 continue;
             }
             if !self.transmit_enabled {
-                if let Err(e) = self.engine.mark_state(&rec_id, &self.network, &self.id, "failed", Some("receive-only mode: transmit disabled".into())) {
+                if let Err(e) = self.engine.mark_state(
+                    &rec_id,
+                    &self.network,
+                    &self.id,
+                    "failed",
+                    Some("receive-only mode: transmit disabled".into()),
+                ) {
                     first_err.get_or_insert(e);
                 }
                 continue;
             }
             match self.write(&bytes) {
                 Ok(()) => {
-                    if let Err(e) = self.engine.mark_state(&rec_id, &self.network, &self.id, "sent", Some("handed to the radio link".into())) {
+                    if let Err(e) = self.engine.mark_state(
+                        &rec_id,
+                        &self.network,
+                        &self.id,
+                        "sent",
+                        Some("handed to the radio link".into()),
+                    ) {
                         first_err.get_or_insert(e);
                     }
                     let id = self.id.clone();
@@ -921,7 +1203,13 @@ impl Session {
                 }
                 Err(e) => {
                     let le = self.link_failed(e);
-                    let _ = self.engine.mark_state(&rec_id, &self.network, &self.id, "failed", Some(le.to_string()));
+                    let _ = self.engine.mark_state(
+                        &rec_id,
+                        &self.network,
+                        &self.id,
+                        "failed",
+                        Some(le.to_string()),
+                    );
                     link_err = Some(le);
                 }
             }

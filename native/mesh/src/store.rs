@@ -26,9 +26,25 @@ impl From<io::Error> for StoreError {
     }
 }
 
+/// What the store needs from its file: write the bytes, then make them
+/// durable. A trait so a test can record the order of the two calls.
+pub trait LogFile: Send {
+    fn write_all(&mut self, data: &[u8]) -> io::Result<()>;
+    fn sync_data(&mut self) -> io::Result<()>;
+}
+
+impl LogFile for File {
+    fn write_all(&mut self, data: &[u8]) -> io::Result<()> {
+        Write::write_all(self, data)
+    }
+    fn sync_data(&mut self) -> io::Result<()> {
+        File::sync_data(self)
+    }
+}
+
 pub struct Store {
     path: PathBuf,
-    file: File,
+    file: Box<dyn LogFile>,
     pub torn_preserved: Option<PathBuf>,
 }
 
@@ -36,7 +52,7 @@ pub struct Store {
 /// and the grant list.
 pub struct LineLog {
     path: PathBuf,
-    file: File,
+    file: Box<dyn LogFile>,
     pub torn_preserved: Option<PathBuf>,
 }
 
@@ -53,7 +69,11 @@ impl LineLog {
                 let _ = d.sync_all();
             }
         }
-        Ok(LineLog { path: path.to_path_buf(), file, torn_preserved: torn })
+        Ok(LineLog {
+            path: path.to_path_buf(),
+            file: Box::new(file),
+            torn_preserved: torn,
+        })
     }
 
     pub fn path(&self) -> &Path {
@@ -102,10 +122,17 @@ fn repair_tail(path: &Path) -> Result<Option<PathBuf>, StoreError> {
     if data.is_empty() || data.ends_with(b"\n") {
         return Ok(None);
     }
-    let cut = data.iter().rposition(|b| *b == b'\n').map(|i| i + 1).unwrap_or(0);
+    let cut = data
+        .iter()
+        .rposition(|b| *b == b'\n')
+        .map(|i| i + 1)
+        .unwrap_or(0);
     let mut n = 0;
     let side = loop {
-        let name = format!("{}.torn-{n}", path.file_name().and_then(|s| s.to_str()).unwrap_or("log"));
+        let name = format!(
+            "{}.torn-{n}",
+            path.file_name().and_then(|s| s.to_str()).unwrap_or("log")
+        );
         let p = path.with_file_name(name);
         if !p.exists() {
             break p;
@@ -114,7 +141,7 @@ fn repair_tail(path: &Path) -> Result<Option<PathBuf>, StoreError> {
     };
     {
         let mut f = File::create(&side)?;
-        f.write_all(&data[cut..])?;
+        Write::write_all(&mut f, &data[cut..])?;
         f.sync_all()?;
     }
     let f = OpenOptions::new().write(true).open(path)?;
@@ -126,7 +153,11 @@ fn repair_tail(path: &Path) -> Result<Option<PathBuf>, StoreError> {
 impl Store {
     pub fn open(dir: &Path) -> Result<Self, StoreError> {
         let log = LineLog::open(&dir.join("records.jsonl"))?;
-        Ok(Store { path: log.path.clone(), file: log.file, torn_preserved: log.torn_preserved })
+        Ok(Store {
+            path: log.path.clone(),
+            file: log.file,
+            torn_preserved: log.torn_preserved,
+        })
     }
 
     pub fn path(&self) -> &Path {
@@ -146,8 +177,14 @@ impl Store {
     /// it is reported with its line number so nothing is silently lost.
     pub fn read_all(dir: &Path) -> Result<Vec<Record>, StoreError> {
         let mut out = Vec::new();
-        for (i, l) in LineLog::read_lines(&dir.join("records.jsonl"))?.into_iter().enumerate() {
-            out.push(serde_json::from_str::<Record>(&l).map_err(|e| StoreError(format!("records.jsonl line {}: {e}", i + 1)))?);
+        for (i, l) in LineLog::read_lines(&dir.join("records.jsonl"))?
+            .into_iter()
+            .enumerate()
+        {
+            out.push(
+                serde_json::from_str::<Record>(&l)
+                    .map_err(|e| StoreError(format!("records.jsonl line {}: {e}", i + 1)))?,
+            );
         }
         Ok(out)
     }
@@ -158,6 +195,19 @@ impl Store {
     /// writes; nothing else uses this).
     pub fn open_file(path: &Path) -> Result<Self, StoreError> {
         let file = OpenOptions::new().append(true).open(path)?;
-        Ok(Store { path: path.to_path_buf(), file, torn_preserved: None })
+        Ok(Store {
+            path: path.to_path_buf(),
+            file: Box::new(file),
+            torn_preserved: None,
+        })
+    }
+
+    /// A store over any `LogFile` (a test records write and sync order).
+    pub fn with_file(path: &Path, file: Box<dyn LogFile>) -> Self {
+        Store {
+            path: path.to_path_buf(),
+            file,
+            torn_preserved: None,
+        }
     }
 }

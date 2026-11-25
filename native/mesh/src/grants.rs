@@ -50,10 +50,17 @@ pub enum Denied {
 impl std::fmt::Display for Denied {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Denied::NoGrant => write!(f, "no grant: the owner has not allowed this agent to send on this channel"),
+            Denied::NoGrant => write!(
+                f,
+                "no grant: the owner has not allowed this agent to send on this channel"
+            ),
             Denied::Expired => write!(f, "the send grant has expired"),
-            Denied::MessageBudget { limit } => write!(f, "airtime budget used up: {limit} messages per hour"),
-            Denied::ByteBudget { limit } => write!(f, "airtime budget used up: {limit} bytes per hour"),
+            Denied::MessageBudget { limit } => {
+                write!(f, "airtime budget used up: {limit} messages per hour")
+            }
+            Denied::ByteBudget { limit } => {
+                write!(f, "airtime budget used up: {limit} bytes per hour")
+            }
         }
     }
 }
@@ -73,8 +80,17 @@ fn grant_id(g: &Grant) -> String {
     let mut h = Sha256::new();
     static N: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let n = N.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0);
-    h.update(format!("{}|{}|{}|{:?}|{}|{}|{}", g.kind, g.agent, g.network, g.channel, g.created_ms, nanos, n).as_bytes());
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    h.update(
+        format!(
+            "{}|{}|{}|{:?}|{}|{}|{}",
+            g.kind, g.agent, g.network, g.channel, g.created_ms, nanos, n
+        )
+        .as_bytes(),
+    );
     format!("g{}", crate::model::to_hex(&h.finalize()[..5]))
 }
 
@@ -83,7 +99,9 @@ impl Grants {
         let log = LineLog::open(&dir.join("grants.jsonl"))?;
         let mut active = BTreeMap::new();
         for (i, l) in LineLog::read_lines(log.path())?.iter().enumerate() {
-            match serde_json::from_str::<Ev>(l).map_err(|e| StoreError(format!("grants.jsonl line {}: {e}", i + 1)))? {
+            match serde_json::from_str::<Ev>(l)
+                .map_err(|e| StoreError(format!("grants.jsonl line {}: {e}", i + 1)))?
+            {
                 Ev::Grant(g) => {
                     active.insert(g.id.clone(), g);
                 }
@@ -92,7 +110,11 @@ impl Grants {
                 }
             }
         }
-        Ok(Grants { log, active, sent: vec![] })
+        Ok(Grants {
+            log,
+            active,
+            sent: vec![],
+        })
     }
 
     pub fn add(&mut self, mut g: Grant) -> Result<Grant, StoreError> {
@@ -104,7 +126,8 @@ impl Grants {
         }
         g.created_ms = now_ms();
         g.id = grant_id(&g);
-        let line = serde_json::to_string(&Ev::Grant(g.clone())).map_err(|e| StoreError(e.to_string()))?;
+        let line =
+            serde_json::to_string(&Ev::Grant(g.clone())).map_err(|e| StoreError(e.to_string()))?;
         self.log.append_line(&line)?;
         self.active.insert(g.id.clone(), g.clone());
         Ok(g)
@@ -114,40 +137,78 @@ impl Grants {
         if !self.active.contains_key(id) {
             return Err(StoreError(format!("no active grant {id}")));
         }
-        let line = serde_json::to_string(&Ev::Revoke { id: id.into(), ts: now_ms(), by: by.into() }).map_err(|e| StoreError(e.to_string()))?;
+        let line = serde_json::to_string(&Ev::Revoke {
+            id: id.into(),
+            ts: now_ms(),
+            by: by.into(),
+        })
+        .map_err(|e| StoreError(e.to_string()))?;
         self.log.append_line(&line)?;
         self.active.remove(id);
         Ok(())
     }
 
     /// Seed the rolling window from past outbound records.
-    pub fn note_sent(&mut self, principal: &str, network: &str, channel: Option<u32>, ts_ms: u64, bytes: u32) {
-        self.sent.push((principal.into(), network.into(), channel, ts_ms, bytes));
+    pub fn note_sent(
+        &mut self,
+        principal: &str,
+        network: &str,
+        channel: Option<u32>,
+        ts_ms: u64,
+        bytes: u32,
+    ) {
+        self.sent
+            .push((principal.into(), network.into(), channel, ts_ms, bytes));
     }
 
     fn matches(g: &Grant, kind: &str, agent: &str, network: &str, channel: Option<u32>) -> bool {
-        g.kind == kind && g.agent == agent && g.network == network && (g.channel.is_none() || g.channel == channel)
+        g.kind == kind
+            && g.agent == agent
+            && g.network == network
+            && (g.channel.is_none() || g.channel == channel)
     }
 
     /// Charge a send that went through (the engine calls this once the
     /// outbound record is stored, so a send that fails does not use budget).
-    pub fn charge(&mut self, principal: &str, network: &str, channel: Option<u32>, bytes: u32, now: u64) {
+    pub fn charge(
+        &mut self,
+        principal: &str,
+        network: &str,
+        channel: Option<u32>,
+        bytes: u32,
+        now: u64,
+    ) {
         if principal != OWNER {
-            self.sent.push((principal.into(), network.into(), channel, now, bytes));
+            self.sent
+                .push((principal.into(), network.into(), channel, now, bytes));
         }
     }
 
     /// Check a send against the grants and the rolling-hour budget. Does not
     /// charge: see `charge`.
-    pub fn authorize_send(&self, principal: &str, network: &str, channel: Option<u32>, bytes: u32, now: u64) -> Result<(), Denied> {
+    pub fn authorize_send(
+        &self,
+        principal: &str,
+        network: &str,
+        channel: Option<u32>,
+        bytes: u32,
+        now: u64,
+    ) -> Result<(), Denied> {
         if principal == OWNER {
             return Ok(());
         }
-        let cands: Vec<&Grant> = self.active.values().filter(|g| Self::matches(g, "send", principal, network, channel)).collect();
+        let cands: Vec<&Grant> = self
+            .active
+            .values()
+            .filter(|g| Self::matches(g, "send", principal, network, channel))
+            .collect();
         if cands.is_empty() {
             return Err(Denied::NoGrant);
         }
-        let live: Vec<&&Grant> = cands.iter().filter(|g| g.expires_ms.is_none_or(|e| e > now)).collect();
+        let live: Vec<&&Grant> = cands
+            .iter()
+            .filter(|g| g.expires_ms.is_none_or(|e| e > now))
+            .collect();
         if live.is_empty() {
             return Err(Denied::Expired);
         }
@@ -156,7 +217,11 @@ impl Grants {
             // count this agent's sends inside the grant's scope in the last hour
             let (mut n, mut b) = (0u32, 0u32);
             for (p, net, ch, ts, by) in &self.sent {
-                if p == principal && net == network && now.saturating_sub(*ts) < HOUR_MS && (g.channel.is_none() || *ch == g.channel) {
+                if p == principal
+                    && net == network
+                    && now.saturating_sub(*ts) < HOUR_MS
+                    && (g.channel.is_none() || *ch == g.channel)
+                {
                     n += 1;
                     b += by;
                 }
@@ -180,7 +245,11 @@ impl Grants {
 
     /// May this agent read the owner's mesh records on this channel?
     pub fn may_read(&self, principal: &str, network: &str, channel: Option<u32>, now: u64) -> bool {
-        principal == OWNER || self.active.values().any(|g| Self::matches(g, "read", principal, network, channel) && g.expires_ms.is_none_or(|e| e > now))
+        principal == OWNER
+            || self.active.values().any(|g| {
+                Self::matches(g, "read", principal, network, channel)
+                    && g.expires_ms.is_none_or(|e| e > now)
+            })
     }
 
     pub fn list(&self) -> Vec<Grant> {

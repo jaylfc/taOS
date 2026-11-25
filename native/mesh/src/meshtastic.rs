@@ -37,7 +37,12 @@ pub fn parse_node(s: &str) -> Option<u32> {
 
 pub fn frame(payload: &[u8]) -> Vec<u8> {
     let mut v = Vec::with_capacity(payload.len() + 4);
-    v.extend_from_slice(&[START1, START2, (payload.len() >> 8) as u8, payload.len() as u8]);
+    v.extend_from_slice(&[
+        START1,
+        START2,
+        (payload.len() >> 8) as u8,
+        payload.len() as u8,
+    ]);
     v.extend_from_slice(payload);
     v
 }
@@ -143,7 +148,10 @@ impl PositionMsg {
     }
 
     pub fn to_model(&self) -> Position {
-        let t = self.time.filter(|t| *t != 0).or(self.timestamp.filter(|t| *t != 0));
+        let t = self
+            .time
+            .filter(|t| *t != 0)
+            .or(self.timestamp.filter(|t| *t != 0));
         Position {
             lat: self.latitude_i.map(|v| f64::from(v) * 1e-7),
             lon: self.longitude_i.map(|v| f64::from(v) * 1e-7),
@@ -268,12 +276,23 @@ impl MeshPacketMsg {
 #[derive(Debug, Clone, PartialEq)]
 pub enum FromRadioMsg {
     Packet(MeshPacketMsg),
-    MyInfo { my_node_num: u32 },
-    NodeInfo { num: u32, user: Option<UserMsg>, position: Option<PositionMsg>, snr: Option<f32>, last_heard: Option<u32>, hops_away: Option<u32> },
+    MyInfo {
+        my_node_num: u32,
+    },
+    NodeInfo {
+        num: u32,
+        user: Option<UserMsg>,
+        position: Option<PositionMsg>,
+        snr: Option<f32>,
+        last_heard: Option<u32>,
+        hops_away: Option<u32>,
+    },
     ConfigCompleteId(u32),
     Rebooted,
     /// Config, channel, metadata, queue status and other radio-side messages.
-    Other { field: u32 },
+    Other {
+        field: u32,
+    },
 }
 
 pub fn decode_from_radio(b: &[u8]) -> Result<(u32, FromRadioMsg), DecodeError> {
@@ -295,7 +314,8 @@ pub fn decode_from_radio(b: &[u8]) -> Result<(u32, FromRadioMsg), DecodeError> {
                 out = Some(FromRadioMsg::MyInfo { my_node_num: num });
             }
             4 => {
-                let (mut num, mut user, mut position, mut snr, mut last_heard, mut hops_away) = (0, None, None, None, None, None);
+                let (mut num, mut user, mut position, mut snr, mut last_heard, mut hops_away) =
+                    (0, None, None, None, None, None);
                 for g in Fields::new(v.as_bytes()) {
                     let (gn, gv) = g?;
                     match gn {
@@ -308,7 +328,14 @@ pub fn decode_from_radio(b: &[u8]) -> Result<(u32, FromRadioMsg), DecodeError> {
                         _ => {}
                     }
                 }
-                out = Some(FromRadioMsg::NodeInfo { num, user, position, snr, last_heard, hops_away });
+                out = Some(FromRadioMsg::NodeInfo {
+                    num,
+                    user,
+                    position,
+                    snr,
+                    last_heard,
+                    hops_away,
+                });
             }
             7 => out = Some(FromRadioMsg::ConfigCompleteId(v.as_u32())),
             8 => out = Some(FromRadioMsg::Rebooted),
@@ -435,7 +462,12 @@ impl Default for MeshtasticDriver {
 
 impl MeshtasticDriver {
     pub fn new() -> Self {
-        MeshtasticDriver { stream: StreamDecoder::new(), my_node: None, config_complete: false, decode_errors: 0 }
+        MeshtasticDriver {
+            stream: StreamDecoder::new(),
+            my_node: None,
+            config_complete: false,
+            decode_errors: 0,
+        }
     }
 
     pub fn radio_id(&self) -> Option<String> {
@@ -470,7 +502,10 @@ impl MeshtasticDriver {
             Err(e) => {
                 self.decode_errors += 1;
                 let mut i = Inbound::control(payload, "undecodable");
-                i.event = Event::Opaque { port: None, note: e.to_string() };
+                i.event = Event::Opaque {
+                    port: None,
+                    note: e.to_string(),
+                };
                 return i;
             }
         };
@@ -486,19 +521,40 @@ impl MeshtasticDriver {
                 Inbound::control(payload, "config_complete")
             }
             FromRadioMsg::Rebooted => Inbound::control(payload, "rebooted"),
-            FromRadioMsg::Other { field } => Inbound::control(payload, &format!("radio_message_{field}")),
-            FromRadioMsg::NodeInfo { num, user, position, snr, last_heard, hops_away } => {
-                let pos = position.as_ref().map(|p| p.to_model()).filter(|p| p.has_fix());
+            FromRadioMsg::Other { field } => {
+                Inbound::control(payload, &format!("radio_message_{field}"))
+            }
+            FromRadioMsg::NodeInfo {
+                num,
+                user,
+                position,
+                snr,
+                last_heard,
+                hops_away,
+            } => {
+                let pos = position
+                    .as_ref()
+                    .map(|p| p.to_model())
+                    .filter(|p| p.has_fix());
                 let u = user.unwrap_or_default();
                 Inbound {
                     raw: payload,
-                    event: Event::NodeInfo { long_name: u.long_name, short_name: u.short_name, hw_model: u.hw_model, position: pos.clone() },
+                    event: Event::NodeInfo {
+                        long_name: u.long_name,
+                        short_name: u.short_name,
+                        hw_model: u.hw_model,
+                        position: pos.clone(),
+                    },
                     from: Some(node_name(num)),
                     to: None,
                     channel: None,
                     packet_id: None,
                     radio_ts: last_heard.filter(|t| *t != 0).map(u64::from),
-                    signal: Signal { snr, hops: hops_away, ..Default::default() },
+                    signal: Signal {
+                        snr,
+                        hops: hops_away,
+                        ..Default::default()
+                    },
                     position: pos,
                     broadcast: false,
                     trust: None,
@@ -518,7 +574,13 @@ impl MeshtasticDriver {
             (Some(s), Some(l)) if s >= l => Some(s - l),
             _ => None,
         };
-        let signal = Signal { rssi: p.rx_rssi, snr: p.rx_snr, hops, hop_limit, hop_start };
+        let signal = Signal {
+            rssi: p.rx_rssi,
+            snr: p.rx_snr,
+            hops,
+            hop_limit,
+            hop_start,
+        };
         let broadcast = p.to == BROADCAST;
         let trust = if p.xeddsa_signed {
             Some("signed".to_string())
@@ -531,7 +593,10 @@ impl MeshtasticDriver {
         };
         let mut inb = Inbound {
             raw,
-            event: Event::Opaque { port: None, note: "encrypted".into() },
+            event: Event::Opaque {
+                port: None,
+                note: "encrypted".into(),
+            },
             from: Some(node_name(p.from)),
             to: Some(node_name(p.to)),
             channel: Some(p.channel),
@@ -543,22 +608,38 @@ impl MeshtasticDriver {
             trust,
         };
         let Some(d) = p.decoded else {
-            inb.event = Event::Opaque { port: None, note: "encrypted payload (radio did not decrypt)".into() };
+            inb.event = Event::Opaque {
+                port: None,
+                note: "encrypted payload (radio did not decrypt)".into(),
+            };
             return inb;
         };
         inb.event = match d.portnum {
-            PORT_TEXT => Event::Text { text: String::from_utf8_lossy(&d.payload).into_owned() },
+            PORT_TEXT => Event::Text {
+                text: String::from_utf8_lossy(&d.payload).into_owned(),
+            },
             PORT_POSITION => match PositionMsg::decode(&d.payload) {
                 Ok(pm) => {
                     let pos = pm.to_model();
                     inb.position = Some(pos.clone());
                     Event::Position(pos)
                 }
-                Err(e) => Event::Opaque { port: Some(d.portnum), note: e.to_string() },
+                Err(e) => Event::Opaque {
+                    port: Some(d.portnum),
+                    note: e.to_string(),
+                },
             },
             PORT_NODEINFO => match UserMsg::decode(&d.payload) {
-                Ok(u) => Event::NodeInfo { long_name: u.long_name, short_name: u.short_name, hw_model: u.hw_model, position: None },
-                Err(e) => Event::Opaque { port: Some(d.portnum), note: e.to_string() },
+                Ok(u) => Event::NodeInfo {
+                    long_name: u.long_name,
+                    short_name: u.short_name,
+                    hw_model: u.hw_model,
+                    position: None,
+                },
+                Err(e) => Event::Opaque {
+                    port: Some(d.portnum),
+                    note: e.to_string(),
+                },
             },
             PORT_TELEMETRY => match telemetry_json(&d.payload) {
                 Ok((time, kind, values)) => {
@@ -567,7 +648,10 @@ impl MeshtasticDriver {
                     }
                     Event::Telemetry { kind, values }
                 }
-                Err(e) => Event::Opaque { port: Some(d.portnum), note: e.to_string() },
+                Err(e) => Event::Opaque {
+                    port: Some(d.portnum),
+                    note: e.to_string(),
+                },
             },
             PORT_ROUTING => {
                 let mut err = None;
@@ -576,16 +660,31 @@ impl MeshtasticDriver {
                         err = Some(f.1.as_u32());
                     }
                 }
-                Event::Ack { request_id: d.request_id.unwrap_or(0), error: err.filter(|e| *e != 0).map(|e| format!("routing_error_{e}")) }
+                Event::Ack {
+                    request_id: d.request_id.unwrap_or(0),
+                    error: err
+                        .filter(|e| *e != 0)
+                        .map(|e| format!("routing_error_{e}")),
+                }
             }
-            other => Event::Opaque { port: Some(other), note: format!("port {other} not decoded") },
+            other => Event::Opaque {
+                port: Some(other),
+                note: format!("port {other} not decoded"),
+            },
         };
         inb
     }
 
     /// Build the framed bytes for a text send plus the unframed ToRadio
     /// payload (what the record stores).
-    pub fn text_frame(&self, to: u32, channel: u32, text: &str, packet_id: u32, want_ack: bool) -> (Vec<u8>, Vec<u8>) {
+    pub fn text_frame(
+        &self,
+        to: u32,
+        channel: u32,
+        text: &str,
+        packet_id: u32,
+        want_ack: bool,
+    ) -> (Vec<u8>, Vec<u8>) {
         let payload = encode_text(to, channel, text, packet_id, want_ack);
         (frame(&payload), payload)
     }
@@ -603,6 +702,9 @@ pub fn fresh_packet_id() -> u32 {
         let _ = NEXT.compare_exchange(0, seed, Ordering::Relaxed, Ordering::Relaxed);
     }
     let id = NEXT.fetch_add(1, Ordering::Relaxed);
-    if id == 0 { NEXT.fetch_add(1, Ordering::Relaxed) } else { id }
+    if id == 0 {
+        NEXT.fetch_add(1, Ordering::Relaxed)
+    } else {
+        id
+    }
 }
-

@@ -64,7 +64,10 @@ fn probe_recognises_a_meshtastic_radio_and_keeps_every_byte_it_read() {
     let p = probe(&mut l, Duration::from_millis(300));
     assert_eq!(p.network.as_deref(), Some("meshtastic"));
     assert_eq!(p.radio_id.as_deref(), Some("!28af67cc"));
-    assert_eq!(p.received, stream, "what the probe read is handed on so no queued frame is lost");
+    assert_eq!(
+        p.received, stream,
+        "what the probe read is handed on so no queued frame is lost"
+    );
     // the probe only sent the read-only handshake
     let w = link.written_bytes();
     assert_eq!(&w[..32], &[0xC3u8; 32][..]);
@@ -152,9 +155,14 @@ fn ble_scan_finds_devices_advertising_either_documented_service() {
         "/org/bluez/hci0/dev_B": dev("AA:AA:AA:AA:AA:02", "MeshCore-Alpha", &["6e400001-b5a3-f393-e0a9-e50e24dcca9e"], -72),
         "/org/bluez/hci0/dev_C": dev("AA:AA:AA:AA:AA:03", "Headphones", &["0000110b-0000-1000-8000-00805f9b34fb"], -40),
     }]});
-    let BleScan::Devices { devices } = scan_ble(&Fixture(Ok(objs))) else { panic!("expected devices") };
+    let BleScan::Devices { devices } = scan_ble(&Fixture(Ok(objs))) else {
+        panic!("expected devices")
+    };
     assert_eq!(devices.len(), 2);
-    let nets: Vec<_> = devices.iter().map(|d| (d.name.clone().unwrap(), d.network.clone())).collect();
+    let nets: Vec<_> = devices
+        .iter()
+        .map(|d| (d.name.clone().unwrap(), d.network.clone()))
+        .collect();
     assert!(nets.contains(&("Meshtastic_abcd".into(), "meshtastic".into())));
     assert!(nets.contains(&("MeshCore-Alpha".into(), "meshcore".into())));
 }
@@ -162,9 +170,17 @@ fn ble_scan_finds_devices_advertising_either_documented_service() {
 #[test]
 fn a_host_without_a_ble_adapter_is_reported_not_crashed() {
     let no_adapter = serde_json::json!({"type": "a{oa{sa{sv}}}", "data": [{"/org/bluez": {"org.bluez.AgentManager1": {}}}]});
-    assert!(matches!(scan_ble(&Fixture(Ok(no_adapter))), BleScan::NoAdapter { .. }));
-    assert!(matches!(scan_ble(&Fixture(Err("busctl: not found".into()))), BleScan::NoAdapter { why } if why.contains("busctl")));
-    assert!(matches!(scan_ble(&Fixture(Ok(serde_json::json!({"nonsense": 1})))), BleScan::NoAdapter { .. }));
+    assert!(matches!(
+        scan_ble(&Fixture(Ok(no_adapter))),
+        BleScan::NoAdapter { .. }
+    ));
+    assert!(
+        matches!(scan_ble(&Fixture(Err("busctl: not found".into()))), BleScan::NoAdapter { why } if why.contains("busctl"))
+    );
+    assert!(matches!(
+        scan_ble(&Fixture(Ok(serde_json::json!({"nonsense": 1})))),
+        BleScan::NoAdapter { .. }
+    ));
 }
 
 #[test]
