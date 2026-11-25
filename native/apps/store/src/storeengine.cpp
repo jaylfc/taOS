@@ -2,6 +2,7 @@
 #include "storeengine.h"
 
 #include <algorithm>
+#include <QSettings>
 
 #include <QDesktopServices>
 #include <QDir>
@@ -141,7 +142,9 @@ StoreEngine::StoreEngine(QObject *parent) : QObject(parent)
     connect(m_capps, &ContainerAppsService::groupCreated, this, [this](const QString &name, bool ok, const QString &text) {
         if (ok) {
             refreshContainerInfo();
+            rememberGroup(name);
             m_groupWork = QVariantMap{{u"state"_s, u"idle"_s}, {u"name"_s, name}, {u"text"_s, text}, {u"created"_s, true}};
+            Q_EMIT groupCreated(name);
         } else {
             m_groupWork = QVariantMap{{u"state"_s, u"failed"_s}, {u"name"_s, name}, {u"text"_s, text}};
         }
@@ -477,6 +480,10 @@ QVariantMap StoreEngine::app(const QString &id) const
         e[u"group"_s] = i.value(u"group"_s).toString();
         e[u"groupName"_s] = groupDisplayName(i.value(u"group"_s).toString());
         e[u"installedVersion"_s] = i.value(u"installed_version"_s).toString();
+        if (!i.value(u"icon_path"_s).toString().isEmpty())
+            e[u"iconUrl"_s] = QUrl::fromLocalFile(i.value(u"icon_path"_s).toString()).toString();   // the icon the launcher uses
+        e[u"licenceAccepted"_s] = !i.value(u"licence_accepted"_s).toObject().isEmpty();
+        e[u"needsLicenceAcceptance"_s] = e.value(u"licenceRequired"_s).toBool() && i.value(u"licence_accepted"_s).toObject().isEmpty();
         const QJsonObject acc = i.value(u"licence_accepted"_s).toObject();
         if (!acc.isEmpty())
             e[u"licenceAcceptedText"_s] = tr("Accepted %1").arg(QDateTime::fromString(acc.value(u"accepted_at"_s).toString(), Qt::ISODate).toLocalTime().toString(Qt::TextDate));
@@ -536,6 +543,7 @@ QVariantList StoreEngine::installedRows() const
         out << QVariantMap{{u"id"_s, e.value(u"id"_s)}, {u"name"_s, e.value(u"name"_s)}, {u"kind"_s, e.value(u"kind"_s)},
                            {u"kindLabel"_s, kindLabel.value(e.value(u"kind"_s).toString(), tr("App"))},
                            {u"subtitle"_s, sub.join(u" · "_s)}, {u"letter"_s, e.value(u"letter"_s)}, {u"source"_s, u"catalog"_s},
+                           {u"iconUrl"_s, app(e.value(u"id"_s).toString()).value(u"iconUrl"_s)},
                            {u"updateAvailable"_s, e.value(u"updateAvailable"_s)}};
     }
     for (const QVariant &v : m_web->instances()) {
@@ -641,9 +649,31 @@ void StoreEngine::installContainerApp(const QString &id)
     s.group = group;
     s.state = u"installing"_s;
     s.text = tr("Starting");
+    rememberGroup(group);
     bump();
     // The licence was shown on the consent card and the person pressed "I agree and install": that is the acceptance.
     m_capps->install(id, u"group:"_s + group, false, licence);
+}
+
+QString StoreEngine::lastAppGroup() const
+{
+    return QSettings(u"taOS"_s, u"Store"_s).value(u"lastAppGroup"_s).toString();
+}
+
+void StoreEngine::rememberGroup(const QString &group)
+{
+    QSettings(u"taOS"_s, u"Store"_s).setValue(u"lastAppGroup"_s, group);
+}
+
+void StoreEngine::acceptInstalledLicence(const QString &id)
+{
+    if (m_capps->acceptLicence(id)) {
+        refreshContainerInfo();
+        Q_EMIT toast(tr("Your acceptance of the licence is recorded."));
+    } else {
+        Q_EMIT toast(tr("Could not record the acceptance."));
+    }
+    bump();
 }
 
 void StoreEngine::chooseGroup(const QString &id, const QString &group)
@@ -712,6 +742,7 @@ void StoreEngine::moveContainerApp(const QString &id, const QString &group)
     s.group = group;
     s.state = u"moving"_s;
     s.text = tr("Moving to %1").arg(groupDisplayName(group));
+    rememberGroup(group);
     bump();
     m_capps->move(id, group);
 }

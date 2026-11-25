@@ -31,6 +31,8 @@ public:
     void createGroup(const QString &name, const QString &displayName);
     /// Moves an installed app and its data to another group; ends with finished(id, ...).
     void move(const QString &id, const QString &group);
+    /// Records the person's acceptance of an installed app's licence (an app installed before licences were recorded).
+    bool acceptLicence(const QString &id);
 
     /// target: "group:<name>" (default "group:default"). acceptedHostWarning is carried for the host target.
     /// licenceAccepted: the person agreed to the licence the Store showed (recorded by the engine with the time and who).

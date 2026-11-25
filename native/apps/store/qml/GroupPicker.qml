@@ -17,7 +17,6 @@ ColumnLayout {
     readonly property var groups: engine && engine.revision >= 0 ? engine.appGroups().filter(g => g.name !== root.exclude) : []
     readonly property var work: engine && engine.revision >= 0 ? engine.groupWork : ({ state: "idle" })
     property bool naming: false
-    property string lastCreated: ""   // a group made here is chosen once; later changes of the list must not undo the person's choice
     Component.onCompleted: { engine.refreshGroups(); pickFirst() }
     // Called each time the picker is shown again (the dialog keeps its content between uses).
     function reset() {
@@ -27,19 +26,23 @@ ColumnLayout {
         pickFirst()
     }
     function pickFirst() {
-        if (selected === "" && groups.length > 0) { selected = groups[0].name; picked(selected) }
+        if (selected !== "" || groups.length === 0) return
+        // the group made or used last, else the first (the default group)
+        const last = engine.lastAppGroup()
+        const hit = groups.filter(g => g.name === last)
+        selected = hit.length > 0 ? hit[0].name : groups[0].name
+        picked(selected)
     }
     onGroupsChanged: pickFirst()
     // a group that has just been made is the one to use
+    // a group made here is chosen, and the name box closes
     Connections {
         target: root.engine
-        function onRevisionChanged() {
-            if (root.work.created === true && root.work.name && root.lastCreated !== root.work.name) {
-                root.lastCreated = root.work.name
-                root.selected = root.work.name
-                root.naming = false
-                root.picked(root.selected)
-            }
+        function onGroupCreated(name) {
+            root.selected = name
+            root.naming = false
+            nameField.text = ""
+            root.picked(name)
         }
     }
 

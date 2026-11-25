@@ -300,9 +300,18 @@ private Q_SLOTS:
         QCOMPARE(visibleByName(m_win, u"createGroupButton"_s)->property("enabled").toBool(), false);
         visibleByName(m_win, u"groupNameField"_s)->setProperty("text", u"Internet apps"_s);
         QVERIFY(waitFor([this] { return visibleByName(m_win, u"createGroupButton"_s)->property("enabled").toBool(); }));
+        writeFile(d + u"/groups.json"_s, jq("{'ok':true,'groups':[{'name':'default','display_name':'My apps','state':'running','apps':[]},{'name':'dev-apps','display_name':'Dev apps','state':'running','apps':[]},{'name':'internet-apps','display_name':'Internet apps','state':'running','apps':[]}]}"));
+        qputenv("FAKE_AG_SLOW", "1");
         click(visibleByName(m_win, u"createGroupButton"_s));
         shot(m_win, u"2-new-group-naming"_s);
         QVERIFY(waitFor([&] { return log().contains(u"group create internet-apps --display-name Internet apps --json"_s); }));
+        // while the group is still being made the install button waits (the install would go to the wrong group)
+        QCOMPARE(visibleByName(m_win, u"consentAccept"_s)->property("enabled").toBool(), false);
+        // when it is ready the name box closes and the new group is the chosen one
+        QVERIFY(waitFor([this] { return visibleByName(m_win, u"groupNameField"_s) == nullptr; }));
+        QVERIFY(waitFor([this] { auto *r = visibleByName(m_win, u"group-internet-apps"_s); return r && r->property("on").toBool(); }));
+        QVERIFY(visibleByName(m_win, u"consentAccept"_s)->property("enabled").toBool());
+        qunsetenv("FAKE_AG_SLOW");
         // choose Dev apps and agree
         writeFile(d + u"/list.json"_s, jq("{'ok':true,'apps':[{'id':'claude-desktop','name':'Claude','group':'dev-apps','installed_version':'1.17282.0'}]}"));
         click(visibleByName(m_win, u"group-dev-apps"_s));
@@ -320,6 +329,11 @@ private Q_SLOTS:
         shot(m_win, u"4-move-to-group-dialog"_s);
         click(visibleByName(m_win, u"moveButton"_s));
         QVERIFY(waitFor([&] { return log().contains(u"move claude-desktop --to group:default --json"_s); }));
+        // and Back from the page still goes back after a move
+        QVERIFY(waitFor([this] { return byName(m_win, u"backButton"_s) != nullptr; }));
+        QTest::qWait(400);
+        click(byName(m_win, u"backButton"_s));
+        QVERIFY(waitFor([this] { return m_win->property("detailId").toString().isEmpty(); }));
         qputenv("TAOS_APPGROUPS_BIN", "/nonexistent/taos-appgroups");
     }
 

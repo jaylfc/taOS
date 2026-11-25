@@ -286,6 +286,45 @@ private Q_SLOTS:
         qputenv("TAOS_APPGROUPS_BIN", "/nonexistent/taos-appgroups");
     }
 
+
+    void container_apps_show_the_launchers_icon_a_real_version_and_ask_for_a_missing_licence()
+    {
+        QTemporaryDir ag;
+        const QString d = ag.path();
+        writeFile(d + u"/catalog.json"_s, jq("{'ok':true,'apps':[{'id':'antigravity','name':'Antigravity','type':'container-desktop-app','description':'d','publisher':'Google','homepage':'https://x.example/','licence':'Google Terms','licence_url':'https://policies.google.com/terms','licence_required':true,'terms_note':'Proprietary','version':'apt','categories':['Development'],'window_app_id':'antigravity-ide','grants':{}},{'id':'kilo-desktop','name':'Kilo','type':'container-desktop-app','description':'d','publisher':'Kilo','homepage':'https://x.example/','licence':'Kilo','licence_url':'https://kilo.ai/terms','licence_required':true,'terms_note':'P','version':'1.0.0','categories':['Development'],'window_app_id':'kilo','grants':{}}]}"));
+        writeFile(d + u"/list.json"_s, jq("{'ok':true,'apps':[{'id':'antigravity','name':'Antigravity','group':'dev-apps','installed_version':'2.8.0','icon_path':'/data/icons/antigravity.override.png'},{'id':'kilo-desktop','name':'Kilo','group':'dev-apps','installed_version':'1.0.0','licence_accepted':{'url':'https://kilo.ai/terms'},'icon_path':''}]}"));
+        writeFile(d + u"/groups.json"_s, jq("{'ok':true,'groups':[{'name':'default','display_name':'My apps','state':'running','apps':[]},{'name':'dev-apps','display_name':'Dev apps','state':'running','apps':['antigravity','kilo-desktop']}]}"));
+        qputenv("TAOS_APPGROUPS_BIN", QByteArray(FAKE_APPGROUPS));
+        qputenv("FAKE_AG_DIR", d.toUtf8());
+        start();
+        loaded();
+        QVERIFY(waitFor([this] { return m_e->app(u"antigravity"_s)[u"installed"_s].toBool(); }));
+        const QVariantMap a = m_e->app(u"antigravity"_s);
+        QCOMPARE(a[u"iconUrl"_s].toString(), u"file:///data/icons/antigravity.override.png"_s);   // what the launcher shows
+        QCOMPARE(a[u"version"_s].toString(), QString());                                          // "apt" is not a version
+        QCOMPARE(a[u"installedVersion"_s].toString(), u"2.8.0"_s);
+        QCOMPARE(a[u"needsLicenceAcceptance"_s].toBool(), true);                                  // installed before licences were recorded
+        QCOMPARE(m_e->app(u"kilo-desktop"_s)[u"needsLicenceAcceptance"_s].toBool(), false);
+        QCOMPARE(m_e->app(u"kilo-desktop"_s)[u"version"_s].toString(), u"1.0.0"_s);
+        QVERIFY(m_e->app(u"kilo-desktop"_s)[u"iconUrl"_s].toString().isEmpty() || !m_e->app(u"kilo-desktop"_s)[u"iconUrl"_s].toString().startsWith(u"file:"_s));
+        QVERIFY(ids(m_e->installedRows()).contains(u"antigravity"_s));
+        for (const QVariant &r : m_e->installedRows())
+            if (r.toMap()[u"id"_s].toString() == u"antigravity"_s)
+                QCOMPARE(r.toMap()[u"iconUrl"_s].toString(), u"file:///data/icons/antigravity.override.png"_s);
+        // accepting records it (the engine is asked) and the page stops asking
+        writeFile(d + u"/list.json"_s, jq("{'ok':true,'apps':[{'id':'antigravity','name':'Antigravity','group':'dev-apps','installed_version':'2.8.0','licence_accepted':{'url':'x'}}]}"));
+        m_e->acceptInstalledLicence(u"antigravity"_s);
+        QFile f(d + u"/args.log"_s);
+        QVERIFY(f.open(QIODevice::ReadOnly));
+        QVERIFY(QString::fromUtf8(f.readAll()).contains(u"licence accept antigravity --accepted-by "_s));
+        QCOMPARE(m_e->app(u"antigravity"_s)[u"needsLicenceAcceptance"_s].toBool(), false);
+        // the group made last is remembered, for the next picker
+        m_e->createAppGroup(u"Internet apps"_s);
+        QVERIFY(waitFor([this] { return m_e->groupWork().value(u"created"_s).toBool(); }));
+        QCOMPARE(m_e->lastAppGroup(), u"internet-apps"_s);
+        qputenv("TAOS_APPGROUPS_BIN", "/nonexistent/taos-appgroups");
+    }
+
     void builtin_web_apps_merge_with_the_server_catalogue()
     {
         Catalog c;

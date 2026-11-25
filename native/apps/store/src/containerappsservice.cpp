@@ -150,6 +150,13 @@ void ContainerAppsService::install(const QString &id, const QString &target, boo
     runStreaming(this, this, id, a, tr("Installed."), tr("The install did not finish."));
 }
 
+bool ContainerAppsService::acceptLicence(const QString &id)
+{
+    QProcess p;
+    p.start(program(), {u"licence"_s, u"accept"_s, id, u"--accepted-by"_s, qEnvironmentVariable("USER", u"the person using this computer"_s) + u" (in the Store)"_s, u"--json"_s});
+    return p.waitForFinished(8000) && p.exitCode() == 0;
+}
+
 void ContainerAppsService::update(const QString &id)
 {
     runStreaming(this, this, id, {u"update"_s, id, u"--json"_s}, tr("Updated."), tr("The update did not finish."));

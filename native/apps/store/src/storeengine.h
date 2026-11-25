@@ -138,6 +138,10 @@ public:
     QVariantMap groupWork() const { return m_groupWork; }
     /// Creates a group named by what the person typed ("Dev apps" becomes the group dev-apps) and calls it that.
     Q_INVOKABLE void createAppGroup(const QString &displayName);
+    /// The group a person made or used last (kept between runs); "" when none. Pickers preselect it.
+    Q_INVOKABLE QString lastAppGroup() const;
+    /// Records the acceptance of the licence of an installed app that has none on record.
+    Q_INVOKABLE void acceptInstalledLicence(const QString &id);
     /// A name the engine would accept for what the person typed, or "" when nothing usable is left.
     Q_INVOKABLE QString groupSlug(const QString &displayName) const;
     /// The group the person picked for an install that is waiting for consent.
@@ -165,6 +169,8 @@ Q_SIGNALS:
     void toast(const QString &text);
     /// An install/remove reached an end (ok or not).
     void installFinished(const QString &id, bool ok, const QString &text);
+    /// A group made from the picker is ready (its name).
+    void groupCreated(const QString &name);
 
 private:
     struct Inst {
@@ -185,6 +191,7 @@ private:
     void postInstall(const QString &id);
     void loadContainerApps();
     void refreshContainerInfo();
+    void rememberGroup(const QString &group);
     QString groupDisplayName(const QString &group) const;
     void installContainerApp(const QString &id);
     void pollProgress();

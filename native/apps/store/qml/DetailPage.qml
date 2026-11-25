@@ -56,7 +56,7 @@ Item {
                 coverUrl: page.e.coverUrl ? page.e.coverUrl : ""
                 subtitle: [page.e.kind === "webapp" ? qsTr("Web app") : page.e.kind === "model" ? qsTr("Model") : page.e.kind === "agent" ? qsTr("Agent framework")
                            : page.e.kind === "plugin" ? qsTr("Plugin") : page.e.kind === "mcp" ? qsTr("Tool server") : qsTr("App"),
-                           page.e.categoryLabel, page.e.version ? "v" + page.e.version : "", page.e.sizeText].filter(s => s).join("  ·  ")
+                           page.e.categoryLabel, (page.e.kind === "containerapp" && page.e.installedVersion) ? "v" + page.e.installedVersion : page.e.version ? "v" + page.e.version : "", page.e.sizeText].filter(s => s).join("  ·  ")
                 actions: Component { GetButton { engine: page.engine; entry: page.e; compact: false; showRemove: true; pick: page.variant; hideReview: true; onReview: {} } }
                 Chip { visible: page.e.needsDocker === true; text: qsTr("Needs Docker"); tone: "warning"; glyph: "alert" }
                 Chip { visible: !!page.e.fit; text: page.e.fitText ? page.e.fitText : ""
@@ -135,6 +135,8 @@ Item {
                         spacing: 8
                         TaosButton {
                             objectName: "consentAccept"
+                            // not while a group is still being made: the install would go to the wrong place
+                            enabled: page.st.consent !== "containerapp" || page.engine.groupWork.state !== "creating"
                             text: page.st.consent === "containerapp" ? (page.e.licenceRequired === true ? qsTr("I agree and install") : qsTr("Install"))
                                   : page.st.consent === "license" ? qsTr("I agree and install") : qsTr("Install with Docker")
                             variant: "primary"
@@ -181,6 +183,20 @@ Item {
                             onClicked: moveDialog.openFor(page.appId, page.e.name, page.e.group)
                         }
                     }
+                }
+                // an app installed before licences were recorded: say so, and let the person accept (or read) it now
+                RowLayout {
+                    visible: page.e.needsLicenceAcceptance === true
+                    objectName: "licenceAcceptRow"
+                    Layout.fillWidth: true
+                    spacing: 8
+                    TaosText { Layout.fillWidth: true; wrapMode: Text.Wrap; font.pixelSize: Look.small; color: Look.textSecondary
+                               text: qsTr("You have not accepted the licence of %1 yet.").arg(page.e.name ? page.e.name : "")
+                               Accessible.ignored: false; Accessible.role: Accessible.StaticText; Accessible.name: text }
+                    TaosButton { text: qsTr("Read it"); variant: "ghost"; compact: true; onClicked: Qt.openUrlExternally(page.e.licenceUrl) }
+                    TaosButton { objectName: "acceptLicence"; text: qsTr("I accept"); variant: "primary"; compact: true
+                                 accessibleName: qsTr("Accept the licence of %1").arg(page.e.name ? page.e.name : "")
+                                 onClicked: page.engine.acceptInstalledLicence(page.appId) }
                 }
                 RowLayout {
                     visible: page.e.canUpdate === true

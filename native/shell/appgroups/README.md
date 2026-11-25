@@ -77,3 +77,23 @@ listed by `backups` and removed only by `backups delete`.
 installs it, never while the app runs. An apt app upgrades only its own package. A feed app downloads the feed's deb and
 installs it only if its SHA-256 equals the one in the feed. The feed and the checksum come from the same publisher over
 HTTPS; a publisher that does not sign them cannot be verified further.
+
+## Icons
+
+The launcher's icon is the first that exists of: `icons/<id>.override.png|svg` (set with `icon set <id> <file>`, cleared with
+`icon clear <id>`), `icons/<id>.png` (a file a person put there), `icons/<id>.pkg.png|svg` (taken from the app's own package
+at install, on a move, and on every update: the package's `.desktop` file names it, resolved through hicolor at the largest
+size then pixmaps, or the manifest's `icon.container_path`), and last the generic glyph `icons/<id>.svg`. This program only
+ever writes the last two. An icon a launcher already points at (a person edited it in by hand) is adopted as the override
+the first time the launcher is rewritten, so install, move, update and `launchers sync` never replace it with a worse one,
+and removing an app keeps anything a person made. `list` reports the icon in use as `icon_path`; the Store shows that file.
+
+## Launching two apps of one group
+
+Device changes of one container (the Wayland and audio sockets that `run` adds, the grants of `install`) take a per
+container lock and retry when Incus answers "ETag doesn't match", so two launches at once both succeed.
+
+## Licence accepted later
+
+`licence accept <id>` records the acceptance of the licence the catalogue now names, for an app installed before licences
+were recorded. It installs nothing.
