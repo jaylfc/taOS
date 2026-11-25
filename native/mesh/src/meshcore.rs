@@ -152,11 +152,13 @@ fn i32le(b: &[u8]) -> i32 {
     i32::from_le_bytes(b[..4].try_into().unwrap())
 }
 
+/// Hops from a frame's path_len byte. MyMesh.cpp sets it to the flood
+/// packet's path length, or 0xFF when the message was not flood routed (it
+/// came by a stored direct path, whose length the frame does not report):
+/// unknown, not zero. The top 2 bits are the hash size mode.
 fn path_len(b: u8) -> Option<u32> {
-    // 255 means a direct message with no path; otherwise the low 6 bits are
-    // the hop count (the top 2 bits are the hash size mode).
     if b == 255 {
-        Some(0)
+        None
     } else {
         Some(u32::from(b & 0x3F))
     }
@@ -220,7 +222,17 @@ impl MeshcoreDriver {
             RESP_END_OF_CONTACTS => Inbound::control(f, "contacts_end"),
             RESP_OK => Inbound::control(f, "ok"),
             RESP_ERR => Inbound::control(f, "error"),
-            RESP_SENT => Inbound::control(f, "sent"),
+            RESP_SENT => {
+                // 06 | route flag | expected_ack u32 | suggested timeout u32
+                if f.len() >= 10 {
+                    let ack = u32le(&f[2..]);
+                    let mut i = Inbound::control(f, "sent");
+                    i.event = Event::Sent { expected_ack: ack };
+                    i
+                } else {
+                    self.bad(f, "SENT too short")
+                }
+            }
             RESP_CONTACT | PUSH_NEW_ADVERT => self.contact(f),
             RESP_CONTACT_MSG_RECV | RESP_CONTACT_MSG_RECV_V3 => {
                 self.draining = true;
@@ -309,6 +321,7 @@ impl MeshcoreDriver {
             signal: Signal::default(),
             position,
             broadcast: f[0] == PUSH_NEW_ADVERT,
+            trust: None,
         }
     }
 
@@ -345,9 +358,10 @@ impl MeshcoreDriver {
             channel: None,
             packet_id: None,
             radio_ts: Some(u64::from(ts)),
-            signal: Signal { snr, hops: if plen == 255 { Some(0) } else { path_len(plen) }, ..Default::default() },
+            signal: Signal { snr, hops: path_len(plen), ..Default::default() },
             position: None,
             broadcast: false,
+            trust: if txt_type == 2 { Some("signed".into()) } else { None },
         }
     }
 
@@ -384,6 +398,7 @@ impl MeshcoreDriver {
             signal: Signal { snr, hops: path_len(plen), ..Default::default() },
             position: None,
             broadcast: true,
+            trust: Some("claimed".into()),
         }
     }
 }

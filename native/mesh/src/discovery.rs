@@ -185,7 +185,7 @@ pub struct BluezBusctl;
 impl BleBackend for BluezBusctl {
     fn managed_objects(&self) -> Result<serde_json::Value, String> {
         let out = std::process::Command::new("busctl")
-            .args(["--system", "--json=short", "call", "org.bluez", "/", "org.freedesktop.DBus.ObjectManager", "GetManagedObjects"])
+            .args(["--system", "--auto-start=no", "--json=short", "call", "org.bluez", "/", "org.freedesktop.DBus.ObjectManager", "GetManagedObjects"])
             .output()
             .map_err(|e| format!("busctl: {e}"))?;
         if !out.status.success() {

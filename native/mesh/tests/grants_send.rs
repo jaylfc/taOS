@@ -203,7 +203,7 @@ fn a_failed_store_write_means_the_send_is_refused_and_not_queued_later() {
 fn agents_read_only_what_the_owner_granted() {
     let r = rig();
     for (ch, body) in [(0, "public"), (1, "team")] {
-        r.e.ingest(NET, &r.id, Inbound { raw: vec![1], event: Event::Text { text: body.into() }, from: Some("!00000b0b".into()), to: Some("!ffffffff".into()), channel: Some(ch), packet_id: None, radio_ts: None, signal: Signal::default(), position: None, broadcast: true }).unwrap();
+        r.e.ingest(NET, &r.id, Inbound { raw: vec![1], event: Event::Text { text: body.into() }, from: Some("!00000b0b".into()), to: Some("!ffffffff".into()), channel: Some(ch), packet_id: None, radio_ts: None, signal: Signal::default(), position: None, broadcast: true, trust: None }).unwrap();
     }
     assert!(r.e.messages("agent:scout", &Filter::default()).unwrap().is_empty(), "no read grant, no messages");
     let mut g = grant("agent:scout", Some(1), None, None, None);

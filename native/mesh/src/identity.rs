@@ -253,38 +253,51 @@ impl IdentityStore {
 ///
 /// * `owner` (the person running the engine) and any identity equal to the
 ///   record's `observer` see everything that observer heard or sent.
-/// * a linked account sees the direct messages and the position broadcasts
-///   of the contacts linked to it, and nothing overheard on a channel.
-/// * positions the linked account has hidden are not shown to anyone through
-///   the API (the raw record stays in the store).
+/// * a linked account sees what its contact's radio history is: every frame
+///   the contact's radios sent (text, positions, telemetry, node info), and
+///   the direct messages addressed to them. It does not see traffic from
+///   other people that the observer merely overheard on a channel.
+/// * state records (send progress) are not messages; callers ask for them
+///   explicitly.
 pub fn visible_to(reg: &Registry, rec: &Record, viewer: &str, owner: &str) -> bool {
     if rec.dir == "state" {
         return false;
     }
-    if rec.kind == "position" {
-        if let Some(s) = &rec.sender {
-            if let Some(c) = s.identity.strip_prefix("contact:").and_then(|c| reg.contacts.get(c)) {
-                if c.locations_hidden_ts.is_some_and(|t| rec.host_ts_ms <= t) {
-                    return false;
-                }
-            }
-        }
-    }
     if viewer == owner || rec.observer.as_deref() == Some(viewer) {
         return true;
+    }
+    if !matches!(rec.kind.as_str(), "text" | "position" | "telemetry" | "nodeinfo") {
+        return false;
     }
     for c in reg.contacts_linked_to(viewer) {
         let cid = format!("contact:{}", c.id);
         let cnodes = reg.nodes_of(&cid);
         let from_c = rec.sender.as_ref().is_some_and(|s| s.identity == cid) || rec.from.as_ref().is_some_and(|f| cnodes.contains(f));
         let to_c = rec.recipient.as_ref().is_some_and(|s| s.identity == cid) || rec.to.as_ref().is_some_and(|t| cnodes.contains(t));
-        let direct = !rec.broadcast;
-        if rec.kind == "position" && from_c {
+        if from_c {
             return true;
         }
-        if rec.kind == "text" && direct && (from_c || to_c) {
+        if rec.kind == "text" && !rec.broadcast && to_c {
             return true;
         }
     }
     false
+}
+
+/// Apply the linked account's "hide my location history" to a record that is
+/// about to be returned: a position record disappears (returns false), and a
+/// position carried on a text or node-info record is removed from the copy.
+/// The stored line is untouched.
+pub fn redact_hidden_locations(reg: &Registry, rec: &mut Record) -> bool {
+    let Some(s) = &rec.sender else { return true };
+    let Some(c) = s.identity.strip_prefix("contact:").and_then(|c| reg.contacts.get(c)) else { return true };
+    let Some(t) = c.locations_hidden_ts else { return true };
+    if rec.host_ts_ms > t {
+        return true;
+    }
+    if rec.kind == "position" {
+        return false;
+    }
+    rec.position = None;
+    true
 }

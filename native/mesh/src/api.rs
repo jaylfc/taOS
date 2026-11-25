@@ -152,6 +152,14 @@ impl Daemon {
                     Err(m) => err(&id, "connect_failed", &m),
                 }
             }
+            "app.radios" => ok!(eng!(crate::appview::radios(&self.engine))),
+            "app.identities" => ok!(eng!(crate::appview::identities(&self.engine))),
+            "app.messages" => ok!(eng!(crate::appview::messages(&self.engine, s(p, "thread")))),
+            "app.send" => {
+                let thread = try_p!(need(p, "thread"));
+                let text = try_p!(need(p, "text"));
+                ok!(crate::appview::send(&self.engine, who, thread, text))
+            }
             "messages" => {
                 let f: Filter = try_p!(serde_json::from_value(p.get("filter").cloned().unwrap_or(json!({}))).map_err(|e| e.to_string()));
                 // an owner may read as a person (the app does this on a

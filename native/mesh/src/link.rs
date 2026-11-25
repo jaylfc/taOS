@@ -40,13 +40,13 @@ pub struct SerialLink {
 }
 
 impl SerialLink {
-    /// Open a serial port at 115200 baud (both protocols' default). DTR and
-    /// RTS are driven low after opening so an ESP32 board is not held in its
-    /// bootloader; the open itself can still pulse them on some adapters.
+    /// Open a serial port at 115200 baud (both protocols' default), with no
+    /// control-line changes of our own. Known gap: the reference Meshtastic
+    /// client clears HUPCL through termios before opening so a board that
+    /// resets on DTR is not rebooted; that needs `unsafe` or a termios
+    /// dependency and is not done here (see docs/API.md, "Not done").
     pub fn open(path: &str) -> io::Result<Self> {
-        let mut port = serialport::new(path, 115_200).timeout(Duration::from_millis(200)).open().map_err(|e| io::Error::other(e.to_string()))?;
-        let _ = port.write_data_terminal_ready(false);
-        let _ = port.write_request_to_send(false);
+        let port = serialport::new(path, 115_200).timeout(Duration::from_millis(200)).open().map_err(|e| io::Error::other(e.to_string()))?;
         Ok(SerialLink { name: path.to_string(), port })
     }
 }

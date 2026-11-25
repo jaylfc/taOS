@@ -105,7 +105,7 @@ fn direct_message_v3_decodes_and_asks_for_the_next_one() {
     assert_eq!(i.from.as_deref(), o["pubkey_prefix"].as_str());
     assert_eq!(i.to.as_deref(), Some("010203040506"));
     assert_eq!(i.signal.snr, Some(o["SNR"].as_f64().unwrap() as f32));
-    assert_eq!(i.signal.hops, Some(0));
+    assert_eq!(i.signal.hops, None, "0xFF path_len is a stored direct route: the hop count is not reported, so unknown");
     assert_eq!(i.radio_ts, o["sender_timestamp"].as_u64());
     assert!(!i.broadcast);
     assert_eq!(cmds, vec![sync_next_message()]);

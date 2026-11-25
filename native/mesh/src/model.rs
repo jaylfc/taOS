@@ -78,6 +78,8 @@ pub enum Event {
     /// A packet whose payload the radio could not decrypt, or a port we do
     /// not decode. The raw bytes are in the record.
     Opaque { port: Option<u32>, note: String },
+    /// A MeshCore radio accepted a send and says which acknowledgement code to expect.
+    Sent { expected_ack: u32 },
 }
 
 impl Event {
@@ -90,6 +92,7 @@ impl Event {
             Event::Ack { .. } => "ack",
             Event::Control { .. } => "control",
             Event::Opaque { .. } => "opaque",
+            Event::Sent { .. } => "send_info",
         }
     }
 }
@@ -108,6 +111,9 @@ pub struct Inbound {
     pub position: Option<Position>,
     /// True when `to` is the network's broadcast address.
     pub broadcast: bool,
+    /// "encrypted" (the frame says it was public-key encrypted) or "signed"
+    /// (the frame says it carries a signature); None when the frame says neither.
+    pub trust: Option<String>,
 }
 
 impl Inbound {
@@ -123,6 +129,7 @@ impl Inbound {
             signal: Signal::default(),
             position: None,
             broadcast: false,
+            trust: None,
         }
     }
 }
@@ -152,6 +159,10 @@ pub struct Record {
     /// "in", "out" or "state" (a state change of an outbound record).
     pub dir: String,
     pub network: String,
+    /// The taOS identity that owns this engine's store (the person it runs
+    /// for). Present on every row so the taOSmd replay always has an owner.
+    #[serde(default)]
+    pub owner: String,
     /// The radio that carried the frame (its node id).
     pub radio: String,
     /// The identity the radio belongs to (who heard or sent it for us).
@@ -197,6 +208,14 @@ pub struct Record {
     pub state: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub note: Option<String>,
+    /// From flags in the frame only: "encrypted", "signed", or "claimed" for
+    /// an unsigned broadcast. Absent when the frame does not say.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub trust: Option<String>,
+    /// Never stored. Added to outbound records returned by queries: the
+    /// folded delivery state (queued, sent, acknowledged, failed).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub delivery: Option<String>,
 }
 
 pub fn to_hex(b: &[u8]) -> String {

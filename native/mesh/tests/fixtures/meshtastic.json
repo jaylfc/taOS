@@ -34,7 +34,7 @@
    }
   },
   {
-   "name": "config_complete",
+   "name": "rebooted_flag_1_2_capture",
    "provenance": "recorded",
    "source": "https://raw.githubusercontent.com/meshtastic/python/master/meshtastic/tests/test_stream_interface.py",
    "hex": "40cfe5d18c0e",

@@ -234,6 +234,7 @@ pub struct MeshPacketMsg {
     pub via_mqtt: bool,
     pub hop_start: Option<u32>,
     pub pki_encrypted: bool,
+    pub xeddsa_signed: bool,
 }
 
 impl MeshPacketMsg {
@@ -256,6 +257,7 @@ impl MeshPacketMsg {
                 14 => p.via_mqtt = v.as_bool(),
                 15 => p.hop_start = Some(v.as_u32()),
                 17 => p.pki_encrypted = v.as_bool(),
+                22 => p.xeddsa_signed = v.as_bool(),
                 _ => {}
             }
         }
@@ -499,6 +501,7 @@ impl MeshtasticDriver {
                     signal: Signal { snr, hops: hops_away, ..Default::default() },
                     position: pos,
                     broadcast: false,
+                    trust: None,
                 }
             }
             FromRadioMsg::Packet(p) => self.decode_packet(payload, p),
@@ -506,12 +509,26 @@ impl MeshtasticDriver {
     }
 
     fn decode_packet(&mut self, raw: Vec<u8>, p: MeshPacketMsg) -> Inbound {
-        let hops = match (p.hop_start, p.hop_limit) {
-            // hop_start == 0 is unknown on older firmware, not "direct"
-            (Some(s), Some(l)) if s > 0 && s >= l => Some(s - l),
+        // hop_start == 0 is unknown on older firmware, not "direct". A zero
+        // hop_limit is not sent on the wire (proto3 default), so with a
+        // known hop_start an absent hop_limit means the limit was used up.
+        let hop_start = p.hop_start.filter(|s| *s > 0);
+        let hop_limit = hop_start.map(|_| p.hop_limit.unwrap_or(0)).or(p.hop_limit);
+        let hops = match (hop_start, hop_limit) {
+            (Some(s), Some(l)) if s >= l => Some(s - l),
             _ => None,
         };
-        let signal = Signal { rssi: p.rx_rssi, snr: p.rx_snr, hops, hop_limit: p.hop_limit, hop_start: p.hop_start.filter(|s| *s > 0) };
+        let signal = Signal { rssi: p.rx_rssi, snr: p.rx_snr, hops, hop_limit, hop_start };
+        let broadcast = p.to == BROADCAST;
+        let trust = if p.xeddsa_signed {
+            Some("signed".to_string())
+        } else if p.pki_encrypted {
+            Some("encrypted".to_string())
+        } else if broadcast {
+            Some("claimed".to_string())
+        } else {
+            None
+        };
         let mut inb = Inbound {
             raw,
             event: Event::Opaque { port: None, note: "encrypted".into() },
@@ -522,7 +539,8 @@ impl MeshtasticDriver {
             radio_ts: p.rx_time.filter(|t| *t != 0).map(u64::from),
             signal,
             position: None,
-            broadcast: p.to == BROADCAST,
+            broadcast,
+            trust,
         };
         let Some(d) = p.decoded else {
             inb.event = Event::Opaque { port: None, note: "encrypted payload (radio did not decrypt)".into() };
@@ -573,9 +591,18 @@ impl MeshtasticDriver {
     }
 }
 
+/// A fresh packet id. Meshtastic ids are random 32-bit values and a repeat
+/// can make the mesh drop the second packet as a duplicate, so the id is a
+/// counter that starts from a clock-derived seed: never the same twice in a
+/// process, and different between runs.
 pub fn fresh_packet_id() -> u32 {
-    // Meshtastic packet ids are random 32-bit values; the low bits of the
-    // clock are enough to avoid reuse inside one host.
-    (now_ms() as u32).wrapping_mul(2_654_435_761) | 1
+    use std::sync::atomic::{AtomicU32, Ordering};
+    static NEXT: AtomicU32 = AtomicU32::new(0);
+    if NEXT.load(Ordering::Relaxed) == 0 {
+        let seed = (now_ms() as u32).wrapping_mul(2_654_435_761) | 1;
+        let _ = NEXT.compare_exchange(0, seed, Ordering::Relaxed, Ordering::Relaxed);
+    }
+    let id = NEXT.fetch_add(1, Ordering::Relaxed);
+    if id == 0 { NEXT.fetch_add(1, Ordering::Relaxed) } else { id }
 }
 

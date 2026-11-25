@@ -129,8 +129,17 @@ impl Grants {
         g.kind == kind && g.agent == agent && g.network == network && (g.channel.is_none() || g.channel == channel)
     }
 
-    /// Check a send. On success the send is counted against the budget.
-    pub fn authorize_send(&mut self, principal: &str, network: &str, channel: Option<u32>, bytes: u32, now: u64) -> Result<(), Denied> {
+    /// Charge a send that went through (the engine calls this once the
+    /// outbound record is stored, so a send that fails does not use budget).
+    pub fn charge(&mut self, principal: &str, network: &str, channel: Option<u32>, bytes: u32, now: u64) {
+        if principal != OWNER {
+            self.sent.push((principal.into(), network.into(), channel, now, bytes));
+        }
+    }
+
+    /// Check a send against the grants and the rolling-hour budget. Does not
+    /// charge: see `charge`.
+    pub fn authorize_send(&self, principal: &str, network: &str, channel: Option<u32>, bytes: u32, now: u64) -> Result<(), Denied> {
         if principal == OWNER {
             return Ok(());
         }
@@ -164,7 +173,6 @@ impl Grants {
                     continue;
                 }
             }
-            self.sent.push((principal.into(), network.into(), channel, now, bytes));
             return Ok(());
         }
         Err(last)

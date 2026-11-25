@@ -19,6 +19,7 @@ fn text_frame(n: u32) -> Inbound {
         signal: Signal { rssi: Some(-90), snr: Some(5.0), hops: Some(1), ..Default::default() },
         position: None,
         broadcast: true,
+        trust: None,
     }
 }
 

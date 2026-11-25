@@ -27,7 +27,7 @@ rec = {
     "my_info_heltec_v2_1": bytes.fromhex("1a2c08cccfbdc502180d320e312e322e34392e35333534633439500d5d30b5884168e0a71270e89d017808900101"),
     "node_info_heltec_v2_1": bytes.fromhex("223208cccfbdc50212280a09213238616636376363120c556e6b6e6f776e20363763631a033f43432206246f28af67cc300a1a00"),
     "my_info_second_capture": b'\x1a,\x08\xdc\x8c\xd5\xc5\x02\x18\r2\x0e1.2.49.5354c49P\x15]\xe1%\x17Eh\xe0\xa7\x12p\xe8\x9d\x01x\x08\x90\x01\x01',
-    "config_complete": b'@\xcf\xe5\xd1\x8c\x0e',
+    "rebooted_flag_1_2_capture": b'@\xcf\xe5\xd1\x8c\x0e',
 }
 for name, raw in rec.items():
     fr = mesh_pb2.FromRadio.FromString(raw)

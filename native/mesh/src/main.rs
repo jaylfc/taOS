@@ -233,6 +233,7 @@ fn append_loop(a: &Args) -> ExitCode {
             signal: Signal::default(),
             position: None,
             broadcast: true,
+            trust: None,
         };
         match engine.ingest("meshtastic", "!0000aaaa", inb) {
             Ok(r) => println!("{}", r.id),
