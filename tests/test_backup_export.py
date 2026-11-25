@@ -500,3 +500,138 @@ class TestExportScrubCompleteness:
         assert ref["name"] == "PROVIDER_KEY"
         assert ref["category"] == "api-keys"
         assert ref["description"] == "[REDACTED]"
+
+
+
+class TestExportFollowups:
+    # Post-merge follow-ups to PR #4560, promised in comment 7174241555:
+    # jaylfc's two nits (comment 7173541194) and CodeRabbit's sanitised-key
+    # collision case (in-thread follow-up 4700327493).
+
+    def test_path_shaped_keys_rewritten_relative_to_data_dir(self):
+        # A mapping KEY that is itself an absolute path gets the same
+        # treatment as a path value: relativised under the data dir, and
+        # the rewrite recorded in the manifest.
+        redactions: list[dict] = []
+        data = {"profiles": {"/srv/taos/agents/a": {"model": "m1"}}}
+        out = sanitize_for_export(
+            data, "config", redactions, known_values=[], data_dir="/srv/taos"
+        )
+        assert out == {"profiles": {"agents/a": {"model": "m1"}}}
+        assert "/srv/taos/agents/a" not in json.dumps(out)
+        paths = {r["path"] for r in redactions}
+        assert "config.profiles.agents/a" in paths
+
+    def test_path_shaped_key_outside_data_dir_reduced_to_basename(self):
+        redactions: list[dict] = []
+        data = {"/home/someone/private/ws": {"model": "m1"}}
+        out = sanitize_for_export(
+            data, "config", redactions, known_values=[], data_dir="/srv/taos"
+        )
+        assert out == {"ws": {"model": "m1"}}
+        assert "/home/someone" not in json.dumps(out)
+        assert redactions
+
+    def test_secret_bearing_path_key_scrubbed_before_rewrite(self):
+        # A key that is both a path and secret-bearing: the credential
+        # scrub runs first, so no secret material survives in either the
+        # key or the redaction paths, and the masked remainder is still
+        # treated as a path.
+        redactions: list[dict] = []
+        data = {f"/srv/taos/{SHAPE_VALUE}": "v", f"/home/admin/{STORE_SECRET}": "w"}
+        out = sanitize_for_export(
+            data, "config", redactions,
+            known_values=[STORE_SECRET], data_dir="/srv/taos",
+        )
+        raw = json.dumps(out) + json.dumps(redactions)
+        assert SHAPE_VALUE not in raw
+        assert STORE_SECRET not in raw
+        # The second key's value is redacted in its own right: the key
+        # tokenises as secret-bearing (rule 2), collision or not.
+        assert out == {"[REDACTED]": "v", "[REDACTED] (2)": "[REDACTED]"}
+
+    def test_env_section_allow_list(self):
+        # Jay's case: an env var with an innocent name keeps its value
+        # through the denylist. Inside an ``env`` section only allow-listed
+        # names (locale / timezone / terminal presentation vars) survive;
+        # everything else is redacted and recorded.
+        redactions: list[dict] = []
+        data = {"agents": [{"name": "a", "env": {
+            "INNOCENT_NAME": "innocent-name-secret-value",
+            "FOO_KEY": "foo-key-value",
+            "TZ": "Europe/Oslo",
+            "LANG": "en_US.UTF-8",
+            "LC_ALL": "C.UTF-8",
+        }}]}
+        out = sanitize_for_export(data, "config", redactions, known_values=[])
+        env = out["agents"][0]["env"]
+        assert env["INNOCENT_NAME"] == "[REDACTED]"
+        assert env["FOO_KEY"] == "[REDACTED]"
+        assert env["TZ"] == "Europe/Oslo"
+        assert env["LANG"] == "en_US.UTF-8"
+        assert env["LC_ALL"] == "C.UTF-8"
+        assert "innocent-name-secret-value" not in json.dumps(out)
+        paths = {r["path"] for r in redactions}
+        assert "config.agents[0].env.INNOCENT_NAME" in paths
+
+    def test_env_allow_list_applies_at_any_depth(self):
+        # MCP-server-shaped config: env nested under a server's config.
+        data = {"servers": [{"config": {"env": {
+            "CUSTOM_FLAG": "custom-secret-value", "TERM": "xterm-256color",
+        }}}]}
+        out = sanitize_for_export(data, "config", [], known_values=[])
+        env = out["servers"][0]["config"]["env"]
+        assert env["CUSTOM_FLAG"] == "[REDACTED]"
+        assert env["TERM"] == "xterm-256color"
+
+    def test_sanitised_key_collision_keeps_both_entries(self):
+        # CodeRabbit 4700327493's shape: a literal "[REDACTED]" key plus a
+        # key that sanitises to "[REDACTED]". Before the fix the second
+        # write silently overwrote the first and "keep" was lost. (The
+        # second entry's value is redacted in its own right -- its key
+        # tokenises as secret-bearing -- but the entry itself survives.)
+        redactions: list[dict] = []
+        data = {"[REDACTED]": "keep", f"lookup-{STORE_SECRET}": "second-value"}
+        out = sanitize_for_export(
+            data, "config", redactions, known_values=[STORE_SECRET]
+        )
+        assert out == {"[REDACTED]": "keep", "[REDACTED] (2)": "[REDACTED]"}
+        assert any("collid" in r["reason"] for r in redactions)
+
+    def test_collision_with_plain_values_keeps_both(self):
+        # Same collision, but the sanitising key is not secret-bearing
+        # (the known value tokenises innocently), so both values survive
+        # verbatim under the plain and suffixed keys.
+        known = "quuxly-wibble-12345"
+        data = {"[REDACTED]": "keep", f"lookup-{known}": "second-value"}
+        out = sanitize_for_export(data, "config", [], known_values=[known])
+        assert out == {"[REDACTED]": "keep", "[REDACTED] (2)": "second-value"}
+
+    def test_two_secret_keys_colliding_both_kept(self):
+        redactions: list[dict] = []
+        data = {f"a-{STORE_SECRET}": "v1", f"b-{STORE_SECRET}": "v2"}
+        out = sanitize_for_export(
+            data, "config", redactions, known_values=[STORE_SECRET]
+        )
+        assert out == {"[REDACTED]": "[REDACTED]", "[REDACTED] (2)": "[REDACTED]"}
+        assert STORE_SECRET not in json.dumps(out)
+
+
+@pytest.mark.asyncio
+class TestBuildExportBundleFollowups:
+    async def test_agent_env_innocent_name_redacted_in_bundle(self, tmp_path):
+        config = AppConfig(
+            agents=[{"name": "agent-one", "env": {
+                "INNOCENT_NAME": "innocent-name-secret-value",
+                "TZ": "Europe/Oslo",
+            }}],
+            config_path=tmp_path / "config.yaml",
+        )
+        bundle = await build_export_bundle(config=config)
+        raw = json.dumps(bundle)
+        assert "innocent-name-secret-value" not in raw
+        env = bundle["agents"]["active"][0]["env"]
+        assert env["INNOCENT_NAME"] == "[REDACTED]"
+        assert env["TZ"] == "Europe/Oslo"
+        paths = {e["path"] for e in bundle["manifest"]["excluded"]}
+        assert "agents.active[0].env.INNOCENT_NAME" in paths

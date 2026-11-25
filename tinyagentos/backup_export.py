@@ -38,12 +38,31 @@ Secret handling, in order of strength:
 5. **Absolute paths do not leave the box.** Values under ``taosmd_dir``
    and ``workspace`` keys are rewritten relative to the data dir when
    they live under it, and reduced to their final component otherwise.
+   Mapping keys that are themselves absolute paths get the same rewrite
+   (after the credential scrub, so a secret-bearing path key loses its
+   secret first and its host layout second).
 
 6. **Keys and metadata are scrubbed too.** Mapping keys are output,
    and redaction paths are built from them, so a key carrying credential
    material is replaced before either is written; rewritten paths and
    the secret references' own free-text fields pass through the string
    scrub before they are stored.
+
+7. **Env sections are allow-listed.** Inside an ``env`` mapping, a
+   variable with an innocent name can still hold a credential, so only
+   known-safe presentation names survive: locale (``LANG``, ``LC_*``),
+   timezone (``TZ``) and terminal (``TERM``) variables, whose values
+   name a locale, a zone or a terminal type and can carry neither a
+   credential nor host layout. Every other variable's value is replaced
+   wholesale and recorded. (The codebase already treats env values as
+   credential-suspect as a class: ``mcp.marketplace.redact_config_env``
+   redacts them all in read payloads.)
+
+8. **Sanitised keys never silently drop an entry.** Two distinct
+   source keys can sanitise to the same output key (two secret-bearing
+   keys both become ``[REDACTED]``); a later collision is kept under a
+   suffixed key (``[REDACTED] (2)``, ...) and the collision is recorded,
+   so no value vanishes without a trace in the manifest.
 
 The manifest flags ``contains_all_users_data`` -- the bundle holds every
 account's preferences, not just the exporting admin's -- and the
@@ -103,6 +122,23 @@ _WEBHOOK_URL_RE = re.compile(
 # shared, so they are rewritten relative to the data dir or stripped.
 _PATH_KEYS = frozenset({"taosmd_dir", "workspace"})
 _DRIVE_RE = re.compile(r"^[A-Za-z]:[\\/]")
+
+# Inside an ``env`` mapping the denylist is not enough: a variable with
+# an innocent name can hold a credential, and env blocks are exactly
+# where credentials get stashed (the MCP marketplace redacts env values
+# wholesale in read payloads for the same reason). Env sections are
+# therefore allow-listed instead (rule 7): only presentation variables
+# survive -- locale, timezone and terminal names, whose values are the
+# NAME of a locale, a zone or a terminal type and can carry neither a
+# credential nor host layout. Everything else is replaced wholesale and
+# recorded, so an import can prompt for the value. Names match exactly:
+# env names are case-sensitive and conventionally uppercase.
+_ENV_ALLOWLIST = frozenset({
+    "LANG", "LANGUAGE",
+    "LC_ALL", "LC_COLLATE", "LC_CTYPE", "LC_MESSAGES", "LC_MONETARY",
+    "LC_NUMERIC", "LC_TIME",
+    "TZ", "TERM",
+})
 
 # The bundle is assembled in memory; cap the serialized size so a
 # pathological install fails with a clear error instead of an unbounded
@@ -207,6 +243,29 @@ def _sanitize_string(
     return cleaned
 
 
+def _rewrite_path_parts(
+    value: str,
+    data_dir: str | None,
+) -> tuple[str, str] | None:
+    """The rewritten form of an absolute path and why, or None.
+
+    Under the data dir the path becomes relative to it (meaningful again
+    on a fresh install with a different layout); outside it, only the
+    final component survives.
+    """
+    if not (value.startswith("/") or _DRIVE_RE.match(value)):
+        return None
+    if data_dir:
+        rel = os.path.relpath(value, data_dir)
+        if rel != ".." and not rel.startswith(".." + os.sep):
+            return rel, "absolute path rewritten relative to the data dir"
+    return (
+        os.path.basename(value.rstrip("/")) or value,
+        "absolute path outside the data dir; reduced to its "
+        "final component so the host layout is not exported",
+    )
+
+
 def _rewrite_path(
     value: str,
     path: str,
@@ -215,26 +274,14 @@ def _rewrite_path(
 ) -> str | None:
     """Rewrite an absolute path for export, or None if *value* is not one.
 
-    Under the data dir the path becomes relative to it (meaningful again
-    on a fresh install with a different layout); outside it, only the
-    final component survives. Either way the rewrite is recorded.
+    The rewrite is recorded in ``redactions`` under ``path``.
     """
-    if not (value.startswith("/") or _DRIVE_RE.match(value)):
+    parts = _rewrite_path_parts(value, data_dir)
+    if parts is None:
         return None
-    if data_dir:
-        rel = os.path.relpath(value, data_dir)
-        if rel != ".." and not rel.startswith(".." + os.sep):
-            redactions.append({
-                "path": path,
-                "reason": "absolute path rewritten relative to the data dir",
-            })
-            return rel
-    redactions.append({
-        "path": path,
-        "reason": "absolute path outside the data dir; reduced to its "
-                  "final component so the host layout is not exported",
-    })
-    return os.path.basename(value.rstrip("/")) or value
+    rewritten, reason = parts
+    redactions.append({"path": path, "reason": reason})
+    return rewritten
 
 
 def sanitize_for_export(
@@ -245,6 +292,7 @@ def sanitize_for_export(
     known_values: list[str] | tuple[str, ...] = (),
     data_dir: str | None = None,
     _in_webhooks: bool = False,
+    _in_env: bool = False,
 ) -> Any:
     """Return a copy of *value* with every secret removed.
 
@@ -260,13 +308,60 @@ def sanitize_for_export(
             safe_k = (
                 _sanitize_key(k, known_values) if isinstance(k, str) else k
             )
-            child = f"{path}.{safe_k}"
-            if safe_k != k:
+            key_scrubbed = safe_k != k
+            # A key that is itself an absolute path gets the same
+            # rewrite as a path value (rule 5). The credential scrub
+            # above runs first, so secret material never survives into
+            # the key or the redaction paths built from it; the
+            # rewritten form is scrubbed again before use, as a
+            # basename can itself be a stored secret.
+            path_reason: str | None = None
+            if isinstance(safe_k, str):
+                parts = _rewrite_path_parts(safe_k, data_dir)
+                if parts is not None and parts[0] != safe_k:
+                    rewritten_k, path_reason = parts
+                    safe_k = _sanitize_key(rewritten_k, known_values)
+            # Two distinct source keys can sanitise to the same output
+            # key (rule 8): keep the later entry under a suffixed key
+            # and record the collision instead of silently dropping it.
+            final_k = safe_k
+            collided = False
+            if isinstance(final_k, str) and final_k in out:
+                n = 2
+                while f"{safe_k} ({n})" in out:
+                    n += 1
+                final_k = f"{safe_k} ({n})"
+                collided = True
+            child = f"{path}.{final_k}"
+            if key_scrubbed:
                 redactions.append({
                     "path": child,
                     "reason": "mapping key contained credential material; "
                               "key replaced with the redaction marker",
                 })
+            if path_reason is not None:
+                redactions.append({"path": child, "reason": path_reason})
+            if collided:
+                redactions.append({
+                    "path": child,
+                    "reason": "mapping keys collided after sanitisation; "
+                              "entry kept under a suffixed key so no "
+                              "value is silently dropped",
+                })
+            if _in_env and isinstance(k, str) and k not in _ENV_ALLOWLIST:
+                # Env sections are allow-listed (rule 7): an innocent
+                # name proves nothing about the value.
+                if v not in (None, "", [], {}):
+                    redactions.append({
+                        "path": child,
+                        "reason": "env variable not on the export "
+                                  "allow-list; value replaced with the "
+                                  "redaction marker",
+                    })
+                    out[final_k] = PLACEHOLDER
+                else:
+                    out[final_k] = v
+                continue
             if isinstance(k, str) and _is_secret_key(k):
                 if v not in (None, "", [], {}):
                     redactions.append({
@@ -274,9 +369,9 @@ def sanitize_for_export(
                         "reason": "secret-bearing key; value replaced "
                                   "with the redaction marker",
                     })
-                    out[safe_k] = PLACEHOLDER
+                    out[final_k] = PLACEHOLDER
                 else:
-                    out[safe_k] = v
+                    out[final_k] = v
                 continue
             if _in_webhooks and isinstance(k, str) and k.lower() == "url":
                 # A webhook URL is itself a credential (Discord/Slack
@@ -289,9 +384,9 @@ def sanitize_for_export(
                         "reason": "webhook URL; webhook URLs are "
                                   "credentials and are never exported",
                     })
-                    out[safe_k] = PLACEHOLDER
+                    out[final_k] = PLACEHOLDER
                 else:
-                    out[safe_k] = v
+                    out[final_k] = v
                 continue
             if (
                 isinstance(k, str)
@@ -303,15 +398,16 @@ def sanitize_for_export(
                     # The rewritten form can itself carry a secret (a
                     # basename that is a stored value), so it goes
                     # through the string scrub before it is stored.
-                    out[safe_k] = _sanitize_string(
+                    out[final_k] = _sanitize_string(
                         rewritten, child, redactions, list(known_values)
                     )
                     continue
-            out[safe_k] = sanitize_for_export(
+            out[final_k] = sanitize_for_export(
                 v, child, redactions, known_values=known_values,
                 data_dir=data_dir,
                 _in_webhooks=_in_webhooks
                 or (isinstance(k, str) and k.lower() == "webhooks"),
+                _in_env=isinstance(k, str) and k.lower() == "env",
             )
         return out
     if isinstance(value, (list, tuple)):
