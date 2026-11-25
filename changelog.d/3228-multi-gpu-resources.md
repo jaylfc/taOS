@@ -1,0 +1,3 @@
+### Added
+
+- **Cluster: one leasable GPU resource per detected GPU (#3228 follow-up)** — workers on multi-GPU hosts now advertise `gpu-cuda-0`, `gpu-cuda-1`, ... / `gpu-rocm-0`, `gpu-rocm-1`, ... enumerated from the hardware profile's `gpus` list (PCI order, per-class indices, each card gated on its own CUDA/ROCm usability flag), instead of a single `gpu-cuda-0`/`gpu-rocm-0` derived from the first card only. Each resource is leasable independently via `POST /api/cluster/leases/claim`. Profiles without an enumerated `gpus` list keep the previous singular behaviour. VRAM is still reported worker-wide (first GPU), so lease VRAM checks stay conservative on multi-GPU hosts.
