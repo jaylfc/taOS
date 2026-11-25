@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import uuid
@@ -102,6 +103,19 @@ class FeedbackStore(BaseStore):
             return {}
         return provided if isinstance(provided, dict) else {}
 
+    async def _collect_context_async(self) -> dict:
+        """Collect the submission context off the event loop.
+
+        ``_collect_context`` is synchronous and, on the default path,
+        shells out to ``git rev-parse`` with a 5 s timeout; called inline
+        from the async create paths it would stall every other request
+        for that long (a slow or hung git blocks the loop). Run it in a
+        worker thread instead. The degradation contract is unchanged --
+        ``_collect_context`` already turns any provider failure into {}
+        and never raises.
+        """
+        return await asyncio.to_thread(self._collect_context)
+
     async def create(
         self,
         *,
@@ -115,7 +129,7 @@ class FeedbackStore(BaseStore):
         assert self._db is not None
         item_id = str(uuid.uuid4())
         created_at = datetime.now(timezone.utc).isoformat()
-        context = self._collect_context()
+        context = await self._collect_context_async()
         await self._db.execute(
             """
             INSERT INTO feedback (id, user_id, type, title, body, screenshot, app, context, created_at)
@@ -169,7 +183,7 @@ class FeedbackStore(BaseStore):
         assert self._db is not None
         item_id = str(uuid.uuid4())
         created_at = datetime.now(timezone.utc).isoformat()
-        context = self._collect_context()
+        context = await self._collect_context_async()
         cursor = await self._db.execute(
             """
             INSERT INTO feedback (id, user_id, type, title, body, screenshot, app, context, created_at)

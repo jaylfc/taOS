@@ -212,3 +212,91 @@ async def test_route_submission_carries_context(client):
     assert listed.status_code == 200
     mine = [i for i in listed.json() if i["id"] == data["id"]]
     assert mine and mine[0]["context"]["version"] == tinyagentos.__version__
+
+
+# ---------------------------------------------------------------------------
+# Event-loop blocking: context collection must not stall other requests.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_slow_context_provider_does_not_block_other_requests(tmp_path):
+    """A slow provider must not block the event loop (PR #4539 review).
+
+    The default collection shells out to ``git rev-parse`` with a 5 s
+    timeout; run inline in the async create path, a hung git would stall
+    every other request for its duration. The provider here sleeps with a
+    blocking ``time.sleep`` to stand in for that hang: another request
+    must still complete before the submission finishes.
+    """
+    import asyncio
+    import time
+
+    def slow_provider():
+        time.sleep(1.0)
+        return KNOWN_CONTEXT
+
+    s = FeedbackStore(tmp_path / "feedback.db", context_provider=slow_provider)
+    await s.init()
+    try:
+        finished = []
+
+        async def submission():
+            row = await s.create(user_id="u1", type="bug", title="t", body="b")
+            finished.append("submission")
+            return row
+
+        async def other_request():
+            await asyncio.sleep(0.1)
+            finished.append("other")
+
+        row, _ = await asyncio.gather(
+            asyncio.create_task(submission()),
+            asyncio.create_task(other_request()),
+        )
+        assert finished == ["other", "submission"]
+        assert row["context"] == KNOWN_CONTEXT
+    finally:
+        await s.close()
+
+
+@pytest.mark.asyncio
+async def test_slow_context_provider_does_not_block_create_within_cap(tmp_path):
+    """Same guarantee on the capped create path: both collect context."""
+    import asyncio
+    import time
+
+    def slow_provider():
+        time.sleep(1.0)
+        return KNOWN_CONTEXT
+
+    s = FeedbackStore(tmp_path / "feedback.db", context_provider=slow_provider)
+    await s.init()
+    try:
+        finished = []
+
+        async def submission():
+            row = await s.create_within_cap(
+                since="1970-01-01T00:00:00+00:00",
+                cap=20,
+                user_id="u1",
+                type="bug",
+                title="t",
+                body="b",
+            )
+            finished.append("submission")
+            return row
+
+        async def other_request():
+            await asyncio.sleep(0.1)
+            finished.append("other")
+
+        row, _ = await asyncio.gather(
+            asyncio.create_task(submission()),
+            asyncio.create_task(other_request()),
+        )
+        assert finished == ["other", "submission"]
+        assert row is not None
+        assert row["context"] == KNOWN_CONTEXT
+    finally:
+        await s.close()
