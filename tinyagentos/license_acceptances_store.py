@@ -47,19 +47,43 @@ class LicenseAcceptancesStore(BaseStore):
         if self._db is not None:
             self._db.row_factory = aiosqlite.Row
         # Migration: add license_version column if missing (for existing installs)
+        # The old schema had UNIQUE (user_id, app_id, license_id) which would
+        # prevent multiple versions for the same license. We must rebuild the
+        # table to replace the old constraint with the new one that includes
+        # license_version.
         if self._db is not None:
             cursor = await self._db.execute("PRAGMA table_info(license_acceptances)")
             columns = [row[1] for row in await cursor.fetchall()]
             if "license_version" not in columns:
+                # Old schema without license_version - rebuild table
                 await self._db.execute("""
-                    ALTER TABLE license_acceptances ADD COLUMN license_version TEXT NOT NULL DEFAULT ''
+                    CREATE TABLE license_acceptances_new (
+                        id              INTEGER PRIMARY KEY AUTOINCREMENT,
+                        user_id         TEXT NOT NULL,
+                        app_id          TEXT NOT NULL,
+                        license_id      TEXT NOT NULL,
+                        license_version TEXT NOT NULL DEFAULT '',
+                        accepted_at     TEXT NOT NULL,
+                        UNIQUE (user_id, app_id, license_id, license_version)
+                    )
                 """)
-            # Recreate unique index to include license_version
-            await self._db.execute("""
-                CREATE UNIQUE INDEX IF NOT EXISTS idx_license_acceptances_unique
-                ON license_acceptances (user_id, app_id, license_id, license_version)
-            """)
-            await self._db.commit()
+                await self._db.execute("""
+                    INSERT INTO license_acceptances_new (id, user_id, app_id, license_id, license_version, accepted_at)
+                    SELECT id, user_id, app_id, license_id, '', accepted_at
+                    FROM license_acceptances
+                """)
+                await self._db.execute("DROP TABLE license_acceptances")
+                await self._db.execute("ALTER TABLE license_acceptances_new RENAME TO license_acceptances")
+                await self._db.commit()
+            else:
+                # Column exists but unique index might be missing or outdated
+                # Ensure the correct unique index exists
+                await self._db.execute("DROP INDEX IF EXISTS idx_license_acceptances_unique")
+                await self._db.execute("""
+                    CREATE UNIQUE INDEX idx_license_acceptances_unique
+                    ON license_acceptances (user_id, app_id, license_id, license_version)
+                """)
+                await self._db.commit()
 
     async def record_acceptance(
         self, user_id: str, app_id: str, license_id: str, license_version: str

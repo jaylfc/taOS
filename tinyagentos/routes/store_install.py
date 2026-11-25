@@ -45,27 +45,16 @@ router = APIRouter()
 def _get_user_territory(request: Request, user: dict | None) -> str | None:
     """Return the user's ISO 3166-1 alpha-2 country code, or None if unknown.
 
-    Checks in order:
-    1. User profile 'country' field (if present)
-    2. Cloudflare CF-IPCountry header
-    3. X-Forwarded-For header (would need geoip lookup - not implemented)
-    4. Request client host (would need geoip lookup - not implemented)
-
-    Returns None if territory cannot be determined. A None territory means
-    territory-limited licences cannot be verified and should be treated as
-    "unknown territory" - the install proceeds but with a warning.
+    Only the user profile 'country' field is trusted. Headers like
+    CF-IPCountry are spoofable and must not be used for territory-limited
+    licence enforcement. If the user has not set a country in their profile,
+    territory verification fails and the user must confirm their region manually.
     """
-    # 1. User profile country
+    # User profile country (only trusted source)
     if user and isinstance(user.get("country"), str) and user["country"]:
         return user["country"].upper()
 
-    # 2. Cloudflare header (common in production behind CF)
-    cf_country = request.headers.get("cf-ipcountry")
-    if cf_country and len(cf_country) == 2:
-        return cf_country.upper()
-
-    # TODO: Add geoip lookup for X-Forwarded-For or client.host
-    # For now, return None (unknown territory)
+    # No trusted territory source available
     return None
 
 
@@ -74,6 +63,18 @@ _KNOWN_BACKENDS = {
     "mlx", "vllm", "comfyui", "transformers",
     "hailo-ollama",
 }
+
+# License classes that require explicit user acceptance (all except permissive/copyleft).
+# This is an allowlist used by the install gate and tests.
+RESTRICTIVE_LICENSE_CLASSES: frozenset[str] = frozenset({
+    "non-commercial",
+    "revenue-capped",
+    "research-only",
+    "territory-limited",
+    "proprietary",
+    "gated",
+    "unlicensed",
+})
 
 # Strict hostname charset for target_remote fallback. Rejects host/path/port
 # injection (":", "/", "?", "#", "@") so an authenticated caller cannot steer
@@ -1055,15 +1056,7 @@ async def install_app(request: Request):
     #   proprietary         - Commercial licences requiring purchase
     #   gated               - Licences requiring approval/access request
     #   unlicensed          - No licence declared / all rights reserved
-    restrictive_classes = {
-        "non-commercial",
-        "revenue-capped",
-        "research-only",
-        "territory-limited",
-        "proprietary",
-        "gated",
-        "unlicensed",
-    }
+    restrictive_classes = RESTRICTIVE_LICENSE_CLASSES
     license_class = getattr(manifest, "license_class", "")
     if license_class in restrictive_classes:
         license_store = getattr(request.app.state, "license_acceptances", None)
@@ -1134,11 +1127,17 @@ async def install_app(request: Request):
                     status_code=403,
                 )
 
-        # Agent consent flow: agents (local_token) cannot accept licences for users.
-        # If the request comes via local_token and tries to pass accepted=true,
+        # Agent consent flow: agents cannot accept licences for users.
+        # If the request comes via any agent path and tries to pass accepted=true,
         # reject it and require human consent.
         via = getattr(request.state, "via", None)
-        is_agent_request = via == "local_token"
+        agent_name = getattr(request.state, "agent_name", None)
+        is_agent_request = (
+            (via == "local_token" and agent_name) or  # bound local token
+            via == "registry_jwt_deployed_agent" or
+            via == "registry_jwt_native_agent" or
+            via == "registry_jwt_candidate"
+        )
         accepted_now = bool(body.get("accepted", False))
         if is_agent_request and accepted_now:
             progress.finish(install_id, success=False, error="agent_cannot_accept_license")
@@ -1170,39 +1169,39 @@ async def install_app(request: Request):
             class_text = {
                 "non-commercial": (
                     f"{manifest.name} uses model weights licensed under {license_name}{version_suffix}, "
-                    "for non-commercial use only.{url_suffix} Continuing means you agree to that "
-                    "license for the weights this service uses."
+                    f"for non-commercial use only.{url_suffix} Continuing means you agree to that "
+                    f"license for the weights this service uses."
                 ),
                 "revenue-capped": (
                     f"{manifest.name} uses model weights licensed under {license_name}{version_suffix}, "
-                    "which permits commercial use only below a revenue threshold.{url_suffix} "
-                    "Continuing means you agree to that license for the weights this service uses."
+                    f"which permits commercial use only below a revenue threshold.{url_suffix} "
+                    f"Continuing means you agree to that license for the weights this service uses."
                 ),
                 "research-only": (
                     f"{manifest.name} uses model weights licensed under {license_name}{version_suffix}, "
-                    "for research use only.{url_suffix} Continuing means you agree to that "
-                    "license for the weights this service uses."
+                    f"for research use only.{url_suffix} Continuing means you agree to that "
+                    f"license for the weights this service uses."
                 ),
                 "territory-limited": (
                     f"{manifest.name} uses model weights licensed under {license_name}{version_suffix}, "
-                    "which is restricted to specific jurisdictions.{url_suffix} "
-                    "Acceptance does not override territory exclusions. Continuing means you agree "
-                    "to that license for the weights this service uses."
+                    f"which is restricted to specific jurisdictions.{url_suffix} "
+                    f"Acceptance does not override territory exclusions. Continuing means you agree "
+                    f"to that license for the weights this service uses."
                 ),
                 "proprietary": (
                     f"{manifest.name} uses model weights under a proprietary licence "
                     f"({license_name}{version_suffix}).{url_suffix} Continuing means you agree "
-                    "to that license for the weights this service uses."
+                    f"to that license for the weights this service uses."
                 ),
                 "gated": (
                     f"{manifest.name} uses model weights under a gated licence "
                     f"({license_name}{version_suffix}) requiring approval.{url_suffix} "
-                    "Continuing means you agree to that license for the weights this service uses."
+                    f"Continuing means you agree to that license for the weights this service uses."
                 ),
                 "unlicensed": (
                     f"{manifest.name} uses model weights with no declared licence "
-                    "(all rights reserved).{url_suffix} Continuing means you accept the risk of "
-                    "using unlicensed weights."
+                    f"(all rights reserved).{url_suffix} Continuing means you accept the risk of "
+                    f"using unlicensed weights."
                 ),
             }
             text = class_text.get(license_class, (

@@ -453,11 +453,11 @@ class TestRestrictiveLicenseGate:
         registry.list_available = MagicMock(return_value=[])
         client._transport.app.state.registry = registry
 
-        headers = {}
+        # For territory-limited, set user's country in profile (not header)
         if license_class == "territory-limited":
-            headers["cf-ipcountry"] = "US"  # Valid territory for the test manifest
+            client._transport.app.state.auth.update_profile("admin", None, None, "US")
 
-        r = await client.post("/api/store/install-v2", json={"manifest_id": "nc-service"}, headers=headers)
+        r = await client.post("/api/store/install-v2", json={"manifest_id": "nc-service"})
 
         assert r.status_code == 412, f"license_class={license_class}: {r.json()}"
         body = r.json()
