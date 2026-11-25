@@ -66,6 +66,7 @@ while [ $# -gt 0 ]; do
         *) echo "install-desktop: unknown option $1" >&2; exit 2 ;;
     esac
 done
+die() { echo "install-desktop: $*" >&2; exit 1; }
 if [ "$uninstall" -eq 1 ]; then
     [ -z "$root" ] && [ "$(id -u)" -ne 0 ] && die "run as root (or use --root DIR for a fake root)"
     if [ -n "$root" ]; then mkdir -p "$root"; root=$(cd "$root" && pwd); fi
@@ -78,7 +79,6 @@ if [ "$uninstall" -eq 1 ]; then
     fi
     exit 0
 fi
-die() { echo "install-desktop: $*" >&2; exit 1; }
 [ -n "$sway" ] || die "--sway <path to the compositor binary> is required"
 [ -x "$sway" ] || die "$sway is not an executable"
 [ -z "$sway_fallback" ] || [ -x "$sway_fallback" ] || die "$sway_fallback is not an executable"
