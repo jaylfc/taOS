@@ -18,6 +18,8 @@ async def user_memory(client, tmp_path):
     # Point the store at a tmp db so tests are isolated
     store.db_path = tmp_path / "user_memory.db"
     await store.init()
+    # Memory is per user: the test client is the install owner's session.
+    store.uid = client._transport.app.state.auth.get_primary_user()["id"]
     yield store
     await store.close()
 
@@ -32,7 +34,7 @@ class TestGetStats:
         assert data["collections"] == {}
 
     async def test_stats_after_save(self, client, user_memory):
-        await user_memory.save_chunk("user", "hello world", "test", "snippets")
+        await user_memory.save_chunk(user_memory.uid, "hello world", "test", "snippets")
         resp = await client.get("/api/user-memory/stats")
         assert resp.status_code == 200
         data = resp.json()
@@ -75,7 +77,7 @@ class TestUpdateSettings:
             "/api/user-memory/settings",
             json={"capture_searches": True},
         )
-        settings = await user_memory.get_settings("user")
+        settings = await user_memory.get_settings(user_memory.uid)
         assert settings["capture_searches"] is True
 
     async def test_update_defaults_preserved(self, client, user_memory):
@@ -83,7 +85,7 @@ class TestUpdateSettings:
             "/api/user-memory/settings",
             json={"capture_notes": False},
         )
-        settings = await user_memory.get_settings("user")
+        settings = await user_memory.get_settings(user_memory.uid)
         # Defaults not in the update payload should remain
         assert settings["capture_conversations"] is True
 
@@ -98,16 +100,16 @@ class TestBrowse:
         assert data["chunks"] == []
 
     async def test_browse_returns_saved_chunks(self, client, user_memory):
-        await user_memory.save_chunk("user", "chunk one", "title1", "snippets")
-        await user_memory.save_chunk("user", "chunk two", "title2", "notes")
+        await user_memory.save_chunk(user_memory.uid, "chunk one", "title1", "snippets")
+        await user_memory.save_chunk(user_memory.uid, "chunk two", "title2", "notes")
         resp = await client.get("/api/user-memory/browse")
         assert resp.status_code == 200
         data = resp.json()
         assert len(data["chunks"]) == 2
 
     async def test_browse_filter_by_collection(self, client, user_memory):
-        await user_memory.save_chunk("user", "snippet content", "s", "snippets")
-        await user_memory.save_chunk("user", "note content", "n", "notes")
+        await user_memory.save_chunk(user_memory.uid, "snippet content", "s", "snippets")
+        await user_memory.save_chunk(user_memory.uid, "note content", "n", "notes")
         resp = await client.get("/api/user-memory/browse?collection=snippets")
         assert resp.status_code == 200
         data = resp.json()
@@ -142,7 +144,7 @@ class TestSave:
             json={"content": "test content"},
         )
         assert resp.status_code == 200
-        chunks = await user_memory.browse("user")
+        chunks = await user_memory.browse(user_memory.uid)
         assert len(chunks) == 1
         assert chunks[0]["collection"] == "snippets"
 
@@ -152,7 +154,7 @@ class TestSave:
             json={"content": "test", "collection": "journal"},
         )
         assert resp.status_code == 200
-        chunks = await user_memory.browse("user", collection="journal")
+        chunks = await user_memory.browse(user_memory.uid, collection="journal")
         assert len(chunks) == 1
 
     async def test_save_taosmd_ingest_failure_is_nonfatal(self, client, user_memory):
@@ -173,7 +175,7 @@ class TestSave:
 @pytest.mark.asyncio
 class TestDeleteChunk:
     async def test_delete_existing(self, client, user_memory):
-        h = await user_memory.save_chunk("user", "to delete", "del", "snippets")
+        h = await user_memory.save_chunk(user_memory.uid, "to delete", "del", "snippets")
         resp = await client.delete(f"/api/user-memory/chunk/{h}")
         assert resp.status_code == 200
         assert resp.json()["ok"] is True
@@ -184,16 +186,16 @@ class TestDeleteChunk:
         assert resp.json()["ok"] is False
 
     async def test_delete_actually_removes(self, client, user_memory):
-        h = await user_memory.save_chunk("user", "temp", "t", "snippets")
+        h = await user_memory.save_chunk(user_memory.uid, "temp", "t", "snippets")
         await client.delete(f"/api/user-memory/chunk/{h}")
-        chunks = await user_memory.browse("user")
+        chunks = await user_memory.browse(user_memory.uid)
         assert len(chunks) == 0
 
 
 @pytest.mark.asyncio
 class TestSearch:
     async def test_search_returns_results(self, client, user_memory):
-        await user_memory.save_chunk("user", "python async tutorial", "async")
+        await user_memory.save_chunk(user_memory.uid, "python async tutorial", "async")
         resp = await client.get("/api/user-memory/search?q=python")
         assert resp.status_code == 200
         data = resp.json()
@@ -203,14 +205,14 @@ class TestSearch:
         assert len(data["results"]) >= 1
 
     async def test_search_no_match(self, client, user_memory):
-        await user_memory.save_chunk("user", "hello world", "hw")
+        await user_memory.save_chunk(user_memory.uid, "hello world", "hw")
         resp = await client.get("/api/user-memory/search?q=zzzznonexistent")
         assert resp.status_code == 200
         data = resp.json()
         assert data["results"] == []
 
     async def test_search_result_shape(self, client, user_memory):
-        await user_memory.save_chunk("user", "test content", "test")
+        await user_memory.save_chunk(user_memory.uid, "test content", "test")
         resp = await client.get("/api/user-memory/search?q=test")
         assert resp.status_code == 200
         data = resp.json()
@@ -260,8 +262,8 @@ class TestListCollections:
         assert data["collections"] == []
 
     async def test_collections_after_save(self, client, user_memory):
-        await user_memory.save_chunk("user", "a", "a", "snippets")
-        await user_memory.save_chunk("user", "b", "b", "journal")
+        await user_memory.save_chunk(user_memory.uid, "a", "a", "snippets")
+        await user_memory.save_chunk(user_memory.uid, "b", "b", "journal")
         resp = await client.get("/api/user-memory/collections")
         assert resp.status_code == 200
         data = resp.json()

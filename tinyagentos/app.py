@@ -826,6 +826,17 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
         except Exception:
             logger.exception("agent_owner startup migration failed")
 
+        # User memory used to be one shared partition filed under "user". Move
+        # those rows to the install owner so other members cannot read them.
+        try:
+            _primary = auth_manager.get_primary_user()
+            if _primary and _primary.get("id"):
+                _um_moved = await user_memory.rekey_legacy(_primary["id"])
+                if _um_moved:
+                    logger.info("user memory: %d legacy chunk(s) moved to the install owner", _um_moved)
+        except Exception:
+            logger.exception("user memory legacy rekey failed")
+
         # Agent DM channels list the literal "user" as a member; record the
         # agent's registry owner on each so the owner keeps reading their own
         # DM once channel reads check membership. Idempotent.

@@ -1,19 +1,46 @@
 from __future__ import annotations
 
+import hashlib
 import logging
 
 import httpx
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import JSONResponse
+
+from tinyagentos.auth_context import agent_bound_name, resolve_agent_owner
+from tinyagentos.user_memory import capture_user_id
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
-USER_ID = "user"  # Single-user for now
-
-# Fixed agent namespace for user memory in taosmd.
+# taosmd agent namespace for the install owner's memory. It is the namespace
+# every capture used before memory became per-user, so the owner keeps their
+# history. Every other user gets a namespace of their own (see _agent_ns).
 _TAOSMD_AGENT = "user-memory"
+
+
+def _uid(request: Request) -> str:
+    """The user whose memory this request touches: the caller, never a shared id.
+
+    A request with no user of its own (the host local token) acts for the
+    install owner. Anything else with no user is refused.
+    """
+    uid = capture_user_id(
+        getattr(request.app.state, "auth", None), getattr(request.state, "user_id", None)
+    )
+    if not uid:
+        raise HTTPException(status_code=401, detail="Authentication required")
+    return uid
+
+
+def _agent_ns(request: Request, uid: str) -> str:
+    """taosmd namespace for *uid*: the legacy one for the owner, a hashed one otherwise."""
+    auth = getattr(request.app.state, "auth", None)
+    primary = (auth.get_primary_user() if auth is not None else None) or {}
+    if primary.get("id") == uid:
+        return _TAOSMD_AGENT
+    return f"{_TAOSMD_AGENT}-{hashlib.sha256(uid.encode()).hexdigest()[:24]}"
 
 
 def _store(request: Request):
@@ -60,20 +87,20 @@ def _hit_to_chunk(hit: dict) -> dict:
 
 @router.get("/api/user-memory/stats")
 async def get_stats(request: Request):
-    stats = await _store(request).get_stats(USER_ID)
+    stats = await _store(request).get_stats(_uid(request))
     return JSONResponse(stats)
 
 
 @router.get("/api/user-memory/settings")
 async def get_settings(request: Request):
-    settings = await _store(request).get_settings(USER_ID)
+    settings = await _store(request).get_settings(_uid(request))
     return JSONResponse(settings)
 
 
 @router.put("/api/user-memory/settings")
 async def update_settings(request: Request):
     body = await request.json()
-    await _store(request).update_settings(USER_ID, body)
+    await _store(request).update_settings(_uid(request), body)
     return JSONResponse({"ok": True})
 
 
@@ -84,10 +111,11 @@ async def search(request: Request, q: str, collection: str | None = None, limit:
     Proxies to taosmd /search?mode=bm25 when available; falls back to the
     local SQLite FTS5 store if taosmd is unreachable or returns an error.
     """
+    uid = _uid(request)
     base = _taosmd_base(request)
     try:
         client = request.app.state.http_client
-        params: dict = {"q": q, "agent": _TAOSMD_AGENT, "limit": limit, "mode": "bm25"}
+        params: dict = {"q": q, "agent": _agent_ns(request, uid), "limit": limit, "mode": "bm25"}
         if collection:
             params["collection"] = collection
         resp = await client.get(f"{base}/search", params=params, timeout=5.0)
@@ -99,13 +127,20 @@ async def search(request: Request, q: str, collection: str | None = None, limit:
     except Exception:
         logger.debug("taosmd search unavailable, falling back to SQLite")
 
-    results = await _store(request).search(USER_ID, q, collection, limit)
+    results = await _store(request).search(uid, q, collection, limit)
     return JSONResponse({"results": results, "query": q, "backend": "sqlite"})
 
 
 @router.get("/api/user-memory/agent-search")
 async def agent_search(request: Request, q: str, agent_name: str, limit: int = 10):
-    """Read-only search endpoint for agents with user memory permission."""
+    """Read-only search endpoint for agents with user memory permission.
+
+    Searches the memory of the agent's registered owner, and only for the
+    agent's own token or for that owner (or an admin) acting through a session.
+    """
+    bound = agent_bound_name(request)
+    if bound and bound != agent_name:
+        return JSONResponse({"error": "forbidden"}, status_code=403)
     config = request.app.state.config
     agents = getattr(config, "agents", None)
     if agents is None and isinstance(config, dict):
@@ -117,13 +152,21 @@ async def agent_search(request: Request, q: str, agent_name: str, limit: int = 1
             {"error": "Agent does not have user memory access"},
             status_code=403,
         )
-    results = await _store(request).search(USER_ID, q, limit=limit)
+    owner = await resolve_agent_owner(request, agent_name)
+    if not owner:
+        return JSONResponse({"error": "forbidden"}, status_code=403)
+    if not bound:
+        caller = getattr(request.state, "user_id", None)
+        is_admin = getattr(request.state, "is_admin", False)
+        if not (is_admin or (caller and str(caller) == str(owner))):
+            return JSONResponse({"error": "forbidden"}, status_code=403)
+    results = await _store(request).search(owner, q, limit=limit)
     return JSONResponse({"results": results, "query": q, "agent": agent_name})
 
 
 @router.get("/api/user-memory/browse")
 async def browse(request: Request, collection: str | None = None, limit: int = 50):
-    chunks = await _store(request).browse(USER_ID, collection, limit)
+    chunks = await _store(request).browse(_uid(request), collection, limit)
     return JSONResponse({"chunks": chunks})
 
 
@@ -137,8 +180,9 @@ async def save(request: Request):
     if not content:
         return JSONResponse({"error": "content required"}, status_code=400)
 
+    uid = _uid(request)
     # Always write to SQLite for browse/stats/delete compatibility.
-    h = await _store(request).save_chunk(USER_ID, content, title, collection, metadata)
+    h = await _store(request).save_chunk(uid, content, title, collection, metadata)
 
     # Also ingest to taosmd when available (best-effort, non-fatal).
     base = _taosmd_base(request)
@@ -148,7 +192,7 @@ async def save(request: Request):
             f"{base}/ingest",
             json={
                 "text": content,
-                "agent": _TAOSMD_AGENT,
+                "agent": _agent_ns(request, uid),
                 # Caller metadata first so the server-owned keys win —
                 # source_id is taosmd's dedup key and must not be
                 # overridable from the request body.
@@ -169,13 +213,13 @@ async def save(request: Request):
 
 @router.delete("/api/user-memory/chunk/{chunk_hash}")
 async def delete_chunk(request: Request, chunk_hash: str):
-    deleted = await _store(request).delete_chunk(USER_ID, chunk_hash)
+    deleted = await _store(request).delete_chunk(_uid(request), chunk_hash)
     return JSONResponse({"ok": deleted})
 
 
 @router.get("/api/user-memory/collections")
 async def list_collections(request: Request):
-    stats = await _store(request).get_stats(USER_ID)
+    stats = await _store(request).get_stats(_uid(request))
     return JSONResponse({"collections": list(stats["collections"].keys())})
 
 
@@ -187,6 +231,8 @@ async def migrate_to_taosmd(request: Request):
     (taosmd uses source_id for deduplication).  Returns 503 if taosmd is
     unreachable.
     """
+    uid = _uid(request)
+    ns = _agent_ns(request, uid)
     base = _taosmd_base(request)
 
     # Probe availability first.
@@ -203,7 +249,7 @@ async def migrate_to_taosmd(request: Request):
     page_size = 1000
     offset = 0
     while True:
-        page = await _store(request).browse(USER_ID, limit=page_size, offset=offset)
+        page = await _store(request).browse(uid, limit=page_size, offset=offset)
         chunks.extend(page)
         if len(page) < page_size:
             break
@@ -231,7 +277,7 @@ async def migrate_to_taosmd(request: Request):
         client = request.app.state.http_client
         resp = await client.post(
             f"{base}/ingest/batch",
-            json={"agent": _TAOSMD_AGENT, "items": items},
+            json={"agent": ns, "items": items},
             timeout=30.0,
         )
         resp.raise_for_status()
@@ -245,7 +291,7 @@ async def migrate_to_taosmd(request: Request):
                 try:
                     one = await client.post(
                         f"{base}/ingest",
-                        json={"text": item["text"], "agent": _TAOSMD_AGENT,
+                        json={"text": item["text"], "agent": ns,
                               "metadata": item["metadata"]},
                         timeout=30.0,
                     )

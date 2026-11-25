@@ -12,6 +12,7 @@ from fastapi.responses import JSONResponse, Response
 from tinyagentos.auth_context import CurrentUser
 from tinyagentos.chat.reactions import maybe_trigger_semantic
 from tinyagentos.device_auth import current_user_or_device
+from tinyagentos.user_memory import capture_user_id
 
 router = APIRouter()
 
@@ -76,10 +77,14 @@ async def _capture_user_memory(
     collection: str,
     metadata: dict,
     setting_key: str,
-    user_id: str = "user",
+    user_id: str | None = None,
 ) -> None:
-    """Fire-and-forget user memory capture. Never raises."""
-    if not user_memory or not content:
+    """Fire-and-forget user memory capture. Never raises.
+
+    ``user_id`` is the person the message belongs to; with none there is nobody
+    to file it under, so nothing is captured.
+    """
+    if not user_memory or not content or not user_id:
         return
     try:
         settings = await user_memory.get_settings(user_id)
@@ -466,6 +471,7 @@ async def post_message(request: Request, user: CurrentUser = Depends(current_use
                     "timestamp": message.get("created_at"),
                 },
                 setting_key="capture_conversations",
+                user_id=capture_user_id(request.app.state.auth, user.user_id),
             ))
 
     # Auto-archive every message for the zero-loss layer

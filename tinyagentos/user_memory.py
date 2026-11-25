@@ -13,6 +13,22 @@ DEFAULT_SETTINGS = {
 }
 
 
+LEGACY_USER_ID = "user"
+
+
+def capture_user_id(auth, user_id: str | None) -> str | None:
+    """The user a capture belongs to: the caller, else the install owner.
+
+    A request with no user of its own (the host local token) acts for the
+    install owner, as everywhere else. None means there is nobody to attribute
+    it to, so nothing is captured.
+    """
+    if user_id:
+        return str(user_id)
+    primary = auth.get_primary_user() if auth is not None else None
+    return (primary or {}).get("id") or None
+
+
 class UserMemoryStore(BaseStore):
     SCHEMA = """
     CREATE TABLE IF NOT EXISTS user_memory_chunks (
@@ -191,3 +207,29 @@ class UserMemoryStore(BaseStore):
             (user_id, json.dumps(current)),
         )
         await self._db.commit()
+
+    async def rekey_legacy(self, owner_id: str) -> int:
+        """Move rows saved under the old shared ``"user"`` id to *owner_id*.
+
+        Before per-user memory every capture was filed under one shared id.
+        Those rows belong to the install owner (the first user), so a member
+        can no longer read them. Idempotent: returns how many chunks moved.
+        """
+        assert self._db is not None
+        if not owner_id or owner_id == LEGACY_USER_ID:
+            return 0
+        cur = await self._db.execute(
+            "UPDATE user_memory_chunks SET user_id = ? WHERE user_id = ?",
+            (owner_id, LEGACY_USER_ID),
+        )
+        moved = cur.rowcount or 0
+        # Keep the owner's own settings if they already have a row.
+        await self._db.execute(
+            "UPDATE OR IGNORE user_memory_settings SET user_id = ? WHERE user_id = ?",
+            (owner_id, LEGACY_USER_ID),
+        )
+        await self._db.execute(
+            "DELETE FROM user_memory_settings WHERE user_id = ?", (LEGACY_USER_ID,)
+        )
+        await self._db.commit()
+        return moved
