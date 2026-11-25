@@ -133,6 +133,37 @@ def test_probe_target_unchanged_without_lazy_block():
     del entry["lazy"]
     assert probe_target(entry)["url"] == entry["url"]
 
+def test_probe_target_keeps_public_url_when_lazy_block_has_no_start_cmd():
+    """Construction rejects a lazy block with backend_url but no start_cmd
+    (no proxy is built), so the entry's server — if running — still listens
+    on the public URL. probe_target must not retarget the probe at the
+    private address anyway: a healthy service recorded offline there, with
+    spurious backend.down notifications (CodeRabbit finding on PR #4497)."""
+    entry = _lazy_entry(lazy={"backend_url": "http://127.0.0.1:9999"})
+    assert build_lazy_proxies([entry]) == {}
+    assert probe_target(entry)["url"] == entry["url"]
+
+
+@pytest.mark.parametrize(
+    "mutate",
+    [
+        # Same port as the public URL (different host): the proxy would
+        # forward to itself, so construction rejects the entry.
+        lambda e: e["lazy"].update(
+            backend_url=e["url"].replace("127.0.0.1", "localhost")
+        ),
+        # Unusable registry TTL: construction skips the entry.
+        lambda e: e.update(keep_alive_minutes="abc"),
+    ],
+)
+def test_probe_target_keeps_public_url_for_other_rejected_lazy_entries(mutate):
+    """Eligibility is a single shared decision: ANY lazy entry construction
+    rejects keeps its public probe URL, not just the no-start_cmd shape."""
+    entry = _lazy_entry()
+    mutate(entry)
+    assert build_lazy_proxies([entry]) == {}
+    assert probe_target(entry)["url"] == entry["url"]
+
 
 # -- end to end -----------------------------------------------------------------
 

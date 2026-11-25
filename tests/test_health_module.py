@@ -497,7 +497,13 @@ async def test_poll_once_probes_lazy_backend_at_real_server(tmp_path):
         "name": "local-stable-diffusion-cpp",
         "type": "sd-cpp",
         "url": "http://127.0.0.1:30450",
-        "lazy": {"backend_url": "http://127.0.0.1:30451"},
+        # A complete lazy block, as auto_register_from_manifest produces:
+        # an entry construction would reject (e.g. backend_url with no
+        # start_cmd) is not wrapped and keeps its public probe URL.
+        "lazy": {
+            "backend_url": "http://127.0.0.1:30451",
+            "start_cmd": "env TAOS_SD_CPP_PORT=30451 run.sh",
+        },
     }
     monitor = _make_monitor(tmp_path, backends=[backend])
     with patch("tinyagentos.health.check_backend_health", new_callable=AsyncMock,

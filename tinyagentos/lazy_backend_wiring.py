@@ -93,55 +93,65 @@ def build_lazy_proxies(backends: list[dict]) -> dict[str, LazyBackendProxy]:
     return proxies
 
 
-def _build_one(name: str, backend: dict, lazy: dict) -> LazyBackendProxy | None:
+def _parse_lazy_entry(backend: dict, lazy: dict) -> tuple[dict | None, str | None]:
+    """Validate a lazy block once, for construction and probing alike.
+
+    Returns (fields, None) when a proxy can be built for the entry, or
+    (None, reason) when it must be skipped. probe_target shares this
+    decision: an entry rejected here is not wrapped, so its server — if
+    running — still listens on the entry's public URL, and probing must
+    not be retargeted at the private backend_url (a healthy service would
+    record offline there and could emit spurious backend.down events).
+    """
     start_cmd = str(lazy.get("start_cmd") or "").strip()
     backend_url = str(lazy.get("backend_url") or "").strip()
     public_url = str(backend.get("url") or "").strip()
     if not start_cmd or not backend_url or not public_url:
-        logger.warning(
-            "lazy wiring: %s skipped — a lazy block needs start_cmd, "
-            "backend_url and a public url on the entry",
-            name,
+        return None, (
+            "a lazy block needs start_cmd, backend_url and a public url "
+            "on the entry"
         )
-        return None
     proxy_port = _port_of(public_url)
     backend_port = _port_of(backend_url)
     if proxy_port is None or backend_port is None:
-        logger.warning(
-            "lazy wiring: %s skipped — could not parse ports from %r / %r",
-            name, public_url, backend_url,
-        )
-        return None
+        return None, f"could not parse ports from {public_url!r} / {backend_url!r}"
     if proxy_port == backend_port:
-        logger.warning(
-            "lazy wiring: %s skipped — public and backend ports are both "
-            "%d; the proxy would forward to itself",
-            name, proxy_port,
+        return None, (
+            f"public and backend ports are both {proxy_port}; the proxy "
+            "would forward to itself"
         )
-        return None
     keep_alive_minutes = backend.get("keep_alive_minutes", 10)
     try:
         idle_timeout = float(keep_alive_minutes) * 60.0
     except (TypeError, ValueError):
-        logger.warning(
-            "lazy wiring: %s skipped — keep_alive_minutes %r is not a number",
-            name, keep_alive_minutes,
-        )
-        return None
+        return None, f"keep_alive_minutes {keep_alive_minutes!r} is not a number"
     if not idle_timeout >= 0:  # negative or NaN
-        logger.warning(
-            "lazy wiring: %s skipped — keep_alive_minutes %r does not "
-            "give a usable idle timeout",
-            name, keep_alive_minutes,
+        return None, (
+            f"keep_alive_minutes {keep_alive_minutes!r} does not give a "
+            "usable idle timeout"
         )
+    return {
+        "start_cmd": start_cmd,
+        "backend_url": backend_url,
+        "public_url": public_url,
+        "proxy_port": proxy_port,
+        "backend_port": backend_port,
+        "idle_timeout": idle_timeout,
+    }, None
+
+
+def _build_one(name: str, backend: dict, lazy: dict) -> LazyBackendProxy | None:
+    fields, reason = _parse_lazy_entry(backend, lazy)
+    if fields is None:
+        logger.warning("lazy wiring: %s skipped — %s", name, reason)
         return None
     return LazyBackendProxy(
-        proxy_port=proxy_port,
-        backend_host=_host_of(backend_url),
-        backend_port=backend_port,
-        start_cmd=_expand_project_dir(start_cmd),
+        proxy_port=fields["proxy_port"],
+        backend_host=_host_of(fields["backend_url"]),
+        backend_port=fields["backend_port"],
+        start_cmd=_expand_project_dir(fields["start_cmd"]),
         stop_cmd=_expand_project_dir(str(lazy.get("stop_cmd") or "")),
-        idle_timeout_seconds=idle_timeout,
+        idle_timeout_seconds=fields["idle_timeout"],
         health_url=str(lazy.get("health_url") or "") or None,
     )
 
@@ -154,10 +164,16 @@ def probe_target(backend: dict) -> dict:
     defeating the wrapper. Probe the real server instead — a stopped
     lazy backend then reads in the catalog exactly like a stopped
     auto-managed one (status error, no models), and a warm one reads ok.
+
+    Only entries _build_one would actually wrap are retargeted —
+    eligibility is shared via _parse_lazy_entry, so a rejected lazy
+    block (e.g. backend_url without start_cmd) keeps its public URL.
     """
     lazy = backend.get("lazy")
-    if isinstance(lazy, dict) and lazy.get("backend_url"):
-        return {**backend, "url": str(lazy["backend_url"])}
+    if isinstance(lazy, dict):
+        fields, _reason = _parse_lazy_entry(backend, lazy)
+        if fields is not None:
+            return {**backend, "url": fields["backend_url"]}
     return backend
 
 
