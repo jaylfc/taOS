@@ -474,8 +474,9 @@ class TestMcpMemberRejected:
 @pytest.mark.asyncio
 class TestNotificationsPrefsMemberRejected:
     async def test_put_pref_rejected_and_not_applied(self, client, app):
-        """Member cannot mute/unmute global notification event types."""
-        # First, verify the default state (unmuted)
+        """A member's pref change applies to the member only (per-person
+        settings, PR #4507): the member's own PUT succeeds, and the admin's
+        prefs are untouched by it."""
         event_type = "app.failed"
         resp = await client.get("/api/notifications/prefs")
         assert resp.status_code == 200
@@ -483,18 +484,30 @@ class TestNotificationsPrefsMemberRejected:
         pref = next(p for p in prefs if p["event_type"] == event_type)
         assert pref["muted"] is False
 
-        # Member tries to mute it
         member = await _member_client(app)
         try:
             resp = await member.put(
                 f"/api/notifications/prefs/{event_type}", json={"muted": True}
             )
+            assert resp.status_code == 200, resp.text
+            # The member sees their own change...
+            resp = await member.get("/api/notifications/prefs")
+            assert resp.status_code == 200
+            mpref = next(
+                p for p in resp.json() if p["event_type"] == event_type
+            )
+            assert mpref["muted"] is True
+            # ...and a forged identity in the body changes nothing: the
+            # route keys on the caller, so this still lands on the member.
+            resp = await member.put(
+                f"/api/notifications/prefs/{event_type}",
+                json={"muted": False, "user_id": "admin"},
+            )
+            assert resp.status_code == 200, resp.text
         finally:
             await member.aclose()
-        assert resp.status_code == 403, resp.text
-        assert resp.json() == FORBIDDEN
 
-        # Verify the value is unchanged
+        # The admin's own prefs were never touched by any of it.
         resp = await client.get("/api/notifications/prefs")
         assert resp.status_code == 200
         prefs = resp.json()
@@ -502,7 +515,7 @@ class TestNotificationsPrefsMemberRejected:
         assert pref["muted"] is False
 
     async def test_admin_put_pref_allowed(self, client, app):
-        """Admin can mute/unmute global notification event types."""
+        """Admin can mute/unmute their own notification event types."""
         event_type = "app.failed"
         resp = await client.put(f"/api/notifications/prefs/{event_type}", json={"muted": True})
         assert resp.status_code == 200, resp.text
@@ -519,7 +532,7 @@ class TestNotificationsPrefsMemberRejected:
         assert pref["muted"] is True
 
     async def test_local_token_put_pref_allowed(self, client, app):
-        """Local token can mute/unmute global notification event types."""
+        """Local token can mute/unmute its own notification event types."""
         bare = _local_token_client(app)
         try:
             event_type = "app.failed"

@@ -14,6 +14,7 @@ interface DndSettings {
   enabled: boolean;
   start: string;
   end: string;
+  timezone?: string;
 }
 
 const NOTIF_TYPES = [
@@ -133,14 +134,23 @@ export function NotificationsPanel() {
 
   const saveDnd = async (next: DndSettings) => {
     const previous = dnd;
-    setDnd(next);
+    // DND is evaluated in the person's own timezone, so every save carries
+    // the browser's current IANA zone.
+    const withTz: DndSettings = {
+      ...next,
+      timezone:
+        Intl.DateTimeFormat().resolvedOptions().timeZone ||
+        next.timezone ||
+        "UTC",
+    };
+    setDnd(withTz);
     setError(null);
     setDndSaving(true);
     try {
       const res = await fetch("/api/notifications/dnd", {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(next),
+        body: JSON.stringify(withTz),
       });
       if (!res.ok) {
         const data = await res.json().catch(() => ({}));

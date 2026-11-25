@@ -134,18 +134,33 @@ async def test_put_non_bool_show_centre_returns_400(client):
 async def test_dnd_get_defaults_and_put_round_trip(client):
     r = await client.get("/api/notifications/dnd")
     assert r.status_code == 200
-    assert r.json() == {"enabled": False, "start": "22:00", "end": "07:00"}
+    assert r.json() == {
+        "enabled": False,
+        "start": "22:00",
+        "end": "07:00",
+        "timezone": "UTC",
+    }
 
     r = await client.put(
         "/api/notifications/dnd",
         json={"enabled": True, "start": "21:30", "end": "06:45"},
     )
     assert r.status_code == 200
-    assert r.json() == {"enabled": True, "start": "21:30", "end": "06:45"}
+    assert r.json() == {
+        "enabled": True,
+        "start": "21:30",
+        "end": "06:45",
+        "timezone": "UTC",
+    }
 
     r = await client.get("/api/notifications/dnd")
     assert r.status_code == 200
-    assert r.json() == {"enabled": True, "start": "21:30", "end": "06:45"}
+    assert r.json() == {
+        "enabled": True,
+        "start": "21:30",
+        "end": "06:45",
+        "timezone": "UTC",
+    }
 
 
 @pytest.mark.asyncio
@@ -159,5 +174,31 @@ async def test_dnd_put_invalid_time_returns_400(client):
     r = await client.put(
         "/api/notifications/dnd",
         json={"enabled": "yes", "start": "22:00", "end": "07:00"},
+    )
+    assert r.status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_dnd_put_accepts_timezone_and_rejects_unknown(client):
+    r = await client.put(
+        "/api/notifications/dnd",
+        json={
+            "enabled": True,
+            "start": "22:00",
+            "end": "07:00",
+            "timezone": "America/New_York",
+        },
+    )
+    assert r.status_code == 200
+    assert r.json()["timezone"] == "America/New_York"
+
+    r = await client.put(
+        "/api/notifications/dnd",
+        json={
+            "enabled": True,
+            "start": "22:00",
+            "end": "07:00",
+            "timezone": "Mars/Olympus",
+        },
     )
     assert r.status_code == 400

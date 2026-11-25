@@ -23,8 +23,11 @@ class TestNotificationStore:
         store = NotificationStore(tmp_path / "notif.db")
         await store.init()
         try:
-            await store.set_event_muted("worker.join", True)
-            await store.emit_event("worker.join", "Worker joined", "worker-1 connected")
+            # Per-person prefs (#206): mute and event share a recipient.
+            await store.set_event_muted("u1", "worker.join", True)
+            await store.emit_event(
+                "worker.join", "Worker joined", "worker-1 connected", user_id="u1"
+            )
             items = await store.list(limit=10)
             assert len(items) == 0
         finally:
@@ -35,10 +38,10 @@ class TestNotificationStore:
         store = NotificationStore(tmp_path / "notif.db")
         await store.init()
         try:
-            prefs = await store.get_event_prefs()
+            prefs = await store.get_event_prefs("u1")
             assert isinstance(prefs, list)
-            await store.set_event_muted("backend.down", True)
-            prefs = await store.get_event_prefs()
+            await store.set_event_muted("u1", "backend.down", True)
+            prefs = await store.get_event_prefs("u1")
             muted = [p for p in prefs if p["event_type"] == "backend.down"]
             assert len(muted) == 1
             assert muted[0]["muted"] is True
@@ -50,7 +53,7 @@ class TestNotificationStore:
         store = NotificationStore(tmp_path / "notif.db")
         await store.init()
         try:
-            await store.set_event_muted("worker.join", True)
+            await store.set_event_muted("u1", "worker.join", True)
             await store.emit_event("backend.up", "Backend online", "test-backend connected")
             items = await store.list(limit=10)
             assert len(items) == 1
