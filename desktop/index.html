@@ -60,6 +60,15 @@
          `base: "/desktop/"` the build rewrites it to `/desktop/boot.js` (the
          emitted shell proves it), so no change is needed here.
          First-run GPU auto-detect happens in-app via a frame-rate probe. -->
+    <!-- Webview compatibility shim (#2082): feature-detected polyfills for
+         the runtime APIs the bundle uses that postdate old system webviews
+         (Object.hasOwn, structuredClone, .at), plus an onerror fallback that
+         paints a readable error instead of a silent blank screen. Kept in an
+         external same-origin file (public/compat.js) because CSP blocks
+         inline scripts; this blocking tag runs before the module bundle.
+         Must load before boot.js as well: the bundle's APIs are shimmed
+         before anything else executes. -->
+    <script src="/compat.js"></script>
     <script src="/boot.js"></script>
   </head>
   <body>

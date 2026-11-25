@@ -43,6 +43,9 @@
       }
       #root { height: 100%; width: 100%; }
     </style>
+    <!-- Webview compatibility shim (#2082): see index.html / public/compat.js.
+         Blocking classic script so the polyfills land before the module bundle. -->
+    <script src="/compat.js"></script>
   </head>
   <body>
     <div id="root"></div>

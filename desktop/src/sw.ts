@@ -36,6 +36,11 @@ const PRECACHE_URLS = [
   // the full effects, and an online launch is answered from Cache Storage
   // without waiting on a round-trip. Served stale-while-revalidate below, so a
   // redeployed boot.js is picked up by the background refresh.
+  // The webview compatibility shim (#2082). Also a blocking <script> in
+  // every shell's <head>, ahead of the module bundle: precached for the
+  // same reason as boot.js — an offline launch on an old webview needs the
+  // polyfills (and the painted-error fallback) before the bundle runs.
+  "/desktop/compat.js",
   "/desktop/boot.js",
   "/chat-pwa",
   "/static/manifest-desktop.json",
