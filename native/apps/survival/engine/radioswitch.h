@@ -45,6 +45,7 @@ public:
     void start(const SwitchRequest &req);
     Step step() const { return m_step; }
     static QString stepName(Step s);
+    static QString networkLabel(const QString &n);
     bool running() const { return m_step != Step::Idle && m_step != Step::Done && m_step != Step::Failed; }
     /// The step that failed (valid in Failed), and what went wrong in words.
     Step failedAt() const { return m_failedAt; }

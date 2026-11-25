@@ -156,6 +156,7 @@ private Q_SLOTS:
         QVERIFY(!saved.value(u"values"_s).toMap().contains(u"options"_s));
         QCOMPARE(QFile::permissions(r->profiles->path()) & (QFileDevice::ReadGroup | QFileDevice::ReadOther | QFileDevice::WriteGroup | QFileDevice::WriteOther), QFileDevice::Permissions());
         QVERIFY(r->sw->notes().join(u' ').contains(u"No settings were saved"_s));
+        QVERIFY(r->sw->notes().join(u' ').contains(u"Settings for Meshtastic saved"_s));
     }
 
     void switching_back_puts_the_saved_settings_back_through_the_engine()

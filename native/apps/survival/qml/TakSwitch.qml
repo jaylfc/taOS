@@ -19,13 +19,15 @@ C.ScrollView {
     property string entryId: ""
     property string chosen: "choose"          // choose | review
     readonly property string phase: sw.step === "idle" ? chosen : (sw.step === "done" || sw.step === "failed" ? "result" : "run")
-    readonly property var row: { tak.radioRows; return tak.radioRow(rowKey) }
+    readonly property var liveRow: { tak.radioRows; return tak.radioRow(rowKey) }
+    readonly property var row: sw.step !== "idle" ? sw.subject : liveRow
     readonly property string boardName: row.hardware !== "" && row.hardware !== undefined ? row.hardware : (fw.plan.board ? fw.boardName(fw.plan.board) : "")
     readonly property var entry: { for (const e of fw.library) if (e.id === entryId) return e; return null }
     readonly property string toNetwork: entry ? entry.network : ""
     readonly property bool hasEarlier: row.profiles ? row.profiles.some(p => p.network === toNetwork) : false
     contentWidth: availableWidth
     clip: true
+    Component.onCompleted: { fw.reload(); fw.detect(); tak.discover() }
     function networkName(n) { return n === "meshtastic" ? "Meshtastic" : n === "meshcore" ? "MeshCore" : n === "rnode" ? "RNode (Reticulum)" : n }
     // one choice per network and variant: the newest stored version that fits this board, other than what it runs now
     readonly property var choices: {
@@ -99,7 +101,7 @@ C.ScrollView {
                 Layout.fillWidth: true
                 glyph: "clock"; clickable: false; enabled: false
                 title: qsTr("Reticulum (RNode)")
-                subtitle: qsTr("Coming: the mesh engine has no Reticulum driver yet")
+                subtitle: qsTr("Coming: no Reticulum driver yet")
             }
             TaosText { visible: root.choices.length === 0; objectName: "nothingStored"; Layout.fillWidth: true; wrapMode: Text.Wrap; font.pixelSize: Look.small; color: Look.textSecondary
                        text: qsTr("Nothing stored fits this board yet. Open the firmware library and refresh it first.") }

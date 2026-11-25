@@ -30,7 +30,11 @@ C.ScrollView {
     Component.onCompleted: if (radioId !== "") tak.requestConfig(radioId)
     onRadioIdChanged: if (radioId !== "") tak.requestConfig(radioId)
     onNavChanged: if (nav && nav.demo.qr !== undefined) { qrChannel = Number(nav.demo.qr); if (nav.demo.showkey !== undefined) { const s = {}; s[Number(nav.demo.showkey)] = true; shown = s } }
-    function getPath(o, p) { let c = o; for (const k of p.split(".")) { if (c === undefined || c === null) return undefined; c = c[k] } return c }
+    function getPath(o, p) {
+        const m = /^channels\.([0-9]+)\.(.+)$/.exec(p)
+        if (m) { for (const c of (o.channels || [])) if (String(c.index) === m[1]) return c[m[2]]; return undefined }
+        let c = o; for (const k of p.split(".")) { if (c === undefined || c === null) return undefined; c = c[k] } return c
+    }
     function stage(path, v) {
         const s = Object.assign({}, staged)
         if (String(getPath(vals, path)) === String(v)) delete s[path]; else s[path] = v
@@ -179,6 +183,13 @@ C.ScrollView {
                             spacing: Look.space2
                             TaosText { text: ch.modelData.name !== "" ? ch.modelData.name : qsTr("Channel %1").arg(ch.index); font.pixelSize: Look.bodyMedium; font.weight: Font.DemiBold; Layout.fillWidth: true; elide: Text.ElideRight }
                             Chip { text: ch.modelData.role === "PRIMARY" ? qsTr("Primary") : ch.modelData.role === "SECONDARY" ? qsTr("Secondary") : String(ch.modelData.role) }
+                        }
+                        RowLayout {
+                            visible: root.canWrite("channels." + ch.index + ".name")
+                            spacing: Look.space2
+                            TaosText { text: qsTr("Name"); font.pixelSize: Look.body; color: Look.textSecondary; Layout.preferredWidth: 40 }
+                            TaosField { objectName: "channelName-" + ch.index; Layout.fillWidth: true; text: root.staged["channels." + ch.index + ".name"] !== undefined ? root.staged["channels." + ch.index + ".name"] : ch.modelData.name
+                                        accessibleName: qsTr("Channel %1 name").arg(ch.index); onEditingFinished: root.stage("channels." + ch.index + ".name", text) }
                         }
                         RowLayout {
                             spacing: Look.space2

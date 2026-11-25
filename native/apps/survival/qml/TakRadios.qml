@@ -103,12 +103,12 @@ C.ScrollView {
                                      text: root.assigning === card.r.engineRadioId ? qsTr("Done") : qsTr("Assign"); glyph: "user"
                                      onClicked: root.assigning = root.assigning === card.r.engineRadioId ? "" : card.r.engineRadioId }
                         PillButton { objectName: "settings-" + card.r.engineRadioId; compact: true; visible: card.r.canSettings; text: qsTr("Settings"); glyph: "cpu"; onClicked: root.nav.open("settings", card.r.engineRadioId) }
-                        PillButton { objectName: "switch-" + card.r.fwDeviceId; compact: true; visible: card.r.fwDeviceId !== ""; text: qsTr("Switch network..."); glyph: "refresh"
+                        PillButton { objectName: "switch-" + (card.r.fwDeviceId !== "" ? card.r.fwDeviceId : card.r.key); compact: true; visible: card.r.kind !== "ble"; text: qsTr("Switch network..."); glyph: "refresh"
                                      enabled: card.r.canSwitch && !Survival.switcher.running
                                      onClicked: root.nav.open("switch", card.r.key) }
                         PillButton { objectName: "forget-" + card.r.key; compact: true; text: qsTr("Forget"); visible: card.r.saved && card.r.state === "detected"; onClicked: root.tak.forgetDevice(card.r.key) }
                     }
-                    TaosText { visible: card.r.fwDeviceId !== "" && !card.r.canSwitch && (card.r.switchWhy || "") !== ""; objectName: "switchWhy"; Layout.fillWidth: true; wrapMode: Text.Wrap; font.pixelSize: Look.small; color: Look.textTertiary
+                    TaosText { visible: card.r.kind !== "ble" && !card.r.canSwitch && (card.r.switchWhy || "") !== ""; objectName: "switchWhy"; Layout.fillWidth: true; wrapMode: Text.Wrap; font.pixelSize: Look.small; color: Look.textTertiary
                                text: card.r.switchWhy || "" }
                     TakAssign { visible: root.assigning === card.r.engineRadioId && card.r.engineRadioId !== ""; Layout.fillWidth: true; node: card.r.engineRadioId; current: card.r.identity }
                 }

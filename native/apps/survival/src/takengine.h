@@ -163,6 +163,8 @@ class SwitchEngine : public QObject
     Q_PROPERTY(QVariantMap flash READ flash NOTIFY changed)
     /// The library entry of the firmware the radio ran before the last switch began ("" when it is not stored): the way back.
     Q_PROPERTY(QString previous READ previous NOTIFY changed)
+    /// The radio row as it was when the switch began (the live row changes as the board is released and comes back).
+    Q_PROPERTY(QVariantMap subject READ subject NOTIFY changed)
 public:
     SwitchEngine(TakEngine *tak, FirmwareEngine *fw, FirmwareClient *client, QObject *parent = nullptr);
     QString step() const { return m_sw ? RadioSwitch::stepName(m_sw->step()) : QStringLiteral("idle"); }
@@ -177,6 +179,7 @@ public:
     int restored() const { return m_sw ? m_sw->restored() : 0; }
     QVariantMap flash() const { return m_sw ? m_sw->flashResult() : QVariantMap(); }
     QString previous() const { return m_previous; }
+    QVariantMap subject() const { return m_subject; }
     /// Starts the switch for the radio row `rowKey` to the stored firmware `entryId`. The board name is what the person
     /// typed. Returns an error in words (nothing started) or an empty string.
     Q_INVOKABLE QString begin(const QString &rowKey, const QString &entryId, const QString &typedName, bool ackUnsigned);
@@ -193,6 +196,7 @@ private:
     FirmwareClient *m_c;
     std::unique_ptr<RadioSwitch> m_sw;
     QString m_previous;
+    QVariantMap m_subject;
     QTimer *m_tick;
 };
 

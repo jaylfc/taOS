@@ -5,33 +5,16 @@ import QtQuick.Layouts
 import Taos.Apps 1.0
 import Taos.Survival 1.0
 
-// The firmware library and the guarded switch of a board between networks. The library is stored ahead of need so a
-// board can be flashed with no internet. Switching walks one board through: detect, choose the network, plan (nothing is
-// written), back up, type the board name, flash, verify. A failed flash shows the board's own recovery steps.
+// The firmware library: what is stored ahead of need so a board can be flashed with no internet, the licences, and the
+// boards the firmware manager sees. Moving a board to another network is the Switch network page (it also saves the
+// radio's settings and reconnects it afterwards), opened from here or from the Radios page.
 C.ScrollView {
     id: root
     property var nav
     readonly property var fw: Survival.firmware
-    property string step: "list"          // list | choose | plan | result
-    property string deviceId: ""
-    property string entryId: ""
-    property bool noBackupOk: false
     contentWidth: availableWidth
     clip: true
     Component.onCompleted: { fw.reload(); fw.detect() }
-    // scripted states for pictures: --demo fwstep=choose|plan|result;typed=<text> (only with TAOS_SURVIVAL_DEMO set, see Main.qml).
-    // Driven by the engine's own signals, never by a timer, and gone for good once it has run.
-    property string demoWant: ""
-    onNavChanged: if (nav && nav.demo.fwstep !== undefined) { demoWant = nav.demo.fwstep; demoAdvance() }
-    Connections { target: root.fw; function onChanged() { root.demoAdvance() } function onPlanChanged() { root.demoAdvance() } }
-    function demoAdvance() {
-        if (demoWant === "" || fw.devices.length === 0) return
-        deviceId = fw.devices[0].id
-        if (demoWant === "choose") { step = "choose"; demoWant = ""; return }
-        if (entryId === "") { entryId = "meshtastic:heltec-v3:2.7.26.54e0d8d"; fw.planFlash(deviceId, entryId); step = "plan"; return }
-        if (demoWant === "plan") { demoWant = ""; return }
-        if (demoWant === "result" && fw.plan.board) { demoWant = ""; step = "result"; fw.runFlash(deviceId, entryId, fw.boardName(fw.plan.board), fw.plan.requires_unsigned_ack === true, false) }
-    }
     function networkName(n) { return n === "meshtastic" ? "Meshtastic" : n === "meshcore" ? "MeshCore" : n === "rnode" ? "RNode (Reticulum)" : n }
     function boardName(id) { for (const b of (fw.boards.boards || [])) if (b.id === id) return b.name; return id }
     // one group per network, one row per board: its versions and total size; how the network's files were checked is said once
@@ -48,26 +31,13 @@ C.ScrollView {
         }
         return Object.keys(by).sort().map(n => ({network: n, how: by[n].how, unsigned: by[n].unsigned, rows: Object.keys(by[n].boards).sort().map(k => by[n].boards[k])}))
     }
-    readonly property var device: { for (const d of fw.devices) if (d.id === deviceId) return d; return null }
-    // for the chosen board: the newest version of each network that fits it
-    readonly property var choices: {
-        if (!device) return []
-        const best = {}
-        for (const e of fw.library) {
-            if (device.candidates.indexOf(e.board) < 0) continue
-            const k = e.network + "|" + e.board + "|" + e.variant
-            if (!best[k]) best[k] = e
-        }
-        return Object.keys(best).sort().map(k => best[k])
-    }
     ColumnLayout {
         x: Look.space3
         width: parent.width - Look.space3 * 2
         spacing: Look.space3
         // ---------------------------------------------------------------- the library
         ColumnLayout {
-            visible: root.step === "list"
-            Layout.fillWidth: true; spacing: Look.space3
+                        Layout.fillWidth: true; spacing: Look.space3
             GlassPanel {
                 visible: root.fw.state === "offline"
                 objectName: "firmwareDown"
@@ -197,7 +167,7 @@ C.ScrollView {
                         TaosText { Layout.fillWidth: true; wrapMode: Text.Wrap; font.pixelSize: Look.small; color: Look.textSecondary
                                    text: qsTr("Could be: %1").arg(dev.modelData.candidates.map(c => root.boardName(c)).join(", ")) }
                         PillButton { objectName: "switch-" + dev.modelData.id; compact: true; text: qsTr("Switch network"); glyph: "refresh"; enabled: root.fw.library.length > 0
-                                     onClicked: { root.deviceId = dev.modelData.id; root.fw.clearPlan(); root.fw.clearResult(); root.step = "choose" } }
+                                     onClicked: root.nav.open("switch", dev.modelData.port || dev.modelData.id) }
                     }
                 }
             }
@@ -210,128 +180,6 @@ C.ScrollView {
             PillButton { visible: root.fw.state !== "offline"; compact: true; text: qsTr("Look again"); glyph: "search"; onClicked: root.fw.detect() }
         }
 
-        // ---------------------------------------------------------------- choose the network
-        ColumnLayout {
-            visible: root.step === "choose"
-            Layout.fillWidth: true; Layout.topMargin: Look.space3; spacing: Look.space2
-            TaosText { text: qsTr("Choose the network"); font.pixelSize: Look.cardTitle; font.weight: Font.DemiBold }
-            TaosText { Layout.fillWidth: true; wrapMode: Text.Wrap; font.pixelSize: Look.small; color: Look.textSecondary
-                       text: qsTr("Only firmware stored for this board is offered. Checking the plan may restart the board briefly.") }
-            Repeater {
-                model: root.choices
-                delegate: ListRow {
-                    required property var modelData
-                    Layout.fillWidth: true
-                    objectName: "choice-" + modelData.id
-                    glyph: "radio"
-                    title: root.networkName(modelData.network) + (modelData.variant !== "" ? " (" + modelData.variant.toUpperCase() + ")" : "")
-                    subtitle: qsTr("Version %1, %2").arg(modelData.version).arg(root.fw.sizeText(modelData.sizeBytes))
-                    onClicked: { root.entryId = modelData.id; root.fw.planFlash(root.deviceId, modelData.id); root.step = "plan" }
-                    trailing: Component { Glyph { name: "chevron-right"; size: 16; stroke: 2; color: Look.textTertiary } }
-                }
-            }
-            TaosText { visible: root.choices.length === 0; Layout.fillWidth: true; wrapMode: Text.Wrap; font.pixelSize: Look.small; color: Look.textSecondary
-                       text: qsTr("Nothing stored fits this board yet. Refresh the library first.") }
-            PillButton { compact: true; text: qsTr("Back"); variant: "outline"; onClicked: root.step = "list" }
-        }
-
-        // ---------------------------------------------------------------- the plan and the confirmation
-        ColumnLayout {
-            visible: root.step === "plan"
-            Layout.fillWidth: true; Layout.topMargin: Look.space3; spacing: Look.space3
-            property var plan: root.fw.plan
-            TaosText { text: qsTr("The plan"); font.pixelSize: Look.cardTitle; font.weight: Font.DemiBold }
-            TaosText { visible: root.fw.planError !== ""; objectName: "planError"; Layout.fillWidth: true; wrapMode: Text.Wrap; font.pixelSize: Look.body; color: Look.danger; text: root.fw.planError }
-            TaosText { visible: root.fw.planError === "" && !root.fw.plan.board; Layout.fillWidth: true; font.pixelSize: Look.body; color: Look.textSecondary; text: qsTr("Checking the board...") }
-            ColumnLayout {
-                visible: !!root.fw.plan.board
-                Layout.fillWidth: true; spacing: Look.space2
-                TaosText { Layout.fillWidth: true; wrapMode: Text.Wrap; font.pixelSize: Look.bodyMedium
-                           text: qsTr("%1 to %2 %3. Nothing has been written yet.").arg(root.fw.boardName(root.fw.plan.board)).arg(root.networkName(root.fw.plan.network || "")).arg(root.fw.plan.version || "") }
-                Repeater {
-                    model: root.fw.plan.steps || []
-                    delegate: RowLayout {
-                        required property var modelData
-                        required property int index
-                        Layout.fillWidth: true; spacing: Look.space3
-                        Rectangle { Layout.alignment: Qt.AlignTop; width: 22; height: 22; radius: 11; color: Look.field; border.width: 1; border.color: Look.hairline
-                                    TaosText { anchors.centerIn: parent; text: index + 1; font.pixelSize: Look.caption; font.weight: Font.DemiBold } }
-                        ColumnLayout { Layout.fillWidth: true; spacing: 0
-                            TaosText { text: modelData.name === "backup" ? qsTr("Back up the current settings") : modelData.name === "flash" ? qsTr("Write the firmware") : modelData.name === "verify" ? qsTr("Check the board came up") : modelData.name === "restore" ? qsTr("Restore the settings") : modelData.name
-                                       font.pixelSize: Look.body; font.weight: Font.DemiBold }
-                            TaosText { text: modelData.detail; Layout.fillWidth: true; wrapMode: Text.Wrap; font.pixelSize: Look.small; color: Look.textSecondary } }
-                    }
-                }
-                Repeater {
-                    objectName: "fwWarnings"
-                    model: root.fw.plan.warnings || []
-                    delegate: RowLayout {
-                        required property string modelData
-                        Layout.fillWidth: true; spacing: Look.space2
-                        Glyph { name: "alert"; size: 14; stroke: 2; color: Look.warning; Layout.alignment: Qt.AlignTop }
-                        TaosText { Layout.fillWidth: true; wrapMode: Text.Wrap; font.pixelSize: Look.small; color: Look.warning; text: modelData }
-                    }
-                }
-                RowLayout {
-                    visible: !!root.fw.plan.requires_unsigned_ack
-                    Layout.fillWidth: true; spacing: Look.space2
-                    TaosCheck { id: ackBox; objectName: "ackUnsigned"; Layout.alignment: Qt.AlignTop
-                                checked: root.nav && root.nav.demo.ack !== undefined
-                                accessibleName: qsTr("I have read this. The publisher does not sign this image and I want to flash it anyway.") }
-                    TaosText { Layout.fillWidth: true; wrapMode: Text.Wrap; font.pixelSize: Look.body
-                               text: qsTr("I have read this. The publisher does not sign this image and I want to flash it anyway.")
-                               TapHandler { onTapped: ackBox.toggle() } }
-                }
-                TaosText { text: qsTr("Type %1 to confirm").arg(root.fw.boardName(root.fw.plan.board)); font.pixelSize: Look.body; font.weight: Font.DemiBold; Layout.topMargin: Look.space2 }
-                TaosField { id: typed; objectName: "confirmField"; text: root.nav && root.nav.demo.typed !== undefined ? root.nav.demo.typed : ""; Layout.fillWidth: true; placeholderText: root.fw.boardName(root.fw.plan.board); accessibleName: qsTr("Type the board name to confirm") }
-                RowLayout {
-                    spacing: Look.space2
-                    PillButton { objectName: "flashButton"; variant: "primary"; text: root.fw.busy ? qsTr("Flashing...") : qsTr("Flash the board")
-                                 enabled: !root.fw.busy && typed.text === root.fw.boardName(root.fw.plan.board) && (!root.fw.plan.requires_unsigned_ack || ackBox.checked)
-                                 onClicked: { root.step = "result"; root.fw.runFlash(root.deviceId, root.entryId, typed.text, ackBox.checked, false) } }
-                    PillButton { text: qsTr("Cancel"); variant: "outline"; enabled: !root.fw.busy; onClicked: { root.fw.clearPlan(); root.step = "list" } }
-                }
-            }
-            PillButton { visible: root.fw.planError !== ""; compact: true; text: qsTr("Back"); variant: "outline"; onClicked: { root.fw.clearPlan(); root.step = "list" } }
-        }
-
-        // ---------------------------------------------------------------- the result
-        ColumnLayout {
-            visible: root.step === "result"
-            Layout.fillWidth: true; Layout.topMargin: Look.space3; spacing: Look.space3
-            readonly property var r: root.fw.result
-            readonly property bool done: !root.fw.busy && r.ok !== undefined
-            TaosText { visible: !parent.done; font.pixelSize: Look.bodyMedium; color: Look.textSecondary; text: qsTr("Writing to the board. Do not unplug it.") }
-            ColumnLayout {
-                visible: parent.done
-                Layout.fillWidth: true; spacing: Look.space2
-                objectName: "flashResult"
-                RowLayout { spacing: Look.space2
-                    Glyph { name: root.fw.result.ok ? "check-circle" : "alert"; size: 20; stroke: 1.8; color: root.fw.result.ok ? Look.success : Look.danger }
-                    TaosText { Layout.fillWidth: true; wrapMode: Text.Wrap; font.pixelSize: Look.cardTitle; font.weight: Font.DemiBold
-                               text: root.fw.result.ok ? (root.fw.result.verify && root.fw.result.verify.status === "confirmed" ? qsTr("Done. The board came up on the new network.") : qsTr("Written. The board could not be checked from here."))
-                                                       : qsTr("The flash did not complete") } }
-                TaosText { visible: !root.fw.result.ok; Layout.fillWidth: true; wrapMode: Text.Wrap; font.pixelSize: Look.body; color: Look.danger; text: root.fw.result.message || "" }
-                Repeater {
-                    model: root.fw.result.steps || []
-                    delegate: RowLayout {
-                        required property var modelData
-                        Layout.fillWidth: true; spacing: Look.space2
-                        Glyph { name: modelData.ok === false ? "circle-x" : "check-circle"; size: 14; stroke: 2; color: modelData.ok === false ? Look.danger : Look.success }
-                        TaosText { Layout.fillWidth: true; wrapMode: Text.Wrap; font.pixelSize: Look.body; text: modelData.name === "backup" ? qsTr("Settings backed up") : modelData.name === "flash" ? qsTr("Firmware written") : modelData.name === "verify" ? qsTr("Board checked") : modelData.name === "restore" ? qsTr("Settings restored") : modelData.name }
-                    }
-                }
-                TaosText { visible: !!root.fw.result.restore && root.fw.result.restore.status === "kept_for_switching_back"; Layout.fillWidth: true; wrapMode: Text.Wrap; font.pixelSize: Look.small; color: Look.textSecondary
-                           text: qsTr("The old settings are kept so you can switch back.") }
-                ColumnLayout {
-                    visible: !root.fw.result.ok && !!root.fw.result.recovery
-                    Layout.fillWidth: true; spacing: Look.space1
-                    TakLabel { text: qsTr("Getting the board back") }
-                    TaosText { objectName: "recoveryText"; Layout.fillWidth: true; wrapMode: Text.Wrap; font.pixelSize: Look.body; text: root.fw.result.recovery || "" }
-                }
-                PillButton { compact: true; text: qsTr("Done"); variant: "primary"; onClicked: { root.fw.clearResult(); root.fw.clearPlan(); root.step = "list"; root.fw.detect() } }
-            }
-        }
         Item { Layout.preferredHeight: Look.space4 }
     }
 }

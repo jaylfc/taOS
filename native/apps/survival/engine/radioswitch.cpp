@@ -30,6 +30,11 @@ QVariant valueAt(const QVariantMap &values, const QString &path)
 
 RadioSwitch::RadioSwitch(MeshBackend *mesh, FirmwareClient *fw, RadioProfiles *profiles, QObject *parent) : QObject(parent), m_b(mesh), m_c(fw), m_p(profiles) {}
 
+QString RadioSwitch::networkLabel(const QString &n)
+{
+    return n == u"meshtastic"_s ? u"Meshtastic"_s : n == u"meshcore"_s ? u"MeshCore"_s : n == u"reticulum"_s ? u"Reticulum"_s : n;
+}
+
 QString RadioSwitch::stepName(Step s)
 {
     switch (s) {
@@ -152,7 +157,7 @@ void RadioSwitch::save()
             return;
         }
         m_profileSaved = true;
-        note(tr("Settings for %1 saved on this device.").arg(m_req.fromNetwork));
+        note(tr("Settings for %1 saved on this device.").arg(networkLabel(m_req.fromNetwork)));
         release();
     });
 }
@@ -283,10 +288,10 @@ void RadioSwitch::reconnect()
             if (x.id == m_newRadio)
                 r = x;
         if (!m_req.toNetwork.isEmpty() && r.transport != m_req.toNetwork) {
-            fail(tr("The board came up speaking %1, not %2.").arg(r.transport, m_req.toNetwork));
+            fail(tr("The board came up speaking %1, not %2.").arg(networkLabel(r.transport), networkLabel(m_req.toNetwork)));
             return;
         }
-        note(tr("The board is back on %1.").arg(r.transport));
+        note(tr("The board is back on %1.").arg(networkLabel(r.transport)));
         restore();
     });
 }
@@ -297,7 +302,7 @@ void RadioSwitch::restore()
     go(Step::Restoring);
     const QVariantMap profile = m_p->load(m_req.deviceId, m_req.toNetwork);
     if (profile.isEmpty()) {
-        note(tr("No settings were saved for %1 before, so the new firmware keeps its own defaults.").arg(m_req.toNetwork));
+        note(tr("No settings were saved for %1 before, so the new firmware keeps its own defaults.").arg(networkLabel(m_req.toNetwork)));
         finish();
         return;
     }

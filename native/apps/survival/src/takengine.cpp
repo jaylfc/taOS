@@ -691,6 +691,7 @@ QString SwitchEngine::begin(const QString &rowKey, const QString &entryId, const
     q.ackUnsigned = ackUnsigned;
     q.previousEntryId = previousEntry(rowKey);
     m_previous = q.previousEntryId;
+    m_subject = row;
     m_sw = std::make_unique<RadioSwitch>(m_tak->backend(), m_c, m_tak->profiles());
     connect(m_sw.get(), &RadioSwitch::changed, this, &SwitchEngine::changed);
     m_sw->start(q);
