@@ -17,6 +17,7 @@ FocusScope {
     property string selectedMarker: ""
     property var pick: null                 // {lon, lat, x, y} of the last tap on empty map
     function focusSearch() { searchField.forceActiveFocus() }
+    function setSearch(t) { searchField.text = t }
     function flyTo(lon, lat, zoom) { mv.flyTo(lon, lat, zoom) }
     function centerOn(lon, lat) { mv.flyTo(lon, lat, Math.max(mv.zoom, 9)) }
 
@@ -50,7 +51,7 @@ FocusScope {
         anchors.fill: parent
         visible: stage.engine.loaded
         engine: stage.engine
-        palette: stage.mapPalette
+        mapPalette: stage.mapPalette
         fontFamily: Look.family
         labelSize: Look.small
         selectedMarker: stage.selectedMarker
@@ -139,11 +140,11 @@ FocusScope {
                 background: Item {}
                 placeholderText: stage.engine.indexReady ? qsTr("Search places") : qsTr("Indexing place names...")
                 accessibleName: qsTr("Search places on the map")
-                onTextChanged: results = text.trim() === "" ? [] : stage.engine.searchPlaces(text)
-                property var results: []
+                // searches again when the place index finishes building
+                readonly property var results: { stage.engine.indexReady; return text.trim() === "" ? [] : stage.engine.searchPlaces(text) }
                 Keys.onDownPressed: if (resultList.count > 0) { resultList.forceActiveFocus(); resultList.currentIndex = 0 }
                 Keys.onEscapePressed: { text = ""; stage.forceActiveFocus() }
-                onAccepted: if (results.length > 0) { stage.centerOn(results[0].lon, results[0].lat); results = []; text = ""; stage.forceActiveFocus() }
+                onAccepted: if (results.length > 0) { stage.centerOn(results[0].lon, results[0].lat); text = ""; stage.forceActiveFocus() }
                 Glyph { x: 10; anchors.verticalCenter: parent.verticalCenter; name: "search"; size: 15; stroke: 2; color: Look.textTertiary }
             }
         }

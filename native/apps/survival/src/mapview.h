@@ -20,7 +20,7 @@ class MapView : public QQuickPaintedItem
     Q_PROPERTY(double centerLon READ centerLon WRITE setCenterLon NOTIFY viewChanged)
     Q_PROPERTY(double centerLat READ centerLat WRITE setCenterLat NOTIFY viewChanged)
     Q_PROPERTY(double zoom READ zoom WRITE setZoom NOTIFY viewChanged)
-    Q_PROPERTY(QVariantMap palette READ palette WRITE setPalette NOTIFY paletteChanged)
+    Q_PROPERTY(QVariantMap mapPalette READ mapPalette WRITE setMapPalette NOTIFY paletteChanged)
     Q_PROPERTY(QString fontFamily READ fontFamily WRITE setFontFamily NOTIFY paletteChanged)
     Q_PROPERTY(int labelSize READ labelSize WRITE setLabelSize NOTIFY paletteChanged)
     Q_PROPERTY(QString selectedMarker READ selectedMarker WRITE setSelectedMarker NOTIFY selectionChanged)
@@ -37,8 +37,8 @@ public:
     void setCenterLon(double v);
     void setCenterLat(double v);
     void setZoom(double v);
-    QVariantMap palette() const { return m_paletteMap; }
-    void setPalette(const QVariantMap &m);
+    QVariantMap mapPalette() const { return m_paletteMap; }
+    void setMapPalette(const QVariantMap &m);
     QString fontFamily() const { return m_family; }
     void setFontFamily(const QString &f) { m_family = f; update(); Q_EMIT paletteChanged(); }
     int labelSize() const { return m_labelSize; }
@@ -57,6 +57,7 @@ public:
     Q_INVOKABLE void flyTo(double lon, double lat, double zoom);
     Q_INVOKABLE void fitBounds(double west, double south, double east, double north);
     Q_INVOKABLE void resetView();
+    Q_INVOKABLE void setView(double lon, double lat, double zoom);
 Q_SIGNALS:
     void engineChanged();
     void viewChanged();
@@ -78,7 +79,7 @@ private:
     QString m_family;
     int m_labelSize = 12;
     QString m_selected;
-    bool m_needsFit = false;
+    bool m_userMoved = false;
     bool m_showMarkers = true;
     QVariantAnimation m_fly;
     double m_flyFromLon = 0, m_flyFromLat = 0, m_flyFromZoom = 0, m_flyToLon = 0, m_flyToLat = 0, m_flyToZoom = 0;

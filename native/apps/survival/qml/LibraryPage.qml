@@ -17,6 +17,7 @@ Item {
     readonly property var installed: { engine.packs; return engine.ofKind("zim", true) }
     readonly property bool hasPack: lib.packId !== ""
     function focusSearch() { mode = "read"; reading = false; searchField.forceActiveFocus() }
+    function runSearch(q) { mode = "read"; reading = false; searchField.text = q; lib.search(q) }
     function openPack(id) { if (lib.open(id)) { mode = "read"; reading = page.narrow } }
 
     Component.onCompleted: if (!hasPack && installed.length > 0) lib.open(installed[0].id)

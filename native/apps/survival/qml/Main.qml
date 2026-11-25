@@ -41,7 +41,11 @@ TaosWindow {
         if (s !== "") section = s
         if (args.indexOf("--no-agent") >= 0) agentOpen = false
         const q = argValue(args, "--search")
-        if (q !== "") { section = "library"; Qt.callLater(() => { libraryPage.focusSearch(); Survival.library.search(q) }) }
+        if (q !== "") { section = "library"; Qt.callLater(() => libraryPage.runSearch(q)) }
+        const vw = argValue(args, "--view")
+        if (vw !== "") { const v = vw.split(","); Qt.callLater(() => (section === "taostak" ? takPage : mapPage).stage.view.setView(Number(v[0]), Number(v[1]), Number(v[2]))) }
+        const mq = argValue(args, "--map-search")
+        if (mq !== "") { Qt.callLater(() => (section === "taostak" ? takPage : mapPage).stage.setSearch(mq)) }
         const tab = argValue(args, "--tab")
         if (tab !== "") {
             if (section === "library") libraryPage.mode = tab

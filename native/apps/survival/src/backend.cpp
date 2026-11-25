@@ -492,6 +492,15 @@ void MapEngine::startPosition()
         m_hasDev = true;
         Q_EMIT meChanged();
     });
+    // a service that is installed but not running (no GeoClue) reports an error: then there is no device position
+    connect(m_pos, &QGeoPositionInfoSource::errorOccurred, this, [this](QGeoPositionInfoSource::Error e) {
+        if (e == QGeoPositionInfoSource::NoError || !m_pos)
+            return;
+        m_pos->stopUpdates();
+        m_pos->deleteLater();
+        m_pos = nullptr;
+        Q_EMIT meChanged();
+    });
     m_pos->setUpdateInterval(5000);
     m_pos->startUpdates();
     Q_EMIT meChanged();

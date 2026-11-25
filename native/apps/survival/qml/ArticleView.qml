@@ -92,7 +92,7 @@ Item {
                             visible: root.art.kind === "article" && (root.art.blocked || 0) > 0
                             Layout.fillWidth: true; wrapMode: Text.Wrap
                             font.pixelSize: Look.small; color: Look.textTertiary
-                            text: qsTr("%n link(s) or picture(s) from the internet were left out. This library works offline.", "", root.art.blocked || 0)
+                            text: qsTr("Links and pictures that point to the internet are switched off here. This library works offline.")
                         }
                         Text {
                             id: bodyText

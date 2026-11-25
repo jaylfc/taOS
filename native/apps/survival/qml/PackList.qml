@@ -61,6 +61,13 @@ ColumnLayout {
                             Chip { visible: card.modelData.language !== ""; text: card.modelData.language.toUpperCase() }
                             Chip { visible: card.modelData.local; text: qsTr("Your file") }
                         }
+                        TaosText {
+                            visible: card.modelData.attribution !== ""
+                            Layout.fillWidth: true
+                            Layout.topMargin: 2
+                            text: card.modelData.attribution
+                            wrapMode: Text.Wrap; font.pixelSize: Look.small; color: Look.textTertiary
+                        }
                     }
                 }
                 // not installed, no publisher download: how to make it
@@ -125,13 +132,7 @@ ColumnLayout {
                 RowLayout {
                     Layout.fillWidth: true
                     spacing: Look.space2
-                    TaosText {
-                        Layout.fillWidth: true
-                        visible: card.modelData.attribution !== ""
-                        text: card.modelData.attribution
-                        wrapMode: Text.Wrap; font.pixelSize: Look.small; color: Look.textTertiary
-                    }
-                    Item { Layout.fillWidth: true; visible: card.modelData.attribution === "" }
+                    Item { Layout.fillWidth: true }
                     PillButton {
                         visible: !card.modelData.installed && card.modelData.hasDownload && card.modelData.state !== "downloading" && card.modelData.state !== "verifying"
                         enabled: card.accepted
@@ -181,12 +182,15 @@ ColumnLayout {
                 text: root.kind === "map" ? qsTr("Type the path of a .pmtiles map file. It is copied into your packs folder. Add its checksum if the publisher gave one and it is checked first.")
                                           : qsTr("Type the path of a .zim file. It is copied into your packs folder. Add its checksum if the publisher gave one and it is checked first.")
             }
-            RowLayout {
+            GridLayout {
                 Layout.fillWidth: true
-                spacing: Look.space2
-                TaosField { id: pathField; Layout.fillWidth: true; placeholderText: qsTr("Path to the file"); accessibleName: qsTr("Path to a pack file")
-                            onAccepted: importBtn.clicked() }
-                TaosField { id: shaField; Layout.preferredWidth: root.compact ? 120 : 200; placeholderText: qsTr("Checksum (optional)"); accessibleName: qsTr("SHA-256 checksum, optional") }
+                columns: root.compact ? 2 : 3
+                columnSpacing: Look.space2
+                rowSpacing: Look.space2
+                TaosField { id: pathField; Layout.fillWidth: true; Layout.columnSpan: root.compact ? 2 : 1
+                            placeholderText: qsTr("Path to the file"); accessibleName: qsTr("Path to a pack file"); onAccepted: importBtn.clicked() }
+                TaosField { id: shaField; Layout.fillWidth: root.compact; Layout.preferredWidth: root.compact ? 100 : 200
+                            placeholderText: qsTr("Checksum (optional)"); accessibleName: qsTr("SHA-256 checksum, optional") }
                 TaosButton { id: importBtn; text: qsTr("Import"); variant: "primary"; enabled: pathField.text.trim() !== ""
                              onClicked: if (root.engine.importFile(pathField.text, shaField.text)) { pathField.text = ""; shaField.text = "" } }
             }

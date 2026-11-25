@@ -59,7 +59,7 @@ void MapView::setEngine(QObject *e)
 void MapView::onEngineLoaded()
 {
     if (m_engine && m_engine->loaded()) {
-        m_needsFit = width() < 10 || height() < 10;
+        m_userMoved = false;
         resetView();
     }
     update();
@@ -84,18 +84,17 @@ void MapView::clampView()
     while (m_lon < -180) m_lon += 360;
 }
 
-void MapView::setCenterLon(double v) { m_fly.stop(); m_lon = v; clampView(); update(); Q_EMIT viewChanged(); }
-void MapView::setCenterLat(double v) { m_fly.stop(); m_lat = v; clampView(); update(); Q_EMIT viewChanged(); }
-void MapView::setZoom(double v) { m_fly.stop(); m_zoom = v; clampView(); update(); Q_EMIT viewChanged(); }
-void MapView::setPalette(const QVariantMap &m) { m_paletteMap = m; update(); Q_EMIT paletteChanged(); }
+void MapView::setCenterLon(double v) { m_userMoved = true; m_fly.stop(); m_lon = v; clampView(); update(); Q_EMIT viewChanged(); }
+void MapView::setCenterLat(double v) { m_userMoved = true; m_fly.stop(); m_lat = v; clampView(); update(); Q_EMIT viewChanged(); }
+void MapView::setZoom(double v) { m_userMoved = true; m_fly.stop(); m_zoom = v; clampView(); update(); Q_EMIT viewChanged(); }
+void MapView::setMapPalette(const QVariantMap &m) { m_paletteMap = m; update(); Q_EMIT paletteChanged(); }
 double MapView::metersPerPixel() const { return std::cos(m_lat * M_PI / 180.0) * kEquator / (512.0 * std::pow(2.0, m_zoom)); }
 void MapView::geometryChange(const QRectF &n, const QRectF &o)
 {
     QQuickPaintedItem::geometryChange(n, o);
-    if (m_needsFit && n.width() > 10 && n.height() > 10) {
-        m_needsFit = false;
+    // until the person moves the map, the whole pack stays fitted to whatever size the window settles at
+    if (!m_userMoved && m_engine && m_engine->loaded() && n.width() > 10 && n.height() > 10)
         resetView();
-    }
     update();
 }
 
@@ -107,6 +106,7 @@ QColor MapView::col(const char *key, const QColor &fallback) const
 
 void MapView::panBy(double dx, double dy)
 {
+    m_userMoved = true;
     m_fly.stop();
     const double cx = lonToWorldX(m_lon, m_zoom) - dx, cy = latToWorldY(m_lat, m_zoom) - dy;
     m_lon = worldXToLon(cx, m_zoom);
@@ -118,6 +118,7 @@ void MapView::panBy(double dx, double dy)
 
 void MapView::zoomAt(double x, double y, double delta)
 {
+    m_userMoved = true;
     m_fly.stop();
     const double z = std::clamp(m_zoom + delta, minZoom(), maxZoom());
     if (z == m_zoom)
@@ -165,6 +166,7 @@ QString MapView::markerAt(double x, double y) const
 
 void MapView::flyTo(double lon, double lat, double zoom)
 {
+    m_userMoved = true;
     m_flyFromLon = m_lon; m_flyFromLat = m_lat; m_flyFromZoom = m_zoom;
     m_flyToLon = lon; m_flyToLat = std::clamp(lat, -85.0, 85.0); m_flyToZoom = std::clamp(zoom, minZoom(), maxZoom());
     m_fly.stop();
@@ -191,10 +193,23 @@ void MapView::fitBounds(double west, double south, double east, double north)
     Q_EMIT viewChanged();
 }
 
+void MapView::setView(double lon, double lat, double zoom)
+{
+    m_userMoved = true;
+    m_fly.stop();
+    m_lon = lon;
+    m_lat = lat;
+    m_zoom = zoom;
+    clampView();
+    update();
+    Q_EMIT viewChanged();
+}
+
 void MapView::resetView()
 {
     if (!m_engine || !m_engine->loaded())
         return;
+    m_userMoved = false;
     const QVariantMap v = m_engine->view();
     fitBounds(v.value(u"west"_s).toDouble(), v.value(u"south"_s).toDouble(), v.value(u"east"_s).toDouble(), v.value(u"north"_s).toDouble());
 }

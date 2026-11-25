@@ -22,6 +22,8 @@ mkdir -p "$TAOS_SURVIVAL_DIR/packs"
 if [ -n "${SURVIVAL_PACKS:-}" ]; then
   for f in "$SURVIVAL_PACKS"/*.zim "$SURVIVAL_PACKS"/*.pmtiles; do [ -e "$f" ] && ln -sf "$f" "$TAOS_SURVIVAL_DIR/packs/$(basename "$f")"; done
 fi
+# SURVIVAL_STATE=<file>: a state.json (markers, contacts, a position) copied in, so the map shots show them
+[ -n "${SURVIVAL_STATE:-}" ] && cp "$SURVIVAL_STATE" "$TAOS_SURVIVAL_DIR/state.json"
 trap 'rm -rf "$H"' EXIT
 APP=$(find "$B" -type f -name taos-survival -perm -u+x | head -n 1)
 [ -n "$APP" ] || { echo "taos-survival not found under $B" >&2; exit 1; }
@@ -37,7 +39,9 @@ for theme in $THEMES; do for variant in ${VARIANTS:-dark light}; do
     shot "library-$p" "$size" --section library
     shot "library-article-$p" "$size" --section library --article "${SURVIVAL_ARTICLE:-}"
     shot "library-packs-$p" "$size" --section library --tab packs
+    shot "library-search-$p" "$size" --section library --search "${SURVIVAL_QUERY:-malaria}"
     shot "map-$p" "$size" --section map
+    shot "map-search-$p" "$size" --section map --map-search "${SURVIVAL_PLACE:-glas}"
     shot "map-packs-$p" "$size" --section map --tab packs
     shot "taostak-$p" "$size" --section taostak
     shot "taostak-radios-$p" "$size" --section taostak --tab radios

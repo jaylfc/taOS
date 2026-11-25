@@ -15,13 +15,13 @@ QJsonObject evalItem(const QJsonObject &item, const KitContext &c)
     QString status = QStringLiteral("unknown"), detail;
     if (type == QLatin1String("zim")) {
         status = c.zimPacks >= min ? QStringLiteral("ok") : QStringLiteral("missing");
-        detail = c.zimPacks > 0 ? QStringLiteral("%1 library pack(s) installed").arg(c.zimPacks) : QStringLiteral("No library pack installed. Get one in Library.");
+        detail = c.zimPacks > 0 ? (c.zimPacks == 1 ? QStringLiteral("1 library pack installed") : QStringLiteral("%1 library packs installed").arg(c.zimPacks)) : QStringLiteral("No library pack installed. Get one in Library.");
     } else if (type == QLatin1String("map")) {
         status = c.mapPacks >= min ? QStringLiteral("ok") : QStringLiteral("missing");
-        detail = c.mapPacks > 0 ? QStringLiteral("%1 map pack(s) installed").arg(c.mapPacks) : QStringLiteral("No map pack installed. Get one in Map.");
+        detail = c.mapPacks > 0 ? (c.mapPacks == 1 ? QStringLiteral("1 map pack installed") : QStringLiteral("%1 map packs installed").arg(c.mapPacks)) : QStringLiteral("No map pack installed. Get one in Map.");
     } else if (type == QLatin1String("radio")) {
-        if (c.radiosConfirmed >= min) { status = QStringLiteral("ok"); detail = QStringLiteral("%1 radio(s) confirmed").arg(c.radiosConfirmed); }
-        else if (c.radiosPossible >= min) { status = QStringLiteral("unknown"); detail = QStringLiteral("%1 USB serial device(s) found that could be a radio. Check them in taOStak.").arg(c.radiosPossible); }
+        if (c.radiosConfirmed >= min) { status = QStringLiteral("ok"); detail = c.radiosConfirmed == 1 ? QStringLiteral("1 radio confirmed") : QStringLiteral("%1 radios confirmed").arg(c.radiosConfirmed); }
+        else if (c.radiosPossible >= min) { status = QStringLiteral("unknown"); detail = c.radiosPossible == 1 ? QStringLiteral("1 USB serial device found that could be a radio. Check it in taOStak.") : QStringLiteral("%1 USB serial devices found that could be a radio. Check them in taOStak.").arg(c.radiosPossible); }
         else { status = QStringLiteral("missing"); detail = QStringLiteral("No radio connected"); }
     } else if (type == QLatin1String("battery")) {
         if (c.batteries < 0) { detail = QStringLiteral("This machine did not say whether it has a battery"); }
