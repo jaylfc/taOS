@@ -10,6 +10,7 @@ build/
 static/desktop/
 mac/launcher/.build/
 *.db
+!tests/fixtures/taosmd_040_store/*.db
 *.sqlite3
 *.pem
 .superpowers/
