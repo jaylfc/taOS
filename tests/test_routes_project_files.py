@@ -149,3 +149,175 @@ async def test_stats_after_upload(client):
     body = resp.json()
     assert body["total_files"] == 1
     assert body["total_size"] == 100
+
+
+# -- tsk-5qy5le: form-field path, filename override, stored_as echo --
+
+
+@pytest.mark.asyncio
+async def test_upload_form_field_path_is_honoured(client):
+    """A multipart form field ``path`` places the file in that directory."""
+    content = b"form path"
+    resp = await client.post(
+        "/api/projects/formpath/files/upload",
+        data={"path": "docs"},
+        files={"file": ("note.md", io.BytesIO(content), "text/markdown")},
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["path"] == "docs/note.md"
+    back = await client.get("/api/projects/formpath/files/docs/note.md")
+    assert back.status_code == 200
+    assert back.content == content
+
+
+@pytest.mark.asyncio
+async def test_upload_query_path_still_works(client):
+    """Existing query-string callers keep their directory semantics."""
+    resp = await client.post(
+        "/api/projects/querypath/files/upload?path=sub/dir",
+        files={"file": ("q.txt", io.BytesIO(b"q"), "text/plain")},
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["path"] == "sub/dir/q.txt"
+    assert body["stored_as"] == "sub/dir/q.txt"
+    back = await client.get("/api/projects/querypath/files/sub/dir/q.txt")
+    assert back.content == b"q"
+
+
+@pytest.mark.asyncio
+async def test_upload_query_and_form_path_agree_is_ok(client):
+    resp = await client.post(
+        "/api/projects/agreepath/files/upload?path=docs",
+        data={"path": "docs"},
+        files={"file": ("a.txt", io.BytesIO(b"a"), "text/plain")},
+    )
+    assert resp.status_code == 200
+    assert resp.json()["stored_as"] == "docs/a.txt"
+
+
+@pytest.mark.asyncio
+async def test_upload_query_and_form_path_conflict_400(client):
+    resp = await client.post(
+        "/api/projects/conflictpath/files/upload?path=one",
+        data={"path": "two"},
+        files={"file": ("c.txt", io.BytesIO(b"c"), "text/plain")},
+    )
+    assert resp.status_code == 400
+    listing = await client.get("/api/projects/conflictpath/files")
+    assert listing.json() == []
+
+
+@pytest.mark.asyncio
+async def test_upload_filename_override(client):
+    """``filename`` form field overrides the stored name."""
+    content = b"free builders"
+    resp = await client.post(
+        "/api/projects/fnoverride/files/upload",
+        data={"path": "docs", "filename": "FREE-BUILDERS.md"},
+        files={"file": ("tmpXYZ123.tmp", io.BytesIO(content), "text/markdown")},
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["name"] == "FREE-BUILDERS.md"
+    assert body["stored_as"] == "docs/FREE-BUILDERS.md"
+    back = await client.get(f"/api/projects/fnoverride/files/{body['stored_as']}")
+    assert back.status_code == 200
+    assert back.content == content
+    listing = await client.get("/api/projects/fnoverride/files?path=docs")
+    assert [e["name"] for e in listing.json()] == ["FREE-BUILDERS.md"]
+
+
+@pytest.mark.asyncio
+async def test_upload_stored_as_matches_real_path_default_name(client):
+    content = b"plain"
+    resp = await client.post(
+        "/api/projects/storedas/files/upload",
+        files={"file": ("plain.txt", io.BytesIO(content), "text/plain")},
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["status"] == "uploaded"
+    assert body["stored_as"] == "plain.txt"
+    back = await client.get(f"/api/projects/storedas/files/{body['stored_as']}")
+    assert back.content == content
+
+
+@pytest.mark.parametrize(
+    "bad_name",
+    ["../escape.md", "../../etc/passwd", "sub/inner.md", "..\\win.md", "..", ".", "/abs.md"],
+)
+@pytest.mark.asyncio
+async def test_upload_filename_traversal_rejected(client, bad_name):
+    """A ``filename`` carrying any path component is refused, never stripped."""
+    resp = await client.post(
+        "/api/projects/fntraversal/files/upload",
+        data={"filename": bad_name},
+        files={"file": ("ok.txt", io.BytesIO(b"x"), "text/plain")},
+    )
+    assert resp.status_code == 400
+    listing = await client.get("/api/projects/fntraversal/files")
+    assert listing.json() == []
+
+
+class TestProjectRootDeleteRefused:
+    """A DELETE whose path resolves to the project files root itself must never
+    move the whole folder into the trash — it must return 400 and leave the
+    root and its contents intact."""
+
+    @pytest.mark.asyncio
+    async def _seed(self, client, slug):
+        content = b"keep me"
+        await client.post(
+            f"/api/projects/{slug}/files/upload",
+            files={"file": ("keep.txt", io.BytesIO(content), "text/plain")},
+        )
+        await client.post(f"/api/projects/{slug}/mkdir", json={"path": "subdir"})
+        await client.post(
+            f"/api/projects/{slug}/files/upload?path=subdir",
+            files={"file": ("inner.txt", io.BytesIO(content), "text/plain")},
+        )
+        listing = (await client.get(f"/api/projects/{slug}/files")).json()
+        names = {e["name"] for e in listing}
+        assert names == {"keep.txt", "subdir"}
+
+    @pytest.mark.parametrize(
+        "bad_path",
+        ["", ".", "%2e", "sub%2F..", "sub/.."],
+    )
+    @pytest.mark.asyncio
+    async def test_delete_root_is_refused(self, client, bad_path):
+        """Every spelling that normalises to the files root is refused.
+
+        ``""``, ``%2e`` and ``sub%2F..`` reach the DELETE handler and are a
+        400; ``.`` and ``sub/..`` are collapsed by the HTTP client to the bare
+        root path, which the route layer rejects as 405 — the root is never
+        trashed either way.
+        """
+        await self._seed(client, "delroot")
+        resp = await client.delete(f"/api/projects/delroot/files/{bad_path}")
+        assert resp.status_code in (400, 405), resp.text
+
+        listing = (await client.get("/api/projects/delroot/files")).json()
+        names = {e["name"] for e in listing}
+        assert names == {"keep.txt", "subdir"}
+        assert (
+            await client.get("/api/projects/delroot/files/keep.txt")
+        ).status_code == 200
+        assert (
+            await client.get("/api/projects/delroot/files/subdir/inner.txt")
+        ).status_code == 200
+
+    @pytest.mark.asyncio
+    async def test_valid_child_delete_still_works(self, client):
+        """A normal child delete must still succeed after the fix."""
+        content = b"bye"
+        await client.post(
+            "/api/projects/delok/files/upload",
+            files={"file": ("gonna_delete.txt", io.BytesIO(content), "text/plain")},
+        )
+        resp = await client.delete("/api/projects/delok/files/gonna_delete.txt")
+        assert resp.status_code == 200
+        assert resp.json()["status"] == "deleted"
+        assert (await client.get("/api/projects/delok/files")).json() == []
