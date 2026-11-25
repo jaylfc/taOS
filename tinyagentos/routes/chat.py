@@ -30,6 +30,21 @@ def _bound_agent(request: Request) -> str | None:
     return getattr(request.state, "agent_name", None)
 
 
+def _turn_owner(request: Request, user) -> str | None:
+    """The authenticated principal behind a request, never the body.
+
+    A bound agent token or registry agent identity is that agent; every other
+    credential (browser session, device bearer, local token) is the user it
+    resolves to.  ``author_id`` in the request body is not consulted, so a
+    caller cannot claim another principal's turns.
+    """
+    agent = _bound_agent(request) or getattr(request.state, "agent_canonical_id", None)
+    if agent:
+        return str(agent)
+    uid = getattr(user, "user_id", None)
+    return str(uid) if uid else None
+
+
 _SLASH_GROUP_GUARD_ERROR = (
     "slash commands in group channels must address an agent: "
     "use @<agent> /<cmd> or @all /<cmd>"
@@ -451,7 +466,7 @@ async def post_message(request: Request, user: CurrentUser = Depends(current_use
     # archive record below both carry it.
     _http_turn = await stamp_turn(
         request.app.state.session_turns, channel_id,
-        owner=body["author_id"],
+        owner=_turn_owner(request, user),
         seed=lambda: msg_store.count_messages(channel_id),
     )
     message = await msg_store.send_message(
@@ -488,6 +503,7 @@ async def post_message(request: Request, user: CurrentUser = Depends(current_use
                     "timestamp": message.get("created_at"),
                 },
                 setting_key="capture_conversations",
+                user_id=str(user.user_id),
                 session_fields=_http_turn,
             ))
 

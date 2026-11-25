@@ -5,24 +5,35 @@ import logging
 
 from fastapi import APIRouter, Request
 
+from tinyagentos.session_turns import stamp_turn
+
 router = APIRouter()
 logger = logging.getLogger(__name__)
 
 
-async def _capture_search_query(user_memory, query: str, user_id: str = "user") -> None:
-    """Fire-and-forget search capture. Never raises."""
+async def _capture_search_query(
+    user_memory, query: str, user_id: str, session_turns=None,
+) -> None:
+    """Fire-and-forget search capture. Never raises.
+
+    Searches are one session per user (``search:<user_id>``); each capture is a
+    turn in it, owned by that user.
+    """
     if not user_memory or not query:
         return
     try:
         settings = await user_memory.get_settings(user_id)
         if not settings.get("capture_searches"):
             return
+        fields = await stamp_turn(
+            session_turns, f"search:{user_id}", owner=user_id,
+        )
         await user_memory.save_chunk(
             user_id,
             content=query,
             title=f"Search: {query[:50]}",
             collection="searches",
-            metadata={"query": query, "source": "global_search"},
+            metadata={"query": query, "source": "global_search", **fields},
         )
     except Exception as e:  # pragma: no cover
         logger.debug(f"search capture failed: {e}")
@@ -37,7 +48,14 @@ async def global_search(request: Request, q: str = "", limit: int = 5):
     # Capture search into user memory (async, non-blocking)
     user_memory = getattr(request.app.state, "user_memory", None)
     if user_memory:
-        asyncio.create_task(_capture_search_query(user_memory, q))
+        uid = getattr(request.state, "user_id", None)
+        if uid:
+            asyncio.create_task(_capture_search_query(
+                user_memory, q, str(uid),
+                session_turns=getattr(request.app.state, "session_turns", None),
+            ))
+        else:
+            logger.warning("search capture skipped: no authenticated user")
 
     query = q.lower()
     results = []

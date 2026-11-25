@@ -16,8 +16,8 @@ import pytest
 import yaml
 from fastapi.testclient import TestClient
 from httpx import ASGITransport, AsyncClient
-
 from taos_test_csrf import arm_test_client
+
 from tinyagentos.app import create_app
 
 UNKNOWN = "unknown"
@@ -52,6 +52,10 @@ async def _post(app, channel_id, content="hi", author="user-1", author_type="use
     return r.json()
 
 
+def _admin_id(app):
+    return app.state.auth.find_user("admin")["id"]
+
+
 def _archived(app):
     return [(c.args[1] if len(c.args) > 1 else c.kwargs["data"])
             for c in app.state.archive.record.call_args_list]
@@ -75,7 +79,9 @@ async def test_http_archive_carries_session_fields(archive_app):
     (data,) = _archived(app)
     assert data["session_id"] == ch
     assert data["turn_index"] == 0
-    assert data["turn_owner"] == "alice"
+    # bound to the authenticated principal (the local token's owner), not the body
+    assert data["turn_owner"] == _admin_id(app)
+    assert data["turn_owner"] != "alice"
     assert data["session_date"] == _day(msg["created_at"])
 
 
@@ -83,7 +89,10 @@ async def test_http_archive_carries_session_fields(archive_app):
 async def test_http_turn_index_increments_per_session(archive_app):
     app = archive_app
     a, b = await _channel(app, "a"), await _channel(app, "b")
-    await _post(app, a); await _post(app, a); await _post(app, b); await _post(app, a)
+    await _post(app, a)
+    await _post(app, a)
+    await _post(app, b)
+    await _post(app, a)
     got = [(d["session_id"], d["turn_index"]) for d in _archived(app)]
     assert got == [(a, 0), (a, 1), (b, 0), (a, 2)]
 
@@ -107,14 +116,16 @@ async def test_user_memory_capture_shares_the_archive_turn(archive_app):
     ch = await _channel(app)
     await _post(app, ch, "one")
     await _post(app, ch, "two")
-    for _ in range(20):
-        await asyncio.sleep(0)
+    for _ in range(200):
+        if um.save_chunk.call_count == 2:
+            break
+        await asyncio.sleep(0.01)
     metas = [c.kwargs["metadata"] for c in um.save_chunk.call_args_list]
     assert sorted(m["turn_index"] for m in metas) == [0, 1]
     arch = {d["turn_index"] for d in _archived(app)}
     assert arch == {0, 1}
     for m in metas:
-        assert m["session_id"] == ch and m["turn_owner"] == "user-1"
+        assert m["session_id"] == ch and m["turn_owner"] == _admin_id(app)
         assert len(m["session_date"]) == 10
 
 
@@ -122,7 +133,8 @@ async def test_user_memory_capture_shares_the_archive_turn(archive_app):
 async def test_turn_index_survives_restart(archive_app):
     app = archive_app
     ch = await _channel(app)
-    await _post(app, ch); await _post(app, ch)
+    await _post(app, ch)
+    await _post(app, ch)
     store = app.state.session_turns
     await store.close()
     await store.init()  # restart: new connection on the same file
@@ -226,12 +238,13 @@ def test_lifespan_wires_the_one_counter_into_every_writer(tmp_path):
 
 @pytest.mark.asyncio
 async def test_channel_hub_inbound_and_outbound_carry_fields(tmp_path, monkeypatch):
+    import tinyagentos.channel_hub.router as rmod
     from tinyagentos.channel_hub.message import IncomingMessage
     from tinyagentos.channel_hub.router import MessageRouter
     from tinyagentos.session_turns import SessionTurnStore
-    import tinyagentos.channel_hub.router as rmod
 
-    store = SessionTurnStore(tmp_path / "t.db"); await store.init()
+    store = SessionTurnStore(tmp_path / "t.db")
+    await store.init()
     archive = AsyncMock()
     r = MessageRouter()
     r.register_adapter("atlas", 9100)
@@ -276,7 +289,8 @@ async def _bridge(tmp_path, with_counter=True):
     class _TR:
         async def get(self, slug): return _TS()
 
-    store = SessionTurnStore(tmp_path / "b.db"); await store.init()
+    store = SessionTurnStore(tmp_path / "b.db")
+    await store.init()
     archive = AsyncMock()
     reg = BridgeSessionRegistry(trace_registry=_TR(), archive=archive,
                                 session_turns=store if with_counter else None)
@@ -350,7 +364,8 @@ async def test_workspace_upload_capture_carries_session_fields(client):
         async def get_settings(self, uid): return {"capture_files": True}
 
         async def save_chunk(self, uid, content, title="", collection="", metadata=None):
-            saved.append(metadata); return "h"
+            saved.append(metadata)
+            return "h"
 
     app.state.user_memory = _UM()
     uid = getattr(app.state.auth.find_user("admin"), "get", lambda k: None)("id")
@@ -358,8 +373,10 @@ async def test_workspace_upload_capture_carries_session_fields(client):
         r = await client.post("/api/workspace/files/upload",
                               files={"file": (name, b"data")})
         assert r.status_code == 200, r.text
-    for _ in range(20):
-        await asyncio.sleep(0)
+    for _ in range(200):
+        if len(saved) == 2:
+            break
+        await asyncio.sleep(0.01)
     assert len(saved) == 2
     assert sorted(m["turn_index"] for m in saved) == [0, 1]
     for m in saved:
@@ -373,11 +390,117 @@ async def test_workspace_upload_capture_carries_session_fields(client):
 @pytest.mark.asyncio
 async def test_counter_atomic_and_persisted(tmp_path):
     from tinyagentos.session_turns import SessionTurnStore
-    s = SessionTurnStore(tmp_path / "c.db"); await s.init()
+    s = SessionTurnStore(tmp_path / "c.db")
+    await s.init()
     got = await asyncio.gather(*[s.next_turn("s") for _ in range(50)])
     assert sorted(got) == list(range(50))
     await s.close()
-    s2 = SessionTurnStore(tmp_path / "c.db"); await s2.init()
+    s2 = SessionTurnStore(tmp_path / "c.db")
+    await s2.init()
     assert await s2.next_turn("s") == 50
     assert await s2.current_turn("never") is None
     await s2.close()
+
+
+# ------------------------------------------------- owner binding, partitions
+
+@pytest.mark.asyncio
+async def test_body_author_cannot_spoof_turn_owner(archive_app):
+    app = archive_app
+    ch = await _channel(app)
+    await _post(app, ch, "x", author="mallory")
+    await _post(app, ch, "y", author="victim-agent", author_type="agent")
+    owners = {d["turn_owner"] for d in _archived(app)}
+    assert owners == {_admin_id(app)}
+
+
+def _add_user(app, username):
+    users = app.state.auth._read_users()
+    rec = {"id": f"id-{username}", "username": username, "full_name": username,
+           "email": "", "password_hash": "x", "created_at": 0, "is_admin": False,
+           "capabilities": []}
+    users["users"].append(rec)
+    app.state.auth._write_users(users)
+    return rec["id"]
+
+
+@pytest.mark.asyncio
+async def test_two_people_do_not_pool_http_chat_captures(archive_app):
+    from taos_test_csrf import csrf_event_hooks
+    app = archive_app
+    um = MagicMock()
+    um.get_settings = AsyncMock(return_value={"capture_conversations": True})
+    um.save_chunk = AsyncMock(return_value="h")
+    app.state.user_memory = um
+    admin = _admin_id(app)
+    bob = _add_user(app, "bob")
+    ch = await app.state.chat_channels.create_channel(
+        name="duo", type="group", created_by="user", members=[admin, bob])
+    ch = ch["id"]
+    for uid in (admin, bob):
+        token = app.state.auth.create_session(user_id=uid, long_lived=True)
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test",
+                               cookies={"taos_session": token},
+                               event_hooks=csrf_event_hooks()) as c:
+            r = await c.post("/api/chat/messages", json={
+                "channel_id": ch, "author_id": uid, "author_type": "user",
+                "content": f"from {uid}"})
+            assert r.status_code == 200, r.text
+    for _ in range(200):
+        if um.save_chunk.call_count == 2:
+            break
+        await asyncio.sleep(0.01)
+    calls = {c.args[0]: c.kwargs["metadata"] for c in um.save_chunk.call_args_list}
+    assert set(calls) == {admin, bob}
+    for uid, meta in calls.items():
+        assert meta["turn_owner"] == uid and meta["session_id"] == ch
+
+
+@pytest.mark.asyncio
+async def test_search_capture_carries_session_fields_under_the_user(archive_app, client):
+    app = archive_app
+    saved = []
+
+    class _UM:
+        async def get_settings(self, uid):
+            return {"capture_searches": True}
+
+        async def save_chunk(self, uid, content, title="", collection="", metadata=None):
+            saved.append((uid, metadata))
+            return "h"
+
+    app.state.user_memory = _UM()
+    for q in ("alpha", "beta"):
+        await client.get("/api/search", params={"q": q})
+    for _ in range(40):
+        await asyncio.sleep(0.01)
+        if len(saved) == 2:
+            break
+    admin = _admin_id(app)
+    assert len(saved) == 2
+    assert {u for u, _ in saved} == {admin}
+    assert sorted(m["turn_index"] for _, m in saved) == [0, 1]
+    for _, m in saved:
+        assert m["session_id"] == f"search:{admin}" and m["turn_owner"] == admin
+
+
+@pytest.mark.asyncio
+async def test_manual_save_session_fields(archive_app, client):
+    app = archive_app
+    saved = []
+
+    class _UM:
+        async def save_chunk(self, uid, content, title, collection, metadata):
+            saved.append(metadata)
+            return "h"
+
+    app.state.user_memory = _UM()
+    ch = await _channel(app)
+    await _post(app, ch)  # turn 0 exists in the session
+    spoof = {"turn_owner": "mallory", "turn_index": 99}
+    await client.post("/api/user-memory/save", json={"content": "c", "metadata": spoof})
+    await client.post("/api/user-memory/save", json={"content": "c2", "session_id": ch})
+    none_, named = saved
+    assert none_["session_id"] == UNKNOWN and none_["turn_index"] == UNKNOWN
+    assert none_["turn_owner"] == _admin_id(app)  # not the metadata spoof
+    assert named["session_id"] == ch and named["turn_index"] == 0

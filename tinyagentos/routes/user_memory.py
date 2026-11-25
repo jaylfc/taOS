@@ -7,6 +7,7 @@ from fastapi import APIRouter, Depends, Request
 from fastapi.responses import JSONResponse
 
 from tinyagentos.auth_context import require_admin
+from tinyagentos.session_turns import stamp_event
 
 logger = logging.getLogger(__name__)
 
@@ -138,6 +139,20 @@ async def save(request: Request):
     metadata = body.get("metadata", {})
     if not content:
         return JSONResponse({"error": "content required"}, status_code=400)
+
+    # Session fields: a manual save belongs to a session only when the caller
+    # names one (then it sits in that session's latest turn); otherwise the
+    # fields are written as explicit unknown.  Server-owned, so they win over
+    # anything in the caller's metadata.
+    if not isinstance(metadata, dict):
+        metadata = {}
+    named = body.get("session_id")
+    owner = getattr(request.state, "user_id", None)
+    metadata = {**metadata, **await stamp_event(
+        getattr(request.app.state, "session_turns", None),
+        named if isinstance(named, str) and named else None,
+        owner=str(owner) if owner else None,
+    )}
 
     # Always write to SQLite for browse/stats/delete compatibility.
     h = await _store(request).save_chunk(USER_ID, content, title, collection, metadata)
