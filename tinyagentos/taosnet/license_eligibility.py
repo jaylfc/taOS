@@ -105,6 +105,8 @@ _SPDX_CLASSIFICATION: dict[str, bool] = {
     "server side public license v1": False,
     "unlicensed": False,
     "unlicense": False,
+    "cc-by-nc-4.0": False,
+    "cc-by-nc-sa-4.0": False,
 }
 
 
