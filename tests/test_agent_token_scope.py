@@ -350,3 +350,32 @@ class TestOwnerlessAgentMigration:
         async with _bearer(app, token) as c:
             after = await c.post("/api/chat/messages", json=body)
         assert after.status_code == 200, after.text
+
+
+@pytest.mark.asyncio
+class TestChatReadsAndSkillAssignment:
+    async def test_member_session_cannot_read_a_channel_it_is_not_in(self, app, world):
+        ch = app.state.chat_channels
+        if ch._db is None:
+            await ch.init()
+        if app.state.chat_messages._db is None:
+            await app.state.chat_messages.init()
+        other = await ch.create_channel(name="adm-dm", type="dm", created_by="user",
+                                        members=["adm-bot", world["admin"]["id"]])
+        token = app.state.auth.create_session(user_id=world["member"]["id"], long_lived=True)
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test",
+                               cookies={"taos_session": token}) as c:
+            for path in (f"/api/chat/channels/{other['id']}",
+                         f"/api/chat/channels/{other['id']}/messages",
+                         f"/api/chat/channels/{other['id']}/threads",
+                         f"/api/chat/channels/{other['id']}/pins"):
+                assert (await c.get(path)).status_code == 403, path
+
+    async def test_unassigned_skill_is_refused_for_agent_token(self, app, world):
+        app.state.skills = MagicMock()
+        app.state.skills.get_skill = AsyncMock(return_value={"id": "memory_search"})
+        app.state.skills.get_agent_skills = AsyncMock(return_value=[])
+        async with _bearer(app, world["tokens"]["mem-bot"]) as c:
+            resp = await c.post("/api/skill-exec/memory_search/call", json={"args": {}})
+        assert resp.status_code == 403
+        assert "not assigned" in resp.text
