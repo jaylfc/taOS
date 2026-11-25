@@ -29,6 +29,11 @@ _hash_upgrade_lock = threading.Lock()
 
 logger = logging.getLogger(__name__)
 
+#: A session signed in at the device's own screen ends after this many idle
+#: seconds (30 minutes), whatever else happens: the fallback when a screen-off
+#: signal is lost.
+CONSOLE_IDLE_S = 1800
+
 
 def _serialized(method):
     """Hold the instance's account-store lock for the whole method.
@@ -371,6 +376,9 @@ class _PinAttemptLimiter:
     _FREE_FAILURES = 5
     _BASE_DELAY = 30
     _MAX_DELAY = 3600
+    #: One recorded failure is forgotten per this many quiet seconds, so an
+    #: owner is never locked out for good by old failures (or a bad clock).
+    _DECAY_S = 6 * 3600
 
     #: Upper bound on tracked keys. ``routes.auth`` falls back to the key
     #: ``f"unknown:{username}"`` when no user resolves, so a caller cycling
@@ -437,18 +445,31 @@ class _PinAttemptLimiter:
         except OSError:
             logger.error("could not persist PIN throttle state to %s", self._path, exc_info=True)
 
+    @classmethod
+    def _decayed(cls, failures: int, last_failure: float, now: float) -> int:
+        quiet = max(0.0, now - last_failure)
+        return max(0, failures - int(quiet // cls._DECAY_S))
+
     def retry_after(self, key: str, now: float | None = None) -> int:
-        """Seconds the caller must wait before another attempt is accepted."""
+        """Seconds the caller must wait before another attempt is accepted.
+
+        Never more than the delay of the failure count itself: a stored
+        timestamp in the future (a clock that was wrong at the time) cannot
+        stretch the wait.
+        """
         now = time.time() if now is None else now
         with self._lock:
             failures, last_failure = self._state.get(key, (0, 0.0))
-        remaining = self._delay_for(failures) - (now - last_failure)
+        failures = self._decayed(failures, last_failure, now)
+        delay = self._delay_for(failures)
+        remaining = min(delay, delay - (now - last_failure))
         return int(remaining) + 1 if remaining > 0 else 0
 
     def record_failure(self, key: str, now: float | None = None) -> None:
         now = time.time() if now is None else now
         with self._lock:
-            failures, _ = self._state.get(key, (0, 0.0))
+            failures, last = self._state.get(key, (0, 0.0))
+            failures = self._decayed(failures, last, now)
             self._state[key] = (failures + 1, now)
             self._state.move_to_end(key)
             # Bound memory, but evict the LEAST-PENALISED key -- fewest
@@ -1278,6 +1299,7 @@ class AuthManager:
         }
         if console:
             entry["console"] = True
+            entry["last_seen"] = time.time()
         if user_agent:
             entry["user_agent_hash"] = hashlib.sha256(user_agent.encode()).hexdigest()
         self._sessions.set_capped(token, entry, self.max_sessions_per_user)
@@ -1312,6 +1334,15 @@ class AuthManager:
             except (KeyError, Exception):
                 pass
             return None
+        if entry.get("console"):
+            now = time.time()
+            last = float(entry.get("last_seen", now))
+            if now - last > CONSOLE_IDLE_S:
+                self._sessions.pop(token, None)
+                return None
+            if now - last > 60:
+                entry["last_seen"] = now
+                self._sessions[token] = entry
         # Client-binding check: only when the session was created with a
         # user_agent_hash.  When the header is omitted the caller cannot prove
         # it is the same browser that created the session, so a stored hash

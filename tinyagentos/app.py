@@ -639,6 +639,12 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
         app.state.memory_store_last_convert = None
         # Arm the startup guard: block non-exempt requests until init completes.
         app.state._startup_complete = False
+        # The console starts locked, so no session signed in at the device's own
+        # screen before this start survives it.
+        try:
+            app.state.auth.revoke_console_sessions()
+        except Exception:  # noqa: BLE001
+            logger.exception("could not end console sessions at startup")
         await agent_registry_store.init()
         await auth_requests_store.init()
         await password_reset_store.init()

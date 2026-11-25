@@ -50,19 +50,52 @@ def _candidate_paths(data_dir: Path | None) -> list[Path]:
     return paths
 
 
+def current_boot_id() -> str | None:
+    """The kernel's id for this boot, or None where there is none."""
+    try:
+        return Path("/proc/sys/kernel/random/boot_id").read_text().strip() or None
+    except OSError:
+        return None
+
+
+def _split(path: Path) -> tuple[str, str | None] | None:
+    """(secret, boot id the file was written under) or None when unreadable."""
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return None
+    lines = [ln.strip() for ln in lines if ln.strip()]
+    if not lines:
+        return None
+    return lines[0], (lines[1] if len(lines) > 1 else None)
+
+
 def _fresh(path: Path) -> bool:
-    """True when the file exists, is not group/world writable and is from this boot."""
+    """Is this the secret for THIS boot, readable only by who it should be?
+
+    The boot id decides freshness, not the clock: a phone with no RTC jumps its
+    clock when NTP answers, which must not rotate the secret mid-boot. A file
+    with no recorded boot id falls back to its mtime against the boot time.
+    """
     try:
         st = path.stat()
     except OSError:
         return False
-    if st.st_mode & 0o022:
+    if st.st_uid != os.geteuid():
         return False
+    group_ok = bool(os.environ.get(ENV_GROUP, "").strip())
+    if st.st_mode & (0o037 if group_ok else 0o077):
+        return False
+    parts = _split(path)
+    if parts is None:
+        return False
+    boot = current_boot_id()
+    if parts[1] is not None and boot is not None:
+        return parts[1] == boot
     try:
-        booted = psutil.boot_time()
+        return st.st_mtime >= psutil.boot_time()
     except Exception:  # noqa: BLE001 - unknown boot time: treat as stale
         return False
-    return st.st_mtime >= booted
 
 
 def _read(path: Path) -> str | None:
@@ -72,13 +105,13 @@ def _read(path: Path) -> str | None:
         hit = _cache.get(str(path))
         if hit is not None and hit[0] == key:
             return hit[1]
-        value = path.read_text(encoding="utf-8").strip()
     except OSError:
         return None
-    if not value:
+    parts = _split(path)
+    if parts is None:
         return None
-    _cache[str(path)] = (key, value)
-    return value
+    _cache[str(path)] = (key, parts[0])
+    return parts[0]
 
 
 def _write(path: Path) -> str | None:
@@ -86,7 +119,10 @@ def _write(path: Path) -> str | None:
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
         group = os.environ.get(ENV_GROUP, "").strip()
-        atomic_write_text(path, value + "\n", mode=0o640 if group else 0o600)
+        atomic_write_text(
+            path, value + "\n" + (current_boot_id() or "") + "\n",
+            mode=0o640 if group else 0o600,
+        )
         if group:
             import grp
 
@@ -121,23 +157,79 @@ def get_secret(data_dir: Path | None = None) -> str | None:
 #: secret nor anything reusable shows up in the process list.
 TICKET_PARAM = "console_ticket"
 TICKET_TTL_S = 60
-_tickets: dict[str, float] = {}
+_tickets: dict[str, tuple[float, int | None]] = {}
 
 
-def mint_ticket(now: float | None = None) -> str:
+def peer_uid(host: str | None, port: int | None) -> int | None:
+    """The uid that owns the client end of a loopback TCP connection.
+
+    Read from /proc/net/tcp{,6}: the row whose LOCAL address is the peer's
+    address and port is the client's socket. None where that cannot be read.
+    """
+    if not host or not port:
+        return None
+    import ipaddress
+
+    try:
+        addr = ipaddress.ip_address(host.split("%", 1)[0])
+    except ValueError:
+        return None
+    mapped = getattr(addr, "ipv4_mapped", None)
+    wanted = {str(addr)}
+    if mapped is not None:
+        wanted.add(str(mapped))
+    for table, v6 in (("/proc/net/tcp", False), ("/proc/net/tcp6", True)):
+        try:
+            rows = Path(table).read_text().splitlines()[1:]
+        except OSError:
+            continue
+        for row in rows:
+            f = row.split()
+            if len(f) < 8:
+                continue
+            ip_hex, _, port_hex = f[1].partition(":")
+            if int(port_hex, 16) != int(port):
+                continue
+            try:
+                raw = bytes.fromhex(ip_hex)
+                if v6:
+                    raw = b"".join(raw[i:i + 4][::-1] for i in range(0, 16, 4))
+                    ip = ipaddress.ip_address(raw)
+                    ip = getattr(ip, "ipv4_mapped", None) or ip
+                else:
+                    ip = ipaddress.ip_address(raw[::-1])
+            except ValueError:
+                continue
+            if str(ip) in wanted:
+                return int(f[7])
+    return None
+
+
+def mint_ticket(uid: int | None = None, now: float | None = None) -> str:
     now = time.time() if now is None else now
-    for t in [t for t, exp in _tickets.items() if exp <= now]:
+    for t in [t for t, (exp, _) in _tickets.items() if exp <= now]:
         del _tickets[t]
     ticket = secrets.token_urlsafe(24)
-    _tickets[ticket] = now + TICKET_TTL_S
+    _tickets[ticket] = (now + TICKET_TTL_S, uid)
     return ticket
 
 
-def redeem_ticket(ticket: str, now: float | None = None) -> bool:
-    """True once per valid, unexpired ticket."""
+def redeem_ticket(ticket: str, uid: int | None = None, now: float | None = None) -> bool:
+    """True once per valid, unexpired ticket, for the uid that minted it.
+
+    The ticket sits in the browser's argv, which other local users can read, so
+    it only works for the account that asked for it. A wrong-uid attempt does
+    not burn it. Where uids cannot be read (not Linux) neither end can be bound.
+    """
     now = time.time() if now is None else now
-    expiry = _tickets.pop(ticket or "", None)
-    return expiry is not None and expiry > now
+    hit = _tickets.get(ticket or "")
+    if hit is None or hit[0] <= now:
+        _tickets.pop(ticket or "", None)
+        return False
+    if hit[1] != uid:
+        return False
+    del _tickets[ticket]
+    return True
 
 
 def header_matches(secret: str | None, headers) -> bool:

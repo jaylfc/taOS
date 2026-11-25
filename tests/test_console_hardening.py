@@ -254,7 +254,7 @@ class TestConsoleSecret:
         assert r.status_code == 403
         assert "ticket" not in r.text
 
-    def test_secret_file_is_private_and_regenerated_each_boot(self, tmp_path, monkeypatch):
+    def test_secret_file_is_private_and_long(self, tmp_path, monkeypatch):
         from tinyagentos import console_secret
 
         path = tmp_path / "fresh" / "secret"
@@ -263,11 +263,6 @@ class TestConsoleSecret:
         assert first and len(first) >= 32
         assert (path.stat().st_mode & 0o777) == 0o600
         assert console_secret.get_secret() == first
-        # A file from before this boot is replaced.
-        old = time.time() - 10 * 365 * 86400
-        os.utime(path, (old, old))
-        second = console_secret.get_secret()
-        assert second and second != first
 
     def test_no_secret_means_not_console(self, monkeypatch, tmp_path):
         from tinyagentos import console_secret
@@ -368,3 +363,144 @@ class TestLockPageIsHonest:
         assert 'note.textContent = "Unlock to stop all agents"' not in src
         assert 'decDone.textContent = "Unlock to " + (approved' not in src
         assert 'note.textContent = "Unlock to " + label' not in src
+
+
+# --------------------------------------------------------------------------- #
+#  Review round: restart, WebSocket, screenshot, ticket uid, boot id,          #
+#  clock, idle expiry, kiosk without a ticket                                  #
+# --------------------------------------------------------------------------- #
+
+class TestRestartAndSockets:
+    @pytest.mark.asyncio
+    async def test_a_restart_ends_console_sessions(self, app, console, tmp_path):
+        token = await _pin_in(console)
+        # A controller restart: the flag is back to "locked" and the app starts.
+        async with app.router.lifespan_context(app):
+            pass
+        assert app.state.auth.validate_session(token, user_agent=UA) is None
+        async with _client(app, host="192.168.1.10", header=None) as other:
+            r = await other.get("/api/settings/lock", headers={"Cookie": f"taos_session={token}"})
+        assert r.status_code == 401
+
+    @pytest.mark.asyncio
+    async def test_a_websocket_refuses_a_locked_console_session(self, app, console):
+        from starlette.testclient import TestClient
+        from starlette.websockets import WebSocketDisconnect
+
+        token = await _pin_in(console)
+        await _screen_off(app)
+        with TestClient(app) as tc:
+            with pytest.raises(WebSocketDisconnect):
+                with tc.websocket_connect(
+                    "/ws/terminal", headers={"cookie": f"taos_session={token}", "user-agent": UA}
+                ) as ws:
+                    ws.receive_text()
+
+
+class TestScreenshotIsGated:
+    @pytest.mark.asyncio
+    async def test_no_session_no_screenshot(self, app, console, monkeypatch):
+        from tinyagentos.routes import auth as auth_routes
+
+        calls = []
+        monkeypatch.setattr(auth_routes, "_take_screenshot", lambda: calls.append(1) or {"ok": True})
+        r = await console.post("/auth/lock-power-action", json={"action": "screenshot"})
+        assert r.status_code == 401, r.text
+        assert calls == []
+
+    @pytest.mark.asyncio
+    async def test_swipe_session_alone_cannot_screenshot(self, app, console, monkeypatch):
+        from tinyagentos.routes import auth as auth_routes
+
+        calls = []
+        monkeypatch.setattr(auth_routes, "_take_screenshot", lambda: calls.append(1) or {"ok": True})
+        mgr = app.state.auth
+        data = mgr._read_users()
+        for u in data["users"]:
+            u["unlock_method"] = "swipe"
+        mgr._write_users(data)
+        assert (await console.post("/auth/swipe-unlock", json={})).status_code == 200
+        csrf = console.cookies.get("csrf_token")
+        hdr = {"X-CSRF-Token": csrf} if csrf else {}
+        r = await console.post("/auth/lock-power-action", json={"action": "screenshot"}, headers=hdr)
+        assert r.status_code in (401, 403), r.text
+        assert calls == []
+
+
+class TestTicketIsBoundToItsUid:
+    @pytest.mark.asyncio
+    async def test_another_uid_cannot_redeem(self, app, monkeypatch):
+        from tinyagentos import console_secret
+
+        uids = iter([1000, 1001, 1000])
+        monkeypatch.setattr(console_secret, "peer_uid", lambda host, port: next(uids), raising=False)
+        async with _client(app, header=None) as shell:
+            t = await shell.post("/auth/console-ticket", headers={"X-taOS-Console": SECRET})
+            ticket = t.json()["ticket"]
+            bad = await shell.get("/?console_ticket=" + ticket, follow_redirects=False)
+            assert "taos_console" not in bad.headers.get("set-cookie", "")
+            good = await shell.get("/?console_ticket=" + ticket, follow_redirects=False)
+            assert "taos_console=" in good.headers.get("set-cookie", "")
+
+
+class TestSecretFreshness:
+    def test_boot_id_decides_not_mtime(self, tmp_path, monkeypatch):
+        from tinyagentos import console_secret
+
+        path = tmp_path / "s"
+        monkeypatch.setenv("TAOS_CONSOLE_SECRET_FILE", str(path))
+        monkeypatch.setattr(console_secret, "current_boot_id", lambda: "boot-A", raising=False)
+        first = console_secret.get_secret()
+        old = time.time() - 10 * 365 * 86400
+        os.utime(path, (old, old))  # an NTP jump must not rotate it
+        assert console_secret.get_secret() == first
+        monkeypatch.setattr(console_secret, "current_boot_id", lambda: "boot-B", raising=False)
+        assert console_secret.get_secret() != first
+
+    def test_group_or_world_readable_file_is_replaced(self, tmp_path, monkeypatch):
+        from tinyagentos import console_secret
+
+        path = tmp_path / "s"
+        monkeypatch.setenv("TAOS_CONSOLE_SECRET_FILE", str(path))
+        monkeypatch.setattr(console_secret, "current_boot_id", lambda: "boot-A", raising=False)
+        first = console_secret.get_secret()
+        os.chmod(path, 0o644)
+        assert console_secret.get_secret() != first
+
+
+class TestLimiterClock:
+    def test_a_future_stamp_cannot_lock_for_years(self):
+        from tinyagentos.auth import _PinAttemptLimiter
+
+        lim = _PinAttemptLimiter()
+        lim._state["u"] = (6, time.time() + 5 * 365 * 86400)
+        assert lim.retry_after("u") <= 61
+
+    def test_failures_decay_while_quiet(self):
+        from tinyagentos.auth import _PinAttemptLimiter
+
+        lim = _PinAttemptLimiter()
+        lim._state["u"] = (20, 1000.0)
+        lim.record_failure("u", now=1000.0 + 60 * 3600)
+        assert lim._state["u"][0] < 20
+
+
+class TestIdleExpiry:
+    def test_console_sessions_expire_when_idle(self, app):
+        mgr = app.state.auth
+        uid = mgr.get_user_by_username("owner")["id"] if hasattr(mgr, "get_user_by_username") else ""
+        tok = mgr.create_session(user_id=uid, console=True)
+        other = mgr.create_session(user_id=uid)
+        assert mgr.validate_session(tok) is not None
+        mgr._sessions[tok] = {**mgr._sessions[tok], "last_seen": time.time() - 3 * 3600}
+        assert mgr.validate_session(tok) is None
+        mgr._sessions[other] = {**mgr._sessions[other], "last_seen": time.time() - 3 * 3600}
+        assert mgr.validate_session(other) is not None
+
+
+class TestKioskWithoutATicket:
+    @pytest.mark.asyncio
+    async def test_the_sign_in_page_says_it_is_not_the_console(self, app):
+        async with _client(app, host="192.168.1.10", header=None) as c:
+            r = await c.get("/auth/login?console_missing=1")
+        assert "not running as the device console" in r.text

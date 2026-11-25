@@ -5589,6 +5589,7 @@ _LOCK_SCREEN_SCRIPT = r"""
           btn.appendChild(glyph);
           btn.appendChild(text);
           btn.addEventListener("click", function () {
+            if (item[1] === "screenshot") return requirePasscodeForPower(item);
             if (!item[4]) return runPowerAction(item[1], item[0]);
             confirmPower(btn, item);
           });
@@ -5622,7 +5623,9 @@ _LOCK_SCREEN_SCRIPT = r"""
       window.__lsPendingPowerAction = { action: item[1], at: Date.now() };
       // What they are unlocking FOR, said truthfully: nothing carries this
       // choice across the sign-in, so the agents are NOT stopped by it.
-      var msg = "Signing in does not stop the agents. Stop them from inside taOS.";
+      var msg = item[1] === "screenshot"
+        ? "Signing in does not take the screenshot. Take it from inside taOS."
+        : "Signing in does not stop the agents. Stop them from inside taOS.";
       // A swipe is not a credential, and this verb changes state: the owner's
       // password is the only gate offered, whatever the unlock method is.
       if (UNLOCK === "swipe") { openPasswordSheet(msg); return; }
@@ -8895,7 +8898,9 @@ async def _json_object(
 
 
 @router.get("/login", response_class=HTMLResponse)
-async def login_page(request: Request, error: str = "", next: str = ""):
+async def login_page(
+    request: Request, error: str = "", next: str = "", console_missing: str = ""
+):
     """Server-rendered login page. Works without JavaScript — the SPA
     takes over once the user is signed in and lands on /desktop."""
     auth_mgr = request.app.state.auth
@@ -8907,6 +8912,11 @@ async def login_page(request: Request, error: str = "", next: str = ""):
         err_text = _LOCKOUT_MSG
     elif error:
         err_text = "Incorrect username or password."
+    elif console_missing:
+        err_text = (
+            "This screen is not running as the device console, so the PIN "
+            "keypad and device controls are off. Sign in with your password."
+        )
     else:
         err_text = ""
     # Only allow relative paths starting with / to prevent open redirect
@@ -13012,7 +13022,9 @@ async def lock_power_action(request: Request):
             )
         return JSONResponse({"ok": True, "action": action})
 
-    if action == "stop-agents":
+    if action in ("stop-agents", "screenshot"):
+        # The verbs that need a signed-in user. (Screenshot writes a file per
+        # call and captures whatever is on screen, so it is not a pre-auth verb.)
         # The one verb that needs a signed-in user. Power off and restart stay
         # pre-auth because the hardware key already does both from a locked
         # screen; nothing on a locked phone can drain every agent, so this must
@@ -13044,9 +13056,11 @@ async def lock_power_action(request: Request):
             if not ok:
                 _pin_limiter.record_failure(sole["id"])
                 return JSONResponse(
-                    {"error": "password required to stop all agents"}, status_code=403
+                    {"error": "password required for this action"}, status_code=403
                 )
             _pin_limiter.reset(sole["id"])
+        if action == "screenshot":
+            return JSONResponse(_take_screenshot())
         orchestrator = getattr(request.app.state, "orchestrator", None)
         if orchestrator is None:
             return JSONResponse({"error": "orchestrator unavailable"}, status_code=503)
@@ -13059,9 +13073,6 @@ async def lock_power_action(request: Request):
         except Exception as exc:
             return JSONResponse({"error": str(exc)}, status_code=500)
         return JSONResponse({"ok": True, "action": action, "report": report})
-
-    if action == "screenshot":
-        return JSONResponse(_take_screenshot())
 
     # Emergency call. There is no dialer on this handset and no telephony stack
     # behind it, so this says so rather than pretending: a menu entry that
@@ -13272,6 +13283,11 @@ def _same_origin_or_absent(request: Request) -> bool:
     return True
 
 
+def _peer(request: Request) -> tuple[str | None, int | None]:
+    client = getattr(request, "client", None)
+    return (client.host, client.port) if client else (None, None)
+
+
 @router.post("/console-ticket")
 async def console_ticket(request: Request):
     """Hand a one-time ticket to a caller that can read the console secret file.
@@ -13289,7 +13305,8 @@ async def console_ticket(request: Request):
     if not console_secret.header_matches(secret, request.headers):
         return JSONResponse({"error": "console only"}, status_code=403)
     return JSONResponse(
-        {"ticket": console_secret.mint_ticket()}, headers={"Cache-Control": "no-store"}
+        {"ticket": console_secret.mint_ticket(
+            console_secret.peer_uid(*_peer(request)))}, headers={"Cache-Control": "no-store"}
     )
 
 
@@ -13535,7 +13552,7 @@ async def auth_setup(request: Request):
         user_id = record["id"] if record else ""
         auth_mgr.update_last_login(user_id)
         await _ensure_native_agent_identity(request, user_id)
-        token = auth_mgr.create_session(user_id=user_id, long_lived=long_lived, user_agent=user_agent)
+        token = auth_mgr.create_session(user_id=user_id, long_lived=long_lived, user_agent=user_agent, console=_request_is_console(request))
         resp = JSONResponse({"ok": True, "user": user})
         if long_lived:
             resp.set_cookie(
@@ -13582,7 +13599,7 @@ async def auth_setup(request: Request):
     user_id = record["id"] if record else ""
     auth_mgr.update_last_login(user_id)
     await _ensure_native_agent_identity(request, user_id)
-    token = auth_mgr.create_session(user_id=user_id, long_lived=long_lived, user_agent=user_agent)
+    token = auth_mgr.create_session(user_id=user_id, long_lived=long_lived, user_agent=user_agent, console=_request_is_console(request))
     response = RedirectResponse("/desktop", status_code=303)
     if long_lived:
         response.set_cookie(
@@ -13656,7 +13673,7 @@ async def complete_invite(request: Request):
     auth_mgr.update_last_login(user_id)
     # Revoke any existing invite-phase sessions and create a fresh one
     auth_mgr.revoke_user_sessions(user_id)
-    token = auth_mgr.create_session(user_id=user_id, long_lived=long_lived, user_agent=user_agent)
+    token = auth_mgr.create_session(user_id=user_id, long_lived=long_lived, user_agent=user_agent, console=_request_is_console(request))
     resp = JSONResponse({"ok": True, "user": user})
     if long_lived:
         resp.set_cookie(

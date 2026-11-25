@@ -110,7 +110,7 @@ while [ "\$i" -lt 60 ]; do
     i=\$((i + 1))
     sleep 1
 done
-START_URL="\$("$CONSOLE_URL_TOOL" "$TAOS_URL" 2>/dev/null || echo "$TAOS_URL")"
+START_URL="\$("$CONSOLE_URL_TOOL" "$TAOS_URL" 2>/dev/null || echo "$TAOS_URL/auth/login?console_missing=1")"
 exec "$BROWSER" $BROWSER_ARGS --app="\$START_URL"
 SH
     chmod +x "$APP_SH"
@@ -130,6 +130,6 @@ while [ "$i" -lt 60 ]; do
     i=$((i + 1))
     sleep 1
 done
-START_URL="$("$CONSOLE_URL_TOOL" "$TAOS_URL" 2>/dev/null || echo "$TAOS_URL")"
+START_URL="$("$CONSOLE_URL_TOOL" "$TAOS_URL" 2>/dev/null || echo "$TAOS_URL/auth/login?console_missing=1")"
 # shellcheck disable=SC2086
 exec "$COMPOSITOR" -- "$BROWSER" $BROWSER_ARGS --app="$START_URL"

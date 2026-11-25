@@ -975,7 +975,9 @@ def _redeem_console_ticket(request: Request):
     ticket = request.query_params.get(console_secret.TICKET_PARAM, "")
     if not auth_routes._request_has_console_shape(request):
         return None
-    if not console_secret.redeem_ticket(ticket):
+    if not console_secret.redeem_ticket(
+        ticket, console_secret.peer_uid(*auth_routes._peer(request))
+    ):
         return None
     auth_mgr = getattr(request.app.state, "auth", None)
     secret = console_secret.get_secret(getattr(auth_mgr, "data_dir", None))
