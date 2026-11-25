@@ -1,0 +1,22 @@
+[package]
+name = "taos-firmware"
+version = "0.1.0"
+description = "Firmware library and guarded flasher for LoRa mesh boards (Meshtastic, MeshCore, RNode)"
+edition.workspace = true
+rust-version.workspace = true
+license-file.workspace = true
+repository.workspace = true
+publish = false
+[lints]
+workspace = true
+[lib]
+name = "taos_firmware"
+path = "src/lib.rs"
+[[bin]]
+name = "taos-firmware"
+path = "src/main.rs"
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+zip = { version = "2", default-features = false, features = ["deflate"] }
