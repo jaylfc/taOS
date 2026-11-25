@@ -330,10 +330,25 @@ class AgentChatRouter:
                 # own history + AGENTS.md, so we send the user message and stream
                 # the mapped replies straight into record_reply (same sink).
                 # _run_acp_turn serializes turns per agent (shared session).
+                # The session keeps its own history, so the only thing to add is what
+                # taOSmd recalls for this agent: ahead of the message, never instead of it.
+                memory_messages = await self._memory_messages(
+                    agent_name=agent_name,
+                    agent=agent,
+                    guest=guest,
+                    message=message,
+                    channel=channel,
+                    thread_id=thread_id,
+                    manual_text="",
+                    history=[],
+                )
+                prompt = "\n\n---\n\n".join(
+                    [m["content"] for m in memory_messages] + [message.get("content", "")]
+                )
                 task = asyncio.create_task(
                     self._run_acp_turn(
                         agent_name,
-                        message.get("content", ""),
+                        prompt,
                         message.get("id"),
                         bridge.record_reply,
                     )
@@ -342,7 +357,23 @@ class AgentChatRouter:
                 task.add_done_callback(self._acp_tasks.discard)
             else:
                 manual_text = build_manual(channel, agent_name, leads)
-                agent_context = [{"role": "system", "content": manual_text}, *context]
+                # Order is fixed: the manual (system) first, then what taOSmd
+                # recalled for THIS agent, then the shared channel/thread history.
+                memory_messages = await self._memory_messages(
+                    agent_name=agent_name,
+                    agent=agent,
+                    guest=guest,
+                    message=message,
+                    channel=channel,
+                    thread_id=thread_id,
+                    manual_text=manual_text,
+                    history=context,
+                )
+                agent_context = [
+                    {"role": "system", "content": manual_text},
+                    *memory_messages,
+                    *context,
+                ]
                 await bridge.enqueue_user_message(
                     agent_name,
                     {
@@ -360,6 +391,95 @@ class AgentChatRouter:
                 )
             if forced and policy is not None:
                 policy.record_send(policy_key, agent_name)
+
+    async def _memory_messages(
+        self,
+        *,
+        agent_name: str,
+        agent: dict,
+        guest: dict | None,
+        message: dict,
+        channel: dict,
+        thread_id: str | None,
+        manual_text: str,
+        history: list[dict],
+    ) -> list[dict]:
+        """What taOSmd recalls for one recipient, as system messages (possibly none).
+
+        One recipient's failure never touches another's context or the shared
+        history: any problem is logged, recorded in that agent's trace, and
+        told to that agent as a one-line note instead of an empty context.
+        """
+        from tinyagentos.chat.context_window import SYSTEM_PROMPT_RESERVE, estimate_tokens
+        from tinyagentos.memory_recall import Recall, recall
+
+        if guest is not None:
+            # A registry guest has no memory store of its own to recall from.
+            return []
+        try:
+            window, reserve = self._recipient_window(agent)
+            # What the prompt already uses: the agent's own system prompt and tool
+            # definitions (the same allowance the history budget makes, #1740), the
+            # manual, and the history that will be sent.
+            used = SYSTEM_PROMPT_RESERVE + estimate_tokens(manual_text) + sum(
+                estimate_tokens(m.get("content", "")) for m in history
+            )
+            result = await recall(
+                message.get("content", ""),
+                agent=agent_name,
+                data_dir=self._state.data_dir,
+                window_tokens=window,
+                used_tokens=used,
+                reasoning_reserve=reserve,
+            )
+        except Exception as exc:  # noqa: BLE001 - reported, never swallowed
+            logger.warning("memory recall for %s failed in the router", agent_name, exc_info=True)
+            result = Recall(
+                status="error",
+                detail=f"recall failed inside taOS ({type(exc).__name__}: {exc})",
+            )
+        await self._trace_recall(agent_name, message, channel, thread_id, result)
+        if result.usable:
+            return [{"role": "system", "content": result.context}]
+        note = result.agent_note()
+        return [{"role": "system", "content": note}] if note else []
+
+    def _recipient_window(self, agent: dict) -> tuple[int | None, int]:
+        """(context window, reasoning reserve) from the recipient's model manifest; (None, 0) when unknown."""
+        from tinyagentos.cluster.model_resolver import _find_model_manifest
+
+        model_id = (agent or {}).get("model") or ""
+        registry = getattr(self._state, "registry", None)
+        if not model_id or registry is None:
+            return None, 0
+        try:
+            manifest = _find_model_manifest(registry, model_id)
+        except Exception:  # noqa: BLE001 - advisory lookup; an unknown window is reported by recall()
+            logger.debug("model manifest lookup failed for %s", model_id, exc_info=True)
+            return None, 0
+        if manifest is None:
+            return None, 0
+        window = int(getattr(manifest, "context_window", 0) or 0) or None
+        reserve = int(getattr(manifest, "reasoning_reserve", 0) or 0)
+        return window, reserve
+
+    async def _trace_recall(
+        self, agent_name: str, message: dict, channel: dict, thread_id: str | None, result,
+    ) -> None:
+        registry = getattr(self._state, "trace_registry", None)
+        if registry is None:
+            return
+        try:
+            store = await registry.get(agent_name)
+            await store.record(
+                "lifecycle",
+                trace_id=message.get("id"),
+                channel_id=channel.get("id"),
+                thread_id=thread_id,
+                payload={"event": "memory_recall", **result.trace_payload()},
+            )
+        except Exception:  # noqa: BLE001 - the trace is secondary; the log already carries the outcome
+            logger.warning("could not record the memory recall trace for %s", agent_name, exc_info=True)
 
     async def _post_system_reply(
         self, agent_name: str, channel_id: str, content: str,
