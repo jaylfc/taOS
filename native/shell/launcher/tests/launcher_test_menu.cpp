@@ -200,7 +200,7 @@ private slots:
         m_c->setQuery(">");
         QVERIFY(m_c->actionsMode());
         QVERIFY(mc()->actionsMode());
-        QCOMPARE(mc()->actionList().count(), 6);
+        QCOMPARE(mc()->actionList().count(), 7);
         QCOMPARE(m_c->count(), 0);
         m_c->setQuery(">sys");
         QCOMPARE(mc()->actionList().data(mc()->actionList().index(0), ActionListModel::TitleRole).toString(), QString("System"));

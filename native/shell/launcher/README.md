@@ -103,7 +103,7 @@ menu gives way to results). One model and one engine serve every look; the style
   Enter opens; Tab or the Menu key shows the context menu; Escape closes the topmost layer (confirmation, sheet, power list, a level of
   the action menu) and then the launcher.
 - **System action menu** (type `>` or press Super+Alt+Space or the Actions button): a short hierarchy, Capture, Toggle, Style,
-  Setup, Install, System, each a list you filter by typing; Enter opens a group or runs an action; Backspace on an empty filter or Escape goes
+  Setup, Install, Help (Keyboard shortcuts: `taos-overview help`), System, each a list you filter by typing; Enter opens a group or runs an action; Backspace on an empty filter or Escape goes
   up. Every row is backed by an existing engine and is offered only when its program exists (grim and slurp, nmcli, bluetoothctl,
   taos-theme, taos-settings, taos-store, the session commands). Not offered because no engine exists yet: Do Not Disturb, night light,
   screen recording, wallpaper, accounts, app groups setup, updates. The idea of a keyboard first hierarchical menu with a filter at

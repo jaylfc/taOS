@@ -113,6 +113,11 @@ ActionMenu::ActionMenu(std::function<bool(const QString &)> exists) : d(std::mak
         ins << leaf(QStringLiteral("install/website"), QStringLiteral("Add a website"), QStringLiteral("Make a website an app"), QStringLiteral("my.taos.store"), { QStringLiteral("web app"), QStringLiteral("url") },
                     exec({ QStringLiteral("taos-store"), QStringLiteral("--add-website") }, QStringLiteral("Open")));
     }
+    // Help: the shortcuts overlay of the overview (it also lists this menu's own keys)
+    QList<Node> help;
+    if (have(QStringLiteral("taos-overview")))
+        help << leaf(QStringLiteral("help/shortcuts"), QStringLiteral("Keyboard shortcuts"), QStringLiteral("Every key and gesture, including this menu's"), QStringLiteral("preferences-desktop-keyboard-shortcuts"),
+                     { QStringLiteral("keys"), QStringLiteral("hotkeys"), QStringLiteral("help"), QStringLiteral("gestures") }, exec({ QStringLiteral("taos-overview"), QStringLiteral("help") }, QStringLiteral("Show")));
     // System
     QList<Node> sys;
     append(sys, fromCmd(QStringLiteral("lock"), QStringLiteral("system/lock"), QStringLiteral("Lock"), QStringLiteral("Lock the screen"), QStringLiteral("system-lock-screen"), { QStringLiteral("away") }));
@@ -127,6 +132,7 @@ ActionMenu::ActionMenu(std::function<bool(const QString &)> exists) : d(std::mak
     addGroup(group(QStringLiteral("style"), QStringLiteral("Style"), QStringLiteral("Light, dark and themes"), QStringLiteral("preferences-desktop-theme"), { QStringLiteral("appearance") }, sty));
     addGroup(group(QStringLiteral("setup"), QStringLiteral("Setup"), QStringLiteral("Displays, network, sound, dock"), QStringLiteral("preferences-system"), { QStringLiteral("settings") }, set));
     addGroup(group(QStringLiteral("install"), QStringLiteral("Install"), QStringLiteral("The Store"), QStringLiteral("my.taos.store"), { QStringLiteral("get"), QStringLiteral("add") }, ins));
+    addGroup(group(QStringLiteral("help"), QStringLiteral("Help"), QStringLiteral("Keyboard shortcuts"), QStringLiteral("help-browser"), { QStringLiteral("keys") }, help));
     addGroup(group(QStringLiteral("system"), QStringLiteral("System"), QStringLiteral("Lock, sign out, restart, shut down"), QStringLiteral("system-shutdown"), { QStringLiteral("power") }, sys));
 }
 

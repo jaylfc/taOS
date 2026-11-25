@@ -15,7 +15,7 @@ class TestActionMenu : public QObject {
 private slots:
     void topLevelHasTheGroupsThatHaveEngines() {
         ActionMenu m(all());
-        QCOMPARE(titles(m.level({})), (QStringList{ "Capture", "Toggle", "Style", "Setup", "Install", "System" }));
+        QCOMPARE(titles(m.level({})), (QStringList{ "Capture", "Toggle", "Style", "Setup", "Install", "Help", "System" }));
     }
     void groupsWithoutAnEngineVanishInsteadOfBeingDead() {
         ActionMenu m(only({ "systemctl", "swaymsg" }));
@@ -59,6 +59,13 @@ private slots:
         QCOMPARE(m.find("capture/region").action.verb, QString("capture-region"));
         QVERIFY(m.find("nope").id.isEmpty());
     }
+    void helpOpensTheShortcutsOverlay() {
+        ActionMenu m(all());
+        QCOMPARE(titles(m.level({ "help" })), (QStringList{ "Keyboard shortcuts" }));
+        QCOMPARE(m.find("help/shortcuts").action.args, (QStringList{ "taos-overview", "help" }));   // the overlay lists the menu's own keys too
+        ActionMenu without(only({ "systemctl" }));
+        QVERIFY(without.find("help/shortcuts").id.isEmpty());                                       // no overview program, no row
+    }
     void captureAreaNeedsSlurp() {
         ActionMenu m(only({ "grim" }));
         QCOMPARE(titles(m.level({ "capture" })), (QStringList{ "Screenshot of the screen" }));
@@ -66,7 +73,7 @@ private slots:
     void jsonForAgents() {
         ActionMenu m(all());
         const QJsonArray g = m.toJson().value("groups").toArray();
-        QCOMPARE(g.size(), 6);
+        QCOMPARE(g.size(), 7);
         QCOMPARE(g.last().toObject().value("id").toString(), QString("system"));
         QVERIFY(g.last().toObject().value("items").toArray().last().toObject().value("confirm").toBool());
     }
