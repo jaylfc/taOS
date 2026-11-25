@@ -19,6 +19,8 @@ case "$1" in
       *--show-keys*) echo "fpr:::::::::$FAKE_FPR:" ;;
       *"/proc/"*environ*) [ -n "$FAKE_RUNNING" ] && echo "/proc/4242" ;;
       *"-printf"*) if [ -n "$FAKE_COUNT_MISMATCH" ] && [ "$ct" != "user-apps" ]; then echo "2 50"; else echo "3 100"; fi ;;
+      # a bare `find <home>` on a home that does not exist yet prints an error on the merged output (seen on a real container)
+      *"-- find "*"-mindepth 1"*"-quit"*) echo "find: '/home/taos/apps/x': No such file or directory" ;;
       *"-mindepth 1"*"-quit"*) [ -n "$FAKE_TARGET_HAS_DATA" ] && echo "x" ;;
       *apt-cache*policy*) printf '  Installed: %s\n  Candidate: %s\n' "${FAKE_VERSION:-1.0.0}" "${FAKE_CANDIDATE:-${FAKE_VERSION:-1.0.0}}" ;;
       *dpkg-query*) echo "${FAKE_VERSION_AFTER:-${FAKE_VERSION:-1.0.0}}" ;;

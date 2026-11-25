@@ -1156,7 +1156,10 @@ Result Engine::move(const QString &appId, const QString &toGroup, const Progress
     if (Result r = ensureGroupImpl(d, toGroup, &created); !r.ok)
         return r;
     const QString home = kHomeBase + u"/"_s + appId;
-    const Proc occupied = d->exec(dstCt, {u"find"_s, home, u"-mindepth"_s, u"1"_s, u"-maxdepth"_s, u"1"_s, u"-print"_s, u"-quit"_s});
+    // A home that does not exist yet is empty (a bare find would print its complaint into the answer).
+    const Proc occupied = d->exec(dstCt, {u"sh"_s, u"-c"_s, u"[ -d \"$1\" ] && find \"$1\" -mindepth 1 -maxdepth 1 -print -quit; true"_s, u"sh"_s, home});
+    if (!occupied.ok())
+        return Result::fail(ExitIncus, u"could not look at %1 in the group %2; nothing was changed"_s.arg(home, toGroup));
     if (!occupied.out.trimmed().isEmpty())
         return Result::fail(ExitConflict, u"the group %1 already holds data for %2; it was not overwritten and nothing was changed"_s.arg(toGroup, m.name));
     // Which of the app's data paths exist in the source: the manifest's list, or the whole home.
