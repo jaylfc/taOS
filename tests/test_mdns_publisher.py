@@ -105,3 +105,124 @@ async def test_start_swallows_exceptions_and_stop_is_noop(monkeypatch, tmp_path)
 
     assert pub._active is False
     await pub.stop()  # must be a no-op, must not raise
+
+
+# ======================================================================
+# Discovery service (#119): _tinyagentos._tcp with url/fingerprint/tier
+# ======================================================================
+
+
+def _registered_infos(zc_instance):
+    return [c.args[0] for c in zc_instance.async_register_service.await_args_list]
+
+
+def _props_of(info):
+    """ServiceInfo properties as a plain str->str dict, however stored."""
+    out = {}
+    for key, value in info.properties.items():
+        k = key.decode() if isinstance(key, bytes) else key
+        v = value.decode() if isinstance(value, bytes) else value
+        out[k] = v
+    return out
+
+
+@pytest.mark.asyncio
+async def test_start_registers_discovery_service_with_txt(fake_zc, tmp_path):
+    zc_instance, _ = fake_zc
+    pub = MdnsPublisher(
+        data_dir=tmp_path, port=6969, fingerprint="f" * 64, tier="x86-cuda-12gb"
+    )
+
+    await pub.start()
+
+    infos = _registered_infos(zc_instance)
+    assert len(infos) == 2
+    discovery = [i for i in infos if i.type == mp.DISCOVERY_SERVICE_TYPE]
+    assert len(discovery) == 1
+    info = discovery[0]
+    assert info.port == 6969
+    assert info.server == "taos.local."
+    props = _props_of(info)
+    assert props["fingerprint"] == "f" * 64
+    assert props["tier"] == "x86-cuda-12gb"
+    assert props["url"] == "http://taos.local:6969"
+
+
+@pytest.mark.asyncio
+async def test_discovery_url_override_and_tier_optional(fake_zc, tmp_path):
+    zc_instance, _ = fake_zc
+    pub = MdnsPublisher(
+        data_dir=tmp_path,
+        port=6969,
+        fingerprint="f" * 64,
+        controller_url="http://192.168.1.42:6969",
+    )
+
+    await pub.start()
+
+    discovery = [
+        i for i in _registered_infos(zc_instance)
+        if i.type == mp.DISCOVERY_SERVICE_TYPE
+    ]
+    props = _props_of(discovery[0])
+    assert props["url"] == "http://192.168.1.42:6969"
+    assert "tier" not in props
+
+
+@pytest.mark.asyncio
+async def test_no_fingerprint_registers_only_http(fake_zc, tmp_path):
+    zc_instance, _ = fake_zc
+    pub = MdnsPublisher(data_dir=tmp_path, port=6969)
+
+    await pub.start()
+
+    assert zc_instance.async_register_service.await_count == 1
+
+
+@pytest.mark.asyncio
+async def test_stop_unregisters_both_services_before_final_close(
+    fake_zc, tmp_path
+):
+    zc_instance, _ = fake_zc
+    pub = MdnsPublisher(data_dir=tmp_path, port=6969, fingerprint="f" * 64)
+    await pub.start()
+
+    await pub.stop()
+
+    assert zc_instance.async_unregister_service.await_count == 2
+    names = [c[0] for c in zc_instance.mock_calls]
+    last_close = max(i for i, n in enumerate(names) if n == "async_close")
+    last_unreg = max(
+        i for i, n in enumerate(names) if n == "async_unregister_service"
+    )
+    assert last_unreg < last_close
+
+
+@pytest.mark.asyncio
+async def test_discovery_register_failure_keeps_http_publish(
+    monkeypatch, tmp_path
+):
+    """The discovery service is an add-on: if its registration fails the
+    _http publish (and the publisher's active state) must survive."""
+    monkeypatch.setattr(mp, "_detect_primary_ipv4", lambda: ["192.168.1.42"])
+    monkeypatch.setattr(
+        mp, "AddressResolver",
+        lambda name: _FakeAddressResolver(found=False, parsed_addrs=[]),
+    )
+    zc_instance = MagicMock()
+    zc_instance.async_close = AsyncMock()
+    zc_instance.async_unregister_service = AsyncMock()
+
+    async def _register(info, **kwargs):
+        if info.type == mp.DISCOVERY_SERVICE_TYPE:
+            raise RuntimeError("name conflict")
+
+    zc_instance.async_register_service = AsyncMock(side_effect=_register)
+    monkeypatch.setattr(mp, "AsyncZeroconf", MagicMock(return_value=zc_instance))
+
+    pub = MdnsPublisher(data_dir=tmp_path, port=6969, fingerprint="f" * 64)
+    await pub.start()  # must not raise
+
+    assert pub.active is True
+    await pub.stop()
+    assert zc_instance.async_unregister_service.await_count == 1

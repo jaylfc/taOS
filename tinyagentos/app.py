@@ -1542,8 +1542,28 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
         else:
             try:
                 from tinyagentos.services.mdns_publisher import MdnsPublisher
+
+                # Discovery service (#119): advertise this controller to
+                # fresh workers under its hub identity fingerprint and
+                # hardware tier. Best-effort -- if the identity is not
+                # available the publisher simply skips the discovery
+                # service and still publishes taos.local.
+                discovery_kwargs: dict = {}
+                try:
+                    from tinyagentos.hub.identity import signing_fingerprint
+
+                    discovery_kwargs["fingerprint"] = signing_fingerprint()
+                except Exception:
+                    logger.debug(
+                        "mDNS: hub identity unavailable -- discovery "
+                        "service will not be published",
+                        exc_info=True,
+                    )
+                if hardware_profile is not None:
+                    discovery_kwargs["tier"] = hardware_profile.profile_id
                 mdns_publisher = MdnsPublisher(
                     data_dir=data_dir, port=config.server.get("port", 6969),
+                    **discovery_kwargs,
                 )
                 await mdns_publisher.start()
                 app.state.mdns_publisher = mdns_publisher
