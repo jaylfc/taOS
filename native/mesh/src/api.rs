@@ -86,9 +86,25 @@ pub struct Daemon {
     pub engine: Arc<Engine>,
     pub receive_only: bool,
     pub stop: Arc<AtomicBool>,
+    /// The uid allowed to connect (the owner's).
+    pub owner_uid: u32,
+    /// Verifies capability tokens for non-owner principals; None refuses them all.
+    pub verifier: Option<crate::auth::TokenVerifier>,
 }
 
 impl Daemon {
+    /// A daemon for the current user: connections must come from this uid
+    /// and no non-owner principal is accepted until a verifier is set.
+    pub fn new(engine: Arc<Engine>, receive_only: bool) -> Self {
+        Daemon {
+            engine,
+            receive_only,
+            stop: Arc::new(AtomicBool::new(false)),
+            owner_uid: nix::unistd::geteuid().as_raw(),
+            verifier: None,
+        }
+    }
+
     /// Open a radio on a link and run its session on a thread.
     pub fn attach(
         &self,
@@ -186,7 +202,9 @@ impl Daemon {
         Ok(json!({"radio": name, "network": net}))
     }
 
-    pub fn handle(&self, line: &str) -> Value {
+    /// Handle a request whose principal has already been authenticated
+    /// (the connection layer does that: see `auth`).
+    pub fn handle_trusted(&self, line: &str) -> Value {
         let req: Request = match serde_json::from_str(line) {
             Ok(r) => r,
             Err(e) => return err(&Value::Null, "bad_request", &e.to_string()),
@@ -228,7 +246,11 @@ impl Daemon {
                 h["radios_connect"] = json!(true);
                 ok!(h)
             }
-            "radios" => ok!(self.engine.radios()),
+            "radios" => ok!(if self.engine.may_see_radios(who) {
+                self.engine.radios()
+            } else {
+                vec![]
+            }),
             "discover" => {
                 if let Some(e) = owner_only(&id) {
                     return e;
@@ -288,9 +310,13 @@ impl Daemon {
                 }
                 ok!(saved_radios())
             }
-            "app.radios" => ok!(eng!(crate::appview::radios(&self.engine))),
-            "app.identities" => ok!(eng!(crate::appview::identities(&self.engine))),
-            "app.messages" => ok!(eng!(crate::appview::messages(&self.engine, s(p, "thread")))),
+            "app.radios" => ok!(eng!(crate::appview::radios(&self.engine, who))),
+            "app.identities" => ok!(eng!(crate::appview::identities(&self.engine, who))),
+            "app.messages" => ok!(eng!(crate::appview::messages(
+                &self.engine,
+                who,
+                s(p, "thread")
+            ))),
             "app.send" => {
                 let thread = try_p!(need(p, "thread"));
                 let text = try_p!(need(p, "text"));
@@ -412,7 +438,45 @@ impl Daemon {
         }
     }
 
+    /// The connection layer for a request line: token check for any
+    /// principal but the owner, then the request. This is the entry point
+    /// for everything that arrives from outside the process.
+    pub fn handle_request(&self, line: &str) -> Value {
+        let Ok(v) = serde_json::from_str::<Value>(line) else {
+            return err(&Value::Null, "bad_request", "not JSON");
+        };
+        let id = v.get("id").cloned().unwrap_or(Value::Null);
+        let who = v.get("principal").and_then(|x| x.as_str()).unwrap_or(OWNER);
+        if who != OWNER {
+            let method = v.get("method").and_then(|x| x.as_str()).unwrap_or("");
+            let Some(ver) = &self.verifier else {
+                return err(
+                    &id,
+                    "forbidden",
+                    "only the owner may use this socket directly: other principals come through the taOS controller with a token, and none is configured",
+                );
+            };
+            let tok = v.get("token").and_then(|x| x.as_str()).unwrap_or("");
+            if let Err(m) = ver.verify(tok, who, method, crate::model::now_ms()) {
+                return err(&id, "forbidden", &m);
+            }
+        }
+        self.handle_trusted(line)
+    }
+
     fn serve_conn(self: &Arc<Self>, stream: UnixStream) {
+        // the connecting process must be the owner
+        match peer_uid(&stream) {
+            Ok(u) if u == self.owner_uid => {}
+            Ok(_) | Err(_) => {
+                let _ = writeln!(
+                    &stream,
+                    "{}",
+                    err(&Value::Null, "forbidden", "not the owner of this engine")
+                );
+                return;
+            }
+        }
         let Ok(rd) = stream.try_clone() else { return };
         let mut w = stream;
         for line in BufReader::new(rd).lines() {
@@ -445,7 +509,7 @@ impl Daemon {
                     return;
                 }
             }
-            let resp = self.handle(&line);
+            let resp = self.handle_request(&line);
             if writeln!(w, "{resp}").is_err() {
                 return;
             }
@@ -453,18 +517,61 @@ impl Daemon {
     }
 
     pub fn serve(self: &Arc<Self>, socket: &Path) -> std::io::Result<()> {
-        if socket.exists() {
+        use std::io::{Error, ErrorKind};
+        use std::os::unix::fs::{DirBuilderExt, FileTypeExt, MetadataExt};
+        let euid = nix::unistd::geteuid().as_raw();
+        let parent = socket
+            .parent()
+            .filter(|p| !p.as_os_str().is_empty())
+            .unwrap_or(Path::new("."));
+        let pm = std::fs::metadata(parent)?;
+        if pm.uid() != euid || pm.mode() & 0o002 != 0 {
+            return Err(Error::new(
+                ErrorKind::PermissionDenied,
+                format!(
+                    "{} must belong to you and not be writable by everyone",
+                    parent.display()
+                ),
+            ));
+        }
+        if let Ok(m) = std::fs::symlink_metadata(socket) {
+            if m.uid() != euid {
+                return Err(Error::new(
+                    ErrorKind::PermissionDenied,
+                    "that socket path belongs to another user: not replacing it",
+                ));
+            }
+            if !m.file_type().is_socket() {
+                return Err(Error::new(
+                    ErrorKind::AlreadyExists,
+                    "that path exists and is not a socket: not replacing it",
+                ));
+            }
             // only remove a socket nobody answers on
             if UnixStream::connect(socket).is_ok() {
-                return Err(std::io::Error::new(
-                    std::io::ErrorKind::AddrInUse,
+                return Err(Error::new(
+                    ErrorKind::AddrInUse,
                     "another taos-mesh is serving this socket",
                 ));
             }
             std::fs::remove_file(socket)?;
         }
-        let l = UnixListener::bind(socket)?;
-        std::fs::set_permissions(socket, std::fs::Permissions::from_mode(0o600))?;
+        // Bind inside a fresh 0700 directory and move the socket into place,
+        // so it is never reachable with a wider mode, not even briefly.
+        let tmpdir = parent.join(format!(
+            ".taos-mesh-bind-{}-{}",
+            std::process::id(),
+            crate::model::now_ms()
+        ));
+        std::fs::DirBuilder::new().mode(0o700).create(&tmpdir)?;
+        let tmp = tmpdir.join("s");
+        let bound = UnixListener::bind(&tmp).and_then(|l| {
+            std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o600))?;
+            std::fs::rename(&tmp, socket)?;
+            Ok(l)
+        });
+        let _ = std::fs::remove_dir(&tmpdir);
+        let l = bound?;
         for c in l.incoming() {
             if self.stop.load(Ordering::Relaxed) {
                 break;
@@ -478,11 +585,31 @@ impl Daemon {
     }
 }
 
+fn peer_uid(s: &UnixStream) -> std::io::Result<u32> {
+    use nix::sys::socket::{getsockopt, sockopt::PeerCredentials};
+    use std::os::fd::AsRawFd;
+    getsockopt(s.as_raw_fd(), PeerCredentials)
+        .map(|c| c.uid())
+        .map_err(std::io::Error::from)
+}
+
 /// Blocking client: one request, one response.
 pub fn call(socket: &Path, method: &str, principal: &str, params: Value) -> Result<Value, String> {
+    call_with_token(socket, method, principal, None, params)
+}
+
+/// Like `call`, with the capability token the controller issued for a
+/// non-owner principal.
+pub fn call_with_token(
+    socket: &Path,
+    method: &str,
+    principal: &str,
+    token: Option<&str>,
+    params: Value,
+) -> Result<Value, String> {
     let mut s = UnixStream::connect(socket)
         .map_err(|e| format!("cannot reach taos-mesh at {}: {e}", socket.display()))?;
-    let req = json!({"id": 1, "method": method, "principal": principal, "params": params});
+    let req = json!({"id": 1, "method": method, "principal": principal, "token": token, "params": params});
     writeln!(s, "{req}").map_err(|e| e.to_string())?;
     let mut line = String::new();
     BufReader::new(s)

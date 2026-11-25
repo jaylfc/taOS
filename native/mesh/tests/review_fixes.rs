@@ -4,7 +4,6 @@ mod common;
 use common::*;
 use serde_json::{json, Value};
 use std::sync::Arc;
-use taos_mesh::api::Daemon;
 use taos_mesh::engine::{Engine, Filter, Session};
 use taos_mesh::grants::Grant;
 use taos_mesh::link::{FakeLink, Link, LinkKind};
@@ -466,18 +465,14 @@ fn receive_only_failure_is_visible_through_the_api_with_its_reason() {
     e.send_text("owner", NET, None, None, Some(0), "stays home")
         .unwrap();
     s.pump().unwrap();
-    let d = Arc::new(Daemon {
-        engine: e.clone(),
-        receive_only: true,
-        stop: Default::default(),
-    });
-    let r: Value = d.handle(
+    let d = Arc::new(taos_mesh::api::Daemon::new(e.clone(), true));
+    let r: Value = d.handle_trusted(
         &json!({"id": 1, "method": "messages", "params": {"filter": {"dir": "state"}}}).to_string(),
     );
     let rows = r["result"].as_array().unwrap();
     assert!(rows.iter().any(|x| x["state"] == "failed" && x["note"].as_str().unwrap().contains("receive-only")), "{r}");
     // an agent never sees send progress
-    let r: Value = d.handle(&json!({"id": 1, "method": "messages", "principal": "agent:x", "params": {"filter": {"dir": "state"}}}).to_string());
+    let r: Value = d.handle_trusted(&json!({"id": 1, "method": "messages", "principal": "agent:x", "params": {"filter": {"dir": "state"}}}).to_string());
     assert!(r["result"].as_array().unwrap().is_empty());
 }
 
@@ -485,13 +480,9 @@ fn receive_only_failure_is_visible_through_the_api_with_its_reason() {
 fn app_view_matches_the_survival_studio_interface() {
     let (_t, e, _l, mut s) = mt();
     let me = s.radio_id().to_string();
-    let d = Arc::new(Daemon {
-        engine: e.clone(),
-        receive_only: false,
-        stop: Default::default(),
-    });
+    let d = Arc::new(taos_mesh::api::Daemon::new(e.clone(), false));
     let call = |m: &str, p: Value, who: &str| -> Value {
-        d.handle(&json!({"id": 1, "method": m, "principal": who, "params": p}).to_string())
+        d.handle_trusted(&json!({"id": 1, "method": m, "principal": who, "params": p}).to_string())
     };
     // a neighbour, a stranger and a position
     let sam = e
@@ -615,12 +606,9 @@ fn app_view_matches_the_survival_studio_interface() {
     let (_t2, e2, l2, mut s2) = mt();
     l2.push(&link_cfg);
     s2.pump().unwrap();
-    let d2 = Arc::new(Daemon {
-        engine: e2,
-        receive_only: false,
-        stop: Default::default(),
-    });
-    let r: Value = d2.handle(&json!({"id": 1, "method": "app.radios", "params": {}}).to_string());
+    let d2 = Arc::new(taos_mesh::api::Daemon::new(e2, false));
+    let r: Value =
+        d2.handle_trusted(&json!({"id": 1, "method": "app.radios", "params": {}}).to_string());
     assert_eq!(r["result"][0]["state"], "connected");
 }
 
@@ -649,11 +637,8 @@ fn battery_comes_from_the_radios_own_device_telemetry() {
         },
     )
     .unwrap();
-    let d = Arc::new(Daemon {
-        engine: e,
-        receive_only: false,
-        stop: Default::default(),
-    });
-    let r: Value = d.handle(&json!({"id": 1, "method": "app.radios", "params": {}}).to_string());
+    let d = Arc::new(taos_mesh::api::Daemon::new(e, false));
+    let r: Value =
+        d.handle_trusted(&json!({"id": 1, "method": "app.radios", "params": {}}).to_string());
     assert_eq!(r["result"][0]["batteryPercent"], 87);
 }

@@ -118,8 +118,10 @@ impl Grants {
     }
 
     pub fn add(&mut self, mut g: Grant) -> Result<Grant, StoreError> {
-        if g.kind != "send" && g.kind != "read" {
-            return Err(StoreError("grant kind must be send or read".into()));
+        if !matches!(g.kind.as_str(), "send" | "read" | "position") {
+            return Err(StoreError(
+                "grant kind must be send, read or position".into(),
+            ));
         }
         if g.agent.is_empty() || g.agent == OWNER {
             return Err(StoreError("a grant names an agent".into()));
@@ -248,6 +250,28 @@ impl Grants {
         principal == OWNER
             || self.active.values().any(|g| {
                 Self::matches(g, "read", principal, network, channel)
+                    && g.expires_ms.is_none_or(|e| e > now)
+            })
+    }
+
+    /// May this agent see where radios are? A separate grant: reading a
+    /// channel never includes positions.
+    pub fn may_read_positions(&self, principal: &str, network: &str, now: u64) -> bool {
+        principal == OWNER
+            || self.active.values().any(|g| {
+                g.kind == "position"
+                    && g.agent == principal
+                    && g.network == network
+                    && g.expires_ms.is_none_or(|e| e > now)
+            })
+    }
+
+    /// Does this agent hold any read or position grant at all?
+    pub fn has_any_read(&self, principal: &str, now: u64) -> bool {
+        principal == OWNER
+            || self.active.values().any(|g| {
+                g.agent == principal
+                    && (g.kind == "read" || g.kind == "position")
                     && g.expires_ms.is_none_or(|e| e > now)
             })
     }

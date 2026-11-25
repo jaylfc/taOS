@@ -8,10 +8,9 @@ use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-use taos_mesh::api::{call, Daemon};
+use taos_mesh::api::{call, call_with_token, Daemon};
 use taos_mesh::engine::Engine;
 use taos_mesh::link::FakeLink;
 use taos_mesh::meshtastic::frame;
@@ -26,11 +25,9 @@ struct Up {
 fn up(receive_only: bool) -> Up {
     let t = TmpDir::new("e2e");
     let engine = Engine::open(&t.path().join("data"), "person:jay").unwrap();
-    let d = Arc::new(Daemon {
-        engine,
-        receive_only,
-        stop: Arc::new(AtomicBool::new(false)),
-    });
+    let mut d = Daemon::new(engine, receive_only);
+    d.verifier = Some(taos_mesh::auth::TokenVerifier::new(vec![7u8; 32]).unwrap());
+    let d = Arc::new(d);
     let sock = t.path().join("mesh.sock");
     let link = FakeLink::new("fake-e2e");
     let fx = fixture("meshtastic.json");
@@ -74,6 +71,13 @@ fn wait_for(sock: &Path, n: usize) -> Vec<Value> {
         );
         std::thread::sleep(Duration::from_millis(20));
     }
+}
+
+/// Call as an agent with a controller-issued token.
+fn acall(sock: &Path, method: &str, who: &str, params: Value) -> Result<Value, String> {
+    let v = taos_mesh::auth::TokenVerifier::new(vec![7u8; 32]).unwrap();
+    let tok = v.mint(who, taos_mesh::model::now_ms() + 60_000, &["*"]);
+    call_with_token(sock, method, who, Some(&tok), params)
 }
 
 fn cli(sock: &Path, args: &[&str]) -> (i32, String, String) {
@@ -161,7 +165,7 @@ fn identities_and_link_through_the_cli() {
     let (_, out, _) = cli(&u.sock, &["identities"]);
     assert!(out.contains("person:sam") && out.contains("2026-11-25"));
     // the linked account sees the contact's position through the API
-    let r = call(&u.sock, "messages", "person:sam", json!({"filter": {}})).unwrap();
+    let r = acall(&u.sock, "messages", "person:sam", json!({"filter": {}})).unwrap();
     assert_eq!(r["result"].as_array().unwrap().len(), 1);
     // a bad link is refused with a non-zero exit
     assert_ne!(cli(&u.sock, &["link", &cid, "agent:x"]).0, 0);
@@ -171,7 +175,7 @@ fn identities_and_link_through_the_cli() {
 fn an_agent_over_the_api_is_refused_without_a_grant_then_allowed_with_one() {
     let u = up(false);
     wait_for(&u.sock, 4);
-    let r = call(
+    let r = acall(
         &u.sock,
         "send",
         "agent:scout",
@@ -180,7 +184,7 @@ fn an_agent_over_the_api_is_refused_without_a_grant_then_allowed_with_one() {
     .unwrap();
     assert_eq!(r["ok"], false);
     assert_eq!(r["error"]["code"], "no_grant");
-    let r = call(
+    let r = acall(
         &u.sock,
         "grants.add",
         "agent:scout",
@@ -205,7 +209,7 @@ fn an_agent_over_the_api_is_refused_without_a_grant_then_allowed_with_one() {
         ],
     );
     assert_eq!(c, 0, "{e}");
-    let r = call(
+    let r = acall(
         &u.sock,
         "send",
         "agent:scout",
@@ -224,11 +228,11 @@ fn an_agent_over_the_api_is_refused_without_a_grant_then_allowed_with_one() {
     assert!(out.contains("agent:scout"));
     // agents cannot call owner methods
     assert_eq!(
-        call(&u.sock, "identities.list", "agent:scout", json!({})).unwrap()["error"]["code"],
+        acall(&u.sock, "identities.list", "agent:scout", json!({})).unwrap()["error"]["code"],
         "forbidden"
     );
     assert_eq!(
-        call(&u.sock, "discover", "agent:scout", json!({})).unwrap()["error"]["code"],
+        acall(&u.sock, "discover", "agent:scout", json!({})).unwrap()["error"]["code"],
         "forbidden"
     );
 }
@@ -299,11 +303,7 @@ fn the_socket_is_private_and_a_second_daemon_cannot_take_it() {
     let mode = std::fs::metadata(&u.sock).unwrap().permissions().mode() & 0o777;
     assert_eq!(mode, 0o600);
     let e = Engine::open(&u._t.path().join("data2"), "x").unwrap();
-    let d2 = Arc::new(Daemon {
-        engine: e,
-        receive_only: true,
-        stop: Arc::new(AtomicBool::new(false)),
-    });
+    let d2 = Arc::new(taos_mesh::api::Daemon::new(e, true));
     assert!(d2.serve(&u.sock).is_err());
 }
 

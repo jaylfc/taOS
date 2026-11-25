@@ -2,6 +2,7 @@
 //! taos-mesh: the taOS mesh radio engine (UI-less). See docs/API.md.
 pub mod api;
 pub mod appview;
+pub mod auth;
 pub mod ble;
 pub mod discovery;
 pub mod engine;

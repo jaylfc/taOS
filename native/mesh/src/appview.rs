@@ -26,22 +26,25 @@ pub fn thread_of(r: &Record) -> Option<String> {
     }
 }
 
-pub fn radios(e: &Engine) -> Result<Value, EngineError> {
+pub fn radios(e: &Engine, viewer: &str) -> Result<Value, EngineError> {
     let recs = e.messages(
-        "owner",
+        viewer,
         &Filter {
             kind: Some("telemetry".into()),
             ..Default::default()
         },
     )?;
     let own_info = e.messages(
-        "owner",
+        viewer,
         &Filter {
             kind: Some("nodeinfo".into()),
             ..Default::default()
         },
     )?;
     let mut out = vec![];
+    if !e.may_see_radios(viewer) {
+        return Ok(Value::Array(out));
+    }
     for r in e.radios() {
         // battery: the radio's own newest device telemetry
         let battery = recs
@@ -87,8 +90,8 @@ pub fn radios(e: &Engine) -> Result<Value, EngineError> {
     Ok(Value::Array(out))
 }
 
-pub fn identities(e: &Engine) -> Result<Value, EngineError> {
-    let recs = e.messages("owner", &Filter::default())?;
+pub fn identities(e: &Engine, viewer: &str) -> Result<Value, EngineError> {
+    let recs = e.messages(viewer, &Filter::default())?;
     #[derive(Default)]
     struct N {
         callsign: String,
@@ -140,9 +143,9 @@ pub fn identities(e: &Engine) -> Result<Value, EngineError> {
     Ok(Value::Array(out))
 }
 
-pub fn messages(e: &Engine, thread: Option<&str>) -> Result<Value, EngineError> {
+pub fn messages(e: &Engine, viewer: &str, thread: Option<&str>) -> Result<Value, EngineError> {
     let recs = e.messages(
-        "owner",
+        viewer,
         &Filter {
             kind: Some("text".into()),
             ..Default::default()

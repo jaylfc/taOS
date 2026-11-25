@@ -105,9 +105,9 @@ fn a_torn_last_line_is_preserved_on_the_side_and_appending_continues() {
     let h = e.health();
     let side = h["torn_tail_preserved"]
         .as_str()
-        .expect("the torn bytes are reported");
+        .expect("the torn bytes are reported (by file name, not path)");
     assert_eq!(
-        std::fs::read(side).unwrap(),
+        std::fs::read(t.path().join(side)).unwrap(),
         br#"{"v":1,"id":"deadbeef","dir":"in","net"#
     );
     e.ingest("meshtastic", "!0000aaaa", text_frame(3)).unwrap();
