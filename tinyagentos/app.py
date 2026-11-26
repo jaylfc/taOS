@@ -1569,7 +1569,13 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
                     tier_opt = tier_opt.strip().lower() not in {
                         "0", "false", "no", "off",
                     }
-                discovery_kwargs["advertise_tier"] = bool(tier_opt)
+                if not tier_opt:
+                    # Only passed on opt-out: the publisher defaults to
+                    # advertising the tier, and the construction seam
+                    # stays minimal for the common case -- the same
+                    # pattern as the fingerprint/tier kwargs above, and
+                    # the one the version-endpoint test doubles record.
+                    discovery_kwargs["advertise_tier"] = False
                 mdns_publisher = MdnsPublisher(
                     data_dir=data_dir, port=config.server.get("port", 6969),
                     **discovery_kwargs,

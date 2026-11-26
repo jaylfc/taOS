@@ -138,3 +138,44 @@ def test_version_endpoint_mdns_disabled_by_config_enabled_zero_string(monkeypatc
     assert body["version"]  # non-empty
     assert body.get("mdns_hostname") is None
     assert not constructed["value"], "Publisher must not be constructed when config.mdns.enabled='0'"
+
+
+def test_version_endpoint_mdns_advertise_tier_opt_out_reaches_publisher(monkeypatch, tmp_path):
+    """When config.mdns.advertise_tier is '0' (string), the publisher is
+    constructed with advertise_tier=False. The default (on) passes no
+    kwarg at all -- that half is covered by the constructed-when-enabled
+    test above, whose recording double accepts only (data_dir, port)."""
+    monkeypatch.delenv("TAOS_MDNS", raising=False)
+    seen_kwargs = {}
+
+    class _KwargsRecordingPublisher:
+        def __init__(self, *, data_dir, port, **kwargs):
+            seen_kwargs.update(kwargs)
+            self._hostname = "taos.local"
+
+        @property
+        def hostname(self) -> str:
+            return self._hostname
+
+        @property
+        def active(self) -> bool:
+            return True
+
+        async def start(self) -> None:
+            pass
+
+        async def stop(self) -> None:
+            pass
+
+    data_dir = tmp_path / "data"
+    data_dir.mkdir(parents=True, exist_ok=True)
+    (data_dir / "config.yaml").write_text("mdns:\n  advertise_tier: \"0\"\n")
+
+    with patch("tinyagentos.services.mdns_publisher.MdnsPublisher", _KwargsRecordingPublisher):
+        app = create_app(data_dir=data_dir, catalog_dir=tmp_path / "catalog")
+        with TestClient(app) as client:
+            r = client.get("/api/version")
+
+    assert r.status_code == 200
+    assert r.json().get("mdns_hostname") == "taos.local"
+    assert seen_kwargs.get("advertise_tier") is False
