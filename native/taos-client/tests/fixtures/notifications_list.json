@@ -1,0 +1,5 @@
+[
+  {"id": 12, "timestamp": 1760000100, "level": "warning", "title": "Access request", "message": "agent wants files_read", "read": false, "source": "auth_requests", "data": {"request_id": "req_9", "target": null}, "user_id": "usr_1", "pinned": true},
+  {"id": 11, "timestamp": 1760000050, "level": "success", "title": "App installed", "message": "Gitea is ready", "read": true, "source": "app.installed", "data": null, "user_id": null, "new_server_field": [1, 2, 3]},
+  {"id": 10, "timestamp": 1760000000, "level": "catastrophic", "title": "Disk", "message": "Quota", "read": false, "source": "disk_quota", "data": {"path": "/"}, "user_id": "usr_1"}
+]

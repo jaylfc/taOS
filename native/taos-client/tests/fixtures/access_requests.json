@@ -1,0 +1,1 @@
+{"requests": [{"id": "req_9", "identity_claim": "builder@host", "framework": "opencode", "requested_scopes": ["files_read", "project_tasks"], "reason": "needs to read the repo", "project_id": null, "status": "pending", "duration_secs": 7200, "human_duration": "expires 2 hours after approval", "token": "must-not-be-modeled"}]}

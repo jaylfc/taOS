@@ -1,0 +1,6 @@
+[
+  {"name": "pc", "url": "http://10.0.0.5:7000", "status": "online", "kind": "worker", "tier_id": "x86-cuda-12gb", "platform": "linux", "last_heartbeat": 1000.0,
+   "backends": [{"name": "ollama:11434", "type": "ollama", "models": ["llama3", {"id": "qwen", "name": "Qwen", "size_mb": 4200}], "loaded_models": ["llama3"]}],
+   "models": [], "capabilities": ["chat"], "potential_capabilities": ["image-gen"], "kv_cache_quant_support": ["fp16"]},
+  {"name": "localhost", "url": "http://nas.lan:7000", "status": "mystery-state", "last_heartbeat": 0, "backends": null}
+]

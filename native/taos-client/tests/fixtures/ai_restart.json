@@ -1,0 +1,1 @@
+{"status": "partial", "restarted": ["rkllama.service"], "failed": [{"unit": "llama-swap.service", "ok": false, "scope": "system", "detail": "timeout"}], "results": [{"unit": "rkllama.service", "ok": true, "scope": "system", "detail": ""}, {"unit": "llama-swap.service", "ok": false, "scope": "system", "detail": "timeout"}]}
