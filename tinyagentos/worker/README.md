@@ -54,10 +54,30 @@ python -m tinyagentos.worker.pair --name gpu-box-01 --register-after
 # Pair only with one specific controller, no prompt:
 python -m tinyagentos.worker.pair --expect-fingerprint <sha256-hex> --register-after
 
-# Just scan (one line per controller); --pick prints only the chosen URL:
+# Just scan (one line per controller); --pick prints the chosen URL and
+# its fingerprint (one per line) for scripts:
 python -m tinyagentos.worker.discovery
 python -m tinyagentos.worker.discovery --pick
 ```
+
+The pick list shows each controller's fingerprint in short form (the
+first 8 hex characters) next to its URL, so you can compare it with
+what the controller's Cluster page shows.
+
+mDNS itself is unauthenticated, so the advertised fingerprint is
+verified, not just displayed: before pairing, the pair CLI challenges
+the controller at the chosen URL to prove possession of the hub key
+behind the advertised fingerprint (a signature over a random nonce,
+checked against that fingerprint). A controller that cannot prove it
+-- a LAN impostor that merely copied the TXT record -- is refused
+before any pairing state is created. The pairing code and the
+controller-side admin approval are still required afterwards, exactly
+as with a hand-typed URL.
+
+The `tier` TXT record reveals the controller's hardware profile to
+anyone on the LAN. It is advertised by default; set
+`mdns.advertise_tier: false` in the controller's config to leave it
+out. The URL and fingerprint records are always advertised.
 
 When nothing is discovered the pair CLI falls back to asking for the URL
 by hand. Discovery is LAN-only; remote attach still uses pairing codes.

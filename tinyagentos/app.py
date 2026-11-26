@@ -1561,6 +1561,15 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
                     )
                 if hardware_profile is not None:
                     discovery_kwargs["tier"] = hardware_profile.profile_id
+                # The advertised tier reveals the hardware profile to
+                # the whole LAN; mdns.advertise_tier: false in config
+                # keeps it out of the TXT records (default: advertise).
+                tier_opt = config.mdns.get("advertise_tier", True)
+                if isinstance(tier_opt, str):
+                    tier_opt = tier_opt.strip().lower() not in {
+                        "0", "false", "no", "off",
+                    }
+                discovery_kwargs["advertise_tier"] = bool(tier_opt)
                 mdns_publisher = MdnsPublisher(
                     data_dir=data_dir, port=config.server.get("port", 6969),
                     **discovery_kwargs,

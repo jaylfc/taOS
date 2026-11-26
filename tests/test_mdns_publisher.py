@@ -170,6 +170,35 @@ async def test_discovery_url_override_and_tier_optional(fake_zc, tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_discovery_tier_omitted_when_advertise_tier_false(
+    fake_zc, tmp_path
+):
+    """advertise_tier=False keeps the tier out of the TXT records (it
+    reveals the hardware profile to anyone on the LAN) while the rest of
+    the discovery record is unchanged."""
+    zc_instance, _ = fake_zc
+    pub = MdnsPublisher(
+        data_dir=tmp_path,
+        port=6969,
+        fingerprint="f" * 64,
+        tier="x86-cuda-12gb",
+        advertise_tier=False,
+    )
+
+    await pub.start()
+
+    discovery = [
+        i for i in _registered_infos(zc_instance)
+        if i.type == mp.DISCOVERY_SERVICE_TYPE
+    ]
+    assert len(discovery) == 1
+    props = _props_of(discovery[0])
+    assert props["fingerprint"] == "f" * 64
+    assert props["url"] == "http://taos.local:6969"
+    assert "tier" not in props
+
+
+@pytest.mark.asyncio
 async def test_no_fingerprint_registers_only_http(fake_zc, tmp_path):
     zc_instance, _ = fake_zc
     pub = MdnsPublisher(data_dir=tmp_path, port=6969)

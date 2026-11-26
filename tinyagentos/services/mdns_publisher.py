@@ -186,6 +186,7 @@ class MdnsPublisher:
         controller_url: str | None = None,
         fingerprint: str | None = None,
         tier: str | None = None,
+        advertise_tier: bool = True,
     ) -> None:
         self._data_dir = data_dir
         self._service_name = service_name
@@ -198,6 +199,10 @@ class MdnsPublisher:
         self._controller_url = controller_url
         self._fingerprint = fingerprint
         self._tier = tier
+        # The tier reveals the hardware profile to anyone on the LAN.
+        # advertise_tier=False keeps it out of the TXT records; the URL
+        # and fingerprint -- what pairing actually needs -- still go out.
+        self._advertise_tier = advertise_tier
         self._zc: AsyncZeroconf | None = None
         self._info: ServiceInfo | None = None
         self._discovery_info: ServiceInfo | None = None
@@ -212,7 +217,7 @@ class MdnsPublisher:
             or f"http://{self._chosen_hostname.rstrip('.')}:{self._port}",
             TXT_KEY_FINGERPRINT: self._fingerprint or "",
         }
-        if self._tier:
+        if self._tier and self._advertise_tier:
             properties[TXT_KEY_TIER] = self._tier
         return ServiceInfo(
             DISCOVERY_SERVICE_TYPE,

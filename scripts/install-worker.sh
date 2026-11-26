@@ -414,10 +414,17 @@ pair_worker() {
             return 1
         fi
         log "no controller URL given -- scanning the LAN for taOS controllers (mDNS)..."
-        CONTROLLER_URL="$("$INSTALL_DIR/.venv/bin/python" -m tinyagentos.worker.discovery --pick)" || {
+        # --pick prints the chosen URL on line 1 and its advertised hub
+        # fingerprint on line 2. The fingerprint is passed to the pair
+        # CLI below, which makes the controller prove it holds that
+        # hub key before pairing -- a copied mDNS record is not enough.
+        local _pick_out
+        _pick_out="$("$INSTALL_DIR/.venv/bin/python" -m tinyagentos.worker.discovery --pick)" || {
             warn "no controller discovered -- re-run with an explicit controller URL."
             return 1
         }
+        CONTROLLER_URL="$(printf '%s\n' "$_pick_out" | sed -n '1p')"
+        DISCOVERED_FINGERPRINT="$(printf '%s\n' "$_pick_out" | sed -n '2p')"
         log "discovered controller: $CONTROLLER_URL"
     fi
     log "pairing worker '${WORKER_NAME}' with controller at $CONTROLLER_URL"
@@ -431,11 +438,16 @@ pair_worker() {
     if [[ -n "$worker_url" ]]; then
         _pair_url_flag=(--url "$worker_url")
     fi
+    local _pair_fp_flag=()
+    if [[ -n "${DISCOVERED_FINGERPRINT:-}" ]]; then
+        _pair_fp_flag=(--expect-fingerprint "$DISCOVERED_FINGERPRINT")
+    fi
     if ! "$INSTALL_DIR/.venv/bin/python" -m tinyagentos.worker.pair \
             "$CONTROLLER_URL" \
             --name "$WORKER_NAME" \
             --state-dir "$INSTALL_DIR/.taos-worker-state" \
             ${_pair_url_flag[@]+"${_pair_url_flag[@]}"} \
+            ${_pair_fp_flag[@]+"${_pair_fp_flag[@]}"} \
             ${_pair_manual_flag[@]+"${_pair_manual_flag[@]}"} \
             --register-after; then
         warn "pairing requires admin approval in taOS > Cluster."
