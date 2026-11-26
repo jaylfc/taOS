@@ -7,6 +7,35 @@ Versions follow semver beta: `1.0.0-beta.N`, bumped on each dev->master promotio
 
 ## [Unreleased]
 
+## [1.0.0-beta.60] - 2026-11-26
+
+Security release cut from beta.59.
+
+### Security
+
+- Security fixes across chat, memory, agents, the store, the hub, the browser proxy, collaboration invites and sign-in. Update soon, especially on installs with more than one person.
+- Chat: attaching files from a workspace is limited to the workspaces folder and to an agent's owner or an admin. Chat channels, messages, threads, pins, search and unread counts are now visible only to a channel's members and admins, and messages are attributed to the signed-in person or the agent that sent them.
+- Memory: a person's captured chats, notes and file activity are now private to that person, and agents reach a person's memory only through their own memory search.
+- Agents: a deployed agent's token now acts as that agent for its owner and no longer has administrator rights. Agent desktops, version history, GitHub grants, messages, contacts and usage need the agent's owner or an admin. Agent keys are no longer returned when an agent is edited, and a rotated-out agent token stops working everywhere.
+- Store, hub and settings: installing and uninstalling store apps, the hub write routes, the shared notification mute list and torrent settings need an admin. Registering a deployed agent identity needs an admin.
+- Browser proxy, invites and requests: crafted page styles can no longer freeze the controller, collaboration invites no longer post to addresses on this machine or its network, and a cross-site page can no longer pause agents. Reusing an existing agent identity now needs proof from that agent.
+- Smaller fixes: deleting the root of a workspace is refused, closing another author's unclaimed task is refused, the "Decision needed" notification goes only to the person who must decide, the device lock screen is harder to guess at (see Changed), and updated dependencies (pypdf, filelock).
+
+### Changed
+
+- Members now see only their own channels and their own memory. Existing shared memory now belongs to the install owner.
+- Memory capture settings are per person; only the install-wide default needs an admin.
+- Deregistering a worker needs an administrator session.
+- Each person can have at most 50 signed-in sessions; the oldest are signed out first.
+- Agents deployed by members before this release with no recorded owner now belong to the install owner.
+- Stronger device lock: failed PIN attempts are counted across restarts with growing delays, locking the screen ends sessions signed in at the device, and the device's own screen is recognised by a private per-boot secret.
+- Agent tokens now expire after 30 days and renew through the registry refresh route. Agents can opt in to a shelf of memory their owner may read.
+
+### Fixed
+
+- Chat search now returns the full number of results from channels you can read.
+- Re-pairing a taOSusb board no longer leaves an old model key behind.
+
 ## [1.0.0-beta.59] - 2026-11-24
 
 Security hotfix cut from beta.58.
