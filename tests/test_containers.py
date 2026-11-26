@@ -668,3 +668,29 @@ class TestExecInContainer:
         assert code == 0
         exec_calls = [c for c in calls if c[:2] == ["incus", "exec"]]
         assert exec_calls == [["incus", "exec", "taos-agent-ghost", "--", "true"]]
+
+
+class TestExecInContainerTimeoutBudget:
+    @pytest.mark.asyncio
+    async def test_caller_timeout_covers_project_resolution(self):
+        """One deadline for the whole call (CodeRabbit Minor on #4571):
+        with timeout=5 the project lookup must not run on _run's 120s
+        default ahead of the exec — every subprocess gets <= the budget."""
+        timeouts = []
+
+        async def mock_run(cmd, timeout=120):
+            timeouts.append(timeout)
+            if cmd[:2] == ["incus", "list"]:
+                return (0, json.dumps([
+                    {"name": "taos-agent-a1", "project": "user-999",
+                     "status": "Running"}
+                ]))
+            return (0, "done")
+
+        with patch("tinyagentos.containers._run", side_effect=mock_run):
+            code, _out = await exec_in_container(
+                "taos-agent-a1", ["true"], timeout=5
+            )
+        assert code == 0
+        assert len(timeouts) == 2  # project lookup + exec
+        assert all(t <= 5 for t in timeouts), timeouts

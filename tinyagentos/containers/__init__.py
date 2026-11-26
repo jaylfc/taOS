@@ -56,7 +56,7 @@ async def _run(cmd: list[str], timeout: int = 120) -> tuple[int, str]:
 # ``patch("tinyagentos.containers._run")`` correctly intercepts them.
 # ---------------------------------------------------------------------------
 
-async def _resolve_container_project(name: str) -> str | None:
+async def _resolve_container_project(name: str, timeout: int = 120) -> str | None:
     """Return the incus project a container lives in, or None if not found.
 
     Searches ALL projects the client can see (``--all-projects``), not just the
@@ -65,7 +65,7 @@ async def _resolve_container_project(name: str) -> str | None:
     scoped to the ambient project alone misses the others, which is how undeploy
     left orphaned containers behind. Errors return None (treated as "unknown").
     """
-    code, output = await _run(["incus", "list", "--all-projects", "-f", "json"])
+    code, output = await _run(["incus", "list", "--all-projects", "-f", "json"], timeout=timeout)
     if code != 0:
         return None
     try:
@@ -105,11 +105,11 @@ async def get_container_state(name: str) -> dict | None:
     return None
 
 
-async def _project_args(name: str) -> list[str]:
+async def _project_args(name: str, timeout: int = 120) -> list[str]:
     """``["--project", <p>]`` for the container's project, or ``[]`` (ambient)
     when it cannot be resolved. Mirrors destroy_container's lookup."""
     try:
-        proj = await _resolve_container_project(name)
+        proj = await _resolve_container_project(name, timeout=timeout)
     except (FileNotFoundError, OSError):
         proj = None
     return ["--project", proj] if proj else []
@@ -432,9 +432,17 @@ async def exec_in_container(name: str, cmd: list[str], timeout: int = 300) -> tu
     this module): without ``--project`` the exec searches the ambient project
     and misses containers living in a per-user project (e.g. ``user-999``).
     Unresolvable containers keep the ambient-project behaviour.
+
+    *timeout* is a single budget shared by the project lookup and the exec
+    itself: a short-timeout caller (the terminal routes use 15s) must not be
+    silently exposed to the lookup's 120s default before the exec starts.
     """
-    proj_args = await _project_args(name)
-    return await _run(["incus", "exec", *proj_args, name, "--"] + cmd, timeout=timeout)
+    deadline = time.monotonic() + timeout
+    proj_args = await _project_args(
+        name, timeout=max(1, round(deadline - time.monotonic()))
+    )
+    remaining = max(1, round(deadline - time.monotonic()))
+    return await _run(["incus", "exec", *proj_args, name, "--"] + cmd, timeout=remaining)
 
 
 async def push_file(name: str, local_path: str, remote_path: str) -> tuple[int, str]:
