@@ -303,8 +303,10 @@ class TestBoundAgentToken:
 
     @pytest.mark.asyncio
     async def test_cannot_restore_or_purge_archives(self, beta, app):
-        assert (await beta.post("/api/agents/archived/ghost-1/restore")).status_code == 403
-        assert (await beta.delete("/api/agents/archived/ghost-1")).status_code == 403
+        # An agent token is never admin, and an agent with no recorded owner has
+        # no user to act for, so it is refused (401 no user, or 403).
+        assert (await beta.post("/api/agents/archived/ghost-1/restore")).status_code in (401, 403)
+        assert (await beta.delete("/api/agents/archived/ghost-1")).status_code in (401, 403)
         assert any(e["id"] == "ghost-1" for e in app.state.config.archived_agents)
 
     @pytest.mark.asyncio

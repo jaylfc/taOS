@@ -146,6 +146,9 @@ async def test_state_requires_agents_read(vapp):
 @pytest.mark.asyncio
 async def test_state_demo_flag_and_unanswerable_decision(vapp, monkeypatch):
     from tinyagentos.demo_mode import write_demo_mode
+    from tinyagentos.routes import auth as auth_mod
+
+    monkeypatch.setattr(auth_mod, "_request_is_console", lambda _r: True)
 
     app = vapp
     monkeypatch.setenv("TAOS_LOCK_DEMO_AGENTS", "DemoA:openclaw:Drafting")
@@ -192,6 +195,9 @@ async def test_state_demo_flag_and_unanswerable_decision(vapp, monkeypatch):
 @pytest.mark.asyncio
 async def test_settings_demo_switch_takes_state_down(vapp, monkeypatch):
     from tinyagentos.demo_mode import write_demo_mode
+    from tinyagentos.routes import auth as auth_mod
+
+    monkeypatch.setattr(auth_mod, "_request_is_console", lambda _r: True)
 
     app = vapp
     monkeypatch.setenv("TAOS_LOCK_DEMO_AGENTS", "DemoB:openclaw:Drafting")

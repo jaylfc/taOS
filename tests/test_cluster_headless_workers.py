@@ -107,21 +107,32 @@ class TestExemptGetBearerTokens:
         assert out.state_flags["headless_full_view"] is None
         assert out.state_flags["via"] == "exempt"
 
-    def test_valid_local_token_gets_admin(self):
+    def test_valid_local_token_gets_admin(self, tmp_path):
         mgr = _default_auth_mgr()
         mgr.validate_local_token.return_value = True
         mgr.get_primary_user.return_value = {"id": "user-1", "is_admin": True}
-        # The removed fallback branch resolved an unbound token via
-        # get_local_token_agent; give the mock a real binding tuple so the
-        # canonical-id path sees a legacy name-only binding and fences the
-        # request to that agent (is_admin + via local_token, unchanged).
-        mgr.get_local_token_binding.return_value = ("test-bound-agent", None)
+        # The host user's own token: no per-agent binding, and it is the token
+        # in the host's token file.
+        token_file = tmp_path / ".auth_local_token"
+        token_file.write_text("local-secret")
+        mgr.get_local_token_binding.return_value = None
+        mgr.local_token_path = lambda: token_file
         req = _make_request(headers={"authorization": "Bearer local-secret"})
         out = _run_dispatch(req, mgr)
         assert out.state_flags["is_admin"] is True
         assert out.state_flags["via"] == "local_token"
 
-    def test_local_token_without_primary_user_is_not_admin(self):
+    def test_a_bound_agent_token_is_never_admin(self):
+        mgr = _default_auth_mgr()
+        mgr.validate_local_token.return_value = True
+        mgr.get_primary_user.return_value = {"id": "user-1", "is_admin": True}
+        mgr.get_local_token_binding.return_value = ("test-bound-agent", None)
+        req = _make_request(headers={"authorization": "Bearer local-secret"})
+        out = _run_dispatch(req, mgr)
+        assert out.state_flags["is_admin"] is False
+        assert out.state_flags["via"] == "agent_token"
+
+    def test_local_token_without_primary_user_is_not_admin(self, tmp_path):
         # Pre-onboarding there is no primary user. The non-exempt flow
         # refuses admin in that case (user_id None, is_admin False); the
         # exempt-GET promotion must match it instead of handing exempt GET
@@ -129,7 +140,10 @@ class TestExemptGetBearerTokens:
         mgr = _default_auth_mgr()
         mgr.validate_local_token.return_value = True
         mgr.get_primary_user.return_value = None
-        mgr.get_local_token_binding.return_value = ("test-bound-agent", None)
+        token_file = tmp_path / ".auth_local_token"
+        token_file.write_text("local-secret")
+        mgr.get_local_token_binding.return_value = None
+        mgr.local_token_path = lambda: token_file
         req = _make_request(headers={"authorization": "Bearer local-secret"})
         out = _run_dispatch(req, mgr)
         assert out.state_flags["is_admin"] is False
@@ -324,8 +338,8 @@ class TestExemptGetBearerTokens:
         
         out = _run_dispatch(req, mgr)
         
-        assert out.state_flags["is_admin"] is True
-        assert out.state_flags["via"] == "local_token"
+        assert out.state_flags["is_admin"] is False
+        assert out.state_flags["via"] == "agent_token"
         
         # Read the log file directly (like test_agent_token_route_recorder.py)
         log_file = tmp_path / "logs" / "agent-token-routes.jsonl"
