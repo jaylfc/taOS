@@ -5,13 +5,15 @@ import logging
 
 from fastapi import APIRouter, Request
 
+from tinyagentos.user_memory import capture_user_id
+
 router = APIRouter()
 logger = logging.getLogger(__name__)
 
 
-async def _capture_search_query(user_memory, query: str, user_id: str = "user") -> None:
+async def _capture_search_query(user_memory, query: str, user_id: str | None = None) -> None:
     """Fire-and-forget search capture. Never raises."""
-    if not user_memory or not query:
+    if not user_memory or not query or not user_id:
         return
     try:
         settings = await user_memory.get_settings(user_id)
@@ -37,7 +39,10 @@ async def global_search(request: Request, q: str = "", limit: int = 5):
     # Capture search into user memory (async, non-blocking)
     user_memory = getattr(request.app.state, "user_memory", None)
     if user_memory:
-        asyncio.create_task(_capture_search_query(user_memory, q))
+        asyncio.create_task(_capture_search_query(
+            user_memory, q,
+            capture_user_id(request.app.state.auth, getattr(request.state, "user_id", None)),
+        ))
 
     query = q.lower()
     results = []

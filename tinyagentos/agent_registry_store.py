@@ -336,6 +336,16 @@ TOKEN_STORAGE_GUIDANCE = (
 )
 
 
+# Agent tokens expire.  An agent holds its token in its environment, so the
+# lifetime is long (30 days) and a token that has just lapsed can still be
+# presented to the refresh route for 14 days to get a new one: a running agent
+# is never stranded by expiry alone, while one that has been gone longer than
+# that has to be re-issued by its owner.  Human tokens are session assertions
+# (no exp).
+AGENT_TOKEN_TTL_SECONDS = 30 * 24 * 3600
+AGENT_TOKEN_REFRESH_GRACE_SECONDS = 14 * 24 * 3600
+
+
 def mint_registry_token(
     canonical_id: str,
     private_key_pem: bytes,
@@ -345,6 +355,7 @@ def mint_registry_token(
     project_id: Optional[str] = None,
     principal_type: str = "agent",
     iat: Optional[int] = None,
+    exp: Optional[int] = None,
 ) -> str:
     """Return a signed compact EdDSA JWT: <header>.<payload>.<signature> (base64url).
 
@@ -364,6 +375,10 @@ def mint_registry_token(
       framework     - agent framework at registration time (agent tokens only)
       project_id    - project binding, present only when non-empty; absent means
                       the token is global (not bound to any project)
+      exp           - unix expiry.  Agent tokens always carry one (``iat`` +
+                      ``AGENT_TOKEN_TTL_SECONDS`` unless *exp* is given); human
+                      assertions carry none.  ``verify_registry_token`` rejects
+                      a token past it.
 
     ``iat`` overrides the issuance timestamp (Unix seconds).  Rotation passes
     the identity's new ``token_min_iat`` cutoff here so the replacement token is
@@ -392,6 +407,10 @@ def mint_registry_token(
         claims["framework"] = framework
     if project_id:
         claims["project_id"] = project_id
+    if exp is None and principal_type == "agent":
+        exp = claims["iat"] + AGENT_TOKEN_TTL_SECONDS
+    if exp is not None:
+        claims["exp"] = int(exp)
     payload = _b64url_encode(
         json.dumps(claims, separators=(",", ":")).encode()
     )
@@ -400,11 +419,16 @@ def mint_registry_token(
     return f"{header}.{payload}.{signature}"
 
 
-def verify_registry_token(token: str, public_key_pem: bytes) -> dict:
+def verify_registry_token(
+    token: str, public_key_pem: bytes, *, check_exp: bool = True
+) -> dict:
     """Verify *token* against *public_key_pem*.
 
     Returns the decoded payload dict on success.
-    Raises ``ValueError`` on invalid format or bad signature.
+    Raises ``ValueError`` on invalid format, bad signature, or (when the token
+    carries an ``exp`` claim and *check_exp* is true) an expired token.  Tokens
+    without ``exp`` (issued before agent tokens expired, and human assertions)
+    are unaffected.
     """
     from cryptography.hazmat.primitives.serialization import load_pem_public_key
     from cryptography.exceptions import InvalidSignature
@@ -428,6 +452,10 @@ def verify_registry_token(token: str, public_key_pem: bytes) -> dict:
         raise ValueError(
             f"payload must be a JSON object, got {type(payload).__name__}"
         )
+    exp = payload.get("exp")
+    if check_exp and exp is not None:
+        if isinstance(exp, bool) or not isinstance(exp, (int, float)) or exp <= time.time():
+            raise ValueError("token expired")
     return payload
 
 
@@ -1019,6 +1047,24 @@ class AgentRegistryStore(BaseStore):
             raise
         await self._db.commit()
         return await self.get(canonical_id)
+
+    async def adopt_ownerless(self, canonical_id: str, user_id: str) -> bool:
+        """Give *canonical_id* an owner when it has none; never change an owner.
+
+        Rows written by a deploy before it recorded the deployer carry an empty
+        ``user_id``. The owner is otherwise immutable, so this only fills an
+        empty one. Returns True when the row was adopted.
+        """
+        if self._db is None:
+            raise RuntimeError("AgentRegistryStore not initialised")
+        if not user_id:
+            return False
+        cur = await self._db.execute(
+            "UPDATE agent_registry SET user_id = ? WHERE canonical_id = ? AND (user_id IS NULL OR user_id = '')",
+            (user_id, canonical_id),
+        )
+        await self._db.commit()
+        return bool(cur.rowcount)
 
     async def revoke(self, canonical_id: str) -> Optional[dict]:
         """Transition *canonical_id* to 'revoked' via the state-transition guard.

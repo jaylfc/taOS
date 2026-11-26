@@ -21,7 +21,8 @@ import logging
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import JSONResponse, Response
 
-from tinyagentos.routes.a2a_bus import _bus_url
+from tinyagentos.routes.a2a_bus import _authorize_bus_read, _bus_url
+from tinyagentos.routes.chat import caller_can_read_channel, channel_read_denied
 
 logger = logging.getLogger(__name__)
 
@@ -46,6 +47,32 @@ def _get_unified_bus_url() -> str:
     used by the a2a_bus.py routes.
     """
     return _bus_url()
+
+
+async def _authorize_channel_read(request: Request, channel_id: str):
+    """Authorize a read of *channel_id*; returns ``(channel_row, denial)``.
+
+    A channel with a controller row needs membership (or admin). A bus thread
+    with NO controller row falls under the bus reader rule shared with
+    GET /api/a2a/bus/messages; that raises 403 itself.
+    """
+    ch_store = request.app.state.chat_channels
+    channel = await ch_store.get_channel(channel_id) if ch_store else None
+    if channel is None:
+        await _authorize_bus_read(request)
+        return None, None
+    return channel, channel_read_denied(request, channel)
+
+
+async def _authorize_message_read(request: Request, thread: str | None):
+    """Authorize a read of a message that lives in *thread* (bus thread or channel id)."""
+    if not thread:
+        await _authorize_bus_read(request)
+        return None
+    # Project channels use the bus thread "project:{project_id}:{channel_id}".
+    channel_id = thread.rsplit(":", 1)[-1] if thread.startswith("project:") else thread
+    _row, denied = await _authorize_channel_read(request, channel_id)
+    return denied
 
 
 async def _proxy_to_bus(method: str, path: str, params: dict | None = None, body: dict | None = None):
@@ -111,6 +138,7 @@ async def list_channels_view(request: Request, member: str | None = None, archiv
     try:
         data = await _proxy_to_bus("GET", "/a2a/channels", params=params)
         channels = data.get("channels", []) if isinstance(data, dict) else []
+        channels = [c for c in channels if caller_can_read_channel(request, c)]
         for channel in channels:
             channel["unified_bus"] = True
         logger.debug("List channels view retrieved %d channels from bus", len(channels))
@@ -124,6 +152,7 @@ async def list_channels_view(request: Request, member: str | None = None, archiv
         channels = await ch_store.list_channels(
             member_id=member, archived=archived, project_id=project_id
         )
+        channels = [c for c in channels if caller_can_read_channel(request, c)]
 
         for channel in channels:
             channel["unified_bus"] = True
@@ -134,6 +163,10 @@ async def list_channels_view(request: Request, member: str | None = None, archiv
 @router.get("/api/chat/v2/channels/{channel_id}")
 async def get_channel_view(channel_id: str, request: Request):
     """View: Get channel from the bus."""
+
+    _row, denied = await _authorize_channel_read(request, channel_id)
+    if denied:
+        return denied
 
     bus_thread = _get_bus_channel_for_channel_id(channel_id, {"id": channel_id})
 
@@ -162,10 +195,9 @@ async def get_channel_view(channel_id: str, request: Request):
 async def get_channel_messages_view(channel_id: str, request: Request, limit: int = 50, before: float | None = None):
     """View: Get messages from the bus with message ID cursor pagination."""
 
-    ch_store = request.app.state.chat_channels
-    channel_data = None
-    if ch_store:
-        channel_data = await ch_store.get_channel(channel_id)
+    channel_data, denied = await _authorize_channel_read(request, channel_id)
+    if denied:
+        return denied
 
     bus_thread = _get_bus_channel_for_channel_id(channel_id, channel_data or {"id": channel_id})
 
@@ -212,6 +244,10 @@ async def get_message_view(message_id: str, request: Request):
         message = await _proxy_to_bus("GET", f"/a2a/messages/{message_id}")
         logger.debug("Get message view retrieved %s from bus", message_id)
 
+        denied = await _authorize_message_read(request, message.get("thread") or message.get("channel_id"))
+        if denied:
+            return denied
+
         message["unified_bus"] = True
 
         return JSONResponse(message)
@@ -225,6 +261,10 @@ async def get_message_view(message_id: str, request: Request):
             msg = await store.get_message(message_id)
             if msg is None:
                 return JSONResponse({"error": "not found"}, status_code=404)
+
+            denied = await _authorize_message_read(request, msg.get("channel_id"))
+            if denied:
+                return denied
 
             msg["unified_bus"] = True
 

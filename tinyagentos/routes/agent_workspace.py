@@ -14,6 +14,7 @@ from tinyagentos.routes.user_workspace import (
     _dir_signature,
     _list_dir,
     _resolve_safe,
+    _resolve_safe_child,
 )
 from tinyagentos.workspace_trash import (
     TrashItemNotFound,
@@ -239,7 +240,7 @@ async def api_delete_file(request: Request, agent_name: str, file_path: str):
     if err is not None:
         return err
 
-    target = _resolve_safe(workspace, file_path)
+    target = _resolve_safe_child(workspace, file_path)
     if target is None:
         return JSONResponse({"error": "Invalid path"}, status_code=400)
 

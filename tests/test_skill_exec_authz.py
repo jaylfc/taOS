@@ -112,6 +112,7 @@ class TestSkillExecAuthz:
         # test_skill_exec_governance.py.
         await app.state.execution_policies.set_policy("code-exec", "allow")
         # Use the deployer's real token-minting flow, not the shared host token.
+        await app.state.skills.assign_skill("alice", "code_exec", None)
         alice_token = app.state.auth.mint_agent_local_token("alice")
         bare_client = AsyncClient(
             transport=ASGITransport(app=app), base_url="http://test"
@@ -126,9 +127,11 @@ class TestSkillExecAuthz:
         finally:
             await bare_client.aclose()
 
-        assert resp.status_code == 200
-        assert resp.json()["returncode"] == 0
-        mock_run.assert_called_once()
+        assert resp.status_code == 403
+        # a per-agent token reaches the skill (assignment + name fence) but the
+        # host-RCE code_exec skill refuses it: it never runs subprocess
+        assert "not available to agent tokens" in resp.json()["error"]
+        mock_run.assert_not_called()
 
     async def test_invalid_token_no_session_rejected_and_no_subprocess(self, client, app):
         """(d) An invalid token with no session at all is rejected (the
@@ -225,9 +228,11 @@ class TestIsAdminOrLocalToken:
 
         req = self._request_with_state(is_admin=False, via="session")
         with patch("subprocess.run") as mock_run:
-            result = await _skill_code_exec({"code": "print('no')"}, req)
+            from fastapi import HTTPException
+            with pytest.raises(HTTPException) as exc:
+                await _skill_code_exec({"code": "print('no')"}, req)
 
-        assert "error" in result
+        assert exc.value.status_code == 403
         mock_run.assert_not_called()
 
 
@@ -261,6 +266,7 @@ class TestSkillExecCredentialAgentName:
         bound agent_name must be accepted."""
         await _ensure_skills_seeded(app)
         await app.state.execution_policies.set_policy("code-exec", "allow")
+        await app.state.skills.assign_skill("alice", "code_exec", None)
         alice_token = app.state.auth.mint_agent_local_token("alice")
 
         bare_client = AsyncClient(
@@ -277,14 +283,17 @@ class TestSkillExecCredentialAgentName:
         finally:
             await bare_client.aclose()
 
-        assert resp.status_code == 200
-        assert resp.json()["returncode"] == 0
-        mock_run.assert_called_once()
+        assert resp.status_code == 403
+        # a per-agent token reaches the skill (assignment + name fence) but the
+        # host-RCE code_exec skill refuses it: it never runs subprocess
+        assert "not available to agent tokens" in resp.json()["error"]
+        mock_run.assert_not_called()
 
     async def test_per_agent_token_no_body_agent_name_uses_credential(self, client, app):
         """When no agent_name is in the body, the credential-bound name is used."""
         await _ensure_skills_seeded(app)
         await app.state.execution_policies.set_policy("code-exec", "allow")
+        await app.state.skills.assign_skill("alice", "code_exec", None)
         alice_token = app.state.auth.mint_agent_local_token("alice")
 
         bare_client = AsyncClient(
@@ -300,9 +309,11 @@ class TestSkillExecCredentialAgentName:
         finally:
             await bare_client.aclose()
 
-        assert resp.status_code == 200
-        assert resp.json()["returncode"] == 0
-        mock_run.assert_called_once()
+        assert resp.status_code == 403
+        # a per-agent token reaches the skill (assignment + name fence) but the
+        # host-RCE code_exec skill refuses it: it never runs subprocess
+        assert "not available to agent tokens" in resp.json()["error"]
+        mock_run.assert_not_called()
 
     async def test_admin_session_body_agent_name_still_honoured(self, client, app):
         """Admin sessions are trusted: body-supplied agent_name is still honoured
@@ -344,7 +355,10 @@ class TestSkillExecCredentialAgentName:
         await _ensure_skills_seeded(app)
         await app.state.execution_policies.set_policy("code-exec", "allow")
 
+        await app.state.skills.assign_skill("alice", "code_exec", None)
+
         alice_token = app.state.auth.mint_agent_local_token("alice")
+        await app.state.skills.assign_skill("bob", "code_exec", None)
         bob_token = app.state.auth.mint_agent_local_token("bob")
 
         # alice's honest call (her own token + agent_name alice) -> 200
@@ -362,9 +376,11 @@ class TestSkillExecCredentialAgentName:
         finally:
             await alice_client.aclose()
 
-        assert resp.status_code == 200
-        assert resp.json()["returncode"] == 0
-        mock_run.assert_called_once()
+        assert resp.status_code == 403
+        # a per-agent token reaches the skill (assignment + name fence) but the
+        # host-RCE code_exec skill refuses it: it never runs subprocess
+        assert "not available to agent tokens" in resp.json()["error"]
+        mock_run.assert_not_called()
 
         # bob's honest call (his own token + agent_name bob) -> 200
         bob_client = AsyncClient(
@@ -381,9 +397,11 @@ class TestSkillExecCredentialAgentName:
         finally:
             await bob_client.aclose()
 
-        assert resp.status_code == 200
-        assert resp.json()["returncode"] == 0
-        mock_run.assert_called_once()
+        assert resp.status_code == 403
+        # a per-agent token reaches the skill (assignment + name fence) but the
+        # host-RCE code_exec skill refuses it: it never runs subprocess
+        assert "not available to agent tokens" in resp.json()["error"]
+        mock_run.assert_not_called()
 
         # alice presenting agent_name bob with HER token -> 403
         alice_impersonator = AsyncClient(

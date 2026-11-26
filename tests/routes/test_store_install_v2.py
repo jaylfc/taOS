@@ -8,6 +8,9 @@ real worker. Real installer side effects are mocked at the
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from httpx import ASGITransport, AsyncClient
+
+from taos_test_csrf import csrf_event_hooks
 
 from tinyagentos.catalog.resolver import DeviceCapability
 
@@ -774,3 +777,110 @@ class TestTargetRemoteValidation:
                 "target_remote": "edge-host.pi",
             })
         assert r.status_code == 200
+
+
+# ---------------------------------------------------------------------------
+# Admin guard on install-v2 / uninstall-v2 (GHSA security: no admin guard)
+# ---------------------------------------------------------------------------
+async def _member_client(app) -> AsyncClient:
+    """Cookie'd client for a non-admin member session on *app*.
+
+    Mirrors the helper in tests/test_settings_authz.py: the admin created by
+    the ``client`` fixture is required to send the invite, so callers must
+    depend on ``client`` (which sets up the admin) before calling this.
+    """
+    auth_mgr = app.state.auth
+    invite_code = auth_mgr.add_user_invite("member", "admin")
+    auth_mgr.complete_invite(
+        "member", invite_code, "Test Member", "", "membersettingspass123"
+    )
+    member = auth_mgr.find_user("member")
+    token = auth_mgr.create_session(user_id=member["id"], long_lived=True)
+    return AsyncClient(
+        transport=ASGITransport(app=app),
+        base_url="http://test",
+        cookies={"taos_session": token},
+        event_hooks=csrf_event_hooks(),
+    )
+
+
+class TestInstallV2AdminGuard:
+    """POST /api/store/install-v2 and /api/store/uninstall-v2 must require an
+    admin (or the host local token). A plain non-admin member session gets
+    403 and nothing is installed or removed; an admin still succeeds."""
+
+    @pytest.mark.asyncio
+    async def test_non_admin_install_v2_returns_403_and_installs_nothing(self, client, fake_registry):
+        client._transport.app.state.registry = fake_registry
+        member_client = await _member_client(client._transport.app)
+        try:
+            with patch(
+                "tinyagentos.routes.store_install.get_installer"
+            ) as mock_get:
+                r = await member_client.post("/api/store/install-v2", json={
+                    "manifest_id": "qwen2.5-3b",
+                    "variant_id": "q4_k_m",
+                })
+            assert r.status_code == 403
+            # The guard short-circuits before the handler body runs, so no
+            # installer is invoked and nothing is recorded as installed.
+            mock_get.assert_not_called()
+            fake_registry.mark_installed.assert_not_called()
+        finally:
+            await member_client.aclose()
+
+    @pytest.mark.asyncio
+    async def test_non_admin_uninstall_v2_returns_403_and_removes_nothing(self, client, fake_registry):
+        client._transport.app.state.registry = fake_registry
+        member_client = await _member_client(client._transport.app)
+        try:
+            with patch(
+                "tinyagentos.routes.store_install.get_installer"
+            ) as mock_get:
+                r = await member_client.post("/api/store/uninstall-v2", json={
+                    "app_id": "qwen2.5-3b",
+                })
+            assert r.status_code == 403
+            # The guard short-circuits before the handler body runs, so the
+            # store record is never touched and no container is removed.
+            mock_get.assert_not_called()
+            fake_registry.mark_uninstalled.assert_not_called()
+        finally:
+            await member_client.aclose()
+
+    @pytest.mark.asyncio
+    async def test_admin_install_v2_still_succeeds(self, client, fake_registry, pi_capability):
+        """Regression: the admin guard must not block a legitimate admin."""
+        client._transport.app.state.registry = fake_registry
+        with patch(
+            "tinyagentos.routes.store_install.get_device_capability",
+            new=AsyncMock(return_value=pi_capability),
+        ), patch(
+            "tinyagentos.routes.store_install.get_installer"
+        ) as mock_get:
+            backend_inst = MagicMock()
+            backend_inst.install = AsyncMock(return_value={"success": True, "method": "script"})
+            model_inst = MagicMock()
+            model_inst.install = AsyncMock(return_value={"success": True})
+            mock_get.side_effect = [backend_inst, model_inst]
+            r = await client.post("/api/store/install-v2", json={
+                "manifest_id": "qwen2.5-3b",
+                "variant_id": "q4_k_m",
+            })
+        assert r.status_code == 200
+
+    @pytest.mark.asyncio
+    async def test_admin_uninstall_v2_still_succeeds(self, client, fake_registry):
+        """Regression: the admin guard must not block a legitimate admin."""
+        client._transport.app.state.registry = fake_registry
+        # The uninstall route reads the installed-apps store; bypass the real
+        # sqlite-backed store (not initialised in the sync-style routes/ tests)
+        # with a mock that reports nothing installed.
+        mock_installed_apps = MagicMock()
+        mock_installed_apps.get_runtime_location = AsyncMock(return_value=None)
+        mock_installed_apps.uninstall = AsyncMock(return_value=False)
+        mock_installed_apps.remove_runtime_location = AsyncMock(return_value=None)
+        client._transport.app.state.installed_apps = mock_installed_apps
+        r = await client.post("/api/store/uninstall-v2", json={"app_id": "qwen2.5-3b"})
+        assert r.status_code == 200
+        assert r.json()["status"] == "not_installed"

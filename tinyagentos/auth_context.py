@@ -39,9 +39,10 @@ def require_admin(request: Request) -> None:
     accepted signals on ``request.state``:
 
     - ``is_admin`` -- True for an admin session AND for the host local token
-      when it maps to the primary user (deployed agents and ``taosctl`` present
-      that token, so they keep working unchanged);
-    - ``via == "local_token"`` -- set for a valid local token even in the
+      when it maps to the primary user (``taosctl`` and scripts present it). A
+      per-agent token (``via == "agent_token"``) is NEVER admin and is refused
+      here: agents get explicit per-agent checks on the routes they need;
+    - ``via == "local_token"`` -- set for a valid HOST local token even in the
       pre-onboarding edge case where there is no primary user yet, so
       ``is_admin`` is False there. Checking both keeps agent tool-calls
       working in every state the middleware allows without ever accepting a
@@ -59,6 +60,25 @@ def require_admin(request: Request) -> None:
     if getattr(request.state, "via", None) == "local_token":
         return
     raise HTTPException(status_code=403, detail="forbidden")
+
+
+def is_agent_token(request: Request) -> bool:
+    """True for a per-agent local token (``via == "agent_token"``).
+
+    AuthMiddleware authenticates such a token AS THE AGENT, acting for the
+    agent's registry owner, never admin: ``require_admin`` refuses it because
+    ``is_admin`` is False and ``via`` is not ``"local_token"``.
+    """
+    return getattr(request.state, "via", None) == "agent_token"
+
+
+def is_local_token_caller(request: Request) -> bool:
+    """True for either local-token credential: the host token or an agent token.
+
+    For the routes that serve agents (memory, broker, photos): they branch on
+    ``agent_name`` to fence an agent to its own resources.
+    """
+    return getattr(request.state, "via", None) in ("local_token", "agent_token")
 
 
 async def resolve_agent_owner(request: Request, agent_id: str, *, exact: bool = False) -> str | None:

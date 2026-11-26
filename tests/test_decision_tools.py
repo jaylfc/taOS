@@ -124,3 +124,13 @@ def test_normalize_options_dedupes_colliding_labels():
 def test_normalize_options_accepts_dicts():
     out = _normalize_options([{"label": "Yes", "value": "y"}, {"label": "No", "value": "n"}])
     assert out == [{"label": "Yes", "value": "y"}, {"label": "No", "value": "n"}]
+
+
+@pytest.mark.asyncio
+async def test_agent_tool_notification_is_scoped_to_decider(app_request):
+    """Follow-up of #3695: the bell notification goes to the asked user only,
+    not as a broadcast to every user and push device."""
+    req, _store, notifs = app_request
+    await execute_request_decision({"question": "Ship it?", "type": "approve_deny"}, req)
+    assert len(notifs.added) == 1
+    assert notifs.added[0].get("user_id") == "user-1"

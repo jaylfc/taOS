@@ -34,6 +34,8 @@ from tinyagentos.auth_context import (
     require_agent_owner_or_admin,
     resolve_agent_owner,
 )
+from tinyagentos.agent_token_auth import _get_grants_store
+
 logger = logging.getLogger(__name__)
 
 EXPORT_VERSION = 1
@@ -541,6 +543,47 @@ async def update_agent_permissions(request: Request, name: str, body: AgentPermi
     }
 
 
+async def _memory_read_target(request: Request, user: CurrentUser, name: str):
+    """The (agent record, shelf) a person may opt in to reading.
+
+    Only the agent's OWNER may do this, not any admin: the grant lets that
+    person's own token read the agent's shelf, so it is theirs to give or
+    withdraw about their own agent.
+    """
+    config = request.app.state.config
+    agent = find_agent(config, name)
+    if not agent:
+        raise HTTPException(status_code=404, detail=f"Agent '{name}' not found")
+    owner = await resolve_agent_owner(request, agent.get("name") or name)
+    if owner is None or not user.user_id or owner != user.user_id:
+        raise HTTPException(status_code=403, detail="forbidden")
+    return agent
+
+
+@router.put("/api/agents/{name}/memory-read")
+async def opt_in_memory_read(request: Request, name: str, user: CurrentUser = Depends(current_user)):
+    """The owner explicitly lets THEMSELVES read this agent's memory shelf
+    (a ``memory:read`` grant: read only, person tokens only)."""
+    agent = await _memory_read_target(request, user, name)
+    from tinyagentos.shelf_grants import grant_person_read
+
+    try:
+        await grant_person_read(_get_grants_store(request), user.user_id, agent["name"])
+    except ValueError:
+        raise HTTPException(status_code=400, detail="agent has no valid memory shelf name")
+    return {"agent": agent["name"], "shelf": agent["name"], "memory_read": True}
+
+
+@router.delete("/api/agents/{name}/memory-read")
+async def opt_out_memory_read(request: Request, name: str, user: CurrentUser = Depends(current_user)):
+    """Withdraw the owner's ``memory:read`` grant on this agent's shelf."""
+    agent = await _memory_read_target(request, user, name)
+    from tinyagentos.shelf_grants import revoke_person_read
+
+    await revoke_person_read(_get_grants_store(request), user.user_id, agent["name"])
+    return {"agent": agent["name"], "shelf": agent["name"], "memory_read": False}
+
+
 @router.delete("/api/agents/{name}")
 async def delete_agent(request: Request, name: str, user: CurrentUser = Depends(current_user)):
     """Archive an agent instead of hard-deleting it. The agent's
@@ -859,8 +902,27 @@ async def deploy_agent_endpoint(request: Request, body: DeployAgentRequest):
                 rec = await ar.register(
                     framework=body.framework,
                     display_name=display_name,
+                    # The deployer owns the agent: its per-agent token acts for
+                    # this user. (The host token maps to the install owner.)
+                    user_id=str(getattr(request.state, "user_id", None) or ""),
                 )
                 canonical_id = rec.get("canonical_id")
+                # The agent's own taOSmd shelf: the name it is registered with
+                # the memory service under, which is not its canonical_id.
+                _grants = getattr(request.app.state, "agent_grants", None)
+                if (
+                    canonical_id
+                    and _grants is not None
+                    and getattr(_grants, "_db", None) is not None
+                    and body.memory_mode != "framework"
+                ):
+                    try:
+                        await _grants.add_shelf_grant(canonical_id, "memory:shelf", unique_slug)
+                    except Exception as shelf_exc:
+                        logger.warning(
+                            "Failed to add memory:shelf grant for %s: %s",
+                            canonical_id, shelf_exc,
+                        )
             except ValueError as e:
                 # Reserved-prefix names are a user error, not a server fault.
                 err_body = {"error": str(e)}
@@ -1066,12 +1128,17 @@ async def deploy_agent_endpoint(request: Request, body: DeployAgentRequest):
                         if not agent.get("chat_channel_id"):
                             try:
                                 ch_store = request.app.state.chat_channels
+                                from tinyagentos.migrations.agent_dm_owner import agent_owner_for_slug
+                                _dm_owner = await agent_owner_for_slug(
+                                    config, getattr(request.app.state, "agent_registry", None), body.name
+                                )
                                 channel = await ch_store.create_channel(
                                     name=display_name,
                                     type="dm",
                                     created_by="user",
                                     members=["user", body.name],
                                     description=f"Direct messages with {display_name}",
+                                    settings={"owner_user_id": _dm_owner} if _dm_owner else None,
                                 )
                                 if channel and channel.get("id"):
                                     agent["chat_channel_id"] = channel["id"]
@@ -1719,7 +1786,7 @@ async def patch_agent_persona(request: Request, slug: str, body: PersonaPatch, u
     if body.source_persona_id is not None:
         agent["source_persona_id"] = body.source_persona_id
     await save_config_locked(config, config.config_path)
-    return {"status": "ok", "agent": agent}
+    return {"status": "ok", "agent": _public_agent(agent)}
 
 
 class MemoryPatch(BaseModel):
@@ -1742,7 +1809,7 @@ async def patch_agent_memory(request: Request, slug: str, body: MemoryPatch, use
     if body.memory_mode is not None:
         agent["memory_mode"] = body.memory_mode
     await save_config_locked(config, config.config_path)
-    return {"status": "ok", "agent": agent}
+    return {"status": "ok", "agent": _public_agent(agent)}
 
 
 @router.post("/api/agents/{slug}/dismiss-migration-banner")

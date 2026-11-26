@@ -7,7 +7,7 @@ import { useProcessStore } from "@/stores/process-store";
 import { useUpdateAvailable } from "@/hooks/use-update-available";
 import { StatusIndicators } from "./StatusIndicators";
 import { AgentKillSwitch } from "./AgentKillSwitch";
-import { withCsrf } from "@/lib/csrf";
+import { confirmLock } from "@/shell/useLockOnScreenOff";
 
 interface Props {
   onSearchOpen: () => void;
@@ -18,7 +18,7 @@ function PowerMenu() {
   const openWindow = useProcessStore((s) => s.openWindow);
 
   const lock = async () => {
-    await fetch("/auth/lock", { method: "POST", credentials: "include", headers: withCsrf({ method: "POST" })?.headers }).catch(() => {});
+    await confirmLock();
     window.location.reload();
   };
 

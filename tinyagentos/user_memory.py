@@ -13,6 +13,24 @@ DEFAULT_SETTINGS = {
 }
 
 
+LEGACY_USER_ID = "user"
+# Settings row holding the install-wide default; not a user id.
+INSTALL_DEFAULT_ID = "__install_default__"
+
+
+def capture_user_id(auth, user_id: str | None) -> str | None:
+    """The user a capture belongs to: the caller, else the install owner.
+
+    A request with no user of its own (the host local token) acts for the
+    install owner, as everywhere else. None means there is nobody to attribute
+    it to, so nothing is captured.
+    """
+    if user_id:
+        return str(user_id)
+    primary = auth.get_primary_user() if auth is not None else None
+    return (primary or {}).get("id") or None
+
+
 class UserMemoryStore(BaseStore):
     SCHEMA = """
     CREATE TABLE IF NOT EXISTS user_memory_chunks (
@@ -171,23 +189,60 @@ class UserMemoryStore(BaseStore):
         total = sum(collections.values())
         return {"total": total, "collections": collections}
 
-    async def get_settings(self, user_id: str) -> dict:
+    async def _raw_settings(self, user_id: str) -> dict:
         assert self._db is not None
         cursor = await self._db.execute(
             "SELECT settings FROM user_memory_settings WHERE user_id = ?",
             (user_id,),
         )
         row = await cursor.fetchone()
-        if row:
-            return {**DEFAULT_SETTINGS, **json.loads(row[0])}
-        return dict(DEFAULT_SETTINGS)
+        return json.loads(row[0]) if row else {}
+
+    async def get_settings(self, user_id: str) -> dict:
+        """Built-in defaults, then the install default, then the person's own choices."""
+        return {
+            **DEFAULT_SETTINGS,
+            **await self._raw_settings(INSTALL_DEFAULT_ID),
+            **await self._raw_settings(user_id),
+        }
 
     async def update_settings(self, user_id: str, updates: dict) -> None:
+        """Store only what the person chose, so a later change to the install
+        default still reaches settings they never touched."""
         assert self._db is not None
-        current = await self.get_settings(user_id)
+        current = await self._raw_settings(user_id)
         current.update(updates)
         await self._db.execute(
             "INSERT OR REPLACE INTO user_memory_settings (user_id, settings) VALUES (?, ?)",
             (user_id, json.dumps(current)),
         )
         await self._db.commit()
+
+    async def update_install_default(self, updates: dict) -> None:
+        await self.update_settings(INSTALL_DEFAULT_ID, updates)
+
+    async def rekey_legacy(self, owner_id: str) -> int:
+        """Move rows saved under the old shared ``"user"`` id to *owner_id*.
+
+        Before per-user memory every capture was filed under one shared id.
+        Those rows belong to the install owner (the first user), so a member
+        can no longer read them. Idempotent: returns how many chunks moved.
+        """
+        assert self._db is not None
+        if not owner_id or owner_id == LEGACY_USER_ID:
+            return 0
+        cur = await self._db.execute(
+            "UPDATE user_memory_chunks SET user_id = ? WHERE user_id = ?",
+            (owner_id, LEGACY_USER_ID),
+        )
+        moved = cur.rowcount or 0
+        # Keep the owner's own settings if they already have a row.
+        await self._db.execute(
+            "UPDATE OR IGNORE user_memory_settings SET user_id = ? WHERE user_id = ?",
+            (owner_id, LEGACY_USER_ID),
+        )
+        await self._db.execute(
+            "DELETE FROM user_memory_settings WHERE user_id = ?", (LEGACY_USER_ID,)
+        )
+        await self._db.commit()
+        return moved

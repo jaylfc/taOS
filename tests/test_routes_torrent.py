@@ -73,6 +73,51 @@ async def test_put_torrent_settings_503_when_store_missing(client, monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_put_torrent_settings_requires_admin(client):
+    """PUT /api/torrent/settings must require admin dependency."""
+    from tinyagentos.auth_context import require_admin as _require_admin
+    target_path = "/api/torrent/settings"
+    found = False
+    for route in client._transport.app.routes:
+        path = getattr(route, "path", "") or ""
+        methods = getattr(route, "methods", set()) or set()
+        if target_path in path and "PUT" in methods:
+            deps = route.dependant.dependencies
+            assert any(
+                d.call is _require_admin or d.call == _require_admin
+                for d in deps
+            ), f"require_admin not found in dependencies: {[d.call for d in deps]}"
+            found = True
+            break
+    assert found, f"Route {target_path!r} with PUT not found in app routes"
+
+
+@pytest.mark.asyncio
+async def test_put_torrent_settings_admin_still_saves(client, monkeypatch):
+    """Admin can still PUT torrent settings; GET reflects the change."""
+    store = client._transport.app.state.download_manager._torrent_settings_store
+    monkeypatch.setattr(
+        client._transport.app.state, "torrent_settings_store", store, raising=False
+    )
+    body = {
+        "seed_enabled": False,
+        "upload_rate_limit_kbps": 100,
+        "max_active_seeds": 3,
+    }
+    resp = await client.put("/api/torrent/settings", json=body)
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["status"] == "saved"
+    assert data["seed_enabled"] is False
+    assert data["upload_rate_limit_kbps"] == 100
+    assert data["max_active_seeds"] == 3
+    # GET reflects the saved value
+    get_resp = await client.get("/api/torrent/settings")
+    assert get_resp.status_code == 200
+    assert get_resp.json()["seed_enabled"] is False
+
+
+@pytest.mark.asyncio
 async def test_put_torrent_settings_422_on_invalid_body(client):
     resp = await client.put(
         "/api/torrent/settings",

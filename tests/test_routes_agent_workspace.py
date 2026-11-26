@@ -246,6 +246,8 @@ class TestAgentWorkspaceOwnership:
     @pytest.mark.asyncio
     async def test_agent_token_is_fenced_to_its_own_workspace(self, owner_clients, app):
         _add_agent(app, "beta")
+        from agent_owner_helper import own_agent
+        await own_agent(app, "beta", app.state.auth.find_user("admin")["id"])
         token = app.state.auth.mint_agent_local_token("beta")
         async with AsyncClient(
             transport=ASGITransport(app=app), base_url="http://test",
@@ -253,3 +255,58 @@ class TestAgentWorkspaceOwnership:
         ) as beta:
             assert (await beta.get("/api/agents/beta/workspace/files")).status_code == 200
             assert (await beta.get("/api/agents/alpha/workspace/files")).status_code == 403
+
+
+class TestAgentRootDeleteRefused:
+    """A DELETE whose path resolves to the agent workspace root itself must
+    never move the whole workspace into the trash - it must return 400 and
+    leave the root and its contents intact."""
+
+    @pytest.mark.asyncio
+    async def _seed(self, client, app, name):
+        _add_agent(app, name)
+        ws = app.state.agent_workspaces_dir / name
+        ws.mkdir(parents=True, exist_ok=True)
+        (ws / "keep.txt").write_bytes(b"keep")
+        (ws / "subdir").mkdir()
+        (ws / "subdir" / "inner.txt").write_bytes(b"keep")
+
+    @pytest.mark.parametrize(
+        "bad_path",
+        ["", ".", "%2e", "sub%2F..", "sub/.."],
+    )
+    @pytest.mark.asyncio
+    async def test_delete_root_is_refused(self, client, app, bad_path):
+        """Every spelling that normalises to the workspace root is refused.
+
+        ``""``, ``%2e`` and ``sub%2F..`` reach the DELETE handler and are a
+        400; ``.`` and ``sub/..`` are collapsed by the HTTP client to the bare
+        root path, which the route layer rejects as 405 - the root is never
+        trashed either way.
+        """
+        await self._seed(client, app, "delroot")
+        resp = await client.delete(
+            f"/api/agents/delroot/workspace/files/{bad_path}"
+        )
+        assert resp.status_code in (400, 405), resp.text
+
+        ws = app.state.agent_workspaces_dir / "delroot"
+        assert (ws / "keep.txt").exists()
+        assert (ws / "subdir" / "inner.txt").exists()
+        listing = (await client.get("/api/agents/delroot/workspace/files")).json()
+        names = {e["name"] for e in listing}
+        assert names == {"keep.txt", "subdir"}
+
+    @pytest.mark.asyncio
+    async def test_valid_child_delete_still_works(self, client, app):
+        """A normal child delete must still succeed after the fix."""
+        _add_agent(app, "delok")
+        ws = app.state.agent_workspaces_dir / "delok"
+        ws.mkdir(parents=True, exist_ok=True)
+        (ws / "gonna_delete.txt").write_bytes(b"bye")
+        resp = await client.delete(
+            "/api/agents/delok/workspace/files/gonna_delete.txt"
+        )
+        assert resp.status_code == 200
+        assert resp.json()["status"] == "deleted"
+        assert (await client.get("/api/agents/delok/workspace/files")).json() == []

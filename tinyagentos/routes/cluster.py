@@ -31,12 +31,14 @@ router = APIRouter()
 
 _update_jobs: dict[str, dict] = {}
 
-# Admin-only fleet mutations / worker execution (tsk-exyzu4). Uses
-# `require_admin`, which accepts an admin session or the host local token
-# (taosctl, the taOS agent). This is broader than the `_require_admin` gate
-# used by revoke/block/unblock, which accepts only an admin session cookie. Worker-facing
-# paths (heartbeat, pairing, leases, capabilities) keep their HMAC /
-# possession gates and are deliberately not covered by this.
+# Admin-only fleet mutations / worker execution (tsk-exyzu4).
+# _ADMIN = [Depends(require_admin)] accepts admin session cookie OR host
+# local token (via auth_context.require_admin). Routes using _ADMIN:
+#   POST /api/cluster/route, POST /api/cluster/workers/{name}/deploy,
+#   POST /api/cluster/workers/{name}/remote, POST /api/cluster/promote-archived.
+# Individual handlers that use _require_admin (from routes.auth) -
+# admin-only, no local token: unregister_worker, revoke/block/unblock,
+# drain, cancel-drain, update-worker, update-all.
 _ADMIN = [Depends(require_admin)]
 
 
@@ -664,8 +666,12 @@ async def worker_heartbeat(request: Request, body: HeartbeatBody):
     return {"status": "ok", "generation": cluster.generation}
 
 
-@router.delete("/api/cluster/workers/{name}", dependencies=_ADMIN)
+@router.delete("/api/cluster/workers/{name}")
 async def unregister_worker(request: Request, name: str):
+    # Admin check - only admin session, no local token
+    ok, err = _require_admin(request)
+    if not ok:
+        return err
     # Revoke the pairing key BEFORE deleting the worker row. If the store is
     # unavailable or revoke raises, refuse with 503 so the row is never deleted
     # while its key survives. Never skip revoke even if the worker row is absent.
@@ -1309,7 +1315,13 @@ async def _require_lease_access(request: Request) -> JSONResponse | None:
     auth_header = request.headers.get("authorization", "")
     if auth_header.lower().startswith("bearer "):
         presented = auth_header[7:].strip()
-        if presented and request.app.state.auth.validate_local_token(presented):
+        # Only the HOST local token is trusted; a per-agent token is refused so
+        # an agent cannot list, claim or release other agents' leases.
+        if (
+            presented
+            and request.app.state.auth.validate_local_token(presented)
+            and not request.app.state.auth.get_local_token_agent(presented)
+        ):
             return None
     try:
         await require_worker_hmac(request)

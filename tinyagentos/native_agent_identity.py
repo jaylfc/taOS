@@ -51,7 +51,8 @@ import os
 from pathlib import Path
 from typing import Any, Optional
 
-from tinyagentos.agent_registry_store import mint_registry_token
+from tinyagentos.agent_registry_store import AGENT_TOKEN_TTL_SECONDS, mint_registry_token
+from tinyagentos.atomic_io import atomic_write_bytes
 from tinyagentos.auto_update import install_id as read_install_id
 
 logger = logging.getLogger(__name__)
@@ -64,6 +65,9 @@ NATIVE_AGENT_ORIGIN = "taos-native"
 
 # Bus participation only.  See property 4 above before adding to this.
 NATIVE_AGENT_SCOPES = ("a2a_send", "a2a_receive")
+
+# The shelf the OS agent keeps its own memory on in the memory service.
+NATIVE_AGENT_SHELF = "taos-agent"
 
 # Scopes for the system agent's API access (desktop control, skill-exec, files,
 # projects, notes, todo, decisions, canvas, observatory).  These are granted to
@@ -121,6 +125,31 @@ _SLUG_PREFIX = "taos-agent"
 def token_path(data_dir: Path | str) -> Path:
     """Path of this install's native-agent token file."""
     return Path(data_dir) / TOKEN_FILENAME
+
+
+# Renew once half of the token's life is left; the hourly loop below looks
+# often enough to never miss it.
+_RENEW_WITHIN_SECONDS = AGENT_TOKEN_TTL_SECONDS // 2
+
+
+def _token_near_expiry(data_dir: Path | str) -> bool:
+    """True when the token on disk has an ``exp`` within the renewal window (or
+    has passed it).  A token with no ``exp`` (minted before expiry existed) is
+    renewed too; an unreadable one is left to the existing empty-file rules."""
+    import base64
+    import json
+    import time
+
+    try:
+        raw = token_path(data_dir).read_text(encoding="utf-8").strip()
+        payload = raw.split(".")[1]
+        claims = json.loads(base64.urlsafe_b64decode(payload + "=" * (-len(payload) % 4)))
+    except (OSError, IndexError, ValueError):
+        return False
+    exp = claims.get("exp")
+    if isinstance(exp, bool) or not isinstance(exp, (int, float)):
+        return True
+    return exp - time.time() < _RENEW_WITHIN_SECONDS
 
 
 def _has_token(data_dir: Path | str) -> bool:
@@ -273,6 +302,29 @@ async def ensure_native_agent_identity(
     for scope in SYSTEM_AGENT_API_SCOPES:
         await grants.add_grant(record["canonical_id"], scope)
 
+    # The OS agent's own memory shelf.  Added once; a pass that finds the agent
+    # holding no shelf grant at all (an install from before shelf grants) adds it.
+    if not await grants.list_shelf_grants(record["canonical_id"]):
+        await grants.add_shelf_grant(
+            record["canonical_id"], "memory:shelf", NATIVE_AGENT_SHELF
+        )
+
+    if _has_token(data_dir) and _token_near_expiry(data_dir):
+        # Agent tokens expire.  Replace the file with a fresh token for the same
+        # identity; nothing is retired, so a process still holding the old one
+        # keeps working until that one lapses.
+        fresh = mint_registry_token(
+            record["canonical_id"],
+            signing_key_pem,
+            user_id=record.get("user_id", ""),
+            framework=record.get("framework", NATIVE_AGENT_ORIGIN),
+        )
+        try:
+            atomic_write_bytes(token_path(data_dir), fresh.encode("utf-8"), mode=0o600)
+            logger.info("native agent token renewed")
+        except OSError as exc:
+            logger.error("native agent token could not be renewed (%s)", type(exc).__name__)
+
     if not _has_token(data_dir):
         token = mint_registry_token(
             record["canonical_id"],
@@ -375,3 +427,31 @@ async def rotate_native_agent_token(
 
     logger.info("native agent token rotated at %s", path)
     return token
+
+
+async def run_native_agent_token_renewal(
+    *,
+    registry: Any,
+    grants: Any,
+    data_dir: Path | str,
+    signing_key_pem: bytes,
+    owner_id,
+    interval: float = 3600.0,
+) -> None:
+    """Background loop: re-run the identity step hourly so the OS agent's token
+    file is replaced before it lapses.  Never raises out of a pass."""
+    import asyncio
+
+    while True:
+        await asyncio.sleep(interval)
+        try:
+            await ensure_native_agent_identity(
+                registry=registry, grants=grants, data_dir=data_dir,
+                signing_key_pem=signing_key_pem, user_id=owner_id(),
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "native agent token renewal pass failed (%s); retrying", type(exc).__name__
+            )

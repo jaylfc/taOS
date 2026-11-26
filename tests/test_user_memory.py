@@ -139,7 +139,7 @@ async def mem_client(app, tmp_data_dir):
 @pytest.mark.asyncio
 async def test_search_falls_back_to_sqlite_when_taosmd_unreachable(app, mem_client, tmp_data_dir):
     client, store = mem_client
-    await store.save_chunk("user", "fallback content", "T", "snippets")
+    await store.save_chunk(app.state.auth.find_user("admin")["id"], "fallback content", "T", "snippets")
     app.state.taosmd_url = "http://localhost:19999"
     try:
         resp = await client.get("/api/user-memory/search", params={"q": "fallback"})
@@ -186,12 +186,12 @@ async def test_search_uses_taosmd_when_available(mem_client, tmp_data_dir):
 @pytest.mark.asyncio
 async def test_save_writes_to_sqlite_and_ingest_to_taosmd(mem_client, tmp_data_dir):
     client, store = mem_client
+    app = client._transport.app
     mock_client = AsyncMock()
     mock_client.__aenter__ = AsyncMock(return_value=mock_client)
     mock_client.__aexit__ = AsyncMock(return_value=False)
     mock_client.post = AsyncMock(return_value=MagicMock(status_code=200))
 
-    app = client._transport.app
     app.state.http_client = mock_client
     resp = await client.post(
         "/api/user-memory/save",
@@ -200,7 +200,7 @@ async def test_save_writes_to_sqlite_and_ingest_to_taosmd(mem_client, tmp_data_d
     assert resp.status_code == 200
     assert resp.json()["ok"] is True
     # SQLite should have the chunk too
-    chunks = await store.browse("user")
+    chunks = await store.browse(app.state.auth.find_user("admin")["id"])
     assert any(c["content"] == "dual write" for c in chunks)
 
 
@@ -214,7 +214,7 @@ async def test_save_succeeds_even_when_taosmd_unreachable(app, mem_client, tmp_d
             json={"content": "resilient", "collection": "notes"},
         )
         assert resp.status_code == 200
-        chunks = await store.browse("user")
+        chunks = await store.browse(app.state.auth.find_user("admin")["id"])
         assert any(c["content"] == "resilient" for c in chunks)
     finally:
         app.state.taosmd_url = None
@@ -274,7 +274,7 @@ async def test_save_metadata_cannot_override_source_id(mem_client, tmp_data_dir)
 async def test_migrate_error_response_does_not_leak_exception_text(mem_client, tmp_data_dir):
     """The /migrate 500 path must not reflect raw exception text to callers."""
     client, store = mem_client
-    await store.save_chunk("user", "to migrate", "T", "snippets")
+    await store.save_chunk(client._transport.app.state.auth.find_user("admin")["id"], "to migrate", "T", "snippets")
     mock_client = AsyncMock()
     mock_client.__aenter__ = AsyncMock(return_value=mock_client)
     mock_client.__aexit__ = AsyncMock(return_value=False)

@@ -16,6 +16,11 @@ from tinyagentos.auth_context import require_admin
 
 logger = logging.getLogger(__name__)
 
+# The graph is ONE shared store with no owner column. require_admin refuses a
+# per-agent local token (``via == "agent_token"``, never admin), so no agent can
+# read or write it. TODO(GHSA-fw8v-crq2-37xw): once taOSmd's KG carries an
+# owner, scope these routes to the caller's own agent/owner instead of
+# admin-only.
 router = APIRouter(dependencies=[Depends(require_admin)])
 
 

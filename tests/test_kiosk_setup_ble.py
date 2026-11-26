@@ -8,10 +8,11 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 
 
 def _extract_ble_block():
-    """Extract the BLE installation block from kiosk-setup.sh by line number."""
+    """Extract the BLE installation block from kiosk-setup.sh by its markers."""
     lines = (REPO_ROOT / "scripts" / "kiosk-setup.sh").read_text().splitlines()
-    # Lines 170-198 (1-indexed) contain the BLE block
-    return "\n".join(lines[169:198])
+    start = next(i for i, l in enumerate(lines) if l.startswith('if [ "${TAOS_EXTRAS_BLE:-1}"'))
+    end = next(i for i in range(start, len(lines)) if lines[i] == "fi")
+    return "\n".join(lines[start:end + 1])
 
 
 def _run_ble_block(tmp_path, venv_owner=None, taos_user=None):

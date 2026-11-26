@@ -283,3 +283,82 @@ class TestUserWorkspaceRoutes:
         assert "total_size" in data
         assert data["total_files"] >= 1
         assert data["total_size"] >= len(content)
+
+
+class TestRootDeleteRefused:
+    """A DELETE whose path resolves to the workspace root itself must never
+    move the whole workspace into the trash - it must return 400 and leave
+    the root and its contents intact."""
+
+    @pytest.mark.asyncio
+    async def _seed(self, client):
+        content = b"keep me"
+        await client.post(
+            "/api/workspace/files/upload",
+            files={"file": ("keep.txt", io.BytesIO(content), "text/plain")},
+        )
+        await client.post("/api/workspace/mkdir", json={"path": "subdir"})
+        await client.post(
+            "/api/workspace/files/upload?path=subdir",
+            files={"file": ("inner.txt", io.BytesIO(content), "text/plain")},
+        )
+        listing = (await client.get("/api/workspace/files")).json()
+        names = {e["name"] for e in listing}
+        assert names == {"keep.txt", "subdir"}
+
+    @pytest.mark.parametrize(
+        "bad_path",
+        ["", ".", "%2e", "sub%2F..", "sub/.."],
+    )
+    @pytest.mark.asyncio
+    async def test_delete_root_is_refused(self, client, bad_path):
+        """Every spelling that normalises to the workspace root is refused.
+
+        ``""``, ``%2e`` and ``sub%2F..`` reach the DELETE handler and are a
+        400; ``.`` and ``sub/..`` are collapsed by the HTTP client to the bare
+        root path, which the route layer rejects as 405 (method not allowed on
+        the GET route) - the root is never trashed either way.
+        """
+        await self._seed(client)
+        resp = await client.delete(f"/api/workspace/files/{bad_path}")
+        assert resp.status_code in (400, 405), resp.text
+
+        # Root and contents untouched
+        listing = (await client.get("/api/workspace/files")).json()
+        names = {e["name"] for e in listing}
+        assert names == {"keep.txt", "subdir"}
+        assert (await client.get("/api/workspace/files/keep.txt")).status_code == 200
+        assert (
+            await client.get("/api/workspace/files/subdir/inner.txt")
+        ).status_code == 200
+
+    @pytest.mark.asyncio
+    async def test_valid_child_delete_still_works(self, client):
+        """A normal child delete must still succeed after the fix."""
+        content = b"bye"
+        await client.post(
+            "/api/workspace/files/upload",
+            files={"file": ("gonna_delete.txt", io.BytesIO(content), "text/plain")},
+        )
+        resp = await client.delete("/api/workspace/files/gonna_delete.txt")
+        assert resp.status_code == 200
+        assert resp.json()["status"] == "deleted"
+        assert (await client.get("/api/workspace/files")).json() == []
+
+    @pytest.mark.parametrize("bad", [".", "sub/.."])
+    @pytest.mark.asyncio
+    async def test_rename_root_refused(self, client, bad):
+        """Renaming from or to the workspace root is refused with 400."""
+        await client.post(
+            "/api/workspace/files/upload",
+            files={"file": ("a.txt", io.BytesIO(b"x"), "text/plain")},
+        )
+        # src resolves to root
+        resp = await client.post("/api/workspace/rename", json={"src": bad, "dst": "x.txt"})
+        assert resp.status_code == 400
+        # dst resolves to root
+        resp = await client.post("/api/workspace/rename", json={"src": "a.txt", "dst": bad})
+        assert resp.status_code == 400
+        # nothing moved
+        names = {e["name"] for e in (await client.get("/api/workspace/files")).json()}
+        assert names == {"a.txt"}

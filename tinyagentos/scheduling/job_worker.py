@@ -175,9 +175,16 @@ class JobWorker:
             if not turns:
                 return {"status": "skipped", "reason": "no turns"}
 
+            # The session's agent identity travels into the crystal and the
+            # KG triples it writes (subject = the agent, not "system"), so the
+            # shared graph can later be scoped per agent.
+            # TODO(GHSA-fw8v-crq2-37xw): once taOSmd's KG has an owner column,
+            # pass the agent's owner here too and filter reads by it.
+            agent_name = payload.get("agent_name") or ctx.get("agent_name") or None
             crystal = await cs.crystallize(
                 session_id=str(session_id),
                 turns=turns,
+                agent_name=agent_name,
                 llm_url=llm_url,
                 model=model,
                 kg=kg,

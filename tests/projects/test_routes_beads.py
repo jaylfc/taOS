@@ -15,6 +15,23 @@ from httpx import ASGITransport, AsyncClient
 from taos_test_csrf import csrf_event_hooks
 
 
+def _host_token_client(app):
+    """Return a client presenting the host local token (no agent binding).
+
+    Mirrors the same helper in tests/test_chat_agent_author_binding.py. It is
+    copied here rather than imported across test files: the session `client`
+    fixture used to post agent-authored messages, and with the author check
+    scoped to browser sessions those are now test conveniences, not product
+    flows, so each file keeps its own copy.
+    """
+    token = app.state.auth.get_local_token()
+    return AsyncClient(
+        transport=ASGITransport(app=app),
+        base_url="http://test",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+
+
 @pytest.mark.asyncio
 async def test_app_boots_with_beads_bridge(app):
     """The bridge must be attached to app.state on lifespan startup."""
@@ -118,17 +135,19 @@ async def test_a2a_claim_verb_via_rest_post_claims_task(app):
             assert a2a_list, "Expected A2A channel to be created for project"
             a2a = a2a_list[0]
 
-            # Send the verb as an "agent" non-system message
-            r = await c.post(
-                "/api/chat/messages",
-                json={
-                    "channel_id": a2a["id"],
-                    "author_id": "alice",
-                    "author_type": "agent",
-                    "content": f"/claim {task['id']}",
-                    "content_type": "text",
-                },
-            )
+            # Send the verb as an "agent" non-system message through the host
+            # local token (a browser session can no longer post as an agent).
+            async with _host_token_client(app) as hc:
+                r = await hc.post(
+                    "/api/chat/messages",
+                    json={
+                        "channel_id": a2a["id"],
+                        "author_id": "alice",
+                        "author_type": "agent",
+                        "content": f"/claim {task['id']}",
+                        "content_type": "text",
+                    },
+                )
             assert r.status_code == 200, r.text
 
             # Allow a tick for the bridge to process the hook
@@ -162,16 +181,19 @@ async def test_a2a_mention_attaches_comment(app):
             assert a2a_list, "Expected A2A channel to be created for project"
             a2a = a2a_list[0]
 
-            await c.post(
-                "/api/chat/messages",
-                json={
-                    "channel_id": a2a["id"],
-                    "author_id": "bob",
-                    "author_type": "agent",
-                    "content": f"chasing {task['id']} in prod",
-                    "content_type": "text",
-                },
-            )
+            # Post as an agent through the host local token (a browser
+            # session can no longer post as an agent).
+            async with _host_token_client(app) as hc:
+                await hc.post(
+                    "/api/chat/messages",
+                    json={
+                        "channel_id": a2a["id"],
+                        "author_id": "bob",
+                        "author_type": "agent",
+                        "content": f"chasing {task['id']} in prod",
+                        "content_type": "text",
+                    },
+                )
             await asyncio.sleep(0.1)
 
             r = await c.get(

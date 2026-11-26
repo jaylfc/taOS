@@ -33,7 +33,7 @@ from pydantic import BaseModel, field_validator
 
 from tinyagentos.agent_registry_store import TOKEN_STORAGE_GUIDANCE, mint_registry_token
 from tinyagentos.agent_token_auth import check_agent_scope
-from tinyagentos.auth_context import CurrentUser, current_user
+from tinyagentos.auth_context import CurrentUser, current_user, require_admin
 
 logger = logging.getLogger(__name__)
 
@@ -263,6 +263,14 @@ async def register_agent(
     """
     store = _get_store(request)
     private_pem, _public_pem = _get_keypair(request)
+
+    # Minting an active (taos-deployed or any non-external-selfjoin) identity
+    # is privileged: only an admin session or the host local token may do it.
+    # external-selfjoin rows are created pending and need consent, so they stay
+    # open to any signed-in user.
+    _effective_origin = body.origin or "taos-deployed"
+    if _effective_origin != "external-selfjoin":
+        require_admin(request)
 
     try:
         record = await store.register(
@@ -549,6 +557,17 @@ async def list_inactive_entries(
     return {"inactive": await store.list_inactive()}
 
 
+def _shelf_grant_active(g: dict) -> bool:
+    from datetime import datetime, timezone
+    exp = g.get("expires_at")
+    if not exp:
+        return True
+    try:
+        return datetime.fromisoformat(exp) > datetime.now(timezone.utc)
+    except ValueError:
+        return False
+
+
 @router.get("/api/agents/registry/grants")
 async def list_active_grants(request: Request, canonical_id: Optional[str] = None):
     """Return the active grant feed for A2A bus enforcement.
@@ -591,9 +610,17 @@ async def list_active_grants(request: Request, canonical_id: Optional[str] = Non
                 g for g in grants
                 if not g.get("expires_at") or g["expires_at"] > now
             ]
+        shelf_grants = [
+            g for g in await grants_store.list_shelf_grants(canonical_id)
+            if _shelf_grant_active(g)
+        ]
     else:
         grants = await grants_store.list_active_grants()
-    return {"grants": grants}
+        shelf_grants = await grants_store.list_active_shelf_grants()
+    # Shelf records (memory:shelf / memory:read) carry their own ``shelf``
+    # field and are served in the same list; the memory service keeps them out
+    # of every project and bus check.
+    return {"grants": [*grants, *shelf_grants]}
 
 
 @router.get("/api/agents/registry")
@@ -808,6 +835,65 @@ async def reactivate_agent(
 ):
     """Reactivate a suspended agent (suspended → active). Admin only."""
     return await _transition(request, canonical_id, "reactivate", "active", user)
+
+
+@router.post("/api/agents/registry/refresh-token")
+async def refresh_token(request: Request):
+    """An agent renews its OWN token before, or shortly after, it expires.
+
+    Presented with the agent's current registry token (an expired one counts
+    for ``AGENT_TOKEN_REFRESH_GRACE_SECONDS``), returns a new token for the
+    same identity with a fresh expiry.  Nothing else changes: the cutoff is not
+    moved, so the token the agent is still running with keeps working until its
+    own expiry and a refresh can never strand a running agent.  Refused (same
+    answers as every other agent route) for a bad signature, a superseded token
+    (older than the identity's rotation cutoff), a non-active identity, a
+    service or human token, and a token lapsed beyond the grace period.
+    """
+    import time as _time
+
+    from tinyagentos.agent_registry_store import (
+        AGENT_TOKEN_REFRESH_GRACE_SECONDS,
+        verify_registry_token,
+    )
+    from tinyagentos.agent_token_auth import _enforce_rotation_cutoff
+
+    auth = request.headers.get("Authorization", "")
+    if not auth.lower().startswith("bearer "):
+        raise HTTPException(status_code=401, detail="bearer token required")
+    private_pem, public_pem = _get_keypair(request)
+    try:
+        claims = verify_registry_token(auth[7:].strip(), public_pem, check_exp=False)
+    except ValueError:
+        raise HTTPException(status_code=401, detail="invalid or malformed registry token")
+    cid = claims.get("sub") or ""
+    if not cid or claims.get("principal_type", "agent") != "agent" or claims.get("kind"):
+        raise HTTPException(status_code=401, detail="not an agent token")
+    exp = claims.get("exp")
+    now = _time.time()
+    if isinstance(exp, bool) or not isinstance(exp, (int, float)):
+        # Tokens from before expiry existed carry none: they may renew into one.
+        exp = now
+    if exp + AGENT_TOKEN_REFRESH_GRACE_SECONDS <= now:
+        raise HTTPException(status_code=401, detail="token expired beyond renewal")
+    store = _get_store(request)
+    record = await store.get(cid)
+    if record is None or record.get("status") != "active":
+        raise HTTPException(status_code=403, detail="agent is not active in the registry")
+    _enforce_rotation_cutoff(record, claims)
+    kwargs = {}
+    if claims.get("project_id"):
+        kwargs["project_id"] = claims["project_id"]
+    token = mint_registry_token(
+        cid,
+        private_pem,
+        user_id=record.get("user_id", ""),
+        framework=record.get("framework", ""),
+        iat=max(int(now), int(record.get("token_min_iat") or 0)),
+        **kwargs,
+    )
+    new_exp = verify_registry_token(token, public_pem)["exp"]
+    return {"token": token, "expires_at": new_exp, "canonical_id": cid}
 
 
 @router.post("/api/agents/registry/{canonical_id}/rotate-tokens")

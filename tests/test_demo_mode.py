@@ -55,7 +55,7 @@ def _client(app, host="127.0.0.1"):
     return AsyncClient(
         transport=ASGITransport(app=app, client=(host, 51234)),
         base_url="http://localhost:6969",
-        headers={"User-Agent": UA},
+        headers={"User-Agent": UA, "X-taOS-Console": "1"},
     )
 
 

@@ -149,3 +149,65 @@ async def test_stats_after_upload(client):
     body = resp.json()
     assert body["total_files"] == 1
     assert body["total_size"] == 100
+
+
+class TestProjectRootDeleteRefused:
+    """A DELETE whose path resolves to the project files root itself must never
+    move the whole folder into the trash - it must return 400 and leave the
+    root and its contents intact."""
+
+    @pytest.mark.asyncio
+    async def _seed(self, client, slug):
+        content = b"keep me"
+        await client.post(
+            f"/api/projects/{slug}/files/upload",
+            files={"file": ("keep.txt", io.BytesIO(content), "text/plain")},
+        )
+        await client.post(f"/api/projects/{slug}/mkdir", json={"path": "subdir"})
+        await client.post(
+            f"/api/projects/{slug}/files/upload?path=subdir",
+            files={"file": ("inner.txt", io.BytesIO(content), "text/plain")},
+        )
+        listing = (await client.get(f"/api/projects/{slug}/files")).json()
+        names = {e["name"] for e in listing}
+        assert names == {"keep.txt", "subdir"}
+
+    @pytest.mark.parametrize(
+        "bad_path",
+        ["", ".", "%2e", "sub%2F..", "sub/.."],
+    )
+    @pytest.mark.asyncio
+    async def test_delete_root_is_refused(self, client, bad_path):
+        """Every spelling that normalises to the files root is refused.
+
+        ``""``, ``%2e`` and ``sub%2F..`` reach the DELETE handler and are a
+        400; ``.`` and ``sub/..`` are collapsed by the HTTP client to the bare
+        root path, which the route layer rejects as 405 - the root is never
+        trashed either way.
+        """
+        await self._seed(client, "delroot")
+        resp = await client.delete(f"/api/projects/delroot/files/{bad_path}")
+        assert resp.status_code in (400, 405), resp.text
+
+        listing = (await client.get("/api/projects/delroot/files")).json()
+        names = {e["name"] for e in listing}
+        assert names == {"keep.txt", "subdir"}
+        assert (
+            await client.get("/api/projects/delroot/files/keep.txt")
+        ).status_code == 200
+        assert (
+            await client.get("/api/projects/delroot/files/subdir/inner.txt")
+        ).status_code == 200
+
+    @pytest.mark.asyncio
+    async def test_valid_child_delete_still_works(self, client):
+        """A normal child delete must still succeed after the fix."""
+        content = b"bye"
+        await client.post(
+            "/api/projects/delok/files/upload",
+            files={"file": ("gonna_delete.txt", io.BytesIO(content), "text/plain")},
+        )
+        resp = await client.delete("/api/projects/delok/files/gonna_delete.txt")
+        assert resp.status_code == 200
+        assert resp.json()["status"] == "deleted"
+        assert (await client.get("/api/projects/delok/files")).json() == []

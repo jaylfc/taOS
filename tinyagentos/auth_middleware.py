@@ -3,13 +3,15 @@ from __future__ import annotations
 import ipaddress
 import logging
 import re
+from urllib.parse import urlencode
 
 from fastapi import HTTPException, Request
 from fastapi.responses import JSONResponse
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.responses import HTMLResponse, RedirectResponse
 
-from tinyagentos.agent_token_auth import check_agent_identity, _get_keypair, _get_store
+from tinyagentos import console_secret
+from tinyagentos.agent_token_auth import _enforce_rotation_cutoff, check_agent_identity, _get_keypair, _get_store
 from tinyagentos.auth import AuthStoreCorruptError
 from tinyagentos.device_store import DEVICE_TOKEN_PREFIX
 from tinyagentos.rate_limit import MovingWindowLimiter
@@ -25,7 +27,7 @@ logger = logging.getLogger(__name__)
 # password. See routes.auth.swipe_unlock.
 # Note /auth/pin (set/clear a PIN) is deliberately absent from this set: those
 # require a live session and must stay gated here.
-EXEMPT_PATHS = {"/auth/login", "/auth/pin-login", "/auth/swipe-unlock", "/auth/osk.js", "/auth/pin-panel.js", "/auth/lock-screen.js", "/auth/lock-widgets", "/auth/lock-weather", "/auth/lock-notifications", "/auth/lock-stats", "/auth/lock-panels", "/auth/lock-events", "/auth/lock-power-menu", "/auth/lock-screen-off", "/auth/lock-screen-on", "/auth/lock-brightness", "/auth/lock-torch", "/auth/lock-volume", "/auth/lock-volume-key", "/auth/lock-charge", "/auth/lock-radios", "/auth/lock-usb", "/auth/lock-power-action", "/auth/lock-app", "/auth/device-agent/heartbeat", "/auth/device-agent/message", "/auth/lock-call", "/auth/lock-call/ring", "/auth/lock-call/reset", "/auth/lock-call/action", "/auth/lock-call/dismiss", "/auth/setup", "/auth/status", "/auth/me", "/auth/complete", "/auth/lock", "/api/health", "/api/version", "/setup", "/setup/complete", "/redeem", "/api/desktop/browser/push/vapid-public-key", "/api/desktop/browser/proxy-config", "/sw.js", "/desktop", "/desktop/index.html", "/chat-pwa", "/app.html", "/manifest", "/api/agents/registry/pubkey", "/api/share/destinations"}
+EXEMPT_PATHS = {"/auth/login", "/auth/console-ticket", "/auth/pin-login", "/auth/swipe-unlock", "/auth/osk.js", "/auth/pin-panel.js", "/auth/lock-screen.js", "/auth/lock-widgets", "/auth/lock-weather", "/auth/lock-notifications", "/auth/lock-stats", "/auth/lock-panels", "/auth/lock-events", "/auth/lock-power-menu", "/auth/lock-screen-off", "/auth/lock-screen-on", "/auth/lock-brightness", "/auth/lock-torch", "/auth/lock-volume", "/auth/lock-volume-key", "/auth/lock-charge", "/auth/lock-radios", "/auth/lock-usb", "/auth/lock-power-action", "/auth/lock-app", "/auth/device-agent/heartbeat", "/auth/device-agent/message", "/auth/lock-call", "/auth/lock-call/ring", "/auth/lock-call/reset", "/auth/lock-call/action", "/auth/lock-call/dismiss", "/auth/setup", "/auth/status", "/auth/me", "/auth/complete", "/auth/lock", "/api/health", "/api/version", "/setup", "/setup/complete", "/redeem", "/api/desktop/browser/push/vapid-public-key", "/api/desktop/browser/proxy-config", "/sw.js", "/desktop", "/desktop/index.html", "/chat-pwa", "/app.html", "/manifest", "/api/agents/registry/pubkey", "/api/share/destinations"}
 
 # Registry feed endpoints accept EITHER an admin session OR a registry JWT.
 # When a Bearer token is present for these paths the request bypasses the
@@ -108,6 +110,9 @@ _AGENT_TOKEN_PATHS = (
     | frozenset({
         "/api/agents/me/models",
         "/api/agents/me/model",
+        # An agent renews its own token here, so a token that has just lapsed
+        # must reach the route (which verifies it with a grace period).
+        "/api/agents/registry/refresh-token",
         "/api/desktop/command",
         "/api/desktop/screenshot",
         "/api/desktop/layout",
@@ -557,6 +562,21 @@ def _is_loopback_client(request: Request) -> bool:
         return False
 
 
+def _is_browser_cross_site(request: Request) -> bool:
+    """True if the request is from a browser and targets a cross-site origin.
+
+    Stop hook is curl and sends neither header; a browser always sends Origin on
+    a cross-origin POST.
+    """
+    origin = request.headers.get("origin")
+    if origin:
+        return True
+    sec_fetch_site = request.headers.get("sec-fetch-site")
+    if sec_fetch_site and sec_fetch_site != "none":
+        return True
+    return False
+
+
 # ---------------------------------------------------------------------------
 # Per-IP moving-window rate limiter for the unauthenticated project-invite
 # redeem. The cluster pairing manual-claim runs the same 20-per-10s cap from
@@ -587,6 +607,34 @@ def rate_limit_ok(key: str) -> bool:
 def rate_limit_retry_after(key: str) -> int:
     """Seconds until ``key`` regains capacity, for the 429's ``Retry-After``."""
     return _invite_limiter.retry_after(key)
+
+
+def _redeem_console_ticket(request: Request):
+    """303 to the same URL without the ticket, with the console cookie set."""
+    from tinyagentos.routes import auth as auth_routes
+
+    ticket = request.query_params.get(console_secret.TICKET_PARAM, "")
+    if not auth_routes._request_has_console_shape(request):
+        return None
+    if not console_secret.redeem_ticket(
+        ticket, console_secret.peer_uid(*auth_routes._peer(request))
+    ):
+        return None
+    auth_mgr = getattr(request.app.state, "auth", None)
+    secret = console_secret.get_secret(getattr(auth_mgr, "data_dir", None))
+    if not secret:
+        return None
+    rest = [
+        (k, v) for k, v in request.query_params.multi_items()
+        if k != console_secret.TICKET_PARAM
+    ]
+    target = request.url.path + (("?" + urlencode(rest)) if rest else "")
+    response = RedirectResponse(target, status_code=303)
+    response.set_cookie(
+        console_secret.COOKIE_NAME, console_secret.cookie_value(secret),
+        httponly=True, samesite="lax", path="/",
+    )
+    return response
 
 
 def _is_exempt(method: str, path: str) -> bool:
@@ -706,6 +754,15 @@ class AuthMiddleware(BaseHTTPMiddleware):
         auth_mgr = request.app.state.auth
         path = request.url.path
 
+        # The shell's start URL carries a one-time console ticket (see
+        # console_secret): trade it for the console cookie and drop it from the URL.
+        if (
+            request.method == "GET"
+            and console_secret.TICKET_PARAM in request.url.query
+            and (ticket_response := _redeem_console_ticket(request)) is not None
+        ):
+            return ticket_response
+
         # Always allow exempt paths through (SPA shell, static assets, auth
         # endpoints, cluster heartbeat). Without this, a cached old client
         # could bypass onboarding by hitting an /api endpoint that the
@@ -740,6 +797,7 @@ class AuthMiddleware(BaseHTTPMiddleware):
             request.method == "POST"
             and path == _PREPARE_SHUTDOWN
             and _is_loopback_client(request)
+            and not _is_browser_cross_site(request)
         ):
             request.state.user_id = None
             request.state.is_admin = False
@@ -770,18 +828,26 @@ class AuthMiddleware(BaseHTTPMiddleware):
                 # current_user-gated routes still 401 while middleware-only
                 # routes proceed as before. (Not failing closed here: the
                 # local token already authenticates, so it is not a bypass.)
-                primary = auth_mgr.get_primary_user()
-                if primary:
-                    request.state.user_id = primary["id"]
-                    request.state.is_admin = True
-                    request.state.via = "local_token"
-                else:
-                    request.state.user_id = None
-                    request.state.is_admin = False
-                    request.state.via = "local_token"
                 bound_agent = auth_mgr.get_local_token_agent(presented)
                 if bound_agent:
+                    # A per-agent token authenticates AS THE AGENT, acting for
+                    # its registry owner, never admin. No owner -> no user (it
+                    # never falls back to the primary user).
+                    from tinyagentos.auth_context import resolve_agent_owner
+
+                    try:
+                        owner = await resolve_agent_owner(request, bound_agent)
+                    except Exception:  # noqa: BLE001 - fail closed
+                        owner = None
+                    request.state.user_id = owner
+                    request.state.is_admin = False
+                    request.state.via = "agent_token"
                     request.state.agent_name = bound_agent
+                else:
+                    primary = auth_mgr.get_primary_user()
+                    request.state.user_id = primary["id"] if primary else None
+                    request.state.is_admin = primary is not None
+                    request.state.via = "local_token"
                 return await call_next(request)
 
         # 2) Registry JWT on allowlisted paths (passthrough; route verifies
@@ -828,6 +894,9 @@ class AuthMiddleware(BaseHTTPMiddleware):
                                 registry = _get_store(request)
                                 record = await registry.get(canonical_id)
                                 if record and record.get("origin") == NATIVE_AGENT_ORIGIN and record.get("status") == "active":
+                                    # A token superseded by rotation must not authenticate:
+                                    # the raise lands in the except below (no user).
+                                    _enforce_rotation_cutoff(record, payload)
                                     request.state.user_id = record.get("user_id")
                                     request.state.is_admin = False
                                     request.state.via = "registry_jwt_native_agent"

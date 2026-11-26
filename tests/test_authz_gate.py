@@ -69,7 +69,12 @@ _ALLOWED_DEP_NAMES = {
     "_require_admin",
 }
 
-_BODY_AUTHZ_NAMES = {"require_owner_or_admin", "require_agent_owner_or_admin"}
+_BODY_AUTHZ_NAMES = {
+    "require_owner_or_admin",
+    "require_agent_owner_or_admin",
+    # Owner-only check for the memory-read opt-in (stricter than owner-or-admin).
+    "_memory_read_target",
+}
 
 
 def _handler_has_body_authz(route) -> bool:
@@ -91,14 +96,17 @@ def _handler_has_body_authz(route) -> bool:
     for node in ast.walk(tree):
         if isinstance(node, ast.AsyncFunctionDef) and node.name == target_name:
             for stmt in node.body:
-                if (
-                    isinstance(stmt, ast.Expr)
-                    and isinstance(stmt.value, ast.Await)
-                    and isinstance(stmt.value.value, ast.Call)
-                    and isinstance(stmt.value.value.func, ast.Name)
-                    and stmt.value.value.func.id in _BODY_AUTHZ_NAMES
-                ):
-                    return True
+                # A bare ``await check(...)`` or ``x = await check(...)`` where
+                # the check raises when the caller is not allowed.
+                if isinstance(stmt, (ast.Expr, ast.Assign)):
+                    value = stmt.value
+                    if (
+                        isinstance(value, ast.Await)
+                        and isinstance(value.value, ast.Call)
+                        and isinstance(value.value.func, ast.Name)
+                        and value.value.func.id in _BODY_AUTHZ_NAMES
+                    ):
+                        return True
     return False
 
 

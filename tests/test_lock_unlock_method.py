@@ -12,6 +12,8 @@ import pytest
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
 
+from tinyagentos.console_secret import cookie_value
+
 from tinyagentos.auth import AuthManager, effective_unlock_method
 
 PASSWORD = "correct horse battery staple"
@@ -52,8 +54,10 @@ def _client(app, host, console_header=True):
     if console_header:
         headers["X-taOS-Console"] = "1"
     transport = ASGITransport(app=app, client=(host, 51234))
+    cookies = {} if console_header else {"taos_console": cookie_value("1")}
     return AsyncClient(
         transport=transport, base_url="http://localhost:6969", headers=headers,
+        cookies=cookies,
     )
 
 
@@ -292,6 +296,7 @@ class TestSwipeUnlockRefusesSimpleRequests:
         assert r.status_code == 200, r.text
         assert r.cookies.get("taos_session")
         bare_console.cookies.clear()
+        bare_console.cookies.set("taos_console", cookie_value("1"))
         # swipe NOT chosen: the header gets it past M5 and no further.
         _force_method(app, "owner", "password")
         r = await bare_console.post("/auth/swipe-unlock", **kwargs)

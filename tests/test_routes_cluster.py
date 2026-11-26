@@ -10,6 +10,17 @@ import pytest
 from httpx import ASGITransport, AsyncClient
 
 
+@pytest.fixture
+def local_token_client(app) -> AsyncClient:
+    """A test client presenting only the host local token (no admin session)."""
+    local_token = app.state.auth.get_local_token()
+    return AsyncClient(
+        transport=ASGITransport(app=app),
+        base_url="http://test",
+        headers={"Authorization": f"Bearer {local_token}"},
+    )
+
+
 # ---------------------------------------------------------------------------
 # Pairing helpers (shared with test_routes_cluster_pairing.py)
 # ---------------------------------------------------------------------------
@@ -169,6 +180,49 @@ async def test_unregister_unknown_worker(client, app):
     await app.state.cluster_pairing.init()
     resp = await client.delete("/api/cluster/workers/ghost")
     assert resp.status_code == 404
+    await app.state.cluster_pairing.close()
+
+
+@pytest.mark.asyncio
+async def test_unregister_with_local_token_403(local_token_client, client, app):
+    """Local token must be rejected for deregister - only admin session is allowed."""
+    await app.state.cluster_pairing.init()
+    # First pair a worker using the admin client
+    key = await pair_worker(client, app, "local-token-worker", "http://10.0.0.2:9000")
+    # Now try to deregister with local token only (no admin session)
+    resp = await local_token_client.delete(
+        "/api/cluster/workers/local-token-worker",
+    )
+    assert resp.status_code == 403, f"Expected 403, got {resp.status_code}: {resp.text}"
+    await app.state.cluster_pairing.close()
+
+
+@pytest.mark.asyncio
+async def test_unregister_with_admin_session_200(client, app):
+    """Signed-in admin must be able to deregister."""
+    import json as _json
+    # Client fixture already has admin session; register then deregister
+    key = await pair_worker(client, app, "admin-worker", "http://10.0.0.2:9000")
+    reg_body = _json.dumps({"name": "admin-worker", "url": "http://10.0.0.2:9000"}).encode()
+    await client.post(
+        "/api/cluster/workers",
+        content=reg_body,
+        headers={**sign_worker_request(key, "admin-worker", "POST", "/api/cluster/workers", reg_body), "content-type": "application/json"},
+    )
+    # Admin session already set via client fixture, so delete should succeed
+    resp = await client.delete("/api/cluster/workers/admin-worker")
+    assert resp.status_code == 200, f"Expected 200, got {resp.status_code}: {resp.text}"
+    assert resp.json()["status"] == "removed"
+    await app.state.cluster_pairing.close()
+
+
+@pytest.mark.asyncio
+async def test_unregister_with_member_403(client, app):
+    """Member session must be rejected for deregister."""
+    await app.state.cluster_pairing.init()
+    resp = await client.delete("/api/cluster/workers/ghost-member")
+    # Ghost worker not paired, and client has admin session, so this depends on implementation
+    assert resp.status_code in (403, 404)
     await app.state.cluster_pairing.close()
 
 

@@ -551,6 +551,12 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
     async def lifespan(app: FastAPI):
         # Arm the startup guard: block non-exempt requests until init completes.
         app.state._startup_complete = False
+        # No session signed in at the device's own screen before this start
+        # survives it.
+        try:
+            app.state.auth.revoke_console_sessions()
+        except Exception:  # noqa: BLE001
+            logger.exception("could not end console sessions at startup")
         await agent_registry_store.init()
         await auth_requests_store.init()
         await password_reset_store.init()
@@ -584,6 +590,35 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
             )
         except Exception:
             logger.exception("native agent identity could not be ensured at startup")
+        # Keep the OS agent's token file fresh on disk, well before it expires.
+        try:
+            from tinyagentos import native_agent_identity as _nai
+
+            _create_supervised_task(
+                _nai.run_native_agent_token_renewal(
+                    registry=agent_registry_store,
+                    grants=agent_grants_store,
+                    data_dir=data_dir,
+                    signing_key_pem=agent_registry_keypair[0],
+                    owner_id=lambda: (auth_manager.get_primary_user() or {}).get("id", ""),
+                ),
+                app.state._background_tasks,
+            )
+        except Exception as exc:
+            logger.error("agent token renewal loop not started (%s)", type(exc).__name__)
+        # Memory shelf grants for agents deployed before shelf grants existed:
+        # each active agent gets its own shelf, so its memory keeps working
+        # once the memory service enforces shelf access.  Idempotent, never fatal.
+        try:
+            from tinyagentos.shelf_grants import backfill_agent_shelf_grants
+
+            _added = await backfill_agent_shelf_grants(
+                agent_grants_store, agent_registry_store, list(getattr(config, "agents", None) or [])
+            )
+            if _added:
+                logger.info("memory shelf grants added for %d existing agent(s)", _added)
+        except Exception as exc:
+            logger.error("memory shelf grant backfill failed (%s)", type(exc).__name__)
         await user_shares_store.init()
         app.state.user_shares = user_shares_store
         await app_grants_store.init()
@@ -780,6 +815,38 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
                 await save_config_locked(config, config.config_path)
         except Exception:
             logger.exception("persona_v2 startup migration failed")
+
+        # Give every ownerless config/imported agent a registry owner (the
+        # install owner) so its per-agent token has a user. Idempotent.
+        try:
+            from tinyagentos.migrations.agent_owner import assign_ownerless_agents
+            _assigned = await assign_ownerless_agents(config, agent_registry_store, auth_manager)
+            if _assigned and config.config_path and config.config_path.exists():
+                await save_config_locked(config, config.config_path)
+        except Exception:
+            logger.exception("agent_owner startup migration failed")
+
+        # User memory used to be one shared partition filed under "user". Move
+        # those rows to the install owner so other members cannot read them.
+        try:
+            _primary = auth_manager.get_primary_user()
+            if _primary and _primary.get("id"):
+                _um_moved = await user_memory.rekey_legacy(_primary["id"])
+                if _um_moved:
+                    logger.info("user memory: %d legacy chunk(s) moved to the install owner", _um_moved)
+        except Exception:
+            logger.exception("user memory legacy rekey failed")
+
+        # Agent DM channels list the literal "user" as a member; record the
+        # agent's registry owner on each so the owner keeps reading their own
+        # DM once channel reads check membership. Idempotent.
+        try:
+            from tinyagentos.migrations.agent_dm_owner import backfill_agent_dm_owners
+            _dm_owned = await backfill_agent_dm_owners(config, agent_registry_store, chat_channels)
+            if _dm_owned:
+                logger.info("agent DM owner backfill: %d channel(s)", len(_dm_owned))
+        except Exception:
+            logger.exception("agent DM owner backfill failed")
 
         # Archive any agent DM channels left live by a removal path that
         # bypassed archive (a cleaned-up failed deploy, a hard-delete of a

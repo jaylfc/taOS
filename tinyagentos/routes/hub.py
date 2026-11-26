@@ -30,7 +30,7 @@ import logging
 from pathlib import Path
 from typing import Optional
 
-from fastapi import APIRouter, Depends, Request
+from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
@@ -254,6 +254,8 @@ async def put_own_profile(
     keypair) so publishing a profile is the natural first act. The new version is
     one past the current profile's, keeping the highest-version-wins invariant.
     """
+    if not user.is_admin:
+        raise HTTPException(status_code=403, detail="forbidden")
     # Mint the identity if this is the node's first hub action.
     identity.load_or_create()
     store = await _get_store(request)
@@ -292,6 +294,8 @@ async def follow_peer(
     target need not approve it (they can block). The signed statement is stored
     locally as an out-follow and is what this node later publishes to peers.
     """
+    if not user.is_admin:
+        raise HTTPException(status_code=403, detail="forbidden")
     identity.load_or_create()
     store = await _get_store(request)
     fingerprint = identity.signing_fingerprint()
@@ -323,6 +327,8 @@ async def grant_cache(
     ahead of the cache engine. ``quota_hint`` is the suggested per-friend budget
     in bytes (defaults to a few hundred MB per design open-question 4).
     """
+    if not user.is_admin:
+        raise HTTPException(status_code=403, detail="forbidden")
     identity.load_or_create()
     store = await _get_store(request)
     fingerprint = identity.signing_fingerprint()
@@ -366,6 +372,8 @@ async def send_friend_request(
     view can show the pending state; the directory's own response (e.g. a request
     id) passes through verbatim.
     """
+    if not user.is_admin:
+        raise HTTPException(status_code=403, detail="forbidden")
     identity.load_or_create()
     store = await _get_store(request)
     fingerprint = identity.signing_fingerprint()
@@ -430,6 +438,8 @@ async def accept_friend_request(
     an accepted edge (design: presence requires "an accepted edge"). The peer
     fingerprint comes from the directory response when present, else the body.
     """
+    if not user.is_admin:
+        raise HTTPException(status_code=403, detail="forbidden")
     upstream = await _forward_to(request, "POST", f"/api/hub/requests/{rid}/accept")
     if upstream.status_code < 200 or upstream.status_code >= 300:
         return JSONResponse(
@@ -470,6 +480,8 @@ async def decline_friend_request(
     user: CurrentUser = Depends(current_user),
 ):
     """Decline a brokered friend request; record it locally as declined."""
+    if not user.is_admin:
+        raise HTTPException(status_code=403, detail="forbidden")
     upstream = await _forward_to(request, "POST", f"/api/hub/requests/{rid}/decline")
     if upstream.status_code < 200 or upstream.status_code >= 300:
         return JSONResponse(
@@ -505,6 +517,8 @@ async def block_peer(
     server-side accepted edge (no more presence visibility or hints either way);
     that directory call is best-effort and its result never blocks the local op.
     """
+    if not user.is_admin:
+        raise HTTPException(status_code=403, detail="forbidden")
     store = await _get_store(request)
     # A social action implies this node has an identity (its fingerprint is the
     # local party in every relationship), so mint it if this is the first act.
@@ -532,7 +546,7 @@ async def block_peer(
     # and can be stale (renamed since the contact was pinned).  A present-but-
     # stale username row must never break revocation.
     contacts_store = getattr(request.app.state, "contacts_store", None)
-    if contacts_store is not None:
+    if contacts_store is not None and getattr(contacts_store, "_db", None) is not None:
         try:
             # Resolve ALL contacts pinned to this fingerprint.  Legacy
             # username-keyed rows (or a rename mid-flight) can leave several
@@ -566,6 +580,10 @@ async def block_peer(
                     )
         except Exception:
             logger.exception("hub block: contacts-store cascade failed for %s", peer)
+            return JSONResponse(
+                {"state": "block-incomplete", "peer": peer},
+                status_code=500,
+            )
 
     return {"state": "blocked", "peer": peer, "severed": severed}
 
@@ -578,6 +596,8 @@ async def mute_peer(
 ):
     """Mute a peer locally: stop rendering, keep the edge (design "block and mute
     are local + circle operations"; mute is the local-only subset)."""
+    if not user.is_admin:
+        raise HTTPException(status_code=403, detail="forbidden")
     identity.load_or_create()
     store = await _get_store(request)
     await store.put_relationship(body.peer_fingerprint, relationships.REL_MUTE)
@@ -591,6 +611,8 @@ async def unmute_peer(
     user: CurrentUser = Depends(current_user),
 ):
     """Unmute a previously muted peer (local-only operation)."""
+    if not user.is_admin:
+        raise HTTPException(status_code=403, detail="forbidden")
     identity.load_or_create()
     store = await _get_store(request)
     await store.delete_relationship(body.peer_fingerprint, relationships.REL_MUTE)
@@ -708,6 +730,8 @@ async def create_post(
     post is chain-positioned and signed before it lands in the store, so it is
     self-verifying the moment it is created.
     """
+    if not user.is_admin:
+        raise HTTPException(status_code=403, detail="forbidden")
     identity.load_or_create()
     store = await _get_store(request)
     attachments: list[dict] = []
@@ -755,6 +779,8 @@ async def own_timeline(
     ``no-identity`` before the node has minted a hub identity, else ``ok`` with
     the posts. The timeline works fully offline from the local store.
     """
+    if not user.is_admin:
+        raise HTTPException(status_code=403, detail="forbidden")
     if not identity.exists():
         return {"state": "no-identity"}
     store = await _get_store(request)
@@ -777,6 +803,8 @@ async def delete_post_route(
     so the chain stays verifiable. Best-effort: a peer that later pulls will see
     the tombstone and drop its copy too. Returns the tombstone statement.
     """
+    if not user.is_admin:
+        raise HTTPException(status_code=403, detail="forbidden")
     identity.load_or_create()
     store = await _get_store(request)
     try:

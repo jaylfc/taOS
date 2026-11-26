@@ -13,6 +13,7 @@ may do.  ``list_active_grants`` is the feed @taOSmd polls later.
 
 import asyncio
 import json
+import re
 from datetime import datetime, timezone
 from typing import Optional
 
@@ -34,6 +35,27 @@ CREATE TABLE IF NOT EXISTS agent_grants (
 """
 
 
+# Shelf grants (taOSmd memory access).  A record names ONE shelf in its own
+# ``shelf`` field.  They live in their own table so no ordinary-grant reader
+# (project gates, a2a_send, a2a_receive) can ever count one: the memory service
+# makes the same split on its side.  ``memory:shelf`` is read and write on that
+# shelf; ``memory:read`` is read only and is honoured for person tokens only.
+SHELF_SCOPES = ("memory:shelf", "memory:read")
+SHELF_NAME_RE = re.compile(r"^[a-z][a-z0-9_-]{0,62}$")
+
+SHELF_SCHEMA = """
+CREATE TABLE IF NOT EXISTS agent_shelf_grants (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    canonical_id TEXT NOT NULL,
+    scope        TEXT NOT NULL,
+    shelf        TEXT NOT NULL,
+    granted_at   TEXT NOT NULL,
+    expires_at   TEXT,
+    UNIQUE (canonical_id, scope, shelf)
+);
+"""
+
+
 def _row_to_dict(row: aiosqlite.Row) -> dict:
     return {k: row[k] for k in row.keys()}
 
@@ -41,7 +63,7 @@ def _row_to_dict(row: aiosqlite.Row) -> dict:
 class AgentGrantsStore(BaseStore):
     """Persistent store for per-agent scope grants."""
 
-    SCHEMA = SCHEMA
+    SCHEMA = SCHEMA + SHELF_SCHEMA
 
     # Serializes the DELETE-then-INSERT-then-SELECT in add_grant. The 3-column
     # UNIQUE with a nullable project_id forces a non-atomic delete+insert
@@ -331,3 +353,111 @@ class AgentGrantsStore(BaseStore):
             (now,),
         )
         return [_row_to_dict(r) for r in await cursor.fetchall()]
+
+    # ------------------------------------------------------------------
+    # Shelf grants (memory service)
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _shelf_record(row) -> dict:
+        d = _row_to_dict(row)
+        # Feed shape the memory service reads: shelf grants are never project
+        # bound and carry no tier of their own.
+        d["project_id"] = None
+        d["tier"] = "once"
+        return d
+
+    async def add_shelf_grant(
+        self,
+        canonical_id: str,
+        scope: str,
+        shelf: str,
+        *,
+        expires_at: Optional[str] = None,
+    ) -> dict:
+        """Grant *canonical_id* ``memory:shelf`` or ``memory:read`` on one shelf.
+
+        ``shelf`` must be a well-formed taOSmd shelf name: the service reads a
+        record with a missing or invalid shelf as granting nothing, so one is
+        refused here instead of being stored as a silent no-op.
+        """
+        if self._db is None:
+            raise RuntimeError("AgentGrantsStore not initialised — call init() first")
+        if scope not in SHELF_SCOPES:
+            raise ValueError(f"scope must be one of {SHELF_SCOPES}")
+        if not isinstance(shelf, str) or not SHELF_NAME_RE.fullmatch(shelf):
+            raise ValueError("invalid shelf name")
+        if not canonical_id:
+            raise ValueError("canonical_id required")
+        now = datetime.now(timezone.utc).isoformat()
+        async with self._write_lock:
+            await self._db.execute(
+                "INSERT INTO agent_shelf_grants (canonical_id, scope, shelf, granted_at, expires_at) "
+                "VALUES (?, ?, ?, ?, ?) "
+                "ON CONFLICT (canonical_id, scope, shelf) DO UPDATE SET expires_at = excluded.expires_at",
+                (canonical_id, scope, shelf, now, expires_at),
+            )
+            await self._db.commit()
+            row = await (
+                await self._db.execute(
+                    "SELECT * FROM agent_shelf_grants WHERE canonical_id = ? AND scope = ? AND shelf = ?",
+                    (canonical_id, scope, shelf),
+                )
+            ).fetchone()
+        return self._shelf_record(row)
+
+    async def revoke_shelf_grant(self, canonical_id: str, scope: str, shelf: str) -> bool:
+        """Delete one exact shelf grant.  True when a row was removed."""
+        if self._db is None:
+            raise RuntimeError("AgentGrantsStore not initialised")
+        async with self._write_lock:
+            cur = await self._db.execute(
+                "DELETE FROM agent_shelf_grants WHERE canonical_id = ? AND scope = ? AND shelf = ?",
+                (canonical_id, scope, shelf),
+            )
+            await self._db.commit()
+        return cur.rowcount > 0
+
+    async def revoke_shelf_grants_on_shelf(self, scope: str, shelf: str) -> int:
+        """Delete every grant of *scope* on *shelf* (any holder)."""
+        if self._db is None:
+            raise RuntimeError("AgentGrantsStore not initialised")
+        async with self._write_lock:
+            cur = await self._db.execute(
+                "DELETE FROM agent_shelf_grants WHERE scope = ? AND shelf = ?", (scope, shelf)
+            )
+            await self._db.commit()
+        return cur.rowcount
+
+    async def revoke_all_shelf_grants(self, canonical_id: str) -> int:
+        """Delete every shelf grant *canonical_id* holds."""
+        if self._db is None:
+            raise RuntimeError("AgentGrantsStore not initialised")
+        async with self._write_lock:
+            cur = await self._db.execute(
+                "DELETE FROM agent_shelf_grants WHERE canonical_id = ?", (canonical_id,)
+            )
+            await self._db.commit()
+        return cur.rowcount
+
+    async def list_shelf_grants(self, canonical_id: str) -> list[dict]:
+        """All shelf grants held by *canonical_id* (expired included)."""
+        if self._db is None:
+            raise RuntimeError("AgentGrantsStore not initialised")
+        cur = await self._db.execute(
+            "SELECT * FROM agent_shelf_grants WHERE canonical_id = ? ORDER BY scope, shelf",
+            (canonical_id,),
+        )
+        return [self._shelf_record(r) for r in await cur.fetchall()]
+
+    async def list_active_shelf_grants(self) -> list[dict]:
+        """Every unexpired shelf grant, in the shape of the grants feed."""
+        if self._db is None:
+            raise RuntimeError("AgentGrantsStore not initialised")
+        now = datetime.now(timezone.utc).isoformat()
+        cur = await self._db.execute(
+            "SELECT * FROM agent_shelf_grants WHERE expires_at IS NULL OR expires_at > ? "
+            "ORDER BY canonical_id, scope, shelf",
+            (now,),
+        )
+        return [self._shelf_record(r) for r in await cur.fetchall()]

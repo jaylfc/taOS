@@ -77,7 +77,11 @@ async def app_join(
     if not current_user and credentials:
         app_password = credentials.credentials
         if app_password and auth_mgr.validate_local_token(app_password):
-            # Local tokens map to the primary/admin user.
+            # Only the HOST local token maps to the primary user. A per-agent
+            # token is an agent credential: it must never mint a preauth key
+            # for the primary user (a member's agent would be the owner).
+            if auth_mgr.get_local_token_agent(app_password):
+                raise HTTPException(status_code=403, detail="forbidden")
             current_user = auth_mgr.get_primary_user()
             auth_via = "app_password_bearer"
         else:

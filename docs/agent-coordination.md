@@ -213,9 +213,18 @@ be reused, so the archived list and the restore and purge routes resolve the own
 through `original.registry_canonical_id`, looked up as an exact registry id (no
 configured name, slug or handle stands in for it, so an agent named after another
 agent's canonical id does not own that archive). An entry without one is admin-only; a
-per-agent local token (marked admin by the middleware) lists only its own agent,
+per-agent local token (`via == "agent_token"`, never admin) lists only its own agent,
 sees no archives and cannot restore or purge one; and
 `resolve_agent_owner` (`tinyagentos/auth_context.py`) attributes an empty id to nobody.
+
+**A per-agent local token is the agent, not an admin.** `AuthMiddleware` stamps it
+`via == "agent_token"`, `is_admin` False and `user_id` = the agent's registry owner
+(`None` when the registry cannot attribute the agent, so user-scoped routes refuse
+it instead of falling back to the primary user). `require_admin`, the settings
+router gate and the skill-exec/delegation helpers refuse it; the routes agents
+need (bootstrap, thinking, chat author binding, skill-exec for assigned skills,
+memory, broker, workspace) fence it to its own agent. The host-user token
+(`via == "local_token"`, no agent) is unchanged. `/api/kg/*` stays admin-only.
 
 **A per-agent local token dies with its agent's name.** It is bound by name, so
 archive and purge revoke it, a new deploy under the name revokes any token still
@@ -814,7 +823,7 @@ purely from a matching active grant. An already-registered agent is added to a
 further project via `POST /api/projects/{project_id}/members/assign-agent`
 (admin/owner gated) or by redeeming an invite whose handle collides with an
 active identity (the existing canonical_id and token are reused instead of
-409ing). The reverse is
+409ing). **To reuse an existing identity for a multi-project approval, the requester must re-submit the request with that agent's registry token as a Bearer header, otherwise the approval returns 409.** The reverse is
 `POST /api/projects/{project_id}/members/revoke-agent` (taOS #2148), which drops
 the agent's grants on that ONE project and leaves its other projects, its other
 scopes and the identity itself standing.
@@ -1173,6 +1182,8 @@ Agents must not treat a 404 from these routes as proof an id does not exist,
 and must not expect a 403 to distinguish "exists, not yours". Admin-only
 lifecycle routes (approve/reject/suspend/reactivate) still 403 non-admins
 before any lookup, which discloses nothing.
+
+`POST /api/agents/registry/register` mints active rows: a `taos-deployed` (or any non-`external-selfjoin`) origin requires an admin session or the host local token; `external-selfjoin` stays open to any signed-in user (rows created pending).
 
 Requested scopes are validated against the same closed `VALID_SCOPES` vocabulary
 as the consent flow. The project-bound scopes -- `project_tasks`,
@@ -2138,3 +2149,24 @@ The agent's own A2A identity token (`.taos_agent_token`) is a2a-only
 (scope `a2a_send` + `a2a_receive`) and covers none of the above endpoints.
 Leaving PicoClaw, or any controller start into opencode, revokes the old
 credential and mints a fresh one.
+
+## Token lifetime and renewal
+
+An agent's registry token expires 30 days after it is issued. Before it lapses
+(or up to 14 days after), the agent renews it with its own token:
+
+    POST /api/agents/registry/refresh-token
+    Authorization: Bearer <current token>
+    -> {"token": "...", "expires_at": <unix>, "canonical_id": "..."}
+
+The new token is for the same identity. The token the agent is running with is
+not retired, so renewing never interrupts a running agent. A token that was
+superseded by a rotation, belongs to a suspended identity, or lapsed more than
+14 days ago cannot renew; ask the owner to rotate it. Tokens issued before this
+change carry no expiry and keep working; they gain one at their next renewal.
+
+## Memory shelves
+
+Each agent may use its own memory shelf (the name it is deployed under) and no
+other. A person can read an agent they own by opting in with
+`PUT /api/agents/{name}/memory-read` (and withdraw with `DELETE`).

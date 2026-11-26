@@ -226,6 +226,7 @@ class TestAuthMiddlewareDispatch:
         middleware = AuthMiddleware(app=MagicMock())
         auth_mgr = _default_auth_mgr()
         auth_mgr.validate_local_token.return_value = True
+        auth_mgr.get_local_token_agent.return_value = None  # the host token
         auth_mgr.get_primary_user.return_value = {"id": "admin-1"}
         req = _request(
             path="/api/system",

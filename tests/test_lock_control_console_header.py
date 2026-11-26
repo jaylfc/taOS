@@ -31,6 +31,8 @@ import pytest
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
 
+from tinyagentos.console_secret import cookie_value
+
 import tinyagentos.routes.auth as auth_routes
 from tinyagentos.auth import AuthManager
 from taos_test_csrf import csrf_event_hooks
@@ -109,7 +111,7 @@ def _client(app, cookies=None):
         transport=ASGITransport(app=app, client=("127.0.0.1", 50123)),
         base_url="http://127.0.0.1:6969",
         headers={"User-Agent": UA},
-        cookies=cookies or {},
+        cookies={"taos_console": cookie_value("1"), **(cookies or {})},
         event_hooks=csrf_event_hooks(),
     )
 

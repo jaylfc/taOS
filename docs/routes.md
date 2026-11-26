@@ -296,7 +296,7 @@ When the override is a full URL (e.g. `http://192.168.1.5:6969`), the scheme and
 
 ### Other fleet mutations (same admin gate)
 
-`DELETE /api/cluster/workers/{name}`, `POST .../{name}/deploy`, `POST .../{name}/remote`, `POST /api/cluster/move`, `/route`, `/promote-archived`: `403 {"detail": "forbidden"}` unless admin session or host local token. Worker-facing paths (heartbeat, pairing, leases, capabilities) keep their HMAC / possession gates.
+`DELETE /api/cluster/workers/{name}`: `403 {"detail": "forbidden"}` unless admin session.
 
 ## Common behaviour
 
