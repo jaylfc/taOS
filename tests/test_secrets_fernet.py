@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import base64
+import logging
 import os
 import stat
 
@@ -48,6 +49,71 @@ class TestFernetKeyFile:
         _get_fernet_key(tmp_path)
         mode = stat.S_IMODE((tmp_path / ".secrets_key").stat().st_mode)
         assert mode == 0o600
+
+    def test_loose_existing_key_is_tightened_on_load(self, tmp_path, caplog):
+        """A key created earlier (or copied/restored) at 0644 is repaired on load."""
+        key_path = tmp_path / ".secrets_key"
+        raw = os.urandom(32)
+        key_path.write_bytes(raw)
+        key_path.chmod(0o644)
+
+        with caplog.at_level(logging.WARNING, logger="tinyagentos.secrets"):
+            key = _get_fernet_key(tmp_path)
+
+        assert key == raw
+        assert stat.S_IMODE(key_path.stat().st_mode) == 0o600, (
+            "an existing group/world-readable key file was left readable by "
+            "every local user"
+        )
+        assert any("0600" in rec.message for rec in caplog.records), (
+            "tightening a loose key file must log one warning"
+        )
+
+    def test_existing_key_owned_by_another_user_is_refused(
+        self, tmp_path, monkeypatch
+    ):
+        """A key owned by a different uid must not be silently read."""
+        key_path = tmp_path / ".secrets_key"
+        key_path.write_bytes(os.urandom(32))
+        key_path.chmod(0o600)
+        before = key_path.read_bytes()
+
+        monkeypatch.setattr(sec_mod, "_current_uid", lambda: os.getuid() + 1)
+
+        with pytest.raises(PermissionError, match="owned by uid"):
+            _get_fernet_key(tmp_path)
+
+        # The key was refused, not read or rewritten.
+        assert key_path.read_bytes() == before
+        assert stat.S_IMODE(key_path.stat().st_mode) == 0o600
+
+    def test_shared_data_dir_mode_is_not_changed(self, tmp_path):
+        """The data dir is shared with the database: only the file is tightened."""
+        key_path = tmp_path / ".secrets_key"
+        key_path.write_bytes(os.urandom(32))
+        key_path.chmod(0o644)
+        tmp_path.chmod(0o755)
+
+        _get_fernet_key(tmp_path)
+
+        assert stat.S_IMODE(key_path.stat().st_mode) == 0o600
+        assert stat.S_IMODE(tmp_path.stat().st_mode) == 0o755, (
+            "the shared data dir must not be tightened to 0700"
+        )
+
+    def test_dedicated_key_dir_is_tightened_to_0700(self, tmp_path):
+        """A dedicated key dir is narrowed to at most 0700 on load."""
+        key_dir = tmp_path / "keys"
+        key_dir.mkdir()
+        key_dir.chmod(0o755)
+        key_path = key_dir / ".secrets_key"
+        key_path.write_bytes(os.urandom(32))
+        key_path.chmod(0o644)
+
+        _get_fernet_key(key_dir, dedicated_dir=True)
+
+        assert stat.S_IMODE(key_path.stat().st_mode) == 0o600
+        assert stat.S_IMODE(key_dir.stat().st_mode) == 0o700
 
     def test_key_stable_across_calls(self, tmp_path):
         k1 = _get_fernet_key(tmp_path)

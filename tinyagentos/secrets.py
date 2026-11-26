@@ -3,7 +3,9 @@ from __future__ import annotations
 import base64
 import hashlib
 import json
+import logging
 import os
+import stat
 import time
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -13,6 +15,8 @@ if TYPE_CHECKING:
 
 from tinyagentos.atomic_io import atomic_create_bytes
 from tinyagentos.base_store import BaseStore
+
+logger = logging.getLogger(__name__)
 
 SECRETS_SCHEMA = """
 CREATE TABLE IF NOT EXISTS secrets (
@@ -66,11 +70,65 @@ def _xor_decrypt(encrypted: str) -> str:
 _fernet_key_cache: dict[str, bytes] = {}
 
 
-def _get_fernet_key(key_dir: Path) -> bytes:
+def _current_uid() -> int | None:
+    """Return the real uid of the running process, or None where unsupported."""
+    getuid = getattr(os, "getuid", None)
+    return getuid() if callable(getuid) else None
+
+
+def _enforce_key_file_permissions(key_path: Path, *, dedicated_dir: bool) -> None:
+    """Tighten and validate an existing key file before it is read.
+
+    Called on every load (start-up and any decrypt) so a key file copied,
+    restored, or created by an older version under a loose umask cannot stay
+    group- or world-readable.  A key owned by a different user is refused
+    outright: reading it would mean trusting key material another account
+    controls.  The key bytes themselves are never logged.
+
+    *dedicated_dir* narrows the containing directory to at most 0700 as well;
+    the shared data dir is left alone because it also holds the databases.
+    """
+    st = key_path.stat()
+
+    uid = _current_uid()
+    if uid is not None and st.st_uid != uid:
+        raise PermissionError(
+            f"Secrets key file {key_path} is owned by uid {st.st_uid}, but the "
+            f"running service user is uid {uid}. Refusing to use a key owned by "
+            "another user. Change its ownership (chown) or remove it to generate "
+            "a fresh key, then restart."
+        )
+
+    tightened: list[str] = []
+    file_mode = stat.S_IMODE(st.st_mode)
+    if file_mode & 0o077:
+        os.chmod(key_path, 0o600)
+        tightened.append(f"file {file_mode:04o} -> 0600")
+
+    if dedicated_dir:
+        dir_mode = stat.S_IMODE(key_path.parent.stat().st_mode)
+        if dir_mode & 0o077:
+            new_dir_mode = dir_mode & 0o700
+            os.chmod(key_path.parent, new_dir_mode)
+            tightened.append(f"directory {dir_mode:04o} -> {new_dir_mode:04o}")
+
+    if tightened:
+        logger.warning(
+            "Secrets key file %s was group- or world-accessible; tightened %s",
+            key_path,
+            ", ".join(tightened),
+        )
+
+
+def _get_fernet_key(key_dir: Path, *, dedicated_dir: bool = False) -> bytes:
     """Return the 32-byte encryption key for *key_dir*, generating on first use.
 
     Stored at ``<key_dir>/.secrets_key`` with mode 0600.  The file holds raw
     bytes (not base64) so a stripped text editor cannot accidentally corrupt it.
+
+    An existing key file is re-checked on every load: group/world access is
+    tightened to 0600 (and *dedicated_dir*, when set, to at most 0700) with a
+    single warning, and a file owned by another user is refused.
     """
     cache_key = str(key_dir)
     if cache_key in _fernet_key_cache:
@@ -89,6 +147,7 @@ def _get_fernet_key(key_dir: Path) -> bytes:
         return raw
 
     if key_path.exists():
+        _enforce_key_file_permissions(key_path, dedicated_dir=dedicated_dir)
         return _validated(key_path.read_bytes())
 
     # Generate a fresh random 32-byte key only when the file does not exist.
