@@ -196,8 +196,21 @@ class FakeExec:
             return (0, out)
         if cmd[:2] == ["tmux", "kill-session"]:
             target = cmd[cmd.index("-t") + 1]
+            if target.startswith("="):
+                # tmux '=' target form: exact match only.
+                exact = target[1:]
+                if exact in self.sessions:
+                    del self.sessions[exact]
+                    return (0, "")
+                return (1, f"can't find session: {exact}")
             if target in self.sessions:
                 del self.sessions[target]
+                return (0, "")
+            # Real tmux also accepts a unique session-name PREFIX as a
+            # target — the behaviour the routes must not rely on.
+            prefixed = [s for s in self.sessions if s.startswith(target)]
+            if len(prefixed) == 1:
+                del self.sessions[prefixed[0]]
                 return (0, "")
             return (1, f"can't find session: {target}")
         if cmd[:2] == ["tmux", "new-session"]:
@@ -308,7 +321,7 @@ class TestKillTerminal:
         assert resp.status_code == 200
         assert session not in fake_exec.sessions
         assert fake_exec.calls == [
-            (f"taos-agent-{name}", ["tmux", "kill-session", "-t", session])
+            (f"taos-agent-{name}", ["tmux", "kill-session", "-t", f"={session}"])
         ]
 
     def test_kill_missing_session_404(
@@ -321,6 +334,24 @@ class TestKillTerminal:
             f"/api/agents/{name}/terminals/{session}", headers=admin_auth_headers
         )
         assert resp.status_code == 404
+
+    def test_kill_absent_prefix_of_existing_session_404(
+        self, test_client, admin_auth_headers, seeded_agent_factory, fake_exec
+    ):
+        """tmux targets accept unique prefixes: killing absent slot 1 must not
+        destroy the existing slot 10 whose name it prefixes."""
+        agent = seeded_agent_factory(framework="openclaw", shortcuts=_TERMINAL_SHORTCUTS)
+        name = agent["name"]
+        slot10 = f"taos-term-{name}-tui-10"
+        slot1 = f"taos-term-{name}-tui-1"
+        fake_exec.sessions = {slot10: 1700000000}
+
+        resp = test_client.delete(
+            f"/api/agents/{name}/terminals/{slot1}", headers=admin_auth_headers
+        )
+
+        assert resp.status_code == 404
+        assert slot10 in fake_exec.sessions
 
     def test_kill_foreign_session_404_without_exec(
         self, test_client, admin_auth_headers, seeded_agent_factory, fake_exec
@@ -357,7 +388,7 @@ class TestRestartTerminal:
         assert resp.status_code == 200
         assert session in fake_exec.sessions  # recreated
         cmds = [cmd for _container, cmd in fake_exec.calls]
-        assert cmds[0] == ["tmux", "kill-session", "-t", session]
+        assert cmds[0] == ["tmux", "kill-session", "-t", f"={session}"]
         assert cmds[1] == [
             "tmux",
             "new-session",
@@ -397,6 +428,27 @@ class TestRestartTerminal:
         )
 
         assert resp.status_code == 404
+        cmds = [cmd for _container, cmd in fake_exec.calls]
+        assert all(cmd[:2] != ["tmux", "new-session"] for cmd in cmds)
+
+    def test_restart_absent_prefix_of_existing_session_404(
+        self, test_client, admin_auth_headers, seeded_agent_factory, fake_exec
+    ):
+        """Restart shares the kill helper: absent slot 1 must not destroy
+        slot 10 via tmux prefix matching."""
+        agent = seeded_agent_factory(framework="openclaw", shortcuts=_TERMINAL_SHORTCUTS)
+        name = agent["name"]
+        slot10 = f"taos-term-{name}-tui-10"
+        slot1 = f"taos-term-{name}-tui-1"
+        fake_exec.sessions = {slot10: 1700000000}
+
+        resp = test_client.post(
+            f"/api/agents/{name}/terminals/{slot1}/restart",
+            headers=admin_auth_headers,
+        )
+
+        assert resp.status_code == 404
+        assert slot10 in fake_exec.sessions
         cmds = [cmd for _container, cmd in fake_exec.calls]
         assert all(cmd[:2] != ["tmux", "new-session"] for cmd in cmds)
 

@@ -120,10 +120,15 @@ async def _list_sessions(name: str) -> list[dict[str, Any]]:
 
 
 async def _kill_session(name: str, session: str) -> bool:
-    """Kill *session* in the agent's container; False when it does not exist."""
+    """Kill *session* in the agent's container; False when it does not exist.
+
+    The target is ``=<session>``: a bare tmux target also matches a unique
+    session-name PREFIX, so killing an absent ``...-tui-1`` would destroy an
+    existing ``...-tui-10``. The ``=`` form requires an exact match.
+    """
     code, output = await exec_in_container(
         _container(name),
-        ["tmux", "kill-session", "-t", session],
+        ["tmux", "kill-session", "-t", f"={session}"],
         timeout=_EXEC_TIMEOUT,
     )
     if code != 0:

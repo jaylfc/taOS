@@ -5,7 +5,7 @@ from unittest.mock import AsyncMock, patch, call
 from tinyagentos.containers import (
     list_containers, create_container, set_root_quota, set_env,
     start_container, stop_container, destroy_container,
-    container_exists,
+    container_exists, exec_in_container,
     _parse_memory, ContainerInfo,
 )
 
@@ -622,3 +622,49 @@ class TestGetContainerIpUsesProject:
         assert ip == "10.42.246.174"
         project_cmds = [cmd for cmd in run_calls if "--project" in cmd]
         assert any("user-999" in str(cmd) for cmd in project_cmds)
+
+
+class TestExecInContainer:
+    @pytest.mark.asyncio
+    async def test_exec_targets_the_containers_project(self):
+        """exec must carry --project for a container in a non-default project
+        (mirroring start/stop/destroy in the same module); without it incus
+        searches the ambient project and misses per-user-project agents."""
+        calls = []
+
+        async def mock_run(cmd, timeout=120):
+            calls.append(cmd)
+            if cmd[:2] == ["incus", "list"]:
+                return (0, json.dumps([
+                    {"name": "taos-agent-a1", "project": "user-999",
+                     "status": "Running"}
+                ]))
+            return (0, "done")
+
+        with patch("tinyagentos.containers._run", side_effect=mock_run):
+            code, out = await exec_in_container(
+                "taos-agent-a1", ["tmux", "list-sessions"]
+            )
+        assert (code, out) == (0, "done")
+        exec_calls = [c for c in calls if c[:2] == ["incus", "exec"]]
+        assert exec_calls == [
+            ["incus", "exec", "--project", "user-999", "taos-agent-a1",
+             "--", "tmux", "list-sessions"]
+        ]
+
+    @pytest.mark.asyncio
+    async def test_exec_ambient_project_when_unresolvable(self):
+        """An unresolvable container keeps the previous ambient-project argv."""
+        calls = []
+
+        async def mock_run(cmd, timeout=120):
+            calls.append(cmd)
+            if cmd[:2] == ["incus", "list"]:
+                return (0, "[]")
+            return (0, "done")
+
+        with patch("tinyagentos.containers._run", side_effect=mock_run):
+            code, _out = await exec_in_container("taos-agent-ghost", ["true"])
+        assert code == 0
+        exec_calls = [c for c in calls if c[:2] == ["incus", "exec"]]
+        assert exec_calls == [["incus", "exec", "taos-agent-ghost", "--", "true"]]

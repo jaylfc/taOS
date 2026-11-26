@@ -426,8 +426,15 @@ async def create_container(
 
 
 async def exec_in_container(name: str, cmd: list[str], timeout: int = 300) -> tuple[int, str]:
-    """Execute a command inside a container."""
-    return await _run(["incus", "exec", name, "--"] + cmd, timeout=timeout)
+    """Execute a command inside a container.
+
+    Resolves the container's incus project first (like start/stop/destroy in
+    this module): without ``--project`` the exec searches the ambient project
+    and misses containers living in a per-user project (e.g. ``user-999``).
+    Unresolvable containers keep the ambient-project behaviour.
+    """
+    proj_args = await _project_args(name)
+    return await _run(["incus", "exec", *proj_args, name, "--"] + cmd, timeout=timeout)
 
 
 async def push_file(name: str, local_path: str, remote_path: str) -> tuple[int, str]:
