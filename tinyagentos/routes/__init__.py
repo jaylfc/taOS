@@ -63,6 +63,10 @@ def register_all_routers(app):
     from tinyagentos.routes.agents import router as agents_router
     app.include_router(agents_router, dependencies=_csrf)
 
+    # Persistent terminal lifecycle (#617): /api/agents/{name}/terminals...
+    from tinyagentos.routes.agent_terminals import router as agent_terminals_router
+    app.include_router(agent_terminals_router, dependencies=_csrf)
+
     from tinyagentos.routes.agent_versions import router as agent_versions_router
     app.include_router(agent_versions_router, dependencies=_csrf)
 
