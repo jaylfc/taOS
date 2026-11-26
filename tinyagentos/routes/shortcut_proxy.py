@@ -561,9 +561,6 @@ async def shortcut_terminal_ws(
         await websocket.close(code=1011, reason="PTY spawn failed")
         return
 
-    if notice is not None:
-        await websocket.send_text(notice)
-
     async def pty_to_ws():
         try:
             while True:
@@ -584,6 +581,10 @@ async def shortcut_terminal_ws(
             pass
 
     try:
+        # Inside the cleanup try: if the client has already gone away this
+        # send raises, and the finally below still closes the PTY handle.
+        if notice is not None:
+            await websocket.send_text(notice)
         await asyncio.gather(pty_to_ws(), ws_to_pty(), return_exceptions=True)
     finally:
         await asyncio.to_thread(pty_handle.close)

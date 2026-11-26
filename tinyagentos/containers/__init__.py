@@ -56,7 +56,7 @@ async def _run(cmd: list[str], timeout: int = 120) -> tuple[int, str]:
 # ``patch("tinyagentos.containers._run")`` correctly intercepts them.
 # ---------------------------------------------------------------------------
 
-async def _resolve_container_project(name: str, timeout: int = 120) -> str | None:
+async def _resolve_container_project(name: str, timeout: float = 120) -> str | None:
     """Return the incus project a container lives in, or None if not found.
 
     Searches ALL projects the client can see (``--all-projects``), not just the
@@ -105,7 +105,7 @@ async def get_container_state(name: str) -> dict | None:
     return None
 
 
-async def _project_args(name: str, timeout: int = 120) -> list[str]:
+async def _project_args(name: str, timeout: float = 120) -> list[str]:
     """``["--project", <p>]`` for the container's project, or ``[]`` (ambient)
     when it cannot be resolved. Mirrors destroy_container's lookup."""
     try:
@@ -439,9 +439,13 @@ async def exec_in_container(name: str, cmd: list[str], timeout: int = 300) -> tu
     """
     deadline = time.monotonic() + timeout
     proj_args = await _project_args(
-        name, timeout=max(1, round(deadline - time.monotonic()))
+        name, timeout=max(0.0, deadline - time.monotonic())
     )
-    remaining = max(1, round(deadline - time.monotonic()))
+    remaining = deadline - time.monotonic()
+    if remaining <= 0:
+        raise TimeoutError(
+            f"exec_in_container: {timeout}s budget exhausted before exec in {name}"
+        )
     return await _run(["incus", "exec", *proj_args, name, "--"] + cmd, timeout=remaining)
 
 

@@ -694,3 +694,24 @@ class TestExecInContainerTimeoutBudget:
         assert code == 0
         assert len(timeouts) == 2  # project lookup + exec
         assert all(t <= 5 for t in timeouts), timeouts
+
+    @pytest.mark.asyncio
+    async def test_expired_budget_raises_before_exec(self):
+        """A budget already exhausted must not start the exec with a fresh
+        rounded-up second (CodeRabbit Minor on #4575): TimeoutError, and
+        the exec argv never runs."""
+        calls = []
+
+        async def mock_run(cmd, timeout=120):
+            calls.append(cmd)
+            if cmd[:2] == ["incus", "list"]:
+                return (0, json.dumps([
+                    {"name": "taos-agent-a1", "project": "user-999",
+                     "status": "Running"}
+                ]))
+            return (0, "done")
+
+        with patch("tinyagentos.containers._run", side_effect=mock_run):
+            with pytest.raises(TimeoutError):
+                await exec_in_container("taos-agent-a1", ["true"], timeout=0)
+        assert [c for c in calls if c[:2] == ["incus", "exec"]] == []
