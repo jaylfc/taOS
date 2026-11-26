@@ -496,6 +496,25 @@ def _get_container_pty(agent_name: str, cmd: list[str] | None):
     return backend.spawn_pty(agent_name, cmd)
 
 
+async def _await_to_completion(coro) -> None:
+    """Await a cleanup coroutine to completion even if this task is
+    cancelled again while waiting (same pattern as
+    routes/agent_auth_requests._await_cleanup): shield alone returns
+    control on a second cancellation while the cleanup runs detached.
+    Cleanup failures are dropped here; the cleanup steps log their own
+    failures and must never mask the handler's outcome."""
+    task = asyncio.ensure_future(coro)
+    while not task.done():
+        try:
+            await asyncio.shield(task)
+        except asyncio.CancelledError:
+            continue
+        except Exception:  # noqa: BLE001 - cleanup is best-effort
+            break
+    if task.done() and not task.cancelled():
+        task.exception()
+
+
 @router.websocket("/shortcut/terminal/{agent_name}/{idx}")
 async def shortcut_terminal_ws(
     agent_name: str,
@@ -595,6 +614,8 @@ async def shortcut_terminal_ws(
         except Exception:
             pass
 
+    reader = asyncio.ensure_future(pty_to_ws())
+    writer = asyncio.ensure_future(ws_to_pty())
     try:
         # Inside the cleanup try: if the client has already gone away this
         # send raises, and the finally below still closes the PTY handle.
@@ -603,20 +624,24 @@ async def shortcut_terminal_ws(
         # First finisher wins: pty_to_ws has no exit condition for a quiet
         # shell (read() returns b"" and it loops), so a bare gather would
         # keep waiting on it after ws_to_pty returns on client disconnect
-        # and the finally below would never close the PTY. Cancel whichever
-        # direction is still running, then collect both.
-        reader = asyncio.ensure_future(pty_to_ws())
-        writer = asyncio.ensure_future(ws_to_pty())
-        try:
-            await asyncio.wait(
-                {reader, writer}, return_when=asyncio.FIRST_COMPLETED
-            )
-        finally:
-            for task in (reader, writer):
-                task.cancel()
-            await asyncio.gather(reader, writer, return_exceptions=True)
+        # and the finally below would never close the PTY.
+        await asyncio.wait(
+            {reader, writer}, return_when=asyncio.FIRST_COMPLETED
+        )
     finally:
-        await asyncio.to_thread(pty_handle.close)
+        # Deterministic close: cancel whichever direction is still
+        # running, AWAIT its cancellation, then close the PTY handle in
+        # this finally, shielded via _await_to_completion. The disconnect
+        # that ends the bridge can also cancel this handler task, and an
+        # unshielded await in the finally is then aborted before the
+        # close runs, leaking the PTY (the 3.13 shard-1 failure of
+        # test_disconnect_with_quiet_shell_closes_pty on #4576).
+        for task in (reader, writer):
+            task.cancel()
+        await _await_to_completion(
+            asyncio.gather(reader, writer, return_exceptions=True)
+        )
+        await _await_to_completion(asyncio.to_thread(pty_handle.close))
         try:
             await websocket.close()
         except Exception:
