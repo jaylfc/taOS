@@ -139,7 +139,7 @@ async def mem_client(app, tmp_data_dir):
 @pytest.mark.asyncio
 async def test_search_falls_back_to_sqlite_when_taosmd_unreachable(app, mem_client, tmp_data_dir):
     client, store = mem_client
-    await store.save_chunk("user", "fallback content", "T", "snippets")
+    await store.save_chunk(app.state.auth.find_user("admin")["id"], "fallback content", "T", "snippets")
     app.state.taosmd_url = "http://localhost:19999"
     try:
         resp = await client.get("/api/user-memory/search", params={"q": "fallback"})
@@ -274,7 +274,7 @@ async def test_save_metadata_cannot_override_source_id(mem_client, tmp_data_dir)
 async def test_migrate_error_response_does_not_leak_exception_text(mem_client, tmp_data_dir):
     """The /migrate 500 path must not reflect raw exception text to callers."""
     client, store = mem_client
-    await store.save_chunk("user", "to migrate", "T", "snippets")
+    await store.save_chunk(client._transport.app.state.auth.find_user("admin")["id"], "to migrate", "T", "snippets")
     mock_client = AsyncMock()
     mock_client.__aenter__ = AsyncMock(return_value=mock_client)
     mock_client.__aexit__ = AsyncMock(return_value=False)
