@@ -13,6 +13,12 @@ interface Props {
   activeAppId: string | null;
   /** True when running in mobile Safari/Chrome (not installed as a PWA). */
   isBrowserMobile?: boolean;
+  /**
+   * Slide the dock away and collapse its height (used while a text field is
+   * focused and the system keyboard owns the bottom of the screen). The dock
+   * is a flex sibling of the app area, so collapsing it hands the space back.
+   */
+  hidden?: boolean;
 }
 
 function resolveIcon(iconName: string): icons.LucideIcon {
@@ -39,7 +45,7 @@ export function useMobileDockMetrics(isBrowserMobile = false) {
   };
 }
 
-export function MobileDock({ onOpenApp, onToggleSwitcher, onOpenLaunchpad, activeAppId, isBrowserMobile = false }: Props) {
+export function MobileDock({ onOpenApp, onToggleSwitcher, onOpenLaunchpad, activeAppId, isBrowserMobile = false, hidden = false }: Props) {
   const dockApps = useMobileHomeStore((s) => s.dockApps);
   const windows = useProcessStore((s) => s.windows);
 
@@ -60,14 +66,21 @@ export function MobileDock({ onOpenApp, onToggleSwitcher, onOpenLaunchpad, activ
   //
   // So keep the full reserve where it was measured and is cheap, and shrink it
   // to the PWA gap on square screens, where dvh is doing the real work anyway.
-  const { paddingBottom: dockPaddingBottom } = useMobileDockMetrics(isBrowserMobile);
+  const { paddingBottom: dockPaddingBottom, height: dockHeight } = useMobileDockMetrics(isBrowserMobile);
 
   return (
     <div
       role="toolbar"
       aria-label="Dock"
-      className="shrink-0"
+      aria-hidden={hidden || undefined}
+      inert={hidden}
+      className="shrink-0 overflow-hidden motion-reduce:!transition-none"
       style={{
+        height: hidden ? 0 : dockHeight,
+        opacity: hidden ? 0 : 1,
+        transform: hidden ? "translateY(100%)" : "none",
+        pointerEvents: hidden ? "none" : undefined,
+        transition: "height 180ms ease, opacity 150ms ease, transform 180ms ease",
         display: "flex",
         alignItems: "center",
         justifyContent: "center",

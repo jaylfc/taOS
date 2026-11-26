@@ -18,6 +18,7 @@ import { usePushClickHandler } from "@/hooks/use-push-click";
 import { useProcessStore } from "@/stores/process-store";
 import { useDockStore } from "@/stores/dock-store";
 import { getApp, pinnedAppId, pinnedLaunchProps } from "@/registry/app-registry";
+import { useTextEntryActive } from "@/hooks/use-text-entry-active";
 import { MobileDock, useMobileDockMetrics } from "@/components/mobile/MobileDock";
 import { CardSwitcher } from "@/components/mobile/CardSwitcher";
 import { MobileTopBar, MOBILE_TOP_BAR_HEIGHT } from "@/components/mobile/MobileTopBar";
@@ -223,6 +224,9 @@ export function App() {
   // layout that accounts for Safari's dynamic URL bar + share/tab bars
   const isBrowserMobile = mode !== "desktop" && !isPwa;
   const { height: mobileDockHeight } = useMobileDockMetrics(isBrowserMobile);
+  // The system keyboard shrinks the window; hide the dock while typing so the
+  // open app reaches the bottom instead of leaving a strip above the keyboard.
+  const typingOnMobile = useTextEntryActive(mode !== "desktop");
 
   // On the handset, the power key locks: see useLockOnScreenOff.
   useLockOnScreenOff();
@@ -481,6 +485,7 @@ export function App() {
         onOpenLaunchpad={() => { setCardSwitcherOpen(false); setSearchOpen(false); setLaunchpadOpen((v) => !v); }}
         activeAppId={activeWindow?.appId ?? null}
         isBrowserMobile={isBrowserMobile}
+        hidden={typingOnMobile}
       />
       <CardSwitcher
         open={cardSwitcherOpen}
