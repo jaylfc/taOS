@@ -13,6 +13,7 @@ import logging
 import re
 import secrets
 import shlex
+import shutil
 import time
 from http.cookies import SimpleCookie
 from typing import Any, Optional
@@ -430,6 +431,45 @@ def tmux_session_cmd(
     return cmd
 
 
+# One-line notice shown in the terminal when the container image has no
+# tmux (#617 follow-up): the terminal still opens, it just runs the plain
+# pre-#617 spawn and dies with the window.
+TMUX_ABSENT_NOTICE = (
+    "tmux is not installed in this container — this terminal won't "
+    "persist when the window closes.\r\n"
+)
+
+
+async def _tmux_available(agent_name: str) -> bool:
+    """True when the terminal spawn for *agent_name* can use tmux.
+
+    Container backends: probe inside the agent's container. The native
+    backend runs the PTY on the host, so probe the host instead. Any probe
+    error reads as unavailable — the caller falls back to a plain
+    terminal, which must never fail to open just because the probe could
+    not run.
+    """
+    from tinyagentos.containers import exec_in_container
+    from tinyagentos.containers.backend import get_backend
+    from tinyagentos.containers.native import NativeBackend
+
+    try:
+        backend = get_backend()
+    except Exception:
+        return False
+    if isinstance(backend, NativeBackend):
+        return shutil.which("tmux") is not None
+    try:
+        code, _output = await exec_in_container(
+            f"taos-agent-{agent_name}",
+            ["sh", "-c", "command -v tmux >/dev/null 2>&1"],
+            timeout=10,
+        )
+    except Exception:
+        return False
+    return code == 0
+
+
 def _get_container_pty(agent_name: str, cmd: list[str] | None):
     """Spawn a PTY inside the agent's container.
 
@@ -473,13 +513,6 @@ async def shortcut_terminal_ws(
     else:
         inner_cmd = None
 
-    # #617: run the shell/TUI inside a persistent tmux session — attach if it
-    # already exists, create it otherwise. Closing this WebSocket then
-    # detaches instead of killing the shell, and reopening reattaches.
-    cmd: list[str] | None = tmux_session_cmd(
-        terminal_session_name(agent_name, scope, idx), inner_cmd
-    )
-
     await websocket.accept()
 
     # Validate handshake BEFORE spawning PTY — prevents resource leak when a
@@ -498,6 +531,22 @@ async def shortcut_terminal_ws(
         await websocket.close(code=1008, reason=f"invalid handshake: {exc}")
         return
 
+    # #617: with tmux in the container, run the shell/TUI inside a
+    # persistent tmux session — attach if it already exists, create it
+    # otherwise; closing this WebSocket then detaches instead of killing
+    # the shell, and reopening reattaches. Without tmux (image not yet
+    # rebuilt with it), fall back to the plain pre-#617 spawn plus a
+    # one-line notice — a terminal must never fail to open just because
+    # persistence is unavailable.
+    if await _tmux_available(agent_name):
+        cmd: list[str] | None = tmux_session_cmd(
+            terminal_session_name(agent_name, scope, idx), inner_cmd
+        )
+        notice: str | None = None
+    else:
+        cmd = inner_cmd
+        notice = TMUX_ABSENT_NOTICE
+
     try:
         pty_handle = await asyncio.to_thread(_get_container_pty, agent_name, cmd)
     except RuntimeError as exc:
@@ -511,6 +560,9 @@ async def shortcut_terminal_ws(
         logger.warning("terminal: spawn_pty failed for %s: %s", agent_name, exc)
         await websocket.close(code=1011, reason="PTY spawn failed")
         return
+
+    if notice is not None:
+        await websocket.send_text(notice)
 
     async def pty_to_ws():
         try:

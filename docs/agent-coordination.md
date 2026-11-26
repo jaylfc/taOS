@@ -1258,9 +1258,19 @@ neighbouring agent routes):
 A `{session}` that does not parse as one of *this* agent's terminal sessions
 is a 404 and never reaches tmux — a crafted name cannot target another
 agent's session. Sessions die on explicit kill/restart or agent teardown,
-not on window close. Still open from #617: the settings-screen
-running-terminals UI, tmux in the agent container images, and orphan
-TTL/cap values.
+not on window close.
+
+Fallback when the image has no tmux (follow-up to #4571): before spawning,
+the WebSocket probes for tmux (`_tmux_available` in
+`routes/shortcut_proxy.py` — inside the container; the native backend
+probes the host). If tmux is absent, the terminal opens with the plain
+pre-#617 spawn and shows a one-line "this terminal won't persist" notice;
+it never fails to open just because persistence is unavailable. The
+lifecycle routes degrade the same way: no tmux reads as an empty list,
+and restart/delete of a session 404s.
+
+Still open from #617: the settings-screen running-terminals UI, tmux in
+the agent container images (#4574), and orphan TTL/cap values.
 
 ## Device bearer self-service (second, narrower passthrough)
 

@@ -12,7 +12,7 @@ from __future__ import annotations
 import json
 import secrets
 import time
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
@@ -55,6 +55,9 @@ def _connect_and_capture(test_client, agent_id: str, idx: int, session_id: str):
     with patch(
         "tinyagentos.routes.shortcut_proxy._get_container_pty",
         side_effect=_fake_get_pty,
+    ), patch(
+        "tinyagentos.routes.shortcut_proxy._tmux_available",
+        new=AsyncMock(return_value=True),
     ):
         test_client.cookies.set("taos_shortcut", session_id)
         try:
