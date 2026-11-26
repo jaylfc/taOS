@@ -229,6 +229,8 @@ async def test_bound_agent_token_cannot_edit_another_agents_reply(tmp_path):
     reply = await store.send_message(
         channel_id=ch_id, author_id="tom", author_type="agent", content="tom's",
     )
+    from agent_owner_helper import own_agent
+    await own_agent(app, "other", _rec["id"])
     token = app.state.auth.mint_agent_local_token("other")
     async with AsyncClient(
         transport=ASGITransport(app=app), base_url="http://test",

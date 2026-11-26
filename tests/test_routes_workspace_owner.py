@@ -106,6 +106,8 @@ class TestWorkspaceMessagesOwnership:
     @pytest.mark.asyncio
     async def test_agent_token_reads_only_its_own_agent(self, owner_clients, app):
         _add_agent(app, "beta")
+        from agent_owner_helper import own_agent
+        await own_agent(app, "beta", app.state.auth.find_user("alice")["id"])
         async with _bearer(app, "beta") as beta:
             assert (await beta.get("/api/agents/beta/messages")).status_code == 200
             assert (await beta.get("/api/agents/alpha/messages")).status_code == 403
@@ -116,6 +118,8 @@ class TestWorkspaceMessagesOwnership:
     @pytest.mark.asyncio
     async def test_agent_token_cannot_spoof_sender(self, owner_clients, app):
         _add_agent(app, "beta")
+        from agent_owner_helper import own_agent
+        await own_agent(app, "beta", app.state.auth.find_user("alice")["id"])
         async with _bearer(app, "beta") as beta:
             resp = await beta.post("/api/agents/alpha/messages", json={"from_agent": "gamma", "message": "spoof"})
             assert resp.status_code == 403

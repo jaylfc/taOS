@@ -652,8 +652,13 @@ def caller_can_read_channel(request: Request, channel: dict) -> bool:
         return True
     if getattr(request.state, "via", None) == "local_token":
         return True
+    members = channel.get("members") or []
+    bound = getattr(request.state, "agent_name", None)
+    if bound and getattr(request.state, "via", None) == "agent_token":
+        # A per-agent token reads only the channels its own agent is a member of.
+        return str(bound) in [str(m) for m in members]
     uid = getattr(request.state, "user_id", None)
-    return bool(uid) and str(uid) in (channel.get("members") or [])
+    return bool(uid) and str(uid) in members
 
 
 def channel_read_denied(request: Request, channel: dict) -> JSONResponse | None:
@@ -1152,6 +1157,9 @@ async def search_messages(
     is_local_token = getattr(request.state, "via", None) == "local_token"
     if is_admin or is_local_token:
         readable_channel_ids = None  # None means all channels
+    elif getattr(request.state, "via", None) == "agent_token":
+        member_channels = await ch_store.list_channels(member_id=str(request.state.agent_name))
+        readable_channel_ids = [c["id"] for c in member_channels if caller_can_read_channel(request, c)]
     else:
         uid = getattr(request.state, "user_id", None)
         if uid is None:

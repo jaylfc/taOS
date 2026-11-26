@@ -1621,6 +1621,24 @@ class AgentRegistryStore(BaseStore):
             await self._db.commit()
             return await self.get(canonical_id)
 
+    async def adopt_ownerless(self, canonical_id: str, user_id: str) -> bool:
+        """Give *canonical_id* an owner when it has none; never change an owner.
+
+        Rows written by a deploy before it recorded the deployer carry an empty
+        ``user_id``. The owner is otherwise immutable, so this only fills an
+        empty one. Returns True when the row was adopted.
+        """
+        if self._db is None:
+            raise RuntimeError("AgentRegistryStore not initialised")
+        if not user_id:
+            return False
+        cur = await self._db.execute(
+            "UPDATE agent_registry SET user_id = ? WHERE canonical_id = ? AND (user_id IS NULL OR user_id = '')",
+            (user_id, canonical_id),
+        )
+        await self._db.commit()
+        return bool(cur.rowcount)
+
     async def revoke(self, canonical_id: str) -> Optional[dict]:
         """Transition *canonical_id* to 'revoked' via the state-transition guard.
 

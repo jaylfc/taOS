@@ -19,6 +19,7 @@ class FakeEventSource {
 describe("useLockOnScreenOff", () => {
   const replace = vi.fn();
   beforeEach(() => {
+    document.cookie = "csrf_token=tok";
     vi.stubGlobal("EventSource", FakeEventSource);
     vi.stubGlobal("fetch", vi.fn(() => Promise.resolve(new Response("{}"))));
     Object.defineProperty(window, "location", { value: { replace }, configurable: true });

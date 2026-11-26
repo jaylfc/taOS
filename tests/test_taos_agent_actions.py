@@ -209,13 +209,15 @@ async def test_confirm_requires_a_human_session(client, app, executed):
             resp = await bare.post(
                 f"/api/taos-agent/actions/{body['action_id']}/{verb}", headers=headers
             )
-            assert resp.status_code == 403, (verb, resp.text)
+            # Never a confirmation: 403, or 401 when the agent has no recorded
+            # owner and so no user to act for.
+            assert resp.status_code in (401, 403), (verb, resp.text)
         resp = await bare.put(
             "/api/taos-agent/actions/policy",
             json={"kind": "test.write", "policy": "auto"},
             headers=headers,
         )
-        assert resp.status_code == 403
+        assert resp.status_code in (401, 403)
     row = await app.state.taos_agent_actions.get(body["action_id"])
     assert row["state"] == "pending"
 

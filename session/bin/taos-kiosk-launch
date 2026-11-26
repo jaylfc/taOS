@@ -38,6 +38,12 @@ for b in /usr/bin/chromium /usr/bin/chromium-browser /usr/lib/chromium/chrome; d
 done
 [ -n "$BROWSER" ] || { echo "taos-kiosk: no chromium binary found" >&2; exit 1; }
 
+# The start URL carries a one-time console ticket (see taos-console-url), so the
+# page is recognised as this device's own screen. Resolved next to this script
+# first, then on the PATH, once the server is up.
+CONSOLE_URL_TOOL="$(dirname "$0")/taos-console-url"
+[ -x "$CONSOLE_URL_TOOL" ] || CONSOLE_URL_TOOL="/usr/local/bin/taos-console-url"
+
 # NOTE: the wait for the taOS server used to live HERE, before the compositor
 # was exec'd. That meant nothing at all was on screen while it waited -- the
 # splash had already quit and sway had not started -- so the user watched ~10
@@ -58,8 +64,7 @@ BROWSER_ARGS="--ozone-platform=wayland \
 --disable-features=TranslateUI \
 --disable-pinch \
 --overscroll-history-navigation=0 \
---user-data-dir=/var/lib/taos-kiosk/chrome \
---app=$TAOS_URL"
+--user-data-dir=/var/lib/taos-kiosk/chrome"
 
 # Remote debugging, OFF unless TAOS_KIOSK_DEBUG_PORT is set.
 #
@@ -105,7 +110,8 @@ while [ "\$i" -lt 60 ]; do
     i=\$((i + 1))
     sleep 1
 done
-exec "$BROWSER" $BROWSER_ARGS
+START_URL="\$("$CONSOLE_URL_TOOL" "$TAOS_URL" 2>/dev/null || echo "$TAOS_URL/auth/login?console_missing=1")"
+exec "$BROWSER" $BROWSER_ARGS --app="\$START_URL"
 SH
     chmod +x "$APP_SH"
     printf 'exec "%s"\n' "$APP_SH" > "$APP_CONF"
@@ -124,5 +130,6 @@ while [ "$i" -lt 60 ]; do
     i=$((i + 1))
     sleep 1
 done
+START_URL="$("$CONSOLE_URL_TOOL" "$TAOS_URL" 2>/dev/null || echo "$TAOS_URL/auth/login?console_missing=1")"
 # shellcheck disable=SC2086
-exec "$COMPOSITOR" -- "$BROWSER" $BROWSER_ARGS
+exec "$COMPOSITOR" -- "$BROWSER" $BROWSER_ARGS --app="$START_URL"

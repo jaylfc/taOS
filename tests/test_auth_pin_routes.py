@@ -41,7 +41,10 @@ def pin_app(tmp_path, monkeypatch):
 async def console(pin_app):
     """A client that looks like the device's own screen."""
     transport = ASGITransport(app=pin_app, client=("127.0.0.1", 51234))
-    async with AsyncClient(transport=transport, base_url="http://localhost:6969") as c:
+    async with AsyncClient(
+        transport=transport, base_url="http://localhost:6969",
+        headers={"X-taOS-Console": "1"},
+    ) as c:
         yield c
 
 
@@ -178,7 +181,10 @@ def fresh_app(tmp_path, monkeypatch):
 @pytest_asyncio.fixture()
 async def fresh_console(fresh_app):
     transport = ASGITransport(app=fresh_app, client=("127.0.0.1", 51234))
-    async with AsyncClient(transport=transport, base_url="http://localhost:6969") as c:
+    async with AsyncClient(
+        transport=transport, base_url="http://localhost:6969",
+        headers={"X-taOS-Console": "1"},
+    ) as c:
         yield c
 
 

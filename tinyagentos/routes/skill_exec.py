@@ -14,7 +14,7 @@ import logging
 import time
 from pathlib import Path
 
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import JSONResponse
 
 from tinyagentos.routes.decisions import SERVER_RAISED_KEY
@@ -55,6 +55,22 @@ def _is_admin_or_local_token(request: Request) -> bool:
         return True
     via = getattr(request.state, "via", None)
     return via == "local_token" or via == "registry_jwt_native_agent" or via == "registry_jwt_deployed_agent"
+
+
+def _may_use_skill_exec(request: Request) -> bool:
+    """Admin / host token / registry agent, OR a per-agent local token.
+
+    A per-agent token (``via == "agent_token"``) is not admin and is refused by
+    ``_is_admin_or_local_token`` (so ``code_exec``'s own defence-in-depth check
+    still refuses it); it may call a skill only through ``execute_skill``, which
+    fences it to its own agent and to the skills assigned to it.
+    """
+    if _is_admin_or_local_token(request):
+        return True
+    return (
+        getattr(request.state, "via", None) == "agent_token"
+        and bool(getattr(request.state, "agent_name", None))
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -226,7 +242,10 @@ async def _skill_code_exec(args: dict, request: Request) -> dict:
     import subprocess
 
     if not _is_admin_or_local_token(request):
-        return {"error": "forbidden: code_exec requires admin or local-token auth"}
+        raise HTTPException(
+            status_code=403,
+            detail="code_exec runs on the host and is not available to agent tokens",
+        )
 
     code = args.get("code", "")
     try:
@@ -740,7 +759,7 @@ async def execute_skill(skill_id: str, request: Request):
     (GHSA-h24f-gp4c-8qjm). Checked first, before touching the skill store or
     parsing args, so no attacker-controlled work happens pre-authorization.
     """
-    if not _is_admin_or_local_token(request):
+    if not _may_use_skill_exec(request):
         return JSONResponse({"error": "forbidden"}, status_code=403)
 
     body = await request.json()
@@ -780,7 +799,7 @@ async def execute_skill(skill_id: str, request: Request):
     credential_agent = getattr(request.state, "agent_name", None)
     if (
         via == "registry_jwt_deployed_agent"
-        or (via == "local_token" and credential_agent)
+        or (via in ("local_token", "agent_token") and credential_agent)
     ):
         if credential_agent:
             assigned = await skill_store.get_agent_skills(credential_agent)
@@ -808,5 +827,7 @@ async def execute_skill(skill_id: str, request: Request):
         result = await impl(args, request)
         _capture_tool_receipt(request, skill_id, args, result)
         return JSONResponse(result)
+    except HTTPException as exc:
+        return JSONResponse({"error": exc.detail}, status_code=exc.status_code)
     except Exception as exc:
         return JSONResponse({"error": str(exc)}, status_code=500)

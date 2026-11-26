@@ -16,6 +16,8 @@ DEFAULT_SETTINGS = {
 
 # Partition every chunk was written under before captures were per user.
 LEGACY_USER_ID = "user"
+# Settings row holding the install-wide default; not a user id.
+INSTALL_DEFAULT_ID = "__install_default__"
 
 
 def user_namespace(user_id: str) -> str:
@@ -224,7 +226,7 @@ class UserMemoryStore(BaseStore):
         total = sum(collections.values())
         return {"total": total, "collections": collections}
 
-    async def get_settings(self, user_id: str) -> dict:
+    async def _raw_settings(self, user_id: str) -> dict:
         assert self._db is not None
         row = None
         # Own settings first; the owner inherits the legacy row until they
@@ -237,16 +239,27 @@ class UserMemoryStore(BaseStore):
             row = await cursor.fetchone()
             if row:
                 break
-        if row:
-            return {**DEFAULT_SETTINGS, **json.loads(row[0])}
-        return dict(DEFAULT_SETTINGS)
+        return json.loads(row[0]) if row else {}
+
+    async def get_settings(self, user_id: str) -> dict:
+        """Built-in defaults, then the install default, then the person's own choices."""
+        return {
+            **DEFAULT_SETTINGS,
+            **await self._raw_settings(INSTALL_DEFAULT_ID),
+            **await self._raw_settings(user_id),
+        }
 
     async def update_settings(self, user_id: str, updates: dict) -> None:
+        """Store only what the person chose, so a later change to the install
+        default still reaches settings they never touched."""
         assert self._db is not None
-        current = await self.get_settings(user_id)
+        current = await self._raw_settings(user_id)
         current.update(updates)
         await self._db.execute(
             "INSERT OR REPLACE INTO user_memory_settings (user_id, settings) VALUES (?, ?)",
             (user_id, json.dumps(current)),
         )
         await self._db.commit()
+
+    async def update_install_default(self, updates: dict) -> None:
+        await self.update_settings(INSTALL_DEFAULT_ID, updates)

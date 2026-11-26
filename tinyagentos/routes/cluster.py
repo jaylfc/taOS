@@ -1460,7 +1460,11 @@ async def _identify_principal(request: Request) -> str | None:
         if auth_header.lower().startswith("bearer "):
             presented = auth_header[7:].strip()
             if presented and request.app.state.auth.validate_local_token(presented):
-                result = "local"
+                # Only the HOST local token is a trusted principal. A per-agent
+                # token is excluded: it would otherwise list, claim and release
+                # other agents' leases and report tasks.
+                if not request.app.state.auth.get_local_token_agent(presented):
+                    result = "local"
         if result is None:
             try:
                 await require_worker_hmac(request)

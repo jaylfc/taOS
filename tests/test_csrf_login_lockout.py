@@ -77,6 +77,7 @@ def _console_client(app, cookies):
     return AsyncClient(
         transport=transport,
         base_url="http://localhost:6969",
+        headers={"X-taOS-Console": "1"},
         cookies=cookies,
     )
 

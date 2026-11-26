@@ -637,27 +637,48 @@ class TestNotificationsPrefsMemberRejected:
 
 
 @pytest.mark.asyncio
-class TestUserMemorySettingsMemberRejected:
-    async def test_put_settings_rejected_and_not_applied(self, client, app):
-        """Member cannot change global user-memory settings."""
-        # First, verify the default state
+class TestUserMemorySettingsPerPerson:
+    async def test_member_changes_only_their_own_settings(self, client, app):
+        """A member's change is theirs alone; the owner's value is untouched."""
         resp = await client.get("/api/user-memory/settings")
         assert resp.status_code == 200
         original_capture = resp.json().get("capture_notes", True)
 
-        # Member tries to change it
         member = await _member_client(app)
         try:
             resp = await member.put("/api/user-memory/settings", json={"capture_notes": not original_capture})
+            assert resp.status_code == 200, resp.text
+            mine = await member.get("/api/user-memory/settings")
+            assert mine.json().get("capture_notes") == (not original_capture)
+        finally:
+            await member.aclose()
+
+        resp = await client.get("/api/user-memory/settings")
+        assert resp.json().get("capture_notes") == original_capture
+
+    async def test_install_default_needs_an_admin(self, client, app):
+        member = await _member_client(app)
+        try:
+            resp = await member.put("/api/user-memory/settings/default", json={"capture_notes": False})
         finally:
             await member.aclose()
         assert resp.status_code == 403, resp.text
         assert resp.json() == FORBIDDEN
 
-        # Verify the value is unchanged
-        resp = await client.get("/api/user-memory/settings")
-        assert resp.status_code == 200
-        assert resp.json().get("capture_notes") == original_capture
+    async def test_admin_default_reaches_people_who_have_not_chosen(self, client, app):
+        member = await _member_client(app)
+        try:
+            resp = await client.put("/api/user-memory/settings/default", json={"capture_searches": True})
+            assert resp.status_code == 200, resp.text
+            got = await member.get("/api/user-memory/settings")
+            assert got.json()["capture_searches"] is True
+            # Their own choice wins over a later default.
+            await member.put("/api/user-memory/settings", json={"capture_searches": False})
+            await client.put("/api/user-memory/settings/default", json={"capture_searches": True})
+            got = await member.get("/api/user-memory/settings")
+            assert got.json()["capture_searches"] is False
+        finally:
+            await member.aclose()
 
     async def test_admin_put_settings_allowed(self, client, app):
         """Admin can change global user-memory settings."""

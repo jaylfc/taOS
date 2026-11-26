@@ -301,10 +301,13 @@ class TestSystemAgentFrameworkAgreement:
     async def test_lock_widgets_and_config_framework_match(self, client, monkeypatch):
         from tinyagentos.routes import auth as auth_mod
 
+        real_is_console = auth_mod._request_is_console
         monkeypatch.setattr(auth_mod, "_request_is_console", lambda _r: True)
 
         widgets_resp = await client.get("/auth/lock-widgets")
         assert widgets_resp.status_code == 200
+        # Back to the real check: a locked console holds no session.
+        monkeypatch.setattr(auth_mod, "_request_is_console", real_is_console)
         widgets = widgets_resp.json()
         taos_agent = next(a for a in widgets["agents"] if a["name"] == "taOS Agent")
         widgets_framework = taos_agent["framework"]

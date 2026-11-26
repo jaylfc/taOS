@@ -50,12 +50,21 @@ def _make_app(data_dir: Path, monkeypatch):
 def app(tmp_path, monkeypatch, demo_env):
     return _make_app(tmp_path, monkeypatch)
 
+@pytest.fixture(autouse=True)
+def _console_unlocked():
+    """A signed-in console: a locked console holds no session (middleware)."""
+    from tinyagentos.routes import auth as auth_routes
+
+    auth_routes._CONSOLE_LOCKED = False
+    yield
+    auth_routes._CONSOLE_LOCKED = True
+
 
 def _client(app, host="127.0.0.1"):
     return AsyncClient(
         transport=ASGITransport(app=app, client=(host, 51234)),
         base_url="http://localhost:6969",
-        headers={"User-Agent": UA},
+        headers={"User-Agent": UA, "X-taOS-Console": "1"},
     )
 
 

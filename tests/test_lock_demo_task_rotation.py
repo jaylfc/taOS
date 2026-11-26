@@ -89,7 +89,7 @@ def widgets(lock_app, monkeypatch):
             async with AsyncClient(
                 transport=ASGITransport(app=lock_app, client=("127.0.0.1", 51234)),
                 base_url="http://localhost:6969",
-                headers={"User-Agent": "Mozilla/5.0 (rotation test)"},
+                headers={"User-Agent": "Mozilla/5.0 (rotation test)", "X-taOS-Console": "1"},
             ) as c:
                 r = await c.get("/auth/lock-widgets")
                 assert r.status_code == 200, r.text

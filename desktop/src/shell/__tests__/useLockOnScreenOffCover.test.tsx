@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { renderHook } from "@testing-library/react";
-import { useLockOnScreenOff } from "../useLockOnScreenOff";
+import { LOCK_RETRY_DELAYS_MS, useLockOnScreenOff } from "../useLockOnScreenOff";
 
 class FakeEventSource {
   static last: FakeEventSource | null = null;
@@ -17,6 +17,7 @@ class FakeEventSource {
 describe("useLockOnScreenOff cover", () => {
   const replace = vi.fn();
   beforeEach(() => {
+    document.cookie = "csrf_token=tok";
     vi.stubGlobal("EventSource", FakeEventSource);
     Object.defineProperty(window, "location", { value: { replace }, configurable: true });
     replace.mockReset();
@@ -44,6 +45,7 @@ describe("useLockOnScreenOff cover", () => {
   });
 
   it("still goes to the lock screen when the lock request rejects", async () => {
+    LOCK_RETRY_DELAYS_MS.fill(0);
     vi.stubGlobal("fetch", vi.fn(() => Promise.reject(new Error("offline"))));
     renderHook(() => useLockOnScreenOff());
     FakeEventSource.last!.fire("screen-off");

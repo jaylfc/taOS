@@ -48,5 +48,9 @@ def test_every_launch_turns_off_swipe_back():
         assert launches, "no chromium launch found in %s" % path
         for line in launches:
             seen += 1
-            assert "--overscroll-history-navigation=0" in line, (path.name, line.strip())
+            # The flag is either on the launch line or in the BROWSER_ARGS the
+            # line expands (the start URL is appended after it).
+            text = path.read_text()
+            via_args = "$BROWSER_ARGS" in line and "--overscroll-history-navigation=0" in text.split("BROWSER_ARGS=", 1)[-1].split("\n\n", 1)[0]
+            assert "--overscroll-history-navigation=0" in line or via_args, (path.name, line.strip())
     assert seen >= len(LAUNCHERS)

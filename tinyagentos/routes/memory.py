@@ -76,7 +76,7 @@ def _local_token_caller(request: Request) -> tuple[bool, str | None]:
     agent_name is bound (host/unbound token).
     Returns (False, None) otherwise.
     """
-    if getattr(request.state, "via", None) == "local_token":
+    if getattr(request.state, "via", None) in ("local_token", "agent_token"):
         return True, getattr(request.state, "agent_name", None)
     return False, None
 
@@ -95,6 +95,9 @@ async def _require_session_agent_access(request: Request, agent: str | None) -> 
     if not agent:
         return
     if getattr(request.state, "via", None) == "local_token" or is_legacy_owner(request):
+        return
+    if getattr(request.state, "via", None) == "agent_token":
+        # An agent token is fenced to its own agent by the route's agent branch.
         return
     # Authorise the exact component _agent_db_path will use.
     await require_agent_owner_or_admin(request, current_user(request), agent.strip())
@@ -524,7 +527,7 @@ async def memory_remember(request: Request, body: RememberRequest):
         # - If target has NO registry_canonical_id: admin only (config-only
         #   agent cannot be attributed by the registry; non-admins are
         #   forbidden).
-        if getattr(request.state, "via", None) != "local_token":
+        if getattr(request.state, "via", None) not in ("local_token", "agent_token"):
             user = current_user(request)
             if target.get("registry_canonical_id"):
                 await require_agent_owner_or_admin(

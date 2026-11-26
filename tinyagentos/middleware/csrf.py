@@ -70,6 +70,7 @@ _HEX_DIGITS = frozenset("0123456789abcdef")
 _CREDENTIAL_PATHS = frozenset(
     {
         "/auth/login",       # password form + SPA handoff
+        "/auth/console-ticket",  # the shell launcher's one-time ticket
         "/auth/pin-login",   # console PIN keypad
         "/auth/swipe-unlock",  # console swipe (single-user, method "swipe")
         "/auth/setup",       # first-run account creation

@@ -88,6 +88,9 @@ echo "PASS: swaybg reachable at $SWAYBG"
 #    waits.
 install -m 755 "$HERE/bin/taos-kiosk-launch" /usr/local/bin/taos-kiosk-launch
 echo "installed /usr/local/bin/taos-kiosk-launch"
+install -m 755 "$HERE/bin/taos-console-url" /usr/local/bin/taos-console-url
+echo "installed /usr/local/bin/taos-console-url"
+sh -n /usr/local/bin/taos-console-url || { echo "FAIL: installed taos-console-url is not valid sh"; exit 1; }
 sh -n /usr/local/bin/taos-kiosk-launch || { echo "FAIL: installed launcher is not valid sh"; exit 1; }
 grep -q 'taos-kiosk-app.sh' /usr/local/bin/taos-kiosk-launch || {
     echo "FAIL: installed launcher has no runtime app script - wrong version"; exit 1; }

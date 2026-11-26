@@ -11,12 +11,26 @@ from __future__ import annotations
 import pytest
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
+
+from tinyagentos.console_secret import cookie_value
 from taos_test_csrf import bound_csrf_token
 
 from tinyagentos.auth import AuthManager, effective_unlock_method
 
 PASSWORD = "correct horse battery staple"
 UA = "Mozilla/5.0 (Linux; taOS kiosk) Chromium/131"
+
+
+@pytest.fixture(autouse=True)
+def _console_unlocked():
+    """These tests sign in with a session minted directly, as a signed-in
+    console would hold; a LOCKED console holds no session (enforced in the
+    middleware), so the console starts unlocked here."""
+    from tinyagentos.routes import auth as auth_routes
+
+    auth_routes._CONSOLE_LOCKED = False
+    yield
+    auth_routes._CONSOLE_LOCKED = True
 
 
 @pytest.fixture(autouse=True)
@@ -52,8 +66,13 @@ def _client(app, host, console_header=True):
     if console_header:
         headers["X-taOS-Console"] = "1"
     transport = ASGITransport(app=app, client=(host, 51234))
+    # No header means the shell's console cookie identifies the screen (the
+    # lock page's own fetches carry it): what is missing is only the
+    # custom header, i.e. the simple-request gate is what gets measured.
+    cookies = {} if console_header else {"taos_console": cookie_value("1")}
     return AsyncClient(
         transport=transport, base_url="http://localhost:6969", headers=headers,
+        cookies=cookies,
     )
 
 
@@ -293,6 +312,7 @@ class TestSwipeUnlockRefusesSimpleRequests:
         assert r.status_code == 200, r.text
         assert r.cookies.get("taos_session")
         bare_console.cookies.clear()
+        bare_console.cookies.set("taos_console", cookie_value("1"))
         # swipe NOT chosen: the header gets it past M5 and no further.
         _force_method(app, "owner", "password")
         r = await bare_console.post("/auth/swipe-unlock", **kwargs)

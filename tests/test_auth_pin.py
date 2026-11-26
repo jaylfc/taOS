@@ -165,14 +165,14 @@ class TestEscalatingThrottleRecovers:
             lim.record_failure("u1", now=1000.0)
         assert lim.retry_after("u1", now=1000.0) == 0
 
-    @pytest.mark.parametrize("failures,expected", [(5, 30), (10, 300), (15, 900), (40, 900)])
+    @pytest.mark.parametrize("failures,expected", [(5, 30), (6, 60), (7, 120), (10, 960), (12, 3600), (40, 3600)])
     def test_delay_escalates_by_tier_and_caps(self, failures, expected):
         lim = _PinAttemptLimiter()
         for _ in range(failures):
             lim.record_failure("u1", now=1000.0)
         assert lim.retry_after("u1", now=1000.0) == pytest.approx(expected, abs=1)
 
-    @pytest.mark.parametrize("failures,delay", [(5, 30), (10, 300), (15, 900), (40, 900)])
+    @pytest.mark.parametrize("failures,delay", [(5, 30), (6, 60), (7, 120), (10, 960), (12, 3600), (40, 3600)])
     def test_every_tier_expires_on_its_own(self, failures, delay):
         """The device must always become usable again without a second machine."""
         lim = _PinAttemptLimiter()
@@ -531,7 +531,7 @@ class TestConcurrentPinLoginSerialization:
 
         auth_routes._pin_limiter = type(auth_routes._pin_limiter)()
         transport = ASGITransport(app=configured_app, client=("127.0.0.1", 51234))
-        async with AsyncClient(transport=transport, base_url="http://localhost:6969") as c:
+        async with AsyncClient(transport=transport, base_url="http://localhost:6969", headers={"X-taOS-Console": "1"}) as c:
             async def attempt():
                 return await c.post("/auth/pin-login", json={"username": "tester", "pin": "0000"})
 
@@ -547,7 +547,7 @@ class TestConcurrentPinLoginSerialization:
 
         auth_routes._pin_limiter = type(auth_routes._pin_limiter)()
         transport = ASGITransport(app=configured_app, client=("127.0.0.1", 51234))
-        async with AsyncClient(transport=transport, base_url="http://localhost:6969") as c:
+        async with AsyncClient(transport=transport, base_url="http://localhost:6969", headers={"X-taOS-Console": "1"}) as c:
             for _ in range(4):
                 r = await c.post("/auth/pin-login", json={"username": "tester", "pin": "0000"})
                 assert r.status_code == 401
@@ -564,7 +564,7 @@ class TestConcurrentPinLoginSerialization:
 
         auth_routes._pin_limiter = type(auth_routes._pin_limiter)()
         transport = ASGITransport(app=configured_app, client=("127.0.0.1", 51234))
-        async with AsyncClient(transport=transport, base_url="http://localhost:6969") as c:
+        async with AsyncClient(transport=transport, base_url="http://localhost:6969", headers={"X-taOS-Console": "1"}) as c:
             for _ in range(5):
                 r = await c.post("/auth/pin-login", json={"username": "tester", "pin": "0000"})
                 assert r.status_code == 401
@@ -603,7 +603,7 @@ class TestConcurrentPinLoginSerialization:
         monkeypatch.setattr("tinyagentos.auth.verify_password", slow_verify)
         try:
             transport = ASGITransport(app=configured_app, client=("127.0.0.1", 51234))
-            async with AsyncClient(transport=transport, base_url="http://localhost:6969") as c:
+            async with AsyncClient(transport=transport, base_url="http://localhost:6969", headers={"X-taOS-Console": "1"}) as c:
                 async def try_tester():
                     return await c.post("/auth/pin-login", json={"username": "tester", "pin": "0000"})
 
@@ -641,7 +641,7 @@ class TestConcurrentPinLoginSerialization:
         monkeypatch.setattr("tinyagentos.auth.verify_password", slow_verify)
         try:
             transport = ASGITransport(app=configured_app, client=("127.0.0.1", 51234))
-            async with AsyncClient(transport=transport, base_url="http://localhost:6969") as c:
+            async with AsyncClient(transport=transport, base_url="http://localhost:6969", headers={"X-taOS-Console": "1"}) as c:
                 login_task = asyncio.create_task(
                     c.post("/auth/pin-login", json={"username": "tester", "pin": "0000"})
                 )
@@ -727,7 +727,7 @@ class TestPinKeyLockWaiterRefcount:
         monkeypatch.setattr("tinyagentos.auth.verify_password", slow_verify)
         try:
             transport = ASGITransport(app=configured_app, client=("127.0.0.1", 51234))
-            async with AsyncClient(transport=transport, base_url="http://localhost:6969") as c:
+            async with AsyncClient(transport=transport, base_url="http://localhost:6969", headers={"X-taOS-Console": "1"}) as c:
                 # First request: holds the lock during slow verify
                 first_task = asyncio.create_task(
                     c.post("/auth/pin-login", json={"username": "tester", "pin": "0000"})
@@ -930,7 +930,7 @@ class TestPinPanelScriptNode:
         app.state.auth.setup_user("admin", "Admin", "", "passw0rd")
         app.state.auth.set_pin("admin", "123456")
         transport = ASGITransport(app=app)
-        async with AsyncClient(transport=transport, base_url="http://test") as c:
+        async with AsyncClient(transport=transport, base_url="http://test", headers={"X-taOS-Console": "1"}) as c:
             resp = await c.get("/auth/login")
         assert resp.status_code == 200
         assert 'data-pin-length="6"' in resp.text
@@ -941,7 +941,7 @@ class TestPinPanelScriptNode:
         keypad cannot auto-submit because nothing knows the length."""
         app.state.auth.setup_user("admin", "Admin", "", "passw0rd")
         transport = ASGITransport(app=app)
-        async with AsyncClient(transport=transport, base_url="http://test") as c:
+        async with AsyncClient(transport=transport, base_url="http://test", headers={"X-taOS-Console": "1"}) as c:
             resp = await c.get("/auth/login")
         assert resp.status_code == 200
         assert "data-pin-length" not in resp.text

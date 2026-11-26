@@ -46,8 +46,13 @@ URL="http://127.0.0.1:${TAOS_PORT:-6969}/auth/lock-call"
 # silently disarm this.
 WINDOW='[app_id="^chrome-127\.0\.0\.1__"]'
 
+# /auth/lock-call is console-only: it needs the per-boot console secret, sent
+# on curl's stdin so it never shows up in the process list.
+SECRET_FILE="${TAOS_CONSOLE_SECRET_FILE:-/run/taos/console-secret}"
+
 live() {
-    state="$(curl -s --max-time 2 "$URL" 2>/dev/null \
+    state="$(printf 'header = "X-taOS-Console: %s"\n' "$(tr -d '\r\n' < "$SECRET_FILE" 2>/dev/null)" \
+        | curl -s --max-time 2 -K - "$URL" 2>/dev/null \
         | sed -n 's/.*"state": *"\([a-z-]*\)".*/\1/p' | head -1)"
     case "$state" in ringing|pa|live) return 0 ;; esac
     return 1

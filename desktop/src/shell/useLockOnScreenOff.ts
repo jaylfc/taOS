@@ -25,6 +25,31 @@ import { withCsrf } from "@/lib/csrf";
 /** The lock page's own <title> (see the login page in routes/auth.py). */
 const LOCK_PAGE_TITLE = "Sign in \u2014 taOS";
 
+/** Pause between lock attempts, in ms. The first attempt is immediate. */
+export const LOCK_RETRY_DELAYS_MS = [0, 400, 1200, 3000, 5000];
+
+const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
+
+/** POST /auth/lock with the CSRF header; true only on a 2xx answer. */
+export async function confirmLock(): Promise<boolean> {
+  for (const delay of LOCK_RETRY_DELAYS_MS) {
+    if (delay) await sleep(delay);
+    try {
+      let init = withCsrf({ method: "POST", credentials: "include" });
+      if (!new Headers(init?.headers).has("X-CSRF-Token")) {
+        // No csrf_token cookie yet: any answer from the server issues one.
+        await fetch("/auth/status", { credentials: "include" });
+        init = withCsrf({ method: "POST", credentials: "include" });
+      }
+      const response = await fetch("/auth/lock", init);
+      if (response.ok) return true;
+    } catch {
+      // Controller restarting or unreachable: try again.
+    }
+  }
+  return false;
+}
+
 export function useLockOnScreenOff(): void {
   useEffect(() => {
     if (typeof EventSource === "undefined") return;
@@ -48,15 +73,14 @@ export function useLockOnScreenOff(): void {
       // has loaded; restored below if the shell stays.
       const previousTitle = document.title;
       document.title = LOCK_PAGE_TITLE;
-      try {
-        await fetch("/auth/lock", {
-          method: "POST",
-          credentials: "include",
-          headers: withCsrf({ method: "POST" })?.headers,
-        });
-      } catch {
-        // The lock page still asks for a PIN if the session survived.
-      }
+      // The lock counts only when the server says so (a 2xx). A rejected or
+      // unreachable request used to be ignored, which left the old session
+      // alive behind a sign-in page. Retry, and if the server still has not
+      // confirmed, go to the sign-in page anyway: the controller treats a
+      // sign-in page shown to the console as a lock and revokes the session
+      // there, and it has already marked the console locked from the
+      // screen-off signal itself.
+      await confirmLock();
       try {
         window.location.replace("/auth/login");
       } catch {

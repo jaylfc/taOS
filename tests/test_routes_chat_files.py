@@ -367,7 +367,14 @@ class TestFromPathOwnership:
         """A bound agent (via local token) can attach a file from its own agent workspace."""
         from httpx import AsyncClient, ASGITransport
 
-        # Create a bound agent token for agent "alpha"
+        # Agent "alpha" is registered to the signed-in admin; its token acts for
+        # that owner (a token for an ownerless agent has no user to act for).
+        registry = app.state.agent_registry
+        if registry._db is None:
+            await registry.init()
+        admin = app.state.auth.get_primary_user()
+        row = await registry.register(framework="claude-code", display_name="alpha", user_id=admin["id"])
+        app.state.config.agents.append({"name": "alpha", "registry_canonical_id": row["canonical_id"]})
         token = app.state.auth.mint_agent_local_token("alpha")
         ws = app.state.data_dir / "agent-workspaces" / "alpha"
         ws.mkdir(parents=True, exist_ok=True)
