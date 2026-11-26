@@ -1,7 +1,8 @@
 """Tests for the shortcut terminal WebSocket route (Tasks 20-21).
 
 Task 20: PTY bridge — cookie validation, scope check, basic data flow.
-Task 21: tui shortcut spawns PTY with bash -lc <command>.
+Task 21: tui shortcut spawns PTY with bash -lc <command> (since #617, wrapped
+in the tmux attach-or-create session command).
 """
 from __future__ import annotations
 
@@ -119,7 +120,9 @@ class TestTuiSpawnCommand:
     def test_tui_shortcut_passes_command_to_spawn_pty(
         self, test_client, seeded_agent_factory
     ):
-        """For a tui shortcut, spawn_pty must be called with cmd=['bash','-lc',<command>]."""
+        """For a tui shortcut, spawn_pty gets the tmux attach-or-create wrap (#617)
+        carrying the shortcut's command: ['tmux','new-session','-A','-s',<session>,
+        'bash -lc <command>']."""
         shortcuts = [
             {
                 "kind": "tui",
@@ -155,7 +158,14 @@ class TestTuiSpawnCommand:
             finally:
                 test_client.cookies.clear()
 
-        assert captured_cmd == ["bash", "-lc", "htop"]
+        assert captured_cmd == [
+            "tmux",
+            "new-session",
+            "-A",
+            "-s",
+            f"taos-term-{agent_id}-tui-0",
+            "bash -lc htop",
+        ]
 
 
 # ---------------------------------------------------------------------------

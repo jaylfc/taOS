@@ -10,7 +10,9 @@ import asyncio
 import base64
 import json
 import logging
+import re
 import secrets
+import shlex
 import time
 from http.cookies import SimpleCookie
 from typing import Any, Optional
@@ -376,6 +378,58 @@ async def shortcut_dashboard_proxy(
 # Terminal PTY bridge helpers — Task 20 / 21
 # ---------------------------------------------------------------------------
 
+# ---------------------------------------------------------------------------
+# Persistent terminal sessions (#617)
+#
+# A terminal shortcut's shell/TUI runs inside a tmux session in the agent's
+# container, named taos-term-<agent>-<kind>-<idx> (one session per shortcut
+# window). The WebSocket attaches-or-creates; closing the socket detaches and
+# the session keeps running. The lifecycle routes in
+# routes/agent_terminals.py list/restart/kill these sessions and share the
+# naming helpers below.
+# ---------------------------------------------------------------------------
+
+_TMUX_UNSAFE_CHARS = re.compile(r"[^A-Za-z0-9_-]+")
+
+
+def _tmux_safe(part: str) -> str:
+    """Make *part* safe for a tmux session name ('.' and ':' are target syntax)."""
+    return _TMUX_UNSAFE_CHARS.sub("-", str(part)).strip("-") or "x"
+
+
+def terminal_session_name(agent_name: str, kind: str, idx: int) -> str:
+    """tmux session name for agent_name's terminal shortcut window *idx*."""
+    return f"taos-term-{_tmux_safe(agent_name)}-{_tmux_safe(kind)}-{idx}"
+
+
+def parse_terminal_session(agent_name: str, session: str) -> tuple[str, int] | None:
+    """Return (kind, idx) if *session* is agent_name's terminal session, else None."""
+    prefix = f"taos-term-{_tmux_safe(agent_name)}-"
+    if not session.startswith(prefix):
+        return None
+    kind, sep, idx = session[len(prefix):].rpartition("-")
+    if not sep or not kind or not idx.isdigit():
+        return None
+    return kind, int(idx)
+
+
+def tmux_session_cmd(
+    session_name: str, inner_cmd: list[str] | None, *, detached: bool = False
+) -> list[str]:
+    """Build the tmux new-session command for a terminal session.
+
+    Attached form (the WebSocket spawn): ``tmux new-session -A -s <name>``
+    attaches if the session exists, else creates it. Detached form (the
+    restart route): ``-d`` instead of ``-A``. *inner_cmd* (a tui shortcut's
+    command) is appended as ONE shell-command string so its quoting survives
+    tmux's sh -c handling; None starts the session's default shell.
+    """
+    cmd = ["tmux", "new-session", "-d" if detached else "-A", "-s", session_name]
+    if inner_cmd:
+        cmd.append(" ".join(shlex.quote(c) for c in inner_cmd))
+    return cmd
+
+
 def _get_container_pty(agent_name: str, cmd: list[str] | None):
     """Spawn a PTY inside the agent's container.
 
@@ -412,12 +466,19 @@ async def shortcut_terminal_ws(
         return
 
     # For tui shortcuts pass the configured command; for container-terminal use
-    # the default shell (cmd=None).
+    # the default shell (inner cmd=None).
     if scope == "tui":
         command = shortcut.get("command", "")
-        cmd: list[str] | None = ["bash", "-lc", command]
+        inner_cmd: list[str] | None = ["bash", "-lc", command]
     else:
-        cmd = None
+        inner_cmd = None
+
+    # #617: run the shell/TUI inside a persistent tmux session — attach if it
+    # already exists, create it otherwise. Closing this WebSocket then
+    # detaches instead of killing the shell, and reopening reattaches.
+    cmd: list[str] | None = tmux_session_cmd(
+        terminal_session_name(agent_name, scope, idx), inner_cmd
+    )
 
     await websocket.accept()
 
