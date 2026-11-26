@@ -1,0 +1,3 @@
+### Fixed
+
+- **Terminal tmux probe and PTY cleanup (review on #4575)** — the shortcut terminal's tmux probe now goes through the active container backend instead of the module-level Incus-only exec (the LXC backend keeps the module path, which resolves the container's incus project), so a Docker/Apple host no longer misreports tmux as absent. The WebSocket PTY bridge also cancels the surviving direction when either side finishes: a client disconnect with a quiet shell previously left `pty_to_ws` looping on empty reads forever, so the cleanup that closes the PTY handle never ran and the PTY leaked.

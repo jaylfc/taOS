@@ -1279,6 +1279,16 @@ it never fails to open just because persistence is unavailable. The
 lifecycle routes degrade the same way: no tmux reads as an empty list,
 and restart/delete of a session 404s.
 
+The probe goes through the active container backend
+(`backend.exec_in_container`); the LXC backend keeps the module-level
+exec, which resolves the container's incus project first — the
+module-level exec is hard-coded to `incus exec`, so probing through it
+on a Docker/Apple host would misreport tmux as absent and degrade
+every terminal. The WebSocket bridge also cancels the surviving
+direction as soon as either side finishes: a client disconnect with a
+quiet shell previously left the PTY reader looping on empty reads, so
+the cleanup that closes the PTY handle never ran and the PTY leaked.
+
 Still open from #617: the settings-screen running-terminals UI, tmux in
 the agent container images (#4574), and orphan TTL/cap values.
 

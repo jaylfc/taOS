@@ -451,6 +451,7 @@ async def _tmux_available(agent_name: str) -> bool:
     """
     from tinyagentos.containers import exec_in_container
     from tinyagentos.containers.backend import get_backend
+    from tinyagentos.containers.lxc import LXCBackend
     from tinyagentos.containers.native import NativeBackend
 
     try:
@@ -460,11 +461,25 @@ async def _tmux_available(agent_name: str) -> bool:
     if isinstance(backend, NativeBackend):
         return shutil.which("tmux") is not None
     try:
-        code, _output = await exec_in_container(
-            f"taos-agent-{agent_name}",
-            ["sh", "-c", "command -v tmux >/dev/null 2>&1"],
-            timeout=10,
-        )
+        if isinstance(backend, LXCBackend):
+            # The module-level exec resolves the container's incus project
+            # before exec'ing; the LXC backend's own exec does not, so keep
+            # the module path for Incus.
+            code, _output = await exec_in_container(
+                f"taos-agent-{agent_name}",
+                ["sh", "-c", "command -v tmux >/dev/null 2>&1"],
+                timeout=10,
+            )
+        else:
+            # Probe through the ACTIVE backend: the module-level
+            # exec_in_container is hard-coded to `incus exec`, so on a
+            # Docker/Apple host it would fail and wrongly report tmux
+            # absent, degrading every terminal to the plain fallback.
+            code, _output = await backend.exec_in_container(
+                f"taos-agent-{agent_name}",
+                ["sh", "-c", "command -v tmux >/dev/null 2>&1"],
+                timeout=10,
+            )
     except Exception:
         return False
     return code == 0
@@ -479,6 +494,25 @@ def _get_container_pty(agent_name: str, cmd: list[str] | None):
     from tinyagentos.containers.backend import get_backend
     backend = get_backend()
     return backend.spawn_pty(agent_name, cmd)
+
+
+async def _await_to_completion(coro) -> None:
+    """Await a cleanup coroutine to completion even if this task is
+    cancelled again while waiting (same pattern as
+    routes/agent_auth_requests._await_cleanup): shield alone returns
+    control on a second cancellation while the cleanup runs detached.
+    Cleanup failures are dropped here; the cleanup steps log their own
+    failures and must never mask the handler's outcome."""
+    task = asyncio.ensure_future(coro)
+    while not task.done():
+        try:
+            await asyncio.shield(task)
+        except asyncio.CancelledError:
+            continue
+        except Exception:  # noqa: BLE001 - cleanup is best-effort
+            break
+    if task.done() and not task.cancelled():
+        task.exception()
 
 
 @router.websocket("/shortcut/terminal/{agent_name}/{idx}")
@@ -580,14 +614,34 @@ async def shortcut_terminal_ws(
         except Exception:
             pass
 
+    reader = asyncio.ensure_future(pty_to_ws())
+    writer = asyncio.ensure_future(ws_to_pty())
     try:
         # Inside the cleanup try: if the client has already gone away this
         # send raises, and the finally below still closes the PTY handle.
         if notice is not None:
             await websocket.send_text(notice)
-        await asyncio.gather(pty_to_ws(), ws_to_pty(), return_exceptions=True)
+        # First finisher wins: pty_to_ws has no exit condition for a quiet
+        # shell (read() returns b"" and it loops), so a bare gather would
+        # keep waiting on it after ws_to_pty returns on client disconnect
+        # and the finally below would never close the PTY.
+        await asyncio.wait(
+            {reader, writer}, return_when=asyncio.FIRST_COMPLETED
+        )
     finally:
-        await asyncio.to_thread(pty_handle.close)
+        # Deterministic close: cancel whichever direction is still
+        # running, AWAIT its cancellation, then close the PTY handle in
+        # this finally, shielded via _await_to_completion. The disconnect
+        # that ends the bridge can also cancel this handler task, and an
+        # unshielded await in the finally is then aborted before the
+        # close runs, leaking the PTY (the 3.13 shard-1 failure of
+        # test_disconnect_with_quiet_shell_closes_pty on #4576).
+        for task in (reader, writer):
+            task.cancel()
+        await _await_to_completion(
+            asyncio.gather(reader, writer, return_exceptions=True)
+        )
+        await _await_to_completion(asyncio.to_thread(pty_handle.close))
         try:
             await websocket.close()
         except Exception:
