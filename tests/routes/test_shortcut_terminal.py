@@ -342,3 +342,93 @@ class TestTmuxAbsentFallback:
                 test_client.cookies.clear()
 
         assert captured["cmd"] == ["bash", "-lc", "htop"]
+
+
+# ---------------------------------------------------------------------------
+# Review on #4575 (CodeRabbit, 2026-11-26) — two Majors on the fallback:
+# the tmux probe must go through the ACTIVE backend, not the module-level
+# Incus exec; and a client disconnect must close the PTY even when the
+# shell is quiet (pty_to_ws has no exit condition on empty reads).
+# ---------------------------------------------------------------------------
+
+class TestTmuxProbeUsesActiveBackend:
+    @pytest.mark.asyncio
+    async def test_probe_uses_active_backend_not_module_level_incus(self):
+        """With a non-Incus backend active, _tmux_available must ask THAT
+        backend whether tmux exists in the container. The module-level
+        exec_in_container is hard-coded to `incus exec`: on a Docker/Apple
+        host it fails, so the probe would wrongly report tmux absent and
+        degrade every terminal to the non-persistent fallback."""
+        from tinyagentos.routes.shortcut_proxy import _tmux_available
+
+        backend_exec = AsyncMock(return_value=(0, ""))
+        fake_backend = type("FakeBackend", (), {"exec_in_container": backend_exec})()
+        module_exec = AsyncMock(return_value=(1, "incus: not found"))
+
+        with patch(
+            "tinyagentos.containers.backend.get_backend", return_value=fake_backend
+        ), patch("tinyagentos.containers.exec_in_container", module_exec):
+            assert await _tmux_available("agent1") is True
+
+        backend_exec.assert_awaited_once()
+        args = backend_exec.await_args.args
+        assert args[0] == "taos-agent-agent1"
+        assert args[1] == ["sh", "-c", "command -v tmux >/dev/null 2>&1"]
+        module_exec.assert_not_awaited()
+
+
+class QuietPtyHandle:
+    """PTY handle whose shell never prints: read() always returns b''."""
+
+    def __init__(self):
+        self.closed = False
+
+    def read(self, size: int = 4096) -> bytes:
+        return b""
+
+    def write(self, data: bytes) -> None:
+        pass
+
+    def close(self) -> None:
+        self.closed = True
+
+
+class TestTerminalDisconnectClosesPty:
+    def test_disconnect_with_quiet_shell_closes_pty(
+        self, test_client, seeded_agent_factory
+    ):
+        """Client disconnects while the shell is quiet: ws_to_pty returns,
+        and the handler must stop waiting on pty_to_ws and run its cleanup
+        (pty_handle.close()). With a bare asyncio.gather the reader loops
+        on b'' forever, gather never returns, and the PTY leaks."""
+        shortcuts = [
+            {
+                "kind": "container-terminal",
+                "label": "Shell",
+                "icon": "terminal",
+                "requires_capability": "agent.shell",
+            }
+        ]
+        agent = seeded_agent_factory(framework="openclaw", shortcuts=shortcuts)
+        agent_id = agent["id"]
+        session_id = _make_terminal_session(agent_id, 0)
+        fake_pty = QuietPtyHandle()
+
+        with patch(
+            "tinyagentos.routes.shortcut_proxy._get_container_pty",
+            return_value=fake_pty,
+        ), patch(
+            "tinyagentos.routes.shortcut_proxy._tmux_available",
+            new=AsyncMock(return_value=True),
+        ):
+            test_client.cookies.set("taos_shortcut", session_id)
+            try:
+                with test_client.websocket_connect(
+                    f"/shortcut/terminal/{agent_id}/0"
+                ) as ws:
+                    ws.send_text(json.dumps({"type": "ticket", "ticket": "dummy-ticket"}))
+                # Leaving the context disconnects the client.
+            finally:
+                test_client.cookies.clear()
+
+        assert fake_pty.closed, "PTY handle was not closed after client disconnect"

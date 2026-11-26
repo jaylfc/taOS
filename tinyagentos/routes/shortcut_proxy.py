@@ -451,6 +451,7 @@ async def _tmux_available(agent_name: str) -> bool:
     """
     from tinyagentos.containers import exec_in_container
     from tinyagentos.containers.backend import get_backend
+    from tinyagentos.containers.lxc import LXCBackend
     from tinyagentos.containers.native import NativeBackend
 
     try:
@@ -460,11 +461,25 @@ async def _tmux_available(agent_name: str) -> bool:
     if isinstance(backend, NativeBackend):
         return shutil.which("tmux") is not None
     try:
-        code, _output = await exec_in_container(
-            f"taos-agent-{agent_name}",
-            ["sh", "-c", "command -v tmux >/dev/null 2>&1"],
-            timeout=10,
-        )
+        if isinstance(backend, LXCBackend):
+            # The module-level exec resolves the container's incus project
+            # before exec'ing; the LXC backend's own exec does not, so keep
+            # the module path for Incus.
+            code, _output = await exec_in_container(
+                f"taos-agent-{agent_name}",
+                ["sh", "-c", "command -v tmux >/dev/null 2>&1"],
+                timeout=10,
+            )
+        else:
+            # Probe through the ACTIVE backend: the module-level
+            # exec_in_container is hard-coded to `incus exec`, so on a
+            # Docker/Apple host it would fail and wrongly report tmux
+            # absent, degrading every terminal to the plain fallback.
+            code, _output = await backend.exec_in_container(
+                f"taos-agent-{agent_name}",
+                ["sh", "-c", "command -v tmux >/dev/null 2>&1"],
+                timeout=10,
+            )
     except Exception:
         return False
     return code == 0
@@ -585,7 +600,21 @@ async def shortcut_terminal_ws(
         # send raises, and the finally below still closes the PTY handle.
         if notice is not None:
             await websocket.send_text(notice)
-        await asyncio.gather(pty_to_ws(), ws_to_pty(), return_exceptions=True)
+        # First finisher wins: pty_to_ws has no exit condition for a quiet
+        # shell (read() returns b"" and it loops), so a bare gather would
+        # keep waiting on it after ws_to_pty returns on client disconnect
+        # and the finally below would never close the PTY. Cancel whichever
+        # direction is still running, then collect both.
+        reader = asyncio.ensure_future(pty_to_ws())
+        writer = asyncio.ensure_future(ws_to_pty())
+        try:
+            await asyncio.wait(
+                {reader, writer}, return_when=asyncio.FIRST_COMPLETED
+            )
+        finally:
+            for task in (reader, writer):
+                task.cancel()
+            await asyncio.gather(reader, writer, return_exceptions=True)
     finally:
         await asyncio.to_thread(pty_handle.close)
         try:
