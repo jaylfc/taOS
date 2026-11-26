@@ -383,6 +383,28 @@ The `label_pin` is only sent in the confirm body when the input is non-empty. Wh
 `pin_required` is true from the start response, the Confirm button is disabled until
 the Label PIN has 4-12 digits.
 
+## Pairing identity proof (mDNS discovery, #119)
+
+`POST /api/cluster/pairing/identity-proof` is auth-exempt, like announce and
+claim: a worker that found the controller through the `_tinyagentos._tcp`
+mDNS service holds only an unauthenticated TXT record, and anyone on the LAN
+can advertise the same service type with a copied fingerprint string. The
+worker challenges the controller at the advertised URL with a random nonce
+(32-128 lowercase hex, otherwise 400); the controller answers with its hub
+fingerprint, signing public key and an Ed25519 signature over the
+domain-separated message `taos-pairing-identity-proof:<nonce>`
+(`tinyagentos.hub.identity.build_pairing_proof`). The signature is the proof
+and only public material leaves the node -- the same key material the TXT
+record already broadcasts.
+
+The worker side (`tinyagentos/worker/pairing.py`, `verify_controller_proof`)
+fails closed: the returned key must hash to the advertised fingerprint AND
+the signature must verify. Verification runs before the pairing announce
+whenever a fingerprint is known (a discovered candidate, or
+`--expect-fingerprint`; `scripts/install-worker.sh` plumbs the fingerprint
+out of `discovery --pick`), so an impostor is refused before any pairing
+state is created. The pairing code and admin approval flow are unchanged.
+
 ## Spend model tokens on judgement, not on waiting
 
 An agent working this repo pays for every turn it takes. Reserve those turns for
