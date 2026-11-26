@@ -207,11 +207,11 @@ class BridgeSessionRegistry:
         # Store data as JSON string so subscribe can read id without re-encoding
         event: dict = {"event": "user_message", "data": json.dumps(msg)}
         outbox = self._guest_outbox
-        if outbox is not None and self._is_guest is not None and self._is_guest(slug):
+        if outbox is not None:
             try:
                 event["outbox_id"] = await outbox.append(slug, msg)
             except Exception:
-                logger.exception("bridge_session: guest outbox append failed for %s", slug)
+                logger.exception("bridge_session: outbox append failed for %s", slug)
         await session.queue.put(event)
 
         # Record a message_in trace event so the transcript captures both
