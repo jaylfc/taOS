@@ -21,10 +21,14 @@ class _FakeClient:
 
     def post(self, path, body=None, params=None, json=None):
         self.calls.append(("POST", path, body))
+        if self._raise is not None:
+            raise self._raise
         return {"ok": True}
 
     def patch(self, path, body=None, json=None):
         self.calls.append(("PATCH", path, body))
+        if self._raise is not None:
+            raise self._raise
         return {"ok": True}
 
     def delete(self, path, params=None):
@@ -180,4 +184,32 @@ def test_cluster_remove_403_prints_admin_message(monkeypatch, capsys):
         cli_main.main(["cluster", "remove", "w1"])
     assert exc.value.code == 1
     captured = capsys.readouterr()
-    assert "Removing a worker needs a signed-in admin" in captured.out
+    assert "Removing a worker needs a signed-in admin in the taOS desktop (Cluster app). The command line cannot do it." in captured.err
+    assert captured.out == ""
+
+
+@pytest.mark.parametrize("verb,method", [
+    ("revoke", "post"),
+    ("block", "post"),
+    ("unblock", "post"),
+    ("drain", "post"),
+    ("cancel-drain", "post"),
+])
+def test_cluster_admin_verbs_403_print_admin_message(monkeypatch, capsys, verb, method):
+    import pytest
+
+    from tinyagentos.cli.taosctl import __main__ as cli_main
+    from tinyagentos.cli.taosctl import client as cli_client
+
+    fake = _FakeClient()
+    fake._raise = cli_client.ApiError(403, "forbidden")
+    monkeypatch.setattr(cli_main, "TaosClient", lambda **k: fake)
+    argv = ["cluster", verb, "w1"]
+    if verb == "drain":
+        argv = ["cluster", verb, "w1"]  # drain doesn't need extra args
+    with pytest.raises(SystemExit) as exc:
+        cli_main.main(argv)
+    assert exc.value.code == 1
+    captured = capsys.readouterr()
+    assert "Removing a worker needs a signed-in admin in the taOS desktop (Cluster app). The command line cannot do it." in captured.err
+    assert captured.out == ""

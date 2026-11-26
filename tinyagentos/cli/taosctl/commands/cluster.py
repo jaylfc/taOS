@@ -12,6 +12,7 @@ Deliberately not wrapped:
 """
 from __future__ import annotations
 
+import sys
 from urllib.parse import quote
 
 from tinyagentos.cli.taosctl.client import ApiError
@@ -20,6 +21,16 @@ from tinyagentos.cli.taosctl.client import ApiError
 # they do not overwrite the server URL / API token the client is built from.
 
 NOUN = "cluster"
+
+_ADMIN_ONLY_MSG = (
+    "Removing a worker needs a signed-in admin in the taOS desktop (Cluster app). "
+    "The command line cannot do it."
+)
+
+
+def _admin_only() -> None:
+    print(_ADMIN_ONLY_MSG, file=sys.stderr)
+    sys.exit(1)
 
 
 def _q(value: str) -> str:
@@ -34,18 +45,18 @@ def register(subparsers) -> None:
     verbs.add_parser("workers", help="List cluster workers").set_defaults(func=_workers)
 
     for verb, fn, helptext in (
-        ("remove", _remove, "Unregister a worker (admin)"),
-        ("revoke", _revoke, "Revoke a worker's signing key (admin)"),
-        ("block", _block, "Revoke and block a worker (admin)"),
-        ("unblock", _unblock, "Unblock a worker (admin)"),
-        ("cancel-drain", _cancel_drain, "Cancel a worker drain (admin)"),
+        ("remove", _remove, "Unregister a worker (requires signed-in admin in taOS desktop)"),
+        ("revoke", _revoke, "Revoke a worker's signing key (requires signed-in admin in taOS desktop)"),
+        ("block", _block, "Revoke and block a worker (requires signed-in admin in taOS desktop)"),
+        ("unblock", _unblock, "Unblock a worker (requires signed-in admin in taOS desktop)"),
+        ("cancel-drain", _cancel_drain, "Cancel a worker drain (requires signed-in admin in taOS desktop)"),
         ("update-worker", _update_worker, "Update one worker (admin)"),
     ):
         vp = verbs.add_parser(verb, help=helptext)
         vp.add_argument("name", help="Worker name")
         vp.set_defaults(func=fn)
 
-    dp = verbs.add_parser("drain", help="Drain a worker (admin)")
+    dp = verbs.add_parser("drain", help="Drain a worker (requires signed-in admin in taOS desktop)")
     dp.add_argument("name", help="Worker name")
     dp.add_argument("--force", action="store_true",
                     help="Force-release leases instead of draining gracefully")
@@ -207,30 +218,54 @@ def _remove(args, client):
         return client.delete(f"/api/cluster/workers/{_q(args.name)}")
     except ApiError as exc:
         if exc.status == 403:
-            print("Removing a worker needs a signed-in admin: use the Cluster app, or sign in with taosctl login")
-            raise SystemExit(1)
+            _admin_only()
         raise
 
 
 def _revoke(args, client):
-    return client.post(f"/api/cluster/workers/{_q(args.name)}/revoke")
+    try:
+        return client.post(f"/api/cluster/workers/{_q(args.name)}/revoke")
+    except ApiError as exc:
+        if exc.status == 403:
+            _admin_only()
+        raise
 
 
 def _block(args, client):
-    return client.post(f"/api/cluster/workers/{_q(args.name)}/block")
+    try:
+        return client.post(f"/api/cluster/workers/{_q(args.name)}/block")
+    except ApiError as exc:
+        if exc.status == 403:
+            _admin_only()
+        raise
 
 
 def _unblock(args, client):
-    return client.post(f"/api/cluster/workers/{_q(args.name)}/unblock")
+    try:
+        return client.post(f"/api/cluster/workers/{_q(args.name)}/unblock")
+    except ApiError as exc:
+        if exc.status == 403:
+            _admin_only()
+        raise
 
 
 def _drain(args, client):
-    return client.post(f"/api/cluster/workers/{_q(args.name)}/drain",
-                       body={"graceful": not args.force})
+    try:
+        return client.post(f"/api/cluster/workers/{_q(args.name)}/drain",
+                           body={"graceful": not args.force})
+    except ApiError as exc:
+        if exc.status == 403:
+            _admin_only()
+        raise
 
 
 def _cancel_drain(args, client):
-    return client.post(f"/api/cluster/workers/{_q(args.name)}/cancel-drain")
+    try:
+        return client.post(f"/api/cluster/workers/{_q(args.name)}/cancel-drain")
+    except ApiError as exc:
+        if exc.status == 403:
+            _admin_only()
+        raise
 
 
 def _update_worker(args, client):
