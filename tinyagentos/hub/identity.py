@@ -289,6 +289,42 @@ def build_registration(challenge: str) -> dict:
     }
 
 
+# --- pairing identity proof (#119) --------------------------------------------
+#
+# A worker that discovers this controller over mDNS sees only an
+# unauthenticated TXT record: anyone on the LAN can advertise the same
+# service type with a copied fingerprint string. Before pairing, the
+# worker challenges the controller at the advertised URL with a random
+# nonce; the controller answers with a signature over the
+# domain-separated message below, and the worker checks that the
+# answering key's fingerprint matches the advertised one and that the
+# signature verifies. The prefix keeps these signatures unusable as any
+# other protocol's signed object.
+
+_PAIRING_PROOF_PREFIX = "taos-pairing-identity-proof:"
+
+
+def pairing_proof_message(nonce: str) -> bytes:
+    """The exact bytes signed for a pairing identity proof over ``nonce``."""
+    return f"{_PAIRING_PROOF_PREFIX}{nonce}".encode("utf-8")
+
+
+def build_pairing_proof(nonce: str) -> dict:
+    """Build this node's pairing identity proof for a worker's nonce.
+
+    Returns the node's fingerprint, its signing public key, and a
+    signature over :func:`pairing_proof_message` -- everything the
+    worker needs to verify possession of the hub key. No private
+    material leaves the node.
+    """
+    pub = public_identity()
+    return {
+        "fingerprint": pub["fingerprint"],
+        "signing_pubkey": pub["signing_pubkey"],
+        "signature": sign(pairing_proof_message(nonce)),
+    }
+
+
 def fingerprint(signing_pubkey_hex: str) -> str:
     """SHA-256 (hex) of a raw signing public key -- the canonical author id."""
     return hashlib.sha256(bytes.fromhex(signing_pubkey_hex)).hexdigest()
