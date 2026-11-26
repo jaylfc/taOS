@@ -17,6 +17,23 @@ def client(tmp_path):
     return TestClient(app)
 
 
+@pytest.fixture(autouse=True)
+def _hub_identity_stays_in_tmp(monkeypatch, tmp_path):
+    """Keep the hub identity inside the test's tmp data dir.
+
+    The identity behind the mDNS fingerprint is resolved globally
+    (resolve_data_dir: TAOS_DATA_DIR or the project default), NOT from
+    create_app's data_dir argument. Without this, the first
+    mDNS-enabled boot mints <project>/data/hub/identity.json and the
+    data-guard plugin fails that test at teardown ("PROJECT_DIR/data
+    was mutated") -- on a fresh checkout that is the
+    constructed-when-enabled test, which is why CI's changed-files
+    job reported 7 passed + 1 setup/teardown error while warm
+    checkouts (identity already minted) showed nothing.
+    """
+    monkeypatch.setenv("TAOS_DATA_DIR", str(tmp_path / "data"))
+
+
 def test_version_endpoint_returns_version(client):
     r = client.get("/api/version")
     assert r.status_code == 200
