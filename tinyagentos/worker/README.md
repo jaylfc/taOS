@@ -74,6 +74,16 @@ before any pairing state is created. The pairing code and the
 controller-side admin approval are still required afterwards, exactly
 as with a hand-typed URL.
 
+The proof has a limit worth knowing: it authenticates the proof
+exchange only. The pairing requests that follow are not bound to the
+verified key, so an impostor that *relays* the challenge to the real
+controller (and relays the pairing traffic too) can pass the proof.
+What still gates that relay is the pairing code and the
+controller-side admin approval: the worker's signing key is only
+released after a human approves the pairing in the real controller's
+UI. Binding the pairing exchange itself to the verified hub key is a
+tracked follow-up.
+
 The `tier` TXT record reveals the controller's hardware profile to
 anyone on the LAN. It is advertised by default; set
 `mdns.advertise_tier: false` in the controller's config to leave it

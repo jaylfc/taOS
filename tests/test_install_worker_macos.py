@@ -628,3 +628,54 @@ def test_module_import_is_not_host_dependent() -> None:
             f"_collect_resources must stay a pure function; found {host_probe}"
         )
     assert 'os.environ.get("TAOS_WORKER_RESOURCES"' in code
+
+
+def test_pair_worker_offers_manual_url_when_discovery_finds_nothing(
+    tmp_path: Path,
+) -> None:
+    """pair_worker on an interactive run whose discovery finds no
+    controller must offer the manual URL entry the script header
+    promises, not just fail. Needs a pty for the [[ -t 0 ]] guard, so
+    it runs the extracted function under `script`."""
+    import shutil
+    import subprocess as _sp
+
+    script_bin = shutil.which("script")
+    if script_bin is None:
+        pytest.skip("util-linux `script` not available for a pty")
+
+    install_dir = tmp_path / "install"
+    venv_bin = install_dir / ".venv" / "bin"
+    venv_bin.mkdir(parents=True)
+    fake_python = venv_bin / "python"
+    fake_python.write_text(
+        "#!/usr/bin/env bash\n"
+        'if [[ "$*" == *"worker.discovery"* ]]; then exit 1; fi\n'
+        'if [[ "$*" == *"worker.pair"* ]]; then echo "PAIR_ARGS:$*"; exit 0; fi\n'
+        "exit 0\n"
+    )
+    fake_python.chmod(0o755)
+
+    functions = _extract_function(INSTALL_SCRIPT, "pair_worker")
+    body = (
+        "log() { printf '%s\\n' \"$*\"; }\n"
+        "warn() { printf '%s\\n' \"$*\" >&2; }\n"
+        f"INSTALL_DIR={install_dir}\n"
+        'CONTROLLER_URL=""\n'
+        "WORKER_NAME=w\n"
+        + functions
+        + "\nif pair_worker; then printf 'PAIR_RC=0\\n'; else printf 'PAIR_RC=1\\n'; fi\n"
+    )
+    wrapper = tmp_path / "wrapper.sh"
+    wrapper.write_text("#!/usr/bin/env bash\nset -euo pipefail\n" + body)
+    wrapper.chmod(0o755)
+    result = _sp.run(
+        [script_bin, "-qec", f"bash {wrapper}", "/dev/null"],
+        input="http://manual.example:6969\n",
+        capture_output=True,
+        text=True,
+        timeout=60,
+        env={"PATH": "/usr/bin:/bin", "LANG": "C.UTF-8"},
+    )
+    assert "PAIR_RC=0" in result.stdout, result.stdout + result.stderr
+    assert "http://manual.example:6969" in result.stdout, result.stdout

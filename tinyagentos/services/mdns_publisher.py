@@ -332,12 +332,20 @@ class MdnsPublisher:
             return
         try:
             if self._zc is not None:
+                # Each step is attempted independently: one failing
+                # unregister must not skip the other, or the close.
                 if self._discovery_info is not None:
-                    await self._zc.async_unregister_service(
-                        self._discovery_info
-                    )
+                    try:
+                        await self._zc.async_unregister_service(
+                            self._discovery_info
+                        )
+                    except Exception:
+                        logger.exception("mDNS: discovery unregister failed")
                 if self._info is not None:
-                    await self._zc.async_unregister_service(self._info)
+                    try:
+                        await self._zc.async_unregister_service(self._info)
+                    except Exception:
+                        logger.exception("mDNS: unregister failed")
                 await self._zc.async_close()
         except Exception:
             logger.exception("mDNS: stop failed")

@@ -163,22 +163,23 @@ async def discover_controllers(timeout: float = 5.0) -> list[ControllerCandidate
     zc: AsyncZeroconf | None = None
     browser: AsyncServiceBrowser | None = None
     try:
-        zc = AsyncZeroconf()
-        browser = AsyncServiceBrowser(zc, DISCOVERY_SERVICE_TYPE, collector)
-        await asyncio.sleep(max(timeout, 0.0))
-    except Exception:
-        logger.exception("discovery: browse failed -- treating as no controllers")
-        return []
-    finally:
-        if browser is not None:
-            try:
-                await browser.async_cancel()
-            except Exception:
-                logger.debug("discovery: browser cancel failed", exc_info=True)
+        try:
+            zc = AsyncZeroconf()
+            # AsyncServiceBrowser needs the underlying Zeroconf instance,
+            # not the AsyncZeroconf wrapper: it reaches for zc.cache,
+            # which the wrapper does not expose.
+            browser = AsyncServiceBrowser(
+                zc.zeroconf, DISCOVERY_SERVICE_TYPE, listener=collector
+            )
+            await asyncio.sleep(max(timeout, 0.0))
+        except Exception:
+            logger.exception(
+                "discovery: browse failed -- treating as no controllers"
+            )
+            return []
 
-    candidates: list[ControllerCandidate] = []
-    seen: set[str] = set()
-    try:
+        candidates: list[ControllerCandidate] = []
+        seen: set[str] = set()
         for name in collector.names:
             try:
                 info = await zc.async_get_service_info(
@@ -194,13 +195,21 @@ async def discover_controllers(timeout: float = 5.0) -> list[ControllerCandidate
                 continue
             seen.add(cand.fingerprint)
             candidates.append(cand)
+        return candidates
     finally:
+        # One finally for both resources: a browse failure, an early
+        # return, or a cancellation during the browse sleep must not
+        # leak the AsyncZeroconf instance.
+        if browser is not None:
+            try:
+                await browser.async_cancel()
+            except Exception:
+                logger.debug("discovery: browser cancel failed", exc_info=True)
         if zc is not None:
             try:
                 await zc.async_close()
             except Exception:
                 logger.debug("discovery: zeroconf close failed", exc_info=True)
-    return candidates
 
 
 def choose_candidate(
@@ -236,8 +245,12 @@ def choose_candidate(
             f"  {idx}. {cand.name} -- {cand.url} "
             f"(fingerprint {cand.fingerprint[:8]}...{tier})"
         )
+    # The prompt goes through print_fn (stderr), never input_fn:
+    # builtin input() writes its prompt to stdout, and --pick callers
+    # capture stdout as the machine-readable URL/fingerprint pair.
+    print_fn("Pick a controller by number (blank for none): ")
     try:
-        answer = input_fn("Pick a controller by number (blank for none): ")
+        answer = input_fn("")
     except (EOFError, KeyboardInterrupt):
         return None
     answer = (answer or "").strip()

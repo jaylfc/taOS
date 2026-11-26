@@ -228,6 +228,31 @@ async def test_stop_unregisters_both_services_before_final_close(
 
 
 @pytest.mark.asyncio
+async def test_stop_discovery_unregister_failure_still_unregisters_http_and_closes(
+    fake_zc, tmp_path
+):
+    """A failing discovery unregister must not skip the _http unregister
+    or the close: each step of stop() is attempted independently."""
+    from unittest.mock import AsyncMock as _AM
+
+    zc_instance, _ = fake_zc
+    pub = MdnsPublisher(data_dir=tmp_path, port=6969, fingerprint="f" * 64)
+    await pub.start()
+
+    zc_instance.async_unregister_service = _AM(
+        side_effect=[RuntimeError("discovery unregister boom"), None]
+    )
+    closes_before = zc_instance.async_close.await_count
+    await pub.stop()
+
+    assert zc_instance.async_unregister_service.await_count == 2
+    # start() itself may close once (name-conflict path); stop() must
+    # add exactly one more close of its own.
+    assert zc_instance.async_close.await_count == closes_before + 1
+    assert pub.active is False
+
+
+@pytest.mark.asyncio
 async def test_discovery_register_failure_keeps_http_publish(
     monkeypatch, tmp_path
 ):

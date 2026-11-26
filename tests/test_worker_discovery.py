@@ -113,16 +113,28 @@ class TestParse:
 
 
 class FakeBrowser:
-    """Stands in for AsyncServiceBrowser: fires add_service immediately."""
+    """Stands in for AsyncServiceBrowser: fires add_service immediately.
+
+    Enforces the real zeroconf contract: the browser must be given the
+    underlying Zeroconf instance (AsyncZeroconf.zeroconf), NOT the
+    AsyncZeroconf wrapper -- the real AsyncServiceBrowser reaches for
+    zc.cache, which the wrapper does not expose, and raises
+    AttributeError before browsing anything.
+    """
 
     instances: list = []
     names: list[str] = []
 
-    def __init__(self, async_zc, service_type, listener):
+    def __init__(self, zc, service_type, listener=None):
+        assert zc is FakeAsyncZeroconf.inner, (
+            "AsyncServiceBrowser must receive the underlying Zeroconf "
+            "instance (AsyncZeroconf.zeroconf), not the AsyncZeroconf "
+            "wrapper"
+        )
         self.service_type = service_type
         FakeBrowser.instances.append(self)
         for name in FakeBrowser.names:
-            listener.add_service(async_zc.zeroconf, service_type, name)
+            listener.add_service(zc, service_type, name)
 
     async def async_cancel(self):
         return None
@@ -131,9 +143,10 @@ class FakeBrowser:
 class FakeAsyncZeroconf:
     infos: dict = {}
     closed = False
+    inner = None
 
     def __init__(self):
-        self.zeroconf = object()
+        self.zeroconf = FakeAsyncZeroconf.inner
 
     async def async_get_service_info(self, service_type, name, timeout=None):
         return FakeAsyncZeroconf.infos.get(name)
@@ -148,6 +161,7 @@ def fake_zc_layer(monkeypatch):
     FakeBrowser.names = []
     FakeAsyncZeroconf.infos = {}
     FakeAsyncZeroconf.closed = False
+    FakeAsyncZeroconf.inner = object()
     monkeypatch.setattr(disc, "AsyncServiceBrowser", FakeBrowser)
     monkeypatch.setattr(disc, "AsyncZeroconf", FakeAsyncZeroconf)
     return FakeAsyncZeroconf
@@ -192,6 +206,22 @@ async def test_discover_skips_unparseable_services(fake_zc_layer):
 @pytest.mark.asyncio
 async def test_discover_no_services_returns_empty(fake_zc_layer):
     assert await discover_controllers(timeout=0.05) == []
+
+
+@pytest.mark.asyncio
+async def test_discover_browser_failure_still_closes_zeroconf(
+    fake_zc_layer, monkeypatch
+):
+    """If browser construction raises after AsyncZeroconf exists, the
+    instance must still be closed -- the early return must not leak it."""
+
+    class _BoomBrowser:
+        def __init__(self, *a, **k):
+            raise RuntimeError("no browser")
+
+    monkeypatch.setattr(disc, "AsyncServiceBrowser", _BoomBrowser)
+    assert await disc.discover_controllers(timeout=0) == []
+    assert FakeAsyncZeroconf.closed is True
 
 
 @pytest.mark.asyncio
@@ -296,3 +326,24 @@ class TestCli:
         # line 2 as the fingerprint it passes to pair --expect-fingerprint,
         # so the picked controller's identity gets verified at pairing.
         assert lines == ["http://taos.local:6969", FP_A]
+
+
+def test_pick_cli_stdout_is_only_url_and_fingerprint(monkeypatch, capsys):
+    """--pick is captured by install-worker.sh: stdout must carry only
+    the chosen URL and fingerprint, one per line. The selection prompt
+    belongs on stderr -- builtin input() would glue it onto the URL
+    line in stdout."""
+    import io
+
+    async def _fake_discover(timeout=5.0):
+        return [
+            cand(FP_A),
+            cand(FP_B, "http://taos2.local:6969"),
+        ]
+
+    monkeypatch.setattr(disc, "discover_controllers", _fake_discover)
+    monkeypatch.setattr("sys.stdin", io.StringIO("1\n"))
+    rc = disc.main(["--pick"])
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert out == f"{'http://taos.local:6969'}\n{FP_A}\n"

@@ -15,7 +15,9 @@
 # The controller URL may be omitted on an interactive run: at pairing
 # time the installer scans the LAN for controllers advertising via mDNS
 # (#119) and offers a list to pick from, falling back to manual URL
-# entry when none are found. Non-interactive runs must pass the URL.
+# entry when none are found. Non-interactive runs must pass the URL,
+# and so must the two-phase Linux install: phase 2 runs inside the
+# worker LXC without a terminal, so discovery cannot prompt there.
 #
 # Environment overrides:
 #     TAOS_CONTROLLER_URL     controller URL (default: first positional arg)
@@ -418,14 +420,27 @@ pair_worker() {
         # fingerprint on line 2. The fingerprint is passed to the pair
         # CLI below, which makes the controller prove it holds that
         # hub key before pairing -- a copied mDNS record is not enough.
-        local _pick_out
-        _pick_out="$("$INSTALL_DIR/.venv/bin/python" -m tinyagentos.worker.discovery --pick)" || {
-            warn "no controller discovered -- re-run with an explicit controller URL."
-            return 1
-        }
-        CONTROLLER_URL="$(printf '%s\n' "$_pick_out" | sed -n '1p')"
-        DISCOVERED_FINGERPRINT="$(printf '%s\n' "$_pick_out" | sed -n '2p')"
-        log "discovered controller: $CONTROLLER_URL"
+        local _pick_out=""
+        if _pick_out="$("$INSTALL_DIR/.venv/bin/python" -m tinyagentos.worker.discovery --pick)"; then
+            CONTROLLER_URL="$(printf '%s\n' "$_pick_out" | sed -n '1p')"
+            DISCOVERED_FINGERPRINT="$(printf '%s\n' "$_pick_out" | sed -n '2p')"
+            log "discovered controller: $CONTROLLER_URL"
+        else
+            # Interactive (the -t 0 guard above already refused
+            # non-interactive runs) but nothing was discovered or
+            # picked: the header promises a manual URL fallback, so
+            # offer it before giving up.
+            warn "no controller discovered."
+            printf 'Enter the controller URL by hand (blank to abort): ' >&2
+            local _manual_url=""
+            read -r _manual_url || _manual_url=""
+            if [[ -z "$_manual_url" ]]; then
+                warn "  no URL entered -- re-run with an explicit controller URL."
+                return 1
+            fi
+            CONTROLLER_URL="$_manual_url"
+            log "using manually entered controller: $CONTROLLER_URL"
+        fi
     fi
     log "pairing worker '${WORKER_NAME}' with controller at $CONTROLLER_URL"
     log "  (the pairing code will be printed below: enter it in taOS > Cluster)"
