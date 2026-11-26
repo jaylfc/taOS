@@ -115,10 +115,19 @@ async def get_settings(request: Request):
     return JSONResponse(settings)
 
 
-@router.put("/api/user-memory/settings", dependencies=[Depends(require_admin)])
+@router.put("/api/user-memory/settings")
 async def update_settings(request: Request):
+    """Change the caller's own capture settings; nobody else's."""
     body = await request.json()
     await _store(request).update_settings(_uid(request), body)
+    return JSONResponse({"ok": True})
+
+
+@router.put("/api/user-memory/settings/default", dependencies=[Depends(require_admin)])
+async def update_install_default(request: Request):
+    """Change the install-wide default that people inherit until they choose."""
+    body = await request.json()
+    await _store(request).update_install_default(body)
     return JSONResponse({"ok": True})
 
 

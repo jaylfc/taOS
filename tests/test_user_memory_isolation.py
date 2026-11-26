@@ -59,16 +59,33 @@ async def test_member_cannot_read_search_or_delete_the_owners_memory(client, app
 
 
 @pytest.mark.asyncio
-async def test_settings_are_per_user_and_changing_them_needs_an_admin(client, app, store):
+async def test_each_person_changes_only_their_own_settings(client, app, store):
     member, _ = await _member(app)
     try:
         r = await member.put("/api/user-memory/settings", json={"capture_searches": True})
+        assert r.status_code == 200, r.text
+        assert (await member.get("/api/user-memory/settings")).json()["capture_searches"] is True
+        # The owner's setting is untouched, and the owner's change does not reach the member.
+        assert (await client.get("/api/user-memory/settings")).json()["capture_searches"] is False
+        await client.put("/api/user-memory/settings", json={"capture_conversations": False})
+        assert (await member.get("/api/user-memory/settings")).json()["capture_conversations"] is True
+    finally:
+        await member.aclose()
+
+
+@pytest.mark.asyncio
+async def test_install_default_is_admin_only_and_people_keep_their_choice(client, app, store):
+    member, _ = await _member(app)
+    try:
+        r = await member.put("/api/user-memory/settings/default", json={"capture_searches": True})
         assert r.status_code == 403, r.text
-        assert (await member.get("/api/user-memory/settings")).json()["capture_searches"] is False
-        r = await client.put("/api/user-memory/settings", json={"capture_searches": True})
+        assert (await client.get("/api/user-memory/settings")).json()["capture_searches"] is False
+        await member.put("/api/user-memory/settings", json={"capture_files": False})
+        r = await client.put("/api/user-memory/settings/default", json={"capture_searches": True, "capture_files": True})
         assert r.status_code == 200
-        # The owner's change is the owner's alone.
-        assert (await member.get("/api/user-memory/settings")).json()["capture_searches"] is False
+        got = (await member.get("/api/user-memory/settings")).json()
+        assert got["capture_searches"] is True      # inherited from the new default
+        assert got["capture_files"] is False         # their own choice wins
     finally:
         await member.aclose()
 
