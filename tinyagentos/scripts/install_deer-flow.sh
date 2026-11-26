@@ -178,6 +178,11 @@ DEER_FLOW_URL = os.environ.get("DEER_FLOW_URL", "http://127.0.0.1:8001")
 RECONNECT_DELAY = 2.0
 MAX_RETRIES = 3
 RETRY_BACKOFF_BASE = 2.0  # seconds -- 2, 4 between connection retries
+# Final reply retries: capped backoff (1, 2, 4, 8, 15 s then 15 s repeating)
+# inside a total window of at least 180 s so a reply survives a controller
+# restart (TimeoutStartSec=180 in scripts/systemd/tinyagentos.service).
+REPLY_BACKOFF_STEPS = (1.0, 2.0, 4.0, 8.0, 15.0)
+REPLY_WINDOW_S = 180.0
 ERROR_COOLDOWN = 5.0      # seconds after a final error before accepting new messages
 # DeerFlow is a long-horizon multi-step agent: a run can take minutes.
 RUN_TIMEOUT = 600
@@ -367,30 +372,40 @@ async def post_reply(client: httpx.AsyncClient, reply_url: str, token: str,
     body = {"kind": "final", "id": msg_id, "trace_id": trace_id, "content": content}
     if cid: body["channel_id"] = cid
     headers = {"Content-Type": "application/json", "Authorization": f"Bearer {token}"}
-    for attempt in range(1, MAX_RETRIES + 1):
+    step = 0
+    elapsed = 0.0  # time spent sleeping between retries (simulated time when sleep is patched)
+    while True:
         try:
             resp = await client.post(reply_url, json=body, headers=headers, timeout=30)
             if 200 <= resp.status_code < 300:
                 return True
-            if (resp.status_code == 429 or 500 <= resp.status_code < 600) and attempt < MAX_RETRIES:
-                log.warning("reply POST %s (attempt %d/%d), retry in %.1fs",
-                            resp.status_code, attempt, MAX_RETRIES, 1.0 * attempt)
-                await asyncio.sleep(1.0 * attempt)
-                continue
+            if resp.status_code == 429 or 500 <= resp.status_code < 600:
+                if elapsed < REPLY_WINDOW_S:
+                    delay = REPLY_BACKOFF_STEPS[min(step, len(REPLY_BACKOFF_STEPS) - 1)]
+                    step += 1
+                    log.warning("reply POST %s, retry in %.1fs",
+                                resp.status_code, delay)
+                    await asyncio.sleep(delay)
+                    elapsed += delay
+                    continue
+                log.warning("reply POST %s: giving up after %.0fs window",
+                            resp.status_code, REPLY_WINDOW_S)
+                return False
             log.warning("reply POST %s: %s", resp.status_code, resp.text[:300])
             return False
         except httpx.TransportError as e:
-            if attempt < MAX_RETRIES:
-                log.warning("reply POST error %s (attempt %d/%d), retry in %.1fs",
-                            e, attempt, MAX_RETRIES, 1.0 * attempt)
-                await asyncio.sleep(1.0 * attempt)
+            if elapsed < REPLY_WINDOW_S:
+                delay = REPLY_BACKOFF_STEPS[min(step, len(REPLY_BACKOFF_STEPS) - 1)]
+                step += 1
+                log.warning("reply POST error %s, retry in %.1fs", e, delay)
+                await asyncio.sleep(delay)
+                elapsed += delay
                 continue
             log.warning("reply POST failed: %s", e)
             return False
         except Exception as e:
             log.warning("reply POST failed: %s", e)
             return False
-    return False
 
 
 async def handle_user_message(client: httpx.AsyncClient, evt: dict, channel: dict,
@@ -457,16 +472,20 @@ async def handle_user_message(client: httpx.AsyncClient, evt: dict, channel: dic
 
 async def sse_loop(client: httpx.AsyncClient, channel: dict, stop: asyncio.Event) -> None:
     seen_ids: set[str] = set()
+    last_event_id = ""
     error_until: list[float] = [0.0]  # mutable so tasks can update it
     pending_tasks: set[asyncio.Task] = set()
     _PENDING_CAP = _MAX_INFLIGHT * 4
     while not stop.is_set():
         try:
             log.info("SSE connecting to %s", channel["events_url"])
+            headers = {"Authorization": f"Bearer {channel['auth_bearer']}",
+                       "Accept": "text/event-stream",
+                       "Cache-Control": "no-cache"}
+            if last_event_id:
+                headers["Last-Event-ID"] = last_event_id
             async with client.stream("GET", channel["events_url"],
-                                      headers={"Authorization": f"Bearer {channel['auth_bearer']}",
-                                               "Accept": "text/event-stream",
-                                               "Cache-Control": "no-cache"},
+                                      headers=headers,
                                       timeout=None) as resp:
                 if resp.status_code != 200:
                     log.warning("SSE %s, retry", resp.status_code)
@@ -511,6 +530,8 @@ async def sse_loop(client: httpx.AsyncClient, channel: dict, stop: asyncio.Event
                         evt_type = raw[6:].strip()
                     elif raw.startswith("data:"):
                         evt_data = raw[5:].lstrip()
+                    elif raw.startswith("id:"):
+                        last_event_id = raw[3:].strip()
         except Exception as e:
             log.warning("SSE error: %s; retry in %ds", e, RECONNECT_DELAY)
         if not stop.is_set():
