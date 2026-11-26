@@ -1555,8 +1555,43 @@ def create_app(data_dir: Path | None = None, catalog_dir: Path | None = None) ->
         else:
             try:
                 from tinyagentos.services.mdns_publisher import MdnsPublisher
+
+                # Discovery service (#119): advertise this controller to
+                # fresh workers under its hub identity fingerprint and
+                # hardware tier. Best-effort -- if the identity is not
+                # available the publisher simply skips the discovery
+                # service and still publishes taos.local.
+                discovery_kwargs: dict = {}
+                try:
+                    from tinyagentos.hub.identity import signing_fingerprint
+
+                    discovery_kwargs["fingerprint"] = signing_fingerprint()
+                except Exception:
+                    logger.debug(
+                        "mDNS: hub identity unavailable -- discovery "
+                        "service will not be published",
+                        exc_info=True,
+                    )
+                if hardware_profile is not None:
+                    discovery_kwargs["tier"] = hardware_profile.profile_id
+                # The advertised tier reveals the hardware profile to
+                # the whole LAN; mdns.advertise_tier: false in config
+                # keeps it out of the TXT records (default: advertise).
+                tier_opt = config.mdns.get("advertise_tier", True)
+                if isinstance(tier_opt, str):
+                    tier_opt = tier_opt.strip().lower() not in {
+                        "0", "false", "no", "off",
+                    }
+                if not tier_opt:
+                    # Only passed on opt-out: the publisher defaults to
+                    # advertising the tier, and the construction seam
+                    # stays minimal for the common case -- the same
+                    # pattern as the fingerprint/tier kwargs above, and
+                    # the one the version-endpoint test doubles record.
+                    discovery_kwargs["advertise_tier"] = False
                 mdns_publisher = MdnsPublisher(
                     data_dir=data_dir, port=config.server.get("port", 6969),
+                    **discovery_kwargs,
                 )
                 await mdns_publisher.start()
                 app.state.mdns_publisher = mdns_publisher

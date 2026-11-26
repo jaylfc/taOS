@@ -332,6 +332,13 @@ class ClusterManager:
         liveness detection, lease sweep and the split-brain fence remain
         active for the rest of the process lifetime.
         """
+        if task.cancelled():
+            # Shutdown cancels the monitor on purpose. Reading
+            # .exception() here would re-raise CancelledError (that
+            # was the "Exception in callback" teardown error in the
+            # app-boot tests), and the monitor must not restart while
+            # the process is going away.
+            return
         exception = task.exception()
         if exception:
             logger.exception("Monitor loop crashed: %s", exception)

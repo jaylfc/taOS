@@ -12,6 +12,13 @@
 #     chmod +x install-worker.sh
 #     ./install-worker.sh http://controller:6969
 #
+# The controller URL may be omitted on an interactive run: at pairing
+# time the installer scans the LAN for controllers advertising via mDNS
+# (#119) and offers a list to pick from, falling back to manual URL
+# entry when none are found. Non-interactive runs must pass the URL,
+# and so must the two-phase Linux install: phase 2 runs inside the
+# worker LXC without a terminal, so discovery cannot prompt there.
+#
 # Environment overrides:
 #     TAOS_CONTROLLER_URL     controller URL (default: first positional arg)
 #     TAOS_WORKER_NAME        worker display name (default: hostname)
@@ -50,9 +57,18 @@ PHASE="${PHASE:-host}"
 
 CONTROLLER_URL="${TAOS_CONTROLLER_URL:-${1:-}}"
 if [[ -z "$CONTROLLER_URL" ]]; then
-    echo "usage: install-worker.sh <controller_url>" >&2
-    echo "example: install-worker.sh http://10.0.0.5:6969" >&2
-    exit 2
+    # No URL: an interactive install discovers controllers on the LAN via
+    # mDNS at pairing time (#119). Non-interactive runs (curl | bash, CI)
+    # cannot prompt, so they still require the URL up front -- except
+    # phase 2 inside the worker LXC, whose console may be interactive.
+    if [[ -t 0 || -n "${TAOS_INSIDE_WORKER:-}" ]]; then
+        echo "[worker-install] no controller URL given: will discover controllers via mDNS at pairing time" >&2
+    else
+        echo "usage: install-worker.sh <controller_url>" >&2
+        echo "example: install-worker.sh http://10.0.0.5:6969" >&2
+        echo "tip: run interactively without a URL to discover controllers on the LAN" >&2
+        exit 2
+    fi
 fi
 
 # Default appends "-worker" to the host's short name so the cluster UI
@@ -389,6 +405,43 @@ reexec_into_worker_lxc() {
 # service that could never register.
 pair_worker() {
     local worker_url="${1:-}"
+    if [[ -z "$CONTROLLER_URL" ]]; then
+        # Discover a controller on the LAN (#119). The discovery CLI
+        # offers the pick list on stderr and prints only the chosen URL
+        # to stdout. Without a terminal there is nothing to pick from:
+        # fall back to telling the user to pass the URL explicitly.
+        if [[ ! -t 0 ]]; then
+            warn "no controller URL given and this run is not interactive."
+            warn "  re-run with a controller URL: install-worker.sh http://<controller-ip>:6969"
+            return 1
+        fi
+        log "no controller URL given -- scanning the LAN for taOS controllers (mDNS)..."
+        # --pick prints the chosen URL on line 1 and its advertised hub
+        # fingerprint on line 2. The fingerprint is passed to the pair
+        # CLI below, which makes the controller prove it holds that
+        # hub key before pairing -- a copied mDNS record is not enough.
+        local _pick_out=""
+        if _pick_out="$("$INSTALL_DIR/.venv/bin/python" -m tinyagentos.worker.discovery --pick)"; then
+            CONTROLLER_URL="$(printf '%s\n' "$_pick_out" | sed -n '1p')"
+            DISCOVERED_FINGERPRINT="$(printf '%s\n' "$_pick_out" | sed -n '2p')"
+            log "discovered controller: $CONTROLLER_URL"
+        else
+            # Interactive (the -t 0 guard above already refused
+            # non-interactive runs) but nothing was discovered or
+            # picked: the header promises a manual URL fallback, so
+            # offer it before giving up.
+            warn "no controller discovered."
+            printf 'Enter the controller URL by hand (blank to abort): ' >&2
+            local _manual_url=""
+            read -r _manual_url || _manual_url=""
+            if [[ -z "$_manual_url" ]]; then
+                warn "  no URL entered -- re-run with an explicit controller URL."
+                return 1
+            fi
+            CONTROLLER_URL="$_manual_url"
+            log "using manually entered controller: $CONTROLLER_URL"
+        fi
+    fi
     log "pairing worker '${WORKER_NAME}' with controller at $CONTROLLER_URL"
     log "  (the pairing code will be printed below: enter it in taOS > Cluster)"
     local _pair_manual_flag=()
@@ -400,11 +453,16 @@ pair_worker() {
     if [[ -n "$worker_url" ]]; then
         _pair_url_flag=(--url "$worker_url")
     fi
+    local _pair_fp_flag=()
+    if [[ -n "${DISCOVERED_FINGERPRINT:-}" ]]; then
+        _pair_fp_flag=(--expect-fingerprint "$DISCOVERED_FINGERPRINT")
+    fi
     if ! "$INSTALL_DIR/.venv/bin/python" -m tinyagentos.worker.pair \
             "$CONTROLLER_URL" \
             --name "$WORKER_NAME" \
             --state-dir "$INSTALL_DIR/.taos-worker-state" \
             ${_pair_url_flag[@]+"${_pair_url_flag[@]}"} \
+            ${_pair_fp_flag[@]+"${_pair_fp_flag[@]}"} \
             ${_pair_manual_flag[@]+"${_pair_manual_flag[@]}"} \
             --register-after; then
         warn "pairing requires admin approval in taOS > Cluster."

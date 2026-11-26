@@ -536,3 +536,404 @@ class TestNotPairedHint:
         message = caplog.text
         assert "--state-dir" in message, message
         assert str(state_dir) in message, message
+
+
+# ======================================================================
+# _resolve_controller: mDNS discovery when no URL is given (#119)
+# ======================================================================
+
+from types import SimpleNamespace
+
+# ======================================================================
+
+
+def _resolve_args(controller=None, expect_fingerprint=None):
+    return SimpleNamespace(
+        controller=controller,
+        scan_timeout=0.05,
+        expect_fingerprint=expect_fingerprint,
+    )
+
+
+def _candidate(fp="a" * 64, url="http://taos.local:6969"):
+    from tinyagentos.worker.discovery import ControllerCandidate
+
+    return ControllerCandidate(
+        name="taOS", url=url, fingerprint=fp, tier=None,
+        host="taos.local", port=6969,
+    )
+
+
+class TestResolveController:
+    def test_explicit_controller_short_circuits(self, monkeypatch):
+        async def _no_scan(timeout=0.0):
+            raise AssertionError("discovery must not run")
+
+        monkeypatch.setattr(
+            "tinyagentos.worker.discovery.discover_controllers", _no_scan
+        )
+        url, fp = asyncio.run(
+            pair_mod._resolve_controller(_resolve_args("http://10.0.0.1:6969"))
+        )
+        assert url == "http://10.0.0.1:6969"
+        assert fp is None
+
+    def test_discovered_controller_is_used(self, monkeypatch):
+        async def _scan(timeout=0.0):
+            return [_candidate()]
+
+        monkeypatch.setattr(
+            "tinyagentos.worker.discovery.discover_controllers", _scan
+        )
+        url, fp = asyncio.run(pair_mod._resolve_controller(_resolve_args()))
+        assert url == "http://taos.local:6969"
+        assert fp == "a" * 64
+
+    def test_expect_fingerprint_selects_match(self, monkeypatch):
+        async def _scan(timeout=0.0):
+            return [
+                _candidate("a" * 64, "http://one.local:6969"),
+                _candidate("b" * 64, "http://two.local:6969"),
+            ]
+
+        monkeypatch.setattr(
+            "tinyagentos.worker.discovery.discover_controllers", _scan
+        )
+        url, fp = asyncio.run(
+            pair_mod._resolve_controller(
+                _resolve_args(expect_fingerprint="b" * 64)
+            )
+        )
+        assert url == "http://two.local:6969"
+        assert fp == "b" * 64
+
+    def test_no_discovery_falls_back_to_manual_entry(self, monkeypatch):
+        async def _scan(timeout=0.0):
+            return []
+
+        monkeypatch.setattr(
+            "tinyagentos.worker.discovery.discover_controllers", _scan
+        )
+        monkeypatch.setattr(
+            "builtins.input", lambda prompt="": "http://10.0.0.9:6969"
+        )
+        url, fp = asyncio.run(pair_mod._resolve_controller(_resolve_args()))
+        assert url == "http://10.0.0.9:6969"
+        assert fp is None
+
+    def test_no_discovery_and_no_manual_entry_raises(self, monkeypatch):
+        async def _scan(timeout=0.0):
+            return []
+
+        monkeypatch.setattr(
+            "tinyagentos.worker.discovery.discover_controllers", _scan
+        )
+
+        def _eof(prompt=""):
+            raise EOFError
+
+        monkeypatch.setattr("builtins.input", _eof)
+        with pytest.raises(ValueError, match="no controller"):
+            asyncio.run(pair_mod._resolve_controller(_resolve_args()))
+
+
+# ======================================================================
+# Controller identity verification (#119, PR #4567): a discovered
+# controller must prove possession of the hub key behind the fingerprint
+# it advertised, before any pairing state is created.
+# ======================================================================
+
+
+def _ed25519_keypair():
+    from cryptography.hazmat.primitives.asymmetric.ed25519 import (
+        Ed25519PrivateKey,
+    )
+    from cryptography.hazmat.primitives.serialization import (
+        Encoding,
+        NoEncryption,
+        PrivateFormat,
+        PublicFormat,
+    )
+
+    priv = Ed25519PrivateKey.generate()
+    priv_raw = priv.private_bytes(Encoding.Raw, PrivateFormat.Raw, NoEncryption())
+    pub_raw = priv.public_key().public_bytes(Encoding.Raw, PublicFormat.Raw)
+    return priv_raw, pub_raw
+
+
+def _proof_payload(priv_raw: bytes, pub_raw: bytes, nonce: str) -> dict:
+    """Build an identity-proof body the way the controller endpoint does."""
+    from cryptography.hazmat.primitives.asymmetric.ed25519 import (
+        Ed25519PrivateKey,
+    )
+
+    from tinyagentos.hub.identity import fingerprint, pairing_proof_message
+
+    priv = Ed25519PrivateKey.from_private_bytes(priv_raw)
+    return {
+        "fingerprint": fingerprint(pub_raw.hex()),
+        "signing_pubkey": pub_raw.hex(),
+        "signature": priv.sign(pairing_proof_message(nonce)).hex(),
+    }
+
+
+class _ProofResp:
+    def __init__(self, status_code=200, payload=None):
+        self.status_code = status_code
+        self._payload = payload or {}
+        self.text = ""
+
+    def json(self):
+        return self._payload
+
+
+class _ProofClient:
+    """httpx-client stand-in that serves one fixed identity-proof reply."""
+
+    def __init__(self, resp=None, exc=None):
+        self._resp = resp
+        self._exc = exc
+        self.posts: list = []
+
+    async def post(self, url, json=None):
+        self.posts.append((url, json))
+        if self._exc is not None:
+            raise self._exc
+        return self._resp
+
+
+class TestVerifyControllerProof:
+    @pytest.mark.asyncio
+    async def test_genuine_proof_verifies(self):
+        from tinyagentos.hub.identity import fingerprint
+        from tinyagentos.worker.pairing import verify_controller_proof
+
+        priv_raw, pub_raw = _ed25519_keypair()
+        nonce = "cd" * 32
+        client = _ProofClient(
+            _ProofResp(200, _proof_payload(priv_raw, pub_raw, nonce))
+        )
+        ok = await verify_controller_proof(
+            client,
+            "http://ctrl:6969",
+            fingerprint(pub_raw.hex()),
+            nonce=nonce,
+        )
+        assert ok is True
+        assert client.posts[0][0] == (
+            "http://ctrl:6969/api/cluster/pairing/identity-proof"
+        )
+        assert client.posts[0][1] == {"nonce": nonce}
+
+    @pytest.mark.asyncio
+    async def test_impostor_proving_with_a_different_key_is_refused(self):
+        """The advertisement carries the victim's fingerprint, but the
+        endpoint proves possession of the attacker's own key: the
+        fingerprint check must refuse it."""
+        from tinyagentos.hub.identity import fingerprint
+        from tinyagentos.worker.pairing import verify_controller_proof
+
+        victim_priv, victim_pub = _ed25519_keypair()
+        atk_priv, atk_pub = _ed25519_keypair()
+        nonce = "cd" * 32
+        client = _ProofClient(
+            _ProofResp(200, _proof_payload(atk_priv, atk_pub, nonce))
+        )
+        ok = await verify_controller_proof(
+            client,
+            "http://evil:6969",
+            fingerprint(victim_pub.hex()),
+            nonce=nonce,
+        )
+        assert ok is False
+
+    @pytest.mark.asyncio
+    async def test_forged_signature_under_victim_pubkey_is_refused(self):
+        """The endpoint presents the victim's pubkey (so the fingerprint
+        matches) but the signature was made by a different key."""
+        from tinyagentos.hub.identity import fingerprint
+        from tinyagentos.worker.pairing import verify_controller_proof
+
+        victim_priv, victim_pub = _ed25519_keypair()
+        atk_priv, _atk_pub = _ed25519_keypair()
+        nonce = "cd" * 32
+        client = _ProofClient(
+            _ProofResp(200, _proof_payload(atk_priv, victim_pub, nonce))
+        )
+        ok = await verify_controller_proof(
+            client,
+            "http://evil:6969",
+            fingerprint(victim_pub.hex()),
+            nonce=nonce,
+        )
+        assert ok is False
+
+    @pytest.mark.asyncio
+    async def test_missing_proof_endpoint_is_refused(self):
+        from tinyagentos.worker.pairing import verify_controller_proof
+
+        client = _ProofClient(_ProofResp(404, {"error": "not found"}))
+        ok = await verify_controller_proof(
+            client, "http://old:6969", "a" * 64, nonce="cd" * 32
+        )
+        assert ok is False
+
+    @pytest.mark.asyncio
+    async def test_unreachable_controller_is_refused(self):
+        from tinyagentos.worker.pairing import verify_controller_proof
+
+        client = _ProofClient(exc=RuntimeError("connection refused"))
+        ok = await verify_controller_proof(
+            client, "http://down:6969", "a" * 64, nonce="cd" * 32
+        )
+        assert ok is False
+
+    @pytest.mark.asyncio
+    async def test_malformed_proof_is_refused(self):
+        from tinyagentos.worker.pairing import verify_controller_proof
+
+        client = _ProofClient(_ProofResp(200, {"fingerprint": "a" * 64}))
+        ok = await verify_controller_proof(
+            client, "http://ctrl:6969", "a" * 64, nonce="cd" * 32
+        )
+        assert ok is False
+
+
+def _discovery_run_args(**overrides):
+    base = dict(
+        controller=None,
+        url="http://w1:8080",
+        scan_timeout=0.05,
+        expect_fingerprint=None,
+    )
+    base.update(overrides)
+    return _FakeArgs(**base)
+
+
+@pytest.mark.asyncio
+async def test_run_discovered_controller_is_verified_then_paired(
+    monkeypatch, tmp_path
+):
+    monkeypatch.setattr(
+        "tinyagentos.worker.pairing.default_state_dir", lambda: tmp_path
+    )
+    mock_run_pairing = AsyncMock(return_value=b"\xaa" * 32)
+    monkeypatch.setattr("tinyagentos.worker.pairing.run_pairing", mock_run_pairing)
+    mock_verify = AsyncMock(return_value=True)
+    monkeypatch.setattr(
+        "tinyagentos.worker.pairing.verify_controller_proof", mock_verify
+    )
+
+    async def _scan(timeout=0.0):
+        return [_candidate()]
+
+    monkeypatch.setattr(
+        "tinyagentos.worker.discovery.discover_controllers", _scan
+    )
+
+    await pair_mod._run(_discovery_run_args())
+
+    mock_verify.assert_awaited_once()
+    assert mock_verify.call_args[0][1] == "http://taos.local:6969"
+    assert mock_verify.call_args[0][2] == "a" * 64
+    mock_run_pairing.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_run_failed_verification_refuses_before_pairing(
+    monkeypatch, tmp_path
+):
+    monkeypatch.setattr(
+        "tinyagentos.worker.pairing.default_state_dir", lambda: tmp_path
+    )
+    mock_run_pairing = AsyncMock(return_value=b"\xaa" * 32)
+    monkeypatch.setattr("tinyagentos.worker.pairing.run_pairing", mock_run_pairing)
+    monkeypatch.setattr(
+        "tinyagentos.worker.pairing.verify_controller_proof",
+        AsyncMock(return_value=False),
+    )
+
+    async def _scan(timeout=0.0):
+        return [_candidate()]
+
+    monkeypatch.setattr(
+        "tinyagentos.worker.discovery.discover_controllers", _scan
+    )
+
+    with pytest.raises(RuntimeError, match="refusing to pair"):
+        await pair_mod._run(_discovery_run_args())
+    mock_run_pairing.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_run_explicit_url_with_expect_fingerprint_is_verified(
+    monkeypatch, tmp_path
+):
+    monkeypatch.setattr(
+        "tinyagentos.worker.pairing.default_state_dir", lambda: tmp_path
+    )
+    mock_run_pairing = AsyncMock(return_value=b"\xaa" * 32)
+    monkeypatch.setattr("tinyagentos.worker.pairing.run_pairing", mock_run_pairing)
+    monkeypatch.setattr(
+        "tinyagentos.worker.pairing.verify_controller_proof",
+        AsyncMock(return_value=False),
+    )
+
+    args = _FakeArgs(url="http://w1:8080", expect_fingerprint="a" * 64)
+    with pytest.raises(RuntimeError, match="refusing to pair"):
+        await pair_mod._run(args)
+    mock_run_pairing.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_run_fake_advertisement_refused_before_any_pairing_state(
+    monkeypatch, tmp_path
+):
+    """The #4567 scenario end to end: an impostor advertises the real
+    controller's fingerprint over mDNS but holds a different key. The
+    pair CLI must refuse, and the pairing announce endpoint must never
+    be hit -- no pairing state is created anywhere."""
+    from tinyagentos.hub.identity import fingerprint
+
+    victim_priv, victim_pub = _ed25519_keypair()
+    atk_priv, atk_pub = _ed25519_keypair()
+    victim_fp = fingerprint(victim_pub.hex())
+
+    posts: list[str] = []
+
+    class _ImpostorClient:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *exc):
+            return False
+
+        async def post(self, url, json=None, **kwargs):
+            posts.append(url)
+            if url.endswith("/api/cluster/pairing/identity-proof"):
+                return _ProofResp(
+                    200, _proof_payload(atk_priv, atk_pub, json["nonce"])
+                )
+            return _ProofResp(200, {})
+
+    monkeypatch.setattr(
+        "tinyagentos.worker.pairing.default_state_dir", lambda: tmp_path
+    )
+    monkeypatch.setattr(
+        "httpx.AsyncClient", lambda *a, **k: _ImpostorClient()
+    )
+    mock_run_pairing = AsyncMock(return_value=b"\xaa" * 32)
+    monkeypatch.setattr("tinyagentos.worker.pairing.run_pairing", mock_run_pairing)
+
+    async def _scan(timeout=0.0):
+        return [_candidate(fp=victim_fp, url="http://evil.local:6969")]
+
+    monkeypatch.setattr(
+        "tinyagentos.worker.discovery.discover_controllers", _scan
+    )
+
+    with pytest.raises(RuntimeError, match="refusing to pair"):
+        await pair_mod._run(_discovery_run_args())
+    assert posts, "the identity challenge was never issued"
+    assert all(u.endswith("/identity-proof") for u in posts), posts
+    mock_run_pairing.assert_not_awaited()

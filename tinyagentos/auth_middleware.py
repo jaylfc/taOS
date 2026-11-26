@@ -771,6 +771,12 @@ _CLUSTER_PAIRING_CLAIM = "/api/cluster/pairing/claim"
 # code it displayed is the proof). The matching authorize endpoint
 # (/api/cluster/pairing/manual) stays admin-gated and is NOT exempt.
 _CLUSTER_PAIRING_MANUAL_CLAIM = "/api/cluster/pairing/manual-claim"
+# Pairing identity proof (#119): a worker challenging a controller it
+# discovered over mDNS is unauthenticated by definition -- the Ed25519
+# signature in the reply is the proof of possession, and the reply
+# exposes only public material (pubkey + fingerprint) that the
+# controller already broadcasts in its mDNS TXT records.
+_CLUSTER_PAIRING_IDENTITY_PROOF = "/api/cluster/pairing/identity-proof"
 _CLUSTER_WORKERS = "/api/cluster/workers"
 # taOS #3227: the registry grant scope (a member of VALID_SCOPES in
 # routes/agent_auth_requests.py) that entitles a registry-JWT caller to the
@@ -942,6 +948,7 @@ def _is_exempt(method: str, path: str) -> bool:
     Cluster pairing exemptions (method-sensitive):
       POST /api/cluster/pairing/announce      — unauthenticated, code hash is proof
       POST /api/cluster/pairing/claim         — unauthenticated, code is proof
+      POST /api/cluster/pairing/identity-proof — unauthenticated, signature is proof
       GET  /api/cluster/workers               — public worker list
       POST /api/cluster/workers               — session-exempt, HMAC gate at route level
       POST /api/cluster/workers/{n}/incus-enroll — session-exempt, HMAC gate at route level
@@ -970,6 +977,8 @@ def _is_exempt(method: str, path: str) -> bool:
     if method == "POST" and path == _CLUSTER_PAIRING_CLAIM:
         return True
     if method == "POST" and path == _CLUSTER_PAIRING_MANUAL_CLAIM:
+        return True
+    if method == "POST" and path == _CLUSTER_PAIRING_IDENTITY_PROOF:
         return True
     # Cluster workers — GET is a public list; POST is session-exempt (HMAC gate).
     if method == "GET" and path == _CLUSTER_WORKERS:

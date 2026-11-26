@@ -628,3 +628,87 @@ def test_module_import_is_not_host_dependent() -> None:
             f"_collect_resources must stay a pure function; found {host_probe}"
         )
     assert 'os.environ.get("TAOS_WORKER_RESOURCES"' in code
+
+
+def test_pair_worker_offers_manual_url_when_discovery_finds_nothing(
+    tmp_path: Path,
+) -> None:
+    """pair_worker on an interactive run whose discovery finds no
+    controller must offer the manual URL entry the script header
+    promises, not just fail. Needs a pty for the [[ -t 0 ]] guard; it
+    uses the pty module (portable -- BSD/macOS `script` has no -c)."""
+    import os
+    import select
+    import subprocess as _sp
+    import termios
+
+    try:
+        import pty
+    except ImportError:
+        pytest.skip("pty module not available on this platform")
+
+    install_dir = tmp_path / "install"
+    venv_bin = install_dir / ".venv" / "bin"
+    venv_bin.mkdir(parents=True)
+    fake_python = venv_bin / "python"
+    fake_python.write_text(
+        "#!/usr/bin/env bash\n"
+        'if [[ "$*" == *"worker.discovery"* ]]; then exit 1; fi\n'
+        'if [[ "$*" == *"worker.pair"* ]]; then echo "PAIR_ARGS:$*"; exit 0; fi\n'
+        "exit 0\n"
+    )
+    fake_python.chmod(0o755)
+
+    functions = _extract_function(INSTALL_SCRIPT, "pair_worker")
+    body = (
+        "log() { printf '%s\\n' \"$*\"; }\n"
+        "warn() { printf '%s\\n' \"$*\" >&2; }\n"
+        f"INSTALL_DIR={install_dir}\n"
+        'CONTROLLER_URL=""\n'
+        "WORKER_NAME=w\n"
+        + functions
+        + "\nif pair_worker; then printf 'PAIR_RC=0\\n'; else printf 'PAIR_RC=1\\n'; fi\n"
+    )
+    wrapper = tmp_path / "wrapper.sh"
+    wrapper.write_text("#!/usr/bin/env bash\nset -euo pipefail\n" + body)
+    wrapper.chmod(0o755)
+
+    master, slave = pty.openpty()
+    # No echo: the typed URL must not show up in the output on its own;
+    # it only counts when the pair stub reports it in its arguments.
+    attrs = termios.tcgetattr(slave)
+    attrs[3] &= ~termios.ECHO
+    termios.tcsetattr(slave, termios.TCSANOW, attrs)
+    proc = _sp.Popen(
+        ["bash", str(wrapper)],
+        stdin=slave,
+        stdout=slave,
+        stderr=slave,
+        env={"PATH": "/usr/bin:/bin", "LANG": "C.UTF-8"},
+        close_fds=True,
+    )
+    os.close(slave)
+    os.write(master, b"http://manual.example:6969\n")
+    out = b""
+    try:
+        while True:
+            ready, _, _ = select.select([master], [], [], 60)
+            if not ready:
+                proc.kill()
+                raise AssertionError(f"pty run timed out; output: {out!r}")
+            try:
+                chunk = os.read(master, 4096)
+            except OSError:
+                break
+            if not chunk:
+                break
+            out += chunk
+    finally:
+        proc.wait(timeout=10)
+        os.close(master)
+    text = out.decode(errors="replace")
+    assert "PAIR_RC=0" in text, text
+    pair_lines = [ln for ln in text.splitlines() if "PAIR_ARGS" in ln]
+    assert any(
+        "http://manual.example:6969" in ln for ln in pair_lines
+    ), text

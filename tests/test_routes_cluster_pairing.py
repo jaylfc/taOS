@@ -792,3 +792,69 @@ async def test_manual_claim_429_carries_retry_after(unauthed_client):
         assert 1 <= retry_after <= int(_cl._MANUAL_CLAIM_WINDOW_SECS)
     finally:
         _cl._manual_claim_hits.clear()
+
+
+# ---------------------------------------------------------------------------
+# Pairing identity proof (#119): the controller proves possession of the
+# hub key whose fingerprint it advertises over mDNS, so a worker can
+# refuse a LAN impostor before any pairing state is created.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_identity_proof_returns_verifiable_proof(
+    unauthed_client, tmp_data_dir, monkeypatch
+):
+    """Unauthenticated like announce/claim. The returned pubkey must hash
+    to the node's advertised hub fingerprint and the signature must
+    verify over the worker's nonce."""
+    from tinyagentos.hub import identity
+
+    monkeypatch.setenv("TAOS_DATA_DIR", str(tmp_data_dir))
+    nonce = secrets.token_hex(32)
+    resp = await unauthed_client.post(
+        "/api/cluster/pairing/identity-proof", json={"nonce": nonce}
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["fingerprint"] == identity.signing_fingerprint()
+    assert identity.fingerprint(body["signing_pubkey"]) == body["fingerprint"]
+    assert identity.verify_signature(
+        body["signing_pubkey"],
+        identity.pairing_proof_message(nonce),
+        body["signature"],
+    )
+
+
+@pytest.mark.asyncio
+async def test_identity_proof_signature_is_bound_to_the_nonce(
+    unauthed_client, tmp_data_dir, monkeypatch
+):
+    """A proof captured for one nonce must not verify for another."""
+    from tinyagentos.hub import identity
+
+    monkeypatch.setenv("TAOS_DATA_DIR", str(tmp_data_dir))
+    nonce = secrets.token_hex(32)
+    resp = await unauthed_client.post(
+        "/api/cluster/pairing/identity-proof", json={"nonce": nonce}
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    other = secrets.token_hex(32)
+    assert not identity.verify_signature(
+        body["signing_pubkey"],
+        identity.pairing_proof_message(other),
+        body["signature"],
+    )
+
+
+@pytest.mark.asyncio
+async def test_identity_proof_rejects_malformed_nonce(
+    unauthed_client, tmp_data_dir, monkeypatch
+):
+    monkeypatch.setenv("TAOS_DATA_DIR", str(tmp_data_dir))
+    for bad in ("", "zz" * 32, "ab" * 8, "AB" * 32, "a" * 200):
+        resp = await unauthed_client.post(
+            "/api/cluster/pairing/identity-proof", json={"nonce": bad}
+        )
+        assert resp.status_code == 400, (bad, resp.text)

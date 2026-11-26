@@ -89,6 +89,10 @@ class PairingClaim(BaseModel):
     code: str
 
 
+class PairingIdentityProof(BaseModel):
+    nonce: str
+
+
 # ---------------------------------------------------------------------------
 # Pairing endpoints
 # ---------------------------------------------------------------------------
@@ -169,6 +173,33 @@ async def pairing_claim(request: Request, body: PairingClaim):
             return JSONResponse({"error": "Unknown or invalidated worker"}, status_code=404)
         return JSONResponse({"error": "Incorrect pairing code"}, status_code=403)
     return {"signing_key": key.hex()}
+
+
+_NONCE_RE = re.compile(r"^[0-9a-f]{32,128}$")
+
+
+@router.post("/api/cluster/pairing/identity-proof")
+async def pairing_identity_proof(request: Request, body: PairingIdentityProof):
+    """Unauthenticated -- prove this controller holds its hub key.
+
+    A worker that found this controller through the mDNS discovery
+    service (#119) challenges it with a random nonce before pairing:
+    the reply carries the hub signing public key and a signature over
+    the nonce, so the worker can check the key's fingerprint against
+    the one the TXT record advertised and verify the signature. An
+    impostor advertising someone else's fingerprint cannot produce
+    this proof, and the worker refuses it before any pairing state is
+    created. Only public material (already broadcast via mDNS) and a
+    signature over a domain-separated message leave the node.
+    """
+    if not _NONCE_RE.match(body.nonce):
+        return JSONResponse(
+            {"error": "nonce must be 32-128 lowercase hex characters"},
+            status_code=400,
+        )
+    from tinyagentos.hub.identity import build_pairing_proof
+
+    return build_pairing_proof(body.nonce)
 
 
 class ManualPairAuthorize(BaseModel):

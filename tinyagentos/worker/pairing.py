@@ -110,6 +110,56 @@ def _describe_error(resp) -> str:
         return resp.text
 
 
+async def verify_controller_proof(
+    client,
+    controller_url: str,
+    expected_fingerprint: str,
+    *,
+    nonce: str | None = None,
+) -> bool:
+    """Verify the controller at ``controller_url`` holds the hub key
+    whose fingerprint is ``expected_fingerprint``.
+
+    Challenges the controller's pairing identity-proof endpoint with a
+    random nonce and checks the reply: the returned signing public key
+    must hash to ``expected_fingerprint`` (the fingerprint the mDNS
+    TXT record advertised) and its signature over the nonce must
+    verify. Any failure -- unreachable, no proof endpoint, malformed
+    reply, wrong key, bad signature -- returns False (fail closed): a
+    controller discovered over unauthenticated mDNS that cannot prove
+    its advertised identity is treated as an impostor.
+    """
+    from tinyagentos.hub.identity import (
+        fingerprint,
+        pairing_proof_message,
+        verify_signature,
+    )
+
+    nonce = nonce or secrets.token_hex(32)
+    try:
+        resp = await client.post(
+            f"{controller_url.rstrip('/')}/api/cluster/pairing/identity-proof",
+            json={"nonce": nonce},
+        )
+    except Exception:  # noqa: BLE001 -- any transport failure is a refusal
+        return False
+    if getattr(resp, "status_code", None) != 200:
+        return False
+    try:
+        data = resp.json()
+        signing_pubkey = data["signing_pubkey"]
+        signature = data["signature"]
+        if not hmac.compare_digest(
+            fingerprint(signing_pubkey), expected_fingerprint
+        ):
+            return False
+    except Exception:  # noqa: BLE001 -- a malformed reply is a refusal
+        return False
+    return verify_signature(
+        signing_pubkey, pairing_proof_message(nonce), signature
+    )
+
+
 async def run_pairing(
     client,
     controller_url: str,

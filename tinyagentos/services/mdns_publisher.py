@@ -21,6 +21,14 @@ zeroconf resolves the collision by suffixing the second one
 (``taos-2.local`` etc.). No special-case code needed here -- the library
 handles it via ``allow_name_change``.
 
+When the node's hub identity fingerprint is supplied, the publisher also
+registers a ``_tinyagentos._tcp`` discovery service (#119) whose TXT
+records carry the controller URL, that fingerprint, and the hardware
+tier, so fresh workers on the LAN can find this controller instead of
+asking the user to type its URL. Workers browse for it with
+``tinyagentos.worker.discovery``; the service type and TXT key constants
+live here so publisher and browser cannot drift apart.
+
 """
 import asyncio
 import logging
@@ -37,6 +45,13 @@ from tinyagentos.atomic_io import atomic_write_text
 logger = logging.getLogger(__name__)
 
 _SERVICE_TYPE = "_http._tcp.local."
+
+# Worker discovery (#119): the service fresh workers browse for, and the
+# TXT keys its records carry. Shared with tinyagentos.worker.discovery.
+DISCOVERY_SERVICE_TYPE = "_tinyagentos._tcp.local."
+TXT_KEY_URL = "url"
+TXT_KEY_FINGERPRINT = "fingerprint"
+TXT_KEY_TIER = "tier"
 
 _HOSTNAME_PATTERN = re.compile(r"^taos(-[a-z0-9]{4})?\.local\.$")
 
@@ -168,15 +183,50 @@ class MdnsPublisher:
         data_dir: Path,
         service_name: str = "taOS",
         port: int,
+        controller_url: str | None = None,
+        fingerprint: str | None = None,
+        tier: str | None = None,
+        advertise_tier: bool = True,
     ) -> None:
         self._data_dir = data_dir
         self._service_name = service_name
         self._port = port
+        # Discovery service (#119) inputs. The fingerprint is the node's
+        # hub identity (tinyagentos.hub.identity.signing_fingerprint) --
+        # the same identity the peer channel pins -- never a fresh key.
+        # Without a fingerprint there is nothing trustworthy to advertise,
+        # so the discovery service is only registered when one is given.
+        self._controller_url = controller_url
+        self._fingerprint = fingerprint
+        self._tier = tier
+        # The tier reveals the hardware profile to anyone on the LAN.
+        # advertise_tier=False keeps it out of the TXT records; the URL
+        # and fingerprint -- what pairing actually needs -- still go out.
+        self._advertise_tier = advertise_tier
         self._zc: AsyncZeroconf | None = None
         self._info: ServiceInfo | None = None
+        self._discovery_info: ServiceInfo | None = None
         self._active = False
         self._chosen_hostname: str = "taos.local."
         self._service_instance_name: str | None = None
+
+    def _discovery_service_info(self, addresses: list[str]) -> ServiceInfo:
+        """Build the ``_tinyagentos._tcp`` record advertising this node."""
+        properties = {
+            TXT_KEY_URL: self._controller_url
+            or f"http://{self._chosen_hostname.rstrip('.')}:{self._port}",
+            TXT_KEY_FINGERPRINT: self._fingerprint or "",
+        }
+        if self._tier and self._advertise_tier:
+            properties[TXT_KEY_TIER] = self._tier
+        return ServiceInfo(
+            DISCOVERY_SERVICE_TYPE,
+            f"{self._service_name}.{DISCOVERY_SERVICE_TYPE}",
+            addresses=[socket.inet_aton(ip) for ip in addresses],
+            port=self._port,
+            properties=properties,
+            server=self._chosen_hostname,
+        )
 
     @property
     def hostname(self) -> str:
@@ -250,6 +300,28 @@ class MdnsPublisher:
                 self._port,
                 ", ".join(addresses),
             )
+            if self._fingerprint:
+                # Add-on to the _http publish: a failure here must not
+                # take the working registration down with it.
+                try:
+                    discovery_info = self._discovery_service_info(addresses)
+                    await zc.async_register_service(
+                        discovery_info, allow_name_change=True
+                    )
+                    self._discovery_info = discovery_info
+                    logger.info(
+                        "mDNS: published discovery service %s "
+                        "(fingerprint=%s..., tier=%s)",
+                        DISCOVERY_SERVICE_TYPE,
+                        self._fingerprint[:8],
+                        self._tier or "unknown",
+                    )
+                except Exception:
+                    logger.exception(
+                        "mDNS: discovery service publish failed -- "
+                        "continuing without"
+                    )
+                    self._discovery_info = None
         except Exception:
             logger.exception("mDNS: publish failed — continuing without")
             self._active = False
@@ -259,8 +331,21 @@ class MdnsPublisher:
         if not self._active:
             return
         try:
-            if self._zc is not None and self._info is not None:
-                await self._zc.async_unregister_service(self._info)
+            if self._zc is not None:
+                # Each step is attempted independently: one failing
+                # unregister must not skip the other, or the close.
+                if self._discovery_info is not None:
+                    try:
+                        await self._zc.async_unregister_service(
+                            self._discovery_info
+                        )
+                    except Exception:
+                        logger.exception("mDNS: discovery unregister failed")
+                if self._info is not None:
+                    try:
+                        await self._zc.async_unregister_service(self._info)
+                    except Exception:
+                        logger.exception("mDNS: unregister failed")
                 await self._zc.async_close()
         except Exception:
             logger.exception("mDNS: stop failed")
@@ -268,4 +353,5 @@ class MdnsPublisher:
             self._active = False
             self._zc = None
             self._info = None
+            self._discovery_info = None
             self._service_instance_name = None

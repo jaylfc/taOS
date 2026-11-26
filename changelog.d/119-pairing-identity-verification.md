@@ -1,0 +1,5 @@
+### Security
+- mDNS controller discovery (#119): the fingerprint a controller advertises in its `_tinyagentos._tcp` TXT record is now verified before pairing. The pair CLI challenges the controller at the advertised URL (`POST /api/cluster/pairing/identity-proof`) to sign a random nonce with its hub identity key, and checks the returned public key hashes to the advertised fingerprint and the signature verifies; a controller that cannot prove possession -- a LAN impostor that copied the TXT record -- is refused before any pairing state is created. The pairing code and controller-side admin approval are unchanged. The discovery pick list now shows each controller's fingerprint in short form next to its URL, and `discovery --pick` prints the chosen fingerprint after the URL so install-worker.sh can pass it to the pair CLI for the same verification.
+
+### Changed
+- The mDNS discovery `tier` TXT record (the controller's hardware profile, visible to anyone on the LAN) is now optional: `mdns.advertise_tier: false` in the controller config omits it. Default is unchanged (advertised).
