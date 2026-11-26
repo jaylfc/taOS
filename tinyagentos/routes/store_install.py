@@ -43,6 +43,37 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
+def _docker_available() -> bool:
+    """Check if Docker is installed and the daemon is reachable."""
+    import shutil
+    if not shutil.which("docker"):
+        return False
+    try:
+        import subprocess
+        result = subprocess.run(
+            ["docker", "info"],
+            capture_output=True,
+            timeout=5,
+        )
+        return result.returncode == 0
+    except Exception:
+        return False
+
+
+def _get_app_runtime(manifest) -> str:
+    """Get the container runtime requirement from a manifest.
+    
+    Returns 'docker', 'lxc', or 'either'.
+    """
+    install_block = getattr(manifest, "install", None) or {}
+    if isinstance(install_block, dict):
+        return install_block.get("runtime", "either")
+    elif hasattr(install_block, "get"):
+        return install_block.get("runtime", "either")
+    # For manifests without install block (e.g., models), check top-level
+    return getattr(manifest, "runtime", "either")
+
+
 _KNOWN_BACKENDS = {
     "rkllama", "rk-llama-cpp", "ollama", "llama-cpp",
     "mlx", "vllm", "comfyui", "transformers",
@@ -639,6 +670,45 @@ async def _legacy_install(request: Request, body: dict, app_id: str | None, targ
     # invoke DockerInstaller / PipInstaller and only mark installed when
     # the underlying tool succeeds.
     if backend in ("docker", "pip"):
+        # If this app requires Docker (runtime: docker), check Docker availability.
+        # Only owner/admin sessions can approve Docker install; agents cannot.
+        if backend == "docker":
+            app_runtime = _get_app_runtime(manifest) if manifest else "none"
+            if app_runtime == "docker":
+                if not _docker_available():
+                    # Check if user has provided consent via docker_consent=true
+                    if not body.get("docker_consent", False):
+                        return JSONResponse(
+                            {
+                                "docker_required": True,
+                                "app_id": app_id,
+                                "message": (
+                                    "This app requires Docker to run. Installing Docker will:"
+                                    "\n- Add a network bridge (docker0) for container networking"
+                                    "\n- Configure IP forwarding and firewall rules (iptables FORWARD chain)"
+                                    "\n- Install Docker Engine and Docker Compose v2 plugin"
+                                    "\n- Add the current user to the docker group (requires re-login)"
+                                ),
+                                "detail": "Set docker_consent=true in the request body to proceed with Docker installation.",
+                            },
+                            status_code=412,
+                        )
+                    # User consented — install Docker on-demand via the audited helper.
+                    # This runs the same logic as the installer script's ensure_docker_for_apps().
+                    from tinyagentos.docker_setup import ensure_docker_on_demand
+                    docker_result = await ensure_docker_on_demand()
+                    if not docker_result.get("success"):
+                        return JSONResponse(
+                            {"error": f"Docker installation failed: {docker_result.get('error', 'unknown error')}"},
+                            status_code=500,
+                        )
+                # Docker is now available (either pre-existing or just installed)
+                # Verify it works before proceeding
+                if not _docker_available():
+                    return JSONResponse(
+                        {"error": "Docker installation reported success but daemon is not reachable"},
+                        status_code=500,
+                    )
         # Apps_dir defaults to data_dir/apps so an unprivileged install
         # works without /opt write access. Tests can override via
         # app.state.apps_dir on a tmp path.

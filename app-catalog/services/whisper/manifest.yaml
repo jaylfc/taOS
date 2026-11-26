@@ -15,6 +15,7 @@ install:
     ASR_MODEL: base
   image: onerahmet/openai-whisper-asr-webservice:20241115
   method: docker
+  runtime: docker
   ports:
   - 9000
   volumes:

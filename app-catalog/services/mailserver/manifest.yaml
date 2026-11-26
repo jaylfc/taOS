@@ -15,6 +15,7 @@ install:
     SSL_TYPE: ''
   image: ghcr.io/docker-mailserver/docker-mailserver:14.0.0
   method: docker
+  runtime: docker
   ports:
   - 25
   - 143

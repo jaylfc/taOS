@@ -12,6 +12,7 @@ id: filebrowser
 install:
   image: filebrowser/filebrowser:2.27.0
   method: docker
+  runtime: docker
   ports:
   - 8080
   volumes:

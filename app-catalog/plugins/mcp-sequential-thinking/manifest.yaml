@@ -1,6 +1,7 @@
 id: mcp-sequential-thinking
 name: MCP Sequential Thinking
 type: plugin
+runtime: either
 version: 0.1.0
 description: "Step-by-step reasoning server for structured agent problem solving"
 homepage: https://github.com/modelcontextprotocol/servers

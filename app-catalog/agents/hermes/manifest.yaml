@@ -14,6 +14,7 @@ requires:
 
 install:
   method: script
+  runtime: either
   script: scripts/install.sh
   note: |
     Installs hermes-agent from PyPI inside the agent container.

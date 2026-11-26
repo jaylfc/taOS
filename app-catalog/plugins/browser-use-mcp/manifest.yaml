@@ -11,6 +11,7 @@ requires:
 
 install:
   method: pip
+  runtime: either
   package: "browser-use[cli]"
 
 hardware_tiers:

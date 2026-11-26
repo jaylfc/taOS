@@ -1,6 +1,7 @@
 id: aws-mcp
 name: AWS MCP
 type: plugin
+runtime: either
 version: 0.1.0
 description: "AWS services integration — S3, Lambda, CDK, and more"
 homepage: https://github.com/awslabs/mcp

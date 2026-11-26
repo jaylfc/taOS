@@ -1,6 +1,7 @@
 id: dbhub
 name: DBHub
 type: plugin
+runtime: either
 version: 0.1.0
 description: "Zero-dependency database MCP server for Postgres, MySQL, and SQLite"
 homepage: https://github.com/bytebase/dbhub

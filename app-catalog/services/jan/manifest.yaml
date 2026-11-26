@@ -13,6 +13,7 @@ id: jan
 install:
   image: ghcr.io/janhq/jan-server:0.5.14
   method: docker
+  runtime: docker
   ports:
   - 1337
 license: AGPL-3.0

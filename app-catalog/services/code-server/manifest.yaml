@@ -18,6 +18,7 @@ install:
     TZ: Europe/London
   image: lscr.io/linuxserver/code-server:4.135.0
   method: docker
+  runtime: docker
   ports:
   - 8443
   volumes:

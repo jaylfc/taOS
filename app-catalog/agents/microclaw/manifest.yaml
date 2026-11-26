@@ -10,6 +10,7 @@ requires:
   ram_mb: 32
 install:
   method: pip
+  runtime: either
   package: microclaw
 hardware_tiers:
   arm-npu-16gb: full

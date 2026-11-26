@@ -293,6 +293,7 @@ async def list_catalog(request: Request, type: str | None = None):
             "license_class": a.license_class,
             "requires": a.requires, "hardware_tiers": a.hardware_tiers,
             "install_method": (a.install.get("method") or a.install.get("backend") or "") if isinstance(a.install, dict) else "",
+            "runtime": (a.install.get("runtime") if isinstance(a.install, dict) else getattr(a, "runtime", "none")),
             "installed": installed,
             "state": (installation.state(a.id) if installation else ("installed" if registry.is_installed(a.id) else "not_installed")),
             "variants": _slim_variants(a),

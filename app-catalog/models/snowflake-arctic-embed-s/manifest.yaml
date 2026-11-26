@@ -1,6 +1,7 @@
 id: snowflake-arctic-embed-s
 name: Snowflake Arctic Embed S
 type: model
+runtime: either
 version: 1.0.0
 description: Snowflake's 33M English embedding, 384-dim, CPU-friendly, strong retrieval
 homepage: https://huggingface.co/Snowflake/snowflake-arctic-embed-s

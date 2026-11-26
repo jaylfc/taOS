@@ -11,6 +11,7 @@ requires:
 
 install:
   method: pip
+  runtime: either
   package: mcp-atlassian
 
 hardware_tiers:

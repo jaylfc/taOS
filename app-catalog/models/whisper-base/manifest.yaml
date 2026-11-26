@@ -1,6 +1,7 @@
 id: whisper-base
 name: Whisper Base (ggml)
 type: model
+runtime: either
 version: 1.0.0
 description: Base Whisper — 74M params, good quality/speed tradeoff
 homepage: https://huggingface.co/ggerganov/whisper.cpp

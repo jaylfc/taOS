@@ -1,6 +1,7 @@
 id: gemma-3-4b
 name: Gemma 3 4B Instruct
 type: model
+runtime: either
 version: 3.0.0
 description: Google's Gemma 3 4B — multimodal, multilingual, 128K context
 homepage: https://huggingface.co/google/gemma-3-4b-it

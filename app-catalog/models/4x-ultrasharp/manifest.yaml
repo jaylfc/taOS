@@ -1,6 +1,7 @@
 id: 4x-ultrasharp
 name: 4x-UltraSharp
 type: model
+runtime: either
 version: 1.0.0
 description: Community favorite ESRGAN upscaler — crisp results for general images
   and art

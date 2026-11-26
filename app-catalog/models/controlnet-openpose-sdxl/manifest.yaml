@@ -1,6 +1,7 @@
 id: controlnet-openpose-sdxl
 name: ControlNet OpenPose (SDXL)
 type: model
+runtime: either
 version: 1.0.0
 description: OpenPose ControlNet for SDXL — pose-controlled generation with SDXL models
 homepage: https://huggingface.co/thibaud/controlnet-openpose-sdxl-1.0

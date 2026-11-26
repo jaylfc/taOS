@@ -1398,8 +1398,10 @@ PY
 
 # Docker is the engine for Store "Docker apps" (manifest install.method: docker),
 # including compose-style stacks like SearXNG / Perplexica. incus runs agent
-# LXCs; Docker runs Docker apps. Installed by default — set TAOS_SKIP_DOCKER=1
-# to opt out (Store Docker apps then stay unavailable).
+# LXCs; Docker runs Docker apps. This function is now called ON-DEMAND from
+# store_install.py when a Docker-required app is installed, not during the
+# initial controller install. Set TAOS_SKIP_DOCKER=1 to opt out (Store Docker
+# apps then stay unavailable).
 # The Compose v2 plugin has two apt names: Debian and Docker's own repo call
 # it docker-compose-plugin; Ubuntu's universe archive calls it
 # docker-compose-v2. Trying only the Ubuntu name broke Debian Bookworm
@@ -1715,6 +1717,10 @@ _apt_install_docker_official_repo() {
     return 0
 }
 
+# On-demand Docker Engine + Compose v2 install for Store Docker apps.
+# Called from store_install.py when a Docker-required app is installed.
+# Not run during initial controller install (default is Incus/LXC only).
+# Set TAOS_SKIP_DOCKER=1 to opt out (Store Docker apps then stay unavailable).
 ensure_docker_for_apps() {
     if [[ "${TAOS_SKIP_DOCKER:-0}" == "1" ]]; then
         DOCKER_COMPOSE_STATUS="skipped"
@@ -1833,11 +1839,13 @@ ensure_docker_for_apps() {
     fi
 }
 
-# Container/Docker setup is optional for the core controller. On hosts where it
-# cannot complete (WSL without systemd, minimal VMs, incus/docker iptables that
+# Container runtime setup is optional for the core controller. On hosts where it
+# cannot complete (WSL without systemd, minimal VMs, incus iptables that
 # fail under set -e), warn and continue rather than aborting the whole install.
+# Default is Incus/LXC only. Docker is installed on-demand when a Store app
+# that requires it is installed (see store_install.py). TAOS_SKIP_DOCKER=1
+# still skips on-demand Docker installs.
 ensure_container_runtime || warn "container runtime setup did not complete -- agent containers may be unavailable; continuing"
-ensure_docker_for_apps || warn "Docker setup did not complete -- Store Docker apps will be unavailable; continuing"
 
 # --- clone / update the repo ---------------------------------------------
 

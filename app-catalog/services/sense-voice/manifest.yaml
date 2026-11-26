@@ -13,6 +13,7 @@ requires:
 
 install:
   method: pip
+  runtime: either
   package: funasr
 
 hardware_tiers:

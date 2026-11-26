@@ -25,6 +25,7 @@ install:
     NEXTAUTH_URL: http://localhost:3000
   image: ghcr.io/linkwarden/linkwarden:2.13.0
   method: docker
+  runtime: docker
   ports:
   - 3000
   volumes:

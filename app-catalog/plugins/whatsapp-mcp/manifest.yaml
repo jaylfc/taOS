@@ -11,6 +11,7 @@ requires:
 
 install:
   method: script
+  runtime: either
   package: "go install github.com/lharries/whatsapp-mcp@latest"
 
 hardware_tiers:

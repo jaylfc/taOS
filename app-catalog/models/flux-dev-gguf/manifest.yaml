@@ -1,6 +1,7 @@
 id: flux-dev-gguf
 name: Flux.1 Dev (GGUF)
 type: model
+runtime: either
 version: 1.0.0
 description: Flux.1 Dev in GGUF — higher quality than Schnell, requires more steps.
   Non-commercial license.

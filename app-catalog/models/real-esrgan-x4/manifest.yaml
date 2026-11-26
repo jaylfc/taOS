@@ -1,6 +1,7 @@
 id: real-esrgan-x4
 name: Real-ESRGAN x4
 type: model
+runtime: either
 version: 1.0.0
 description: Practical image upscaler — 4x super-resolution, restores real-world images
 homepage: https://huggingface.co/ai-forever/Real-ESRGAN

@@ -1,6 +1,7 @@
 id: controlnet-openpose
 name: ControlNet OpenPose (SD 1.5)
 type: model
+runtime: either
 version: 1.0.0
 description: OpenPose ControlNet — generate images driven by pose skeletons
 homepage: https://huggingface.co/lllyasviel/sd-controlnet-openpose

@@ -1,6 +1,7 @@
 id: whisper-tiny
 name: Whisper Tiny (ggml)
 type: model
+runtime: either
 version: 1.0.0
 description: Smallest Whisper — 39M params, real-time transcription on any CPU
 homepage: https://huggingface.co/ggerganov/whisper.cpp

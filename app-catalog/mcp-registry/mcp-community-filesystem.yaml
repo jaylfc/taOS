@@ -5,6 +5,7 @@ description: >-
   filesystem server. Installing this entry provisions a private workspace
   directory for it — no existing taOS directory (and no secrets) is exposed.
 version: 2025.7.1
+runtime: either
 author: modelcontextprotocol
 homepage: https://github.com/modelcontextprotocol/servers
 license: MIT

@@ -1,6 +1,7 @@
 id: whisper-medium
 name: Whisper Medium (ggml)
 type: model
+runtime: either
 version: 1.0.0
 description: Medium Whisper — 769M params, near-large quality at half the size
 homepage: https://huggingface.co/ggerganov/whisper.cpp

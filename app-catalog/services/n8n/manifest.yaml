@@ -14,6 +14,7 @@ install:
     N8N_SECURE_COOKIE: 'false'
   image: n8nio/n8n:1.80.0
   method: docker
+  runtime: docker
   ports:
   - 5678
   volumes:

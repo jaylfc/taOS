@@ -1,6 +1,7 @@
 id: llava-phi-3-mini
 name: LLaVA Phi 3 Mini
 type: model
+runtime: either
 version: 1.0.0
 description: Compact Phi-3-based vision model — efficient image understanding on low-end
   hardware

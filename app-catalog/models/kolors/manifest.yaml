@@ -1,6 +1,7 @@
 id: kolors
 name: Kolors
 type: model
+runtime: either
 version: 1.0.0
 description: Kuaishou's bilingual (EN/ZH) text-to-image model — strong Chinese prompt
   support

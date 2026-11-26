@@ -1,6 +1,7 @@
 id: gfpgan-v1.4
 name: GFPGAN v1.4 (Face Restoration)
 type: model
+runtime: either
 version: 1.4.0
 description: Tencent ARC's face restoration — fix blurred or damaged faces in photos
 homepage: https://github.com/TencentARC/GFPGAN

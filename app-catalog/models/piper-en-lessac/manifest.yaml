@@ -1,6 +1,7 @@
 id: piper-en-lessac
 name: Piper TTS EN-US Lessac (Medium)
 type: model
+runtime: either
 version: 1.0.0
 description: Fast CPU TTS voice — Piper Lessac medium voice, natural English US
 homepage: https://huggingface.co/rhasspy/piper-voices

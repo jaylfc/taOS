@@ -10,6 +10,7 @@ requires:
   ram_mb: 16
 install:
   method: pip
+  runtime: either
   package: zeroclaw
 hardware_tiers:
   arm-npu-16gb: full

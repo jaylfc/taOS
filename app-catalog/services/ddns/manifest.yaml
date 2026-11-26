@@ -13,6 +13,7 @@ install:
     PERIOD: 5m
   image: qmcgaw/ddns-updater:v1
   method: docker
+  runtime: docker
   ports:
   - 8000
   volumes:

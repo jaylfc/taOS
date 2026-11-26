@@ -15,6 +15,7 @@ install:
     STORAGE_DIR: /app/server/storage
   image: mintplexlabs/anythingllm:1.7.0
   method: docker
+  runtime: docker
   ports:
   - 3001
   volumes:

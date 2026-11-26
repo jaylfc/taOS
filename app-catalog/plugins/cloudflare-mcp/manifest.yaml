@@ -1,6 +1,7 @@
 id: cloudflare-mcp
 name: Cloudflare MCP
 type: plugin
+runtime: either
 version: 0.1.0
 description: "Cloudflare Workers, KV, R2, D1, and DNS management via MCP"
 homepage: https://github.com/cloudflare/mcp-server-cloudflare

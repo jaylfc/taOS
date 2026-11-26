@@ -16,6 +16,7 @@ requires:
 
 install:
   method: pip
+  runtime: either
   package: diffusers
 
 hardware_tiers:

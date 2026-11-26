@@ -18,6 +18,7 @@ requires:
 
 install:
   method: script
+  runtime: either
   script: scripts/install-musicgpt.sh
 
 hardware_tiers:

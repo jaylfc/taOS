@@ -11,6 +11,7 @@ requires:
 
 install:
   method: pip
+  runtime: either
   package: ha-mcp
 
 hardware_tiers:

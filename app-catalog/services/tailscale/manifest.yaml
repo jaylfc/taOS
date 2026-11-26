@@ -14,6 +14,7 @@ requires:
 
 install:
   method: script
+  runtime: either
   script: scripts/install-tailscale.sh
 
 hardware_tiers:

@@ -1,6 +1,7 @@
 id: sd3.5-large-turbo-gguf
 name: Stable Diffusion 3.5 Large Turbo (GGUF)
 type: model
+runtime: either
 version: 3.5.0
 description: Stability AI's SD3.5 Large Turbo — 4-step high quality generation
 homepage: https://huggingface.co/city96/stable-diffusion-3.5-large-turbo-gguf

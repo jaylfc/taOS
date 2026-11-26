@@ -1,6 +1,7 @@
 id: codeformer
 name: CodeFormer (Face Restoration)
 type: model
+runtime: either
 version: 0.1.0
 description: Robust face restoration with codebook lookup — high fidelity, handles
   severe degradation

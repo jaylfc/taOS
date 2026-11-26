@@ -1,6 +1,7 @@
 id: mistral-nemo-12b
 name: Mistral Nemo 12B Instruct
 type: model
+runtime: either
 version: 24.07.0
 description: Mistral/NVIDIA collaboration — 128K context, strong multilingual, built-in
   tool calling

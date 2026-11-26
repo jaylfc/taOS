@@ -1,6 +1,7 @@
 id: llava-1.6-mistral-7b
 name: LLaVA 1.6 Mistral 7B
 type: model
+runtime: either
 version: 1.6.0
 description: Vision-language model based on Mistral 7B — strong image Q&A and captioning
 homepage: https://huggingface.co/liuhaotian/llava-v1.6-mistral-7b

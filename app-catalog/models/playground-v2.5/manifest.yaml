@@ -1,6 +1,7 @@
 id: playground-v2.5
 name: Playground v2.5 1024px
 type: model
+runtime: either
 version: 2.5.0
 description: Playground's photorealistic SDXL-compatible model — strong aesthetic
   quality

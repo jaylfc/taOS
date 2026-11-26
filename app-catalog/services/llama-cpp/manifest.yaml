@@ -17,6 +17,7 @@ requires:
 
 install:
   method: script
+  runtime: either
   script: scripts/install-llama-cpp.sh
   uninstall: scripts/uninstall-llama-cpp.sh
 

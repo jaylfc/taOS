@@ -1,6 +1,7 @@
 id: bge-small-en-v1.5
 name: BGE Small EN v1.5
 type: model
+runtime: either
 version: 1.5.0
 description: Tiny 384-dim English embedding — fast, ideal for edge RAG
 homepage: https://huggingface.co/BAAI/bge-small-en-v1.5

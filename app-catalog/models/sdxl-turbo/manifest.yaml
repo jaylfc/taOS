@@ -1,6 +1,7 @@
 id: sdxl-turbo
 name: SDXL Turbo
 type: model
+runtime: either
 version: 1.0.0
 description: Real-time image generation — single-step SDXL distillation, fast on GPU
 homepage: https://huggingface.co/stabilityai/sdxl-turbo

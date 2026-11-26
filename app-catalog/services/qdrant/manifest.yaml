@@ -14,6 +14,7 @@ id: qdrant
 install:
   image: qdrant/qdrant:v1.13.0
   method: docker
+  runtime: docker
   ports:
   - 6333:6333
   - 6334:6334

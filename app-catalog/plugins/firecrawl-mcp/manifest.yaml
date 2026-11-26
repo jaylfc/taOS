@@ -1,6 +1,7 @@
 id: firecrawl-mcp
 name: Firecrawl MCP
 type: plugin
+runtime: either
 version: 0.1.0
 description: "Web scraping and crawling MCP server powered by Firecrawl"
 homepage: https://github.com/mendableai/firecrawl-mcp-server

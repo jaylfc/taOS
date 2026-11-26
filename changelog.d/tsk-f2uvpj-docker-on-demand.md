@@ -1,0 +1,2 @@
+### Added
+- Docker-on-demand: taOS host now gets LXC/Incus by default; Docker is installed only when a Store app that requires it is installed. Apps declare their container runtime via `install.runtime: docker|lxc|none` in their manifest. The install API returns `docker_required` state for Docker apps when Docker is missing, prompting owner/admin consent before installing Docker via an audited helper.

@@ -14,6 +14,7 @@ requires:
 
 install:
   method: pip
+  runtime: either
   package: nemo_toolkit
 
 hardware_tiers:

@@ -16,6 +16,7 @@ requires:
 
 install:
   method: pip
+  runtime: either
   package: wan2_1
 
 hardware_tiers:

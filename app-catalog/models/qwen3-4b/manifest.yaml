@@ -1,6 +1,7 @@
 id: qwen3-4b
 name: Qwen 3 4B
 type: model
+runtime: either
 version: 3.0.0
 description: Compact chat model — good balance of capability and resource usage
 homepage: https://huggingface.co/Qwen/Qwen3-4B

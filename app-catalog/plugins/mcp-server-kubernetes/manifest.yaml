@@ -1,6 +1,7 @@
 id: mcp-server-kubernetes
 name: MCP Kubernetes
 type: plugin
+runtime: either
 version: 0.1.0
 description: "Kubernetes cluster management — pods, deployments, services, and logs"
 homepage: https://github.com/Flux159/mcp-server-kubernetes

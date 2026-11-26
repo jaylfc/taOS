@@ -1,6 +1,7 @@
 id: deepseek-coder-v2-lite
 name: DeepSeek Coder V2 Lite Instruct
 type: model
+runtime: either
 version: 2.0.0
 description: 16B MoE with 2.4B active — specialized code model with strong fill-in-middle
 homepage: https://huggingface.co/deepseek-ai/DeepSeek-Coder-V2-Lite-Instruct

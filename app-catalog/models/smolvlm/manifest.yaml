@@ -1,6 +1,7 @@
 id: smolvlm
 name: SmolVLM
 type: model
+runtime: either
 version: 1.0.0
 description: Hugging Face's compact VLM — 2B params, runs in 5 GB VRAM. Strong at
   chart understanding, document Q&A, and visual reasoning for the size.

@@ -1,6 +1,7 @@
 id: gemma-4-e4b-gguf
 name: Gemma 4 E4B Instruct (GGUF)
 type: model
+runtime: either
 version: 4.0.0
 description: Google Gemma 4 E4B (~7.5B raw / 4B effective via PLE), Q4_K_M GGUF —
   bigger sibling of E2B for boards with more headroom

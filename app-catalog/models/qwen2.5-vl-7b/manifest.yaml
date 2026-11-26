@@ -1,6 +1,7 @@
 id: qwen2.5-vl-7b
 name: Qwen 2.5 VL 7B Instruct
 type: model
+runtime: either
 version: 2.5.0
 description: Next-gen Qwen vision model — stronger document and video understanding
 homepage: https://huggingface.co/Qwen/Qwen2.5-VL-7B-Instruct
