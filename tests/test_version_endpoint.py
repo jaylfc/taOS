@@ -33,12 +33,23 @@ def test_version_endpoint_is_auth_exempt(client):
 
 
 def _make_recording_publisher(active: bool = True):
-    """Create a fake MdnsPublisher class that records construction via closure."""
-    constructed = {"value": False}
+    """Create a fake MdnsPublisher class that records construction via closure.
+
+    The double accepts **kwargs on purpose: which discovery kwargs
+    production passes is environment-dependent by design (fingerprint
+    whenever the hub identity loads -- it is load-or-create, so in
+    practice always; tier whenever a hardware profile is detected).
+    A strict (data_dir, port) signature made these tests fail with a
+    swallowed TypeError wherever the identity loaded, which is why
+    shard results and standalone runs disagreed. The kwargs are
+    recorded so tests can assert on what actually arrived.
+    """
+    constructed = {"value": False, "kwargs": {}}
 
     class _RecordingMdnsPublisher:
-        def __init__(self, *, data_dir, port):
+        def __init__(self, *, data_dir, port, **kwargs):
             constructed["value"] = True
+            constructed["kwargs"] = kwargs
             self._data_dir = data_dir
             self._port = port
             self._hostname = "taos.local"
@@ -96,6 +107,9 @@ def test_version_endpoint_mdns_publisher_constructed_when_enabled(monkeypatch, t
     assert body["version"]  # non-empty
     assert body.get("mdns_hostname") == "taos.local"
     assert constructed["value"], "Publisher must be constructed when TAOS_MDNS is not 0"
+    # The hub identity is load-or-create, so the discovery fingerprint
+    # kwarg always reaches the publisher when mDNS is enabled (#119).
+    assert constructed["kwargs"].get("fingerprint")
 
 
 def test_version_endpoint_mdns_hostname_none_when_publisher_inactive(monkeypatch, tmp_path):

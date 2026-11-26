@@ -180,7 +180,7 @@ async def discover_controllers(timeout: float = 5.0) -> list[ControllerCandidate
 
         candidates: list[ControllerCandidate] = []
         seen: set[str] = set()
-        for name in collector.names:
+        for name in list(collector.names):
             try:
                 info = await zc.async_get_service_info(
                     DISCOVERY_SERVICE_TYPE, name
