@@ -1233,6 +1233,35 @@ guarding against, and the assertion must name a genuine upstream cookie that
 *survives*: a test asserting only "nothing leaked" is satisfied by dropping the
 Cookie header wholesale, which would break every proxied login.
 
+## Agent persistent terminals (#617)
+
+Terminal shortcuts no longer spawn a raw PTY. The shortcut WebSocket
+(`routes/shortcut_proxy.py`) runs the shell/TUI inside a tmux session in the
+agent's container — `tmux new-session -A -s taos-term-<agent>-<kind>-<idx>`
+(one session per shortcut window; session-name parts are sanitised because
+`.`/`:` are tmux target syntax). Closing the window detaches; reopening
+reattaches where the user left off. The naming/parsing helpers live in
+`shortcut_proxy.py` and are shared with the lifecycle routes.
+
+Lifecycle routes (`routes/agent_terminals.py`, owner-or-admin like the
+neighbouring agent routes):
+
+- `GET /api/agents/{name}/terminals` → `{agent, terminals: [{name, kind,
+  started_at}]}` from `tmux list-sessions` in the container. No tmux server
+  (or no tmux in the image) reads as an empty list.
+- `POST /api/agents/{name}/terminals/{session}/restart` → kill the session
+  and re-create it detached for the same shortcut (fresh shell/TUI, same
+  slot). 404 when the session does not exist, or when the name does not
+  resolve to one of the agent's shortcuts.
+- `DELETE /api/agents/{name}/terminals/{session}` → `tmux kill-session`.
+
+A `{session}` that does not parse as one of *this* agent's terminal sessions
+is a 404 and never reaches tmux — a crafted name cannot target another
+agent's session. Sessions die on explicit kill/restart or agent teardown,
+not on window close. Still open from #617: the settings-screen
+running-terminals UI, tmux in the agent container images, and orphan
+TTL/cap values.
+
 ## Device bearer self-service (second, narrower passthrough)
 
 Beyond the `EXEMPT_PATHS` entry for `GET /api/share/destinations`, a paired
