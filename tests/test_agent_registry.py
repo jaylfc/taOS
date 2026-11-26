@@ -677,41 +677,6 @@ class TestAgentRegistryRoutes:
 # registry_feeds_read scope -- feed token auth
 # ---------------------------------------------------------------------------
 
-@pytest_asyncio.fixture
-async def feeds_client(app, tmp_data_dir):
-    """Admin client with all stores needed for the feed-token tests.
-
-    Mirrors registry_client but also initialises agent_grants, auth_requests,
-    and relationships so the consent-flow helpers used inside tests work.
-    """
-    for attr in ("agent_registry", "agent_grants", "auth_requests", "relationships", "metrics"):
-        store = getattr(app.state, attr)
-        if store._db is None:
-            await store.init()
-
-    app.state.auth.setup_user("admin", "Test Admin", "", "testpass")
-    record = app.state.auth.find_user("admin")
-    uid = record["id"] if record else ""
-    token = app.state.auth.create_session(user_id=uid, long_lived=True)
-    app.state._startup_complete = True
-
-    transport = ASGITransport(app=app)
-    async with AsyncClient(
-        transport=transport,
-        base_url="http://test",
-        cookies={"taos_session": token},
-        event_hooks=csrf_event_hooks(),
-    ) as c:
-        c._test_admin_uid = uid
-        c._app = app
-        yield c
-
-    for attr in ("agent_registry", "agent_grants", "auth_requests", "relationships", "metrics"):
-        store = getattr(app.state, attr)
-        if store._db is not None:
-            await store.close()
-
-
 async def _make_feed_token(client) -> str:
     """Register an agent and grant it registry_feeds_read via the consent flow.
 

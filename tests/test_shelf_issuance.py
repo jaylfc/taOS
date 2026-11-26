@@ -74,7 +74,6 @@ class TestBackfillAndOptIn:
         assert await _shelves(grants, "person-1", "memory:read") == []
 
 
-from tests.test_agent_registry import feeds_client  # noqa: E402,F401
 
 
 @pytest.mark.asyncio

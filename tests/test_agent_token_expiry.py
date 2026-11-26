@@ -20,7 +20,6 @@ from tinyagentos.agent_registry_store import (
     verify_registry_token,
 )
 
-from tests.test_agent_registry import feeds_client  # noqa: F401
 
 
 def _keys(app):
