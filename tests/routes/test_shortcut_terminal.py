@@ -9,7 +9,7 @@ from __future__ import annotations
 import json
 import secrets
 import time
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
@@ -98,6 +98,9 @@ class TestTerminalPtyBridge:
         with patch(
             "tinyagentos.routes.shortcut_proxy._get_container_pty",
             return_value=fake_pty,
+        ), patch(
+            "tinyagentos.routes.shortcut_proxy._tmux_available",
+            new=AsyncMock(return_value=True),
         ):
             test_client.cookies.set("taos_shortcut", session_id)
             try:
@@ -146,6 +149,9 @@ class TestTuiSpawnCommand:
         with patch(
             "tinyagentos.routes.shortcut_proxy._get_container_pty",
             side_effect=_fake_get_pty,
+        ), patch(
+            "tinyagentos.routes.shortcut_proxy._tmux_available",
+            new=AsyncMock(return_value=True),
         ):
             test_client.cookies.set("taos_shortcut", session_id)
             try:
@@ -235,3 +241,104 @@ class TestTerminalHandshake:
                         ws.receive_text()
             finally:
                 test_client.cookies.clear()
+
+
+# ---------------------------------------------------------------------------
+# #617 follow-up — tmux absent from the container image: fall back to the
+# plain (pre-#617) spawn with a one-line notice; never fail to open.
+# ---------------------------------------------------------------------------
+
+class TestTmuxAbsentFallback:
+    def test_plain_terminal_opens_with_notice_when_tmux_absent(
+        self, test_client, seeded_agent_factory
+    ):
+        """No tmux in the container: a container-terminal still opens with
+        the plain spawn (cmd=None) and the client first receives the
+        one-line won't-persist notice."""
+        from tinyagentos.routes.shortcut_proxy import TMUX_ABSENT_NOTICE
+
+        shortcuts = [
+            {
+                "kind": "container-terminal",
+                "label": "Shell",
+                "icon": "terminal",
+                "requires_capability": "agent.shell",
+            }
+        ]
+        agent = seeded_agent_factory(framework="openclaw", shortcuts=shortcuts)
+        agent_id = agent["id"]
+        session_id = _make_terminal_session(agent_id, 0)
+
+        captured: dict = {}
+        fake_pty = FakePtyHandle()
+
+        def _fake_get_pty(agent_name: str, cmd: list | None) -> FakePtyHandle:
+            captured["cmd"] = cmd
+            return fake_pty
+
+        with patch(
+            "tinyagentos.routes.shortcut_proxy._get_container_pty",
+            side_effect=_fake_get_pty,
+        ), patch(
+            "tinyagentos.routes.shortcut_proxy._tmux_available",
+            new=AsyncMock(return_value=False),
+        ):
+            test_client.cookies.set("taos_shortcut", session_id)
+            try:
+                with test_client.websocket_connect(
+                    f"/shortcut/terminal/{agent_id}/0"
+                ) as ws:
+                    ws.send_text(json.dumps({"type": "ticket", "ticket": "dummy-ticket"}))
+                    first = ws.receive_text()
+                    assert first == TMUX_ABSENT_NOTICE
+                    assert ws.receive_text() == "$ "
+            finally:
+                test_client.cookies.clear()
+
+        assert captured["cmd"] is None
+
+    def test_tui_falls_back_to_plain_command_when_tmux_absent(
+        self, test_client, seeded_agent_factory
+    ):
+        """No tmux in the container: a tui shortcut spawns its plain
+        ['bash','-lc',<command>] (the pre-#617 argv) and shows the notice."""
+        from tinyagentos.routes.shortcut_proxy import TMUX_ABSENT_NOTICE
+
+        shortcuts = [
+            {
+                "kind": "tui",
+                "label": "htop",
+                "icon": "terminal",
+                "requires_capability": "agent.shell",
+                "command": "htop",
+            }
+        ]
+        agent = seeded_agent_factory(framework="openclaw", shortcuts=shortcuts)
+        agent_id = agent["id"]
+        session_id = _make_terminal_session(agent_id, 0, scope="tui")
+
+        captured: dict = {}
+        fake_pty = FakePtyHandle()
+
+        def _fake_get_pty(agent_name: str, cmd: list | None) -> FakePtyHandle:
+            captured["cmd"] = cmd
+            return fake_pty
+
+        with patch(
+            "tinyagentos.routes.shortcut_proxy._get_container_pty",
+            side_effect=_fake_get_pty,
+        ), patch(
+            "tinyagentos.routes.shortcut_proxy._tmux_available",
+            new=AsyncMock(return_value=False),
+        ):
+            test_client.cookies.set("taos_shortcut", session_id)
+            try:
+                with test_client.websocket_connect(
+                    f"/shortcut/terminal/{agent_id}/0"
+                ) as ws:
+                    ws.send_text(json.dumps({"type": "ticket", "ticket": "dummy-ticket"}))
+                    assert ws.receive_text() == TMUX_ABSENT_NOTICE
+            finally:
+                test_client.cookies.clear()
+
+        assert captured["cmd"] == ["bash", "-lc", "htop"]
