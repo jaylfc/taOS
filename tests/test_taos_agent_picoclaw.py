@@ -257,8 +257,11 @@ async def _framework(client) -> dict:
 
 async def _lock_framework(client, monkeypatch) -> str:
     from tinyagentos.routes import auth as auth_mod
+    real_is_console = auth_mod._request_is_console
     monkeypatch.setattr(auth_mod, "_request_is_console", lambda _r: True)
     resp = await client.get("/auth/lock-widgets")
+    # Back to the real check: a locked console holds no session.
+    monkeypatch.setattr(auth_mod, "_request_is_console", real_is_console)
     assert resp.status_code == 200, resp.text
     agent = next(a for a in resp.json()["agents"] if a.get("system"))
     return agent["framework"]
@@ -429,8 +432,11 @@ async def test_key_never_in_a_response_or_a_log(mobile, monkeypatch, caplog):
         texts.append((await client.get("/api/taos-agent/config")).text)
         texts.append((await client.get("/api/taos-agent/settings")).text)
         from tinyagentos.routes import auth as auth_mod
+        real_is_console = auth_mod._request_is_console
         monkeypatch.setattr(auth_mod, "_request_is_console", lambda _r: True)
         texts.append((await client.get("/auth/lock-widgets")).text)
+        # Back to the real check: a locked console holds no session.
+        monkeypatch.setattr(auth_mod, "_request_is_console", real_is_console)
         chat_text, _ = await _chat(client)
         texts.append(chat_text)
         # The agent itself trying to read or echo its credential gets nothing.
