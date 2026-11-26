@@ -10,6 +10,12 @@ entry when nothing is found (mDNS unavailable, restricted network).
 Discovery is LAN-only by construction: mDNS multicast never leaves the
 local link. Remote attach stays on the pairing-code + mesh path.
 
+The advertised fingerprint is not trusted on its own -- anyone on the
+LAN can copy a TXT record. The pair CLI verifies it by
+challenge-response before pairing (see
+``tinyagentos.worker.pairing.verify_controller_proof``); the scan here
+only supplies the candidates and the fingerprint to check against.
+
 Everything here is best-effort: a failed or empty scan returns an empty
 list, never an exception, so callers can always fall through to the
 manual path.
@@ -226,8 +232,10 @@ def choose_candidate(
     print_fn("Discovered taOS controllers on this network:")
     for idx, cand in enumerate(candidates, start=1):
         tier = f", tier {cand.tier}" if cand.tier else ""
-        print_fn(f"  {idx}. {cand.name} -- {cand.url}{tier}")
-        print_fn(f"     fingerprint {cand.fingerprint}")
+        print_fn(
+            f"  {idx}. {cand.name} -- {cand.url} "
+            f"(fingerprint {cand.fingerprint[:8]}...{tier})"
+        )
     try:
         answer = input_fn("Pick a controller by number (blank for none): ")
     except (EOFError, KeyboardInterrupt):
@@ -249,8 +257,11 @@ def main(argv: list[str] | None = None) -> int:
 
     ``python -m tinyagentos.worker.discovery`` prints one line per found
     controller (url, fingerprint, tier, name). With ``--pick`` it offers
-    the interactive list on stderr and prints ONLY the chosen URL to
-    stdout, so shell callers (install-worker.sh) can capture it.
+    the interactive list on stderr and prints the chosen URL and its
+    fingerprint (one per line) to stdout, so shell callers
+    (install-worker.sh) can capture both and pass the fingerprint to
+    the pair CLI, which verifies the controller holds that hub key
+    before pairing.
     """
     parser = argparse.ArgumentParser(
         description="Discover taOS controllers on the local network (mDNS)"
@@ -265,7 +276,8 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument(
         "--pick", action="store_true",
-        help="Offer a pick list; print only the chosen URL to stdout",
+        help="Offer a pick list; print the chosen URL and fingerprint "
+             "to stdout",
     )
     args = parser.parse_args(argv)
 
@@ -284,6 +296,7 @@ def main(argv: list[str] | None = None) -> int:
             print("No controller selected.", file=sys.stderr)
             return 1
         print(chosen.url)
+        print(chosen.fingerprint)
         return 0
     if args.expect_fingerprint:
         candidates = [

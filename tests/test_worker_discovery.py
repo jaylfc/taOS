@@ -242,6 +242,22 @@ class TestChoose:
         )
         assert chosen is not None and chosen.fingerprint == FP_B
 
+    def test_pick_list_shows_short_fingerprint_next_to_controller(self):
+        lines: list[str] = []
+        chosen = choose_candidate(
+            [cand(FP_A), cand(FP_B, "http://taos2.local:6969")],
+            input_fn=lambda prompt="": "1",
+            print_fn=lines.append,
+        )
+        assert chosen is not None and chosen.fingerprint == FP_A
+        url_lines = [ln for ln in lines if "http://taos.local:6969" in ln]
+        assert url_lines, lines
+        # The short form (first 8 hex chars) sits on the controller's own
+        # line, comparable with what the controller's Cluster page shows.
+        assert FP_A[:8] in url_lines[0]
+        # The full fingerprint is not dumped into the pick list.
+        assert all(FP_A not in ln and FP_B not in ln for ln in lines)
+
     def test_prompt_eof_returns_none(self):
         def _eof(prompt=""):
             raise EOFError
@@ -260,3 +276,23 @@ class TestChoose:
 
     def test_no_candidates_returns_none(self):
         assert choose_candidate([]) is None
+
+
+# ======================================================================
+# CLI
+# ======================================================================
+
+
+class TestCli:
+    def test_pick_prints_url_then_fingerprint(self, monkeypatch, capsys):
+        async def _scan(timeout=0.0):
+            return [cand(FP_A)]
+
+        monkeypatch.setattr(disc, "discover_controllers", _scan)
+        rc = disc.main(["--pick"])
+        assert rc == 0
+        lines = capsys.readouterr().out.splitlines()
+        # install-worker.sh captures line 1 as the controller URL and
+        # line 2 as the fingerprint it passes to pair --expect-fingerprint,
+        # so the picked controller's identity gets verified at pairing.
+        assert lines == ["http://taos.local:6969", FP_A]

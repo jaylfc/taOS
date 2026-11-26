@@ -13,6 +13,12 @@ controllers advertising the mDNS discovery service (#119), offers a
 pick from what it finds, and falls back to asking for the URL by hand
 when nothing is discovered.
 
+When a fingerprint is known for the chosen controller -- from the
+discovery record, or from --expect-fingerprint -- the controller must
+prove possession of that hub key (a signed challenge) before pairing
+starts; a controller that cannot prove it is refused, so a LAN
+impostor advertising a copied fingerprint gains nothing.
+
 Exit codes:
     0  paired (and registered if --register-after)
     1  pairing error (timeout, invalidated, network)
@@ -64,17 +70,26 @@ def main() -> None:
         sys.exit(1)
 
 
-async def _resolve_controller(args) -> str:
-    """Return the controller URL to pair with.
+async def _resolve_controller(args) -> tuple[str, str | None]:
+    """Return (controller URL, fingerprint the controller must prove).
 
     An explicit argument wins. Without one, browse the LAN for
     controllers advertising the #119 discovery service and offer a
     pick; when nothing is found (or nothing is picked), fall back to
     asking for the URL by hand. Raises ValueError when no URL can be
     obtained at all (e.g. stdin is not interactive).
+
+    The second element is the hub fingerprint the controller at the
+    URL must prove possession of before pairing (see
+    pairing.verify_controller_proof): the discovered candidate's
+    advertised fingerprint, or --expect-fingerprint when one was
+    given. It is None only for a hand-typed URL with no expectation
+    set -- nothing was advertised, so there is nothing to check
+    against, and the pairing code + admin approval remain the gate.
     """
+    expect = getattr(args, "expect_fingerprint", None)
     if args.controller:
-        return args.controller
+        return args.controller, expect
     from tinyagentos.worker.discovery import (
         choose_candidate,
         discover_controllers,
@@ -86,14 +101,14 @@ async def _resolve_controller(args) -> str:
     )
     candidates = await discover_controllers(timeout=args.scan_timeout)
     chosen = choose_candidate(
-        candidates, expect_fingerprint=args.expect_fingerprint
+        candidates, expect_fingerprint=expect
     )
     if chosen is not None:
         print(
             f"[pair] using discovered controller {chosen.url} "
             f"(fingerprint {chosen.fingerprint[:8]}...)"
         )
-        return chosen.url
+        return chosen.url, chosen.fingerprint
     if candidates:
         print("[pair] no discovered controller selected.")
     else:
@@ -109,7 +124,7 @@ async def _resolve_controller(args) -> str:
             "no controller URL given and none discovered -- "
             "pass the controller URL explicitly"
         )
-    return url
+    return url, expect
 
 
 async def _run(args) -> None:
@@ -119,9 +134,10 @@ async def _run(args) -> None:
         default_state_dir,
         run_manual_pairing,
         run_pairing,
+        verify_controller_proof,
     )
 
-    args.controller = await _resolve_controller(args)
+    args.controller, expected_fingerprint = await _resolve_controller(args)
 
     state_dir = args.state_dir or default_state_dir()
     name = args.name or _hostname()
@@ -135,6 +151,24 @@ async def _run(args) -> None:
         worker_url = agent.get_worker_url()
 
     async with httpx.AsyncClient(timeout=15) as client:
+        if expected_fingerprint:
+            # A fingerprint was advertised (mDNS) or configured: the
+            # controller must prove it holds that hub key BEFORE the
+            # announce creates any pairing state. An impostor on the
+            # LAN can copy the TXT record, but not the key.
+            if not await verify_controller_proof(
+                client, args.controller, expected_fingerprint
+            ):
+                raise RuntimeError(
+                    f"controller at {args.controller} could not prove "
+                    f"it holds the hub key for fingerprint "
+                    f"{expected_fingerprint[:8]}... -- refusing to pair "
+                    f"(possible impostor)"
+                )
+            print(
+                f"[pair] controller identity verified "
+                f"(fingerprint {expected_fingerprint[:8]}...)"
+            )
         if args.manual:
             key = await run_manual_pairing(
                 client,
