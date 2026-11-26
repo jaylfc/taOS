@@ -99,7 +99,7 @@ class TestShelfGrantStore:
 # ---------------------------------------------------------------------------
 # The grants feed carries shelf records next to ordinary ones
 # ---------------------------------------------------------------------------
-from tests.test_agent_registry import feeds_client  # noqa: E402,F401
+from test_agent_registry import feeds_client  # noqa: E402,F401
 
 
 @pytest.mark.asyncio
