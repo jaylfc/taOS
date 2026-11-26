@@ -4,6 +4,7 @@ import { getApp } from "@/registry/app-registry";
 import { useProcessStore } from "@/stores/process-store";
 import {
   fetchPendingAgentInvites,
+  fetchPendingAgentInvitesMine,
   revokePendingAgentInvite,
   PendingInvitesList,
   type PendingInvite,
@@ -14,19 +15,21 @@ import {
 /*                                                                     */
 /*  Pending external-agent invites in the registry area of the Agents  */
 /*  app: agents in the process of joining should be visible on the     */
-/*  agent-management surface, not only inside the mint dialog. Data    */
-/*  comes from the read-only admin-gated aggregate                    */
-/*  GET /api/agents/invites/pending; cancellation routes to the        */
-/*  per-project or OS-level DELETE. Non-admins (403) see nothing —     */
-/*  the aggregate spans projects they may not own.                     */
+/*  agent-management surface, not only inside the mint dialog. Admins  */
+/*  read the cross-project aggregate (GET /api/agents/invites/pending); */
+/*  non-admin owners read their own agents' pending invites only       */
+/*  (GET /api/agents/invites/pending/mine, not admin-gated).           */
+/*  Cancellation routes to the per-project or OS-level DELETE.         */
 /* ------------------------------------------------------------------ */
 
 export function PendingAgentInvites({
   active,
   refreshKey,
+  isAdmin,
 }: {
   active: boolean;
   refreshKey: number;
+  isAdmin: boolean;
 }) {
   const [invites, setInvites] = useState<PendingInvite[] | null>(null);
   const openWindow = useProcessStore((s) => s.openWindow);
@@ -34,10 +37,12 @@ export function PendingAgentInvites({
 
   const refresh = useCallback(async () => {
     const my = ++seq.current;
-    const rows = await fetchPendingAgentInvites();
+    const rows = isAdmin
+      ? await fetchPendingAgentInvites()
+      : await fetchPendingAgentInvitesMine();
     if (seq.current !== my) return; // stale; a newer refresh is in flight
     setInvites(rows);
-  }, []);
+  }, [isAdmin]);
 
   useEffect(() => {
     if (!active) return;
